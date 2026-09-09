@@ -1,0 +1,28 @@
+{
+  "name": "deva-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deva - 面向开发者的 AI 原生开发工作台",
+  "license": "MIT",
+  "packageManager": "pnpm@10.8.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @deva/desktop dev",
+    "build": "pnpm --filter @deva/desktop build",
+    "start": "pnpm --filter @deva/desktop start",
+    "typecheck": "pnpm --filter @deva/desktop typecheck",
+    "package:win": "pnpm --filter @deva/desktop build:win",
+    "package:mac": "pnpm --filter @deva/desktop build:mac",
+    "package:linux": "pnpm --filter @deva/desktop build:linux"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "electron-winstaller",
+      "esbuild",
+      "@parcel/watcher"
+    ]
+  }
+}

@@ -1,0 +1,119 @@
+/*
+ * 设计 token —— 所有颜色/间距/圆角均走语义变量，支撑明/暗主题与跟随系统。
+ * 见 docs/modules/ui-theming-i18n.md #5 主题系统。
+ * 明暗切换只改语义层映射，组件层不改。
+ */
+
+:root {
+  /* 字体 */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei',
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', ui-monospace, SFMono-Regular,
+    Consolas, 'Courier New', monospace;
+
+  /* 间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+
+  /* 尺寸 */
+  --titlebar-h: 40px;
+  --activitybar-w: 52px;
+  --statusbar-h: 26px;
+  --sidepanel-w: 264px;
+
+  /* 层级 */
+  --z-panel: 10;
+  --z-overlay: 100;
+  --z-toast: 1000;
+
+  /* ---- 明色主题（默认） ---- */
+  --bg: #ffffff;
+  --bg-panel: #f7f7f8;
+  --bg-elevated: #ffffff;
+  --bg-inset: #f0f0f2;
+  --bg-hover: rgba(0, 0, 0, 0.045);
+  --bg-active: rgba(0, 0, 0, 0.08);
+  --bg-selected: rgba(91, 91, 214, 0.12);
+
+  --fg: #1f1f24;
+  --fg-muted: #5c5c66;
+  --fg-subtle: #8a8a94;
+
+  --border: #e6e6ea;
+  --border-strong: #d5d5db;
+
+  --accent: #5b5bd6;
+  --accent-hover: #4c4cc4;
+  --accent-fg: #ffffff;
+  --accent-tint: rgba(91, 91, 214, 0.1);
+
+  /* 对话：用户消息气泡（助手消息无气泡） */
+  --chat-user-bubble: #edeffb;
+
+  --success: #2f9e44;
+  --warning: #d9860b;
+  --danger: #e5484d;
+  --info: #3a7bd5;
+
+  --titlebar-bg: #f2f2f4;
+  --activitybar-bg: #efeff1;
+  --scrollbar: rgba(0, 0, 0, 0.18);
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  --diff-add-bg: rgba(47, 158, 68, 0.12);
+  --diff-del-bg: rgba(229, 72, 77, 0.1);
+  --diff-add-fg: #1a7a30;
+  --diff-del-fg: #c23a3f;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --bg: #1e1e20;
+  --bg-panel: #252528;
+  --bg-elevated: #2a2a2e;
+  --bg-inset: #191919;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --bg-active: rgba(255, 255, 255, 0.1);
+  --bg-selected: rgba(124, 124, 240, 0.2);
+
+  --fg: #e4e4e7;
+  --fg-muted: #a1a1aa;
+  --fg-subtle: #71717a;
+
+  --border: #2f2f33;
+  --border-strong: #3d3d42;
+
+  --accent: #7c7cf0;
+  --accent-hover: #9090f5;
+  --accent-fg: #14141a;
+  --accent-tint: rgba(124, 124, 240, 0.16);
+
+  /* 对话：用户消息气泡（助手消息无气泡） */
+  --chat-user-bubble: #303043;
+
+  --success: #51cf66;
+  --warning: #fcc419;
+  --danger: #ff6b6b;
+  --info: #74b3ff;
+
+  --titlebar-bg: #1b1b1d;
+  --activitybar-bg: #171718;
+  --scrollbar: rgba(255, 255, 255, 0.16);
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  --diff-add-bg: rgba(81, 207, 102, 0.14);
+  --diff-del-bg: rgba(255, 107, 107, 0.14);
+  --diff-add-fg: #7ee094;
+  --diff-del-fg: #ff9d9d;
+
+  color-scheme: dark;
+}
