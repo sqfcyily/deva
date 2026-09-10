@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import {
   ArrowUp,
   Square,
   Paperclip,
   Sparkles,
   ChevronDown,
+  ChevronRight,
   FileText,
   FolderTree,
   FilePen,
@@ -12,6 +13,7 @@ import {
   Search,
   FileSearch,
   Globe,
+  SquareTerminal,
   Wrench,
   ShieldAlert,
   ShieldCheck,
@@ -23,6 +25,8 @@ import {
   AlertTriangle,
   Image as ImageIcon,
   FileCode2,
+  MessageCircleQuestion,
+  Pencil,
   X
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
@@ -36,6 +40,7 @@ import {
   type ToolStatus
 } from '../../store/chat'
 import { useModels } from '../../store/models'
+import { Markdown } from './Markdown'
 
 /**
  * 对话主视图（DeepSeek 网页版风格）。消费 chat store 的真实数据：
@@ -68,7 +73,9 @@ const TOOL_META: Record<string, { icon: React.ReactNode; key: string }> = {
   grep: { icon: <Search size={14} />, key: 'chat.tool.grep' },
   web_fetch: { icon: <Globe size={14} />, key: 'chat.tool.webFetch' },
   write_file: { icon: <FilePen size={14} />, key: 'chat.tool.writeFile' },
-  edit_file: { icon: <Replace size={14} />, key: 'chat.tool.editFile' }
+  edit_file: { icon: <Replace size={14} />, key: 'chat.tool.editFile' },
+  run_command: { icon: <SquareTerminal size={14} />, key: 'chat.tool.runCommand' },
+  ask_user: { icon: <MessageCircleQuestion size={14} />, key: 'chat.tool.askUser' }
 }
 
 /** 权限模式元信息（图标 + i18n 键）；顺序即菜单顺序。 */
@@ -78,10 +85,11 @@ const PERM_MODES: { mode: PermMode; icon: React.ReactNode }[] = [
   { mode: 'auto', icon: <Zap size={13} /> }
 ]
 
-/** 工具卡上要展示的参数提示：优先 path，其次 pattern（grep/glob），再次 url（web_fetch）。 */
+/** 工具卡上要展示的参数提示：优先 command（run_command），再 path，再 pattern（grep/glob），再 url（web_fetch）。 */
 function argHint(args: unknown): string | null {
   if (args && typeof args === 'object') {
-    const o = args as { path?: unknown; pattern?: unknown; url?: unknown }
+    const o = args as { command?: unknown; path?: unknown; pattern?: unknown; url?: unknown }
+    if (typeof o.command === 'string' && o.command.trim()) return o.command
     if (typeof o.path === 'string' && o.path.trim()) return o.path
     if (typeof o.pattern === 'string' && o.pattern.trim()) return o.pattern
     if (typeof o.url === 'string' && o.url.trim()) return o.url
@@ -95,15 +103,17 @@ type Activity =
   | { kind: 'responding' }
   | { kind: 'tool'; toolName: string }
   | { kind: 'permission' }
+  | { kind: 'ask' }
 
 /**
  * 从最后一条助手消息的块序列推断"此刻在干什么"：
- * 未解决的权限卡 > 仍在运行的工具 > 末块有正文=生成回答 > 其余=思考中。
+ * 未答复的问答卡 / 未解决的权限卡 > 仍在运行的工具 > 末块有正文=生成回答 > 其余=思考中。
  */
 function deriveActivity(messages: ChatMessage[]): Activity {
   const last = messages[messages.length - 1]
   if (!last || last.role !== 'assistant') return { kind: 'thinking' }
   const blocks = last.blocks
+  if (blocks.some((b) => b.kind === 'ask' && !b.answer)) return { kind: 'ask' }
   if (blocks.some((b) => b.kind === 'permission' && !b.resolved)) return { kind: 'permission' }
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i]
@@ -116,8 +126,17 @@ function deriveActivity(messages: ChatMessage[]): Activity {
 
 export function ChatView(): React.JSX.Element {
   const { t } = useI18n()
-  const { messages, streaming, streamStatus, send, stop, respondPermission, permMode, setPermMode } =
-    useChat()
+  const {
+    messages,
+    streaming,
+    streamStatus,
+    send,
+    stop,
+    respondPermission,
+    respondAsk,
+    permMode,
+    setPermMode
+  } = useChat()
   const { activeModel, providers, setActiveModel } = useModels()
   const [input, setInput] = useState('')
   const [pickOpen, setPickOpen] = useState(false)
@@ -192,7 +211,12 @@ export function ChatView(): React.JSX.Element {
         ) : (
           <div className="chat__thread">
             {messages.map((m) => (
-              <MessageRow key={m.id} msg={m} onPermission={respondPermission} />
+              <MessageRow
+                key={m.id}
+                msg={m}
+                onPermission={respondPermission}
+                onAsk={respondAsk}
+              />
             ))}
             {streaming && (
               <StatusIndicator
@@ -254,8 +278,8 @@ export function ChatView(): React.JSX.Element {
                 onClick={() => setPermOpen((v) => !v)}
               >
                 {PERM_MODES.find((p) => p.mode === permMode)?.icon}
-                {t(`chat.perm.mode.${permMode}`)}
-                <ChevronDown size={13} />
+                <span className="chip__label">{t(`chat.perm.mode.${permMode}`)}</span>
+                <ChevronDown size={13} className="chip__caret" />
               </button>
               {permOpen && (
                 <>
@@ -288,8 +312,10 @@ export function ChatView(): React.JSX.Element {
             {/* 模型选择 */}
             <div className="model-pick">
               <button className="chip" type="button" onClick={() => setPickOpen((v) => !v)}>
-                {activeModel ? activeModel.model.name : t('chat.selectModel')}
-                <ChevronDown size={13} />
+                <span className="chip__label">
+                  {activeModel ? activeModel.model.name : t('chat.selectModel')}
+                </span>
+                <ChevronDown size={13} className="chip__caret" />
               </button>
               {pickOpen && (
                 <>
@@ -304,6 +330,7 @@ export function ChatView(): React.JSX.Element {
                         <button
                           key={`${p.id}:${m.id}`}
                           className={`model-pick__item${active ? ' is-active' : ''}`}
+                          title={m.name}
                           onClick={() => {
                             setActiveModel(p.id, m.id)
                             setPickOpen(false)
@@ -389,6 +416,16 @@ function StatusIndicator({
     )
   }
 
+  // 等待作答：引导用户去上方问答卡选择/输入。
+  if (activity.kind === 'ask') {
+    return (
+      <div className="chat__status is-waiting" role="status" aria-live="polite">
+        <MessageCircleQuestion size={14} />
+        <span>{t('chat.work.awaitingAnswer')}</span>
+      </div>
+    )
+  }
+
   const label =
     activity.kind === 'tool'
       ? `${t('chat.work.usingTool')} · ${t(TOOL_META[activity.toolName]?.key ?? 'chat.tool.unknown')}`
@@ -405,14 +442,23 @@ function StatusIndicator({
   )
 }
 
-function MessageRow({
-  msg,
-  onPermission
-}: {
-  msg: ChatMessage
-  onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
-}): React.JSX.Element {
-  if (msg.role === 'user') {
+/**
+ * 单条消息行。用 React.memo + msg 引用比较：store 的 updateLastAssistant 只替换最后一条消息对象、
+ * 其余引用不变，故流式期间只有「正在生长的那条」会重渲染/重解析，历史消息全部跳过。
+ * 比较刻意忽略 onPermission/onAsk 的引用变化——两者都以 setMessages 函数式更新 + 按 key 派发，
+ * 行为与创建它们的那次渲染无关，用「旧」回调也不会出错。
+ */
+const MessageRow = memo(
+  function MessageRow({
+    msg,
+    onPermission,
+    onAsk
+  }: {
+    msg: ChatMessage
+    onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
+    onAsk: (key: string, answer: string) => void
+  }): React.JSX.Element {
+    if (msg.role === 'user') {
     const text = msg.blocks.map((b) => (b.kind === 'text' ? b.text : '')).join('')
     return (
       <div className="msg msg--user">
@@ -437,23 +483,49 @@ function MessageRow({
     )
   }
 
-  return (
-    <div className="msg msg--agent">
-      <div className="msg__content">
-        {msg.blocks.map((b, i) => (
-          <BlockView key={i} block={b} onPermission={onPermission} />
-        ))}
+    return (
+      <div className="msg msg--agent">
+        <div className="msg__content">
+          {msg.blocks.map((b, i) => (
+            <BlockView key={i} block={b} onPermission={onPermission} onAsk={onAsk} />
+          ))}
+        </div>
       </div>
+    )
+  },
+  (prev, next) => prev.msg === next.msg
+)
+
+/**
+ * 思考块（可折叠）。对齐 Codex/DeepSeek 的推理折叠；默认展开，点标题收起。
+ * 正文按弱化配色渲染 Markdown（muted）。
+ */
+function ThinkingBlock({ text }: { text: string }): React.JSX.Element {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(true)
+  return (
+    <div className={open ? 'msg__think is-open' : 'msg__think'}>
+      <button type="button" className="msg__think-head" onClick={() => setOpen((v) => !v)}>
+        <ChevronRight size={13} className="msg__think-caret" />
+        <span className="msg__think-label">{t('chat.thinking')}</span>
+      </button>
+      {open && (
+        <div className="msg__think-body">
+          <Markdown text={text} muted />
+        </div>
+      )}
     </div>
   )
 }
 
 function BlockView({
   block,
-  onPermission
+  onPermission,
+  onAsk
 }: {
   block: ChatBlock
   onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
+  onAsk: (key: string, answer: string) => void
 }): React.JSX.Element | null {
   const { t } = useI18n()
 
@@ -461,18 +533,13 @@ function BlockView({
     if (!block.text) return null
     return (
       <div className="msg__text">
-        <p style={{ whiteSpace: 'pre-wrap' }}>{block.text}</p>
+        <Markdown text={block.text} />
       </div>
     )
   }
 
   if (block.kind === 'thinking') {
-    return (
-      <div className="msg__think">
-        <span className="msg__think-label">{t('chat.thinking')}</span>
-        <span style={{ whiteSpace: 'pre-wrap' }}>{block.text}</span>
-      </div>
-    )
+    return <ThinkingBlock text={block.text} />
   }
 
   if (block.kind === 'tool') {
@@ -493,15 +560,23 @@ function BlockView({
 
   if (block.kind === 'permission') {
     const meta = TOOL_META[block.toolName] ?? { icon: <Wrench size={14} />, key: 'chat.tool.unknown' }
-    const path = argHint(block.args)
+    const outside = block.outsideRoot
+    // 越界卡：主体显示被访问目标的完整绝对路径；否则回退常规参数提示。
+    const path = outside ?? argHint(block.args)
     return (
-      <div className="permission">
+      <div className={outside ? 'permission permission--outside' : 'permission'}>
         <div className="permission__head">
           <span className="permission__head-icon">
             <ShieldAlert size={15} />
           </span>
           {t('chat.permission.title')}
         </div>
+        {outside && (
+          <div className="permission__warn">
+            <AlertTriangle size={13} />
+            <span>{t('chat.permission.outside')}</span>
+          </div>
+        )}
         <div className="permission__desc">
           {t(meta.key)}
           {path && (
@@ -520,10 +595,14 @@ function BlockView({
               className="btn btn--primary btn--sm"
               onClick={() => onPermission(block.key, 'allow', false)}
             >
-              {t('chat.permission.allow')}
+              {outside ? t('chat.permission.outsideAllowOnce') : t('chat.permission.allow')}
             </button>
-            <button className="btn btn--sm" onClick={() => onPermission(block.key, 'allow', true)}>
-              {t('chat.permission.allowAlways')}
+            <button
+              className="btn btn--sm"
+              title={outside ? block.trustDir : undefined}
+              onClick={() => onPermission(block.key, 'allow', true)}
+            >
+              {outside ? t('chat.permission.outsideTrustDir') : t('chat.permission.allowAlways')}
             </button>
             <button className="btn btn--sm" onClick={() => onPermission(block.key, 'deny', false)}>
               {t('chat.permission.deny')}
@@ -534,11 +613,100 @@ function BlockView({
     )
   }
 
+  if (block.kind === 'ask') {
+    return <AskCard block={block} onAsk={onAsk} />
+  }
+
   // error
   return (
     <div className="msg__error">
       <AlertTriangle size={14} />
       <span style={{ whiteSpace: 'pre-wrap' }}>{block.message}</span>
+    </div>
+  )
+}
+
+/**
+ * 问答卡（征求决策/澄清）：Codex 式竖排编号单选 + 自由输入兜底。
+ * 点任一候选项即以其标签作答；也可在底部自行输入答案。作答后就地收敛为已答态。
+ */
+function AskCard({
+  block,
+  onAsk
+}: {
+  block: Extract<ChatBlock, { kind: 'ask' }>
+  onAsk: (key: string, answer: string) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const [custom, setCustom] = useState('')
+  const answered = block.answer !== undefined
+
+  const submitCustom = (): void => {
+    const v = custom.trim()
+    if (!v || answered) return
+    onAsk(block.key, v)
+  }
+
+  return (
+    <div className={`ask${answered ? ' is-answered' : ''}`}>
+      <div className="ask__head">
+        <span className="ask__head-icon">
+          <MessageCircleQuestion size={15} />
+        </span>
+        {t('chat.ask.title')}
+      </div>
+      <div className="ask__question">{block.question}</div>
+
+      {answered ? (
+        <div className="ask__resolved">
+          <CheckCircle2 size={13} />
+          <span>{block.answer}</span>
+        </div>
+      ) : (
+        <>
+          {block.options.length > 0 && (
+            <div className="ask__options">
+              {block.options.map((o, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className="ask__option"
+                  onClick={() => onAsk(block.key, o.label)}
+                >
+                  <span className="ask__option-num">{i + 1}</span>
+                  <span className="ask__option-body">
+                    <span className="ask__option-label">{o.label}</span>
+                    {o.description && <span className="ask__option-desc">{o.description}</span>}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="ask__custom">
+            <Pencil size={13} className="ask__custom-icon" />
+            <input
+              className="ask__custom-input"
+              value={custom}
+              placeholder={t('chat.ask.customPlaceholder')}
+              onChange={(e) => setCustom(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  submitCustom()
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="btn btn--primary btn--sm"
+              onClick={submitCustom}
+              disabled={!custom.trim()}
+            >
+              {t('chat.ask.send')}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }

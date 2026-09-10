@@ -29,11 +29,35 @@ export type AttachKind = 'image' | 'document' | 'text'
 /** 每项目权限模式（与 preload/主进程对齐）：逐次询问 / 自动接受项目内编辑 / 全自动。 */
 export type PermMode = 'ask' | 'acceptEdits' | 'auto'
 
+/** ask_user 候选项（与 preload/主进程对齐）。 */
+export interface AskOption {
+  label: string
+  description?: string
+}
+
 export type ChatBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: ToolStatus; summary?: string }
-  | { kind: 'permission'; key: string; toolName: string; args: unknown; resolved?: 'allow' | 'deny' }
+  | {
+      kind: 'permission'
+      key: string
+      toolName: string
+      args: unknown
+      resolved?: 'allow' | 'deny'
+      /** 「项目外访问」授权：被访问目标的完整绝对路径（权限卡显式展示越界路径）。 */
+      outsideRoot?: string
+      /** 「项目外访问」授权：点「信任目录」将信任的目录。 */
+      trustDir?: string
+    }
+  | {
+      kind: 'ask'
+      key: string
+      question: string
+      options: AskOption[]
+      /** 已答复的最终答案（选中项标签或自由输入）；未答为 undefined，此时展示可交互问答卡。 */
+      answer?: string
+    }
   | { kind: 'error'; message: string }
 
 export interface ChatMessage {
@@ -83,7 +107,15 @@ type StreamEvent =
   | { type: 'thinking_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; args: unknown }
   | { type: 'tool_result'; id: string; name: string; summary: string; isError: boolean }
-  | { type: 'permission_request'; key: string; toolName: string; args: unknown }
+  | { type: 'ask_user'; key: string; question: string; options: AskOption[] }
+  | {
+      type: 'permission_request'
+      key: string
+      toolName: string
+      args: unknown
+      outsideRoot?: string
+      trustDir?: string
+    }
   | { type: 'usage'; input: number; output: number }
   | { type: 'reconnecting'; attempt: number; max: number }
   | { type: 'stream_reset' }
@@ -103,6 +135,8 @@ interface ChatContextValue {
   selectSession: (id: string) => void
   deleteSession: (id: string) => void
   respondPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
+  /** 回应 ask_user 询问（选中项标签或自由输入），并把该问答卡就地收敛为已答态。 */
+  respondAsk: (key: string, answer: string) => void
   /** 当前项目的权限模式（授权姿态）。 */
   permMode: PermMode
   /** 切换当前项目的权限模式（即时持久化到 ~/.deva/permissions.json）。 */
@@ -175,7 +209,17 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       return next
     }
     case 'permission_request':
-      next.push({ kind: 'permission', key: ev.key, toolName: ev.toolName, args: ev.args })
+      next.push({
+        kind: 'permission',
+        key: ev.key,
+        toolName: ev.toolName,
+        args: ev.args,
+        outsideRoot: ev.outsideRoot,
+        trustDir: ev.trustDir
+      })
+      return next
+    case 'ask_user':
+      next.push({ kind: 'ask', key: ev.key, question: ev.question, options: ev.options })
       return next
     case 'error':
       next.push({ kind: 'error', message: ev.message })
@@ -473,6 +517,15 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       )
     }
 
+    const respondAsk = (key: string, answer: string): void => {
+      void window.deva.chat.respondAsk({ key, answer })
+      setMessages((prev) =>
+        updateLastAssistant(prev, (blocks) =>
+          blocks.map((b) => (b.kind === 'ask' && b.key === key ? { ...b, answer } : b))
+        )
+      )
+    }
+
     const setPermMode = (mode: PermMode): void => {
       setPermModeState(mode)
       void window.deva.perm.setMode(projectPathRef.current, mode)
@@ -490,6 +543,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       selectSession,
       deleteSession,
       respondPermission,
+      respondAsk,
       permMode,
       setPermMode
     }

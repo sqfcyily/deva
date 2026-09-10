@@ -48,6 +48,12 @@ export interface FeatureContribution {
    * 目前是声明式元数据，供后续「项目切换」逻辑与未来插件系统消费。
    */
   scope: FeatureScope
+  /**
+   * 该视图下是否显示底部集成终端（命令行）。
+   * 仅对话/资源管理器/版本控制这类「贴着项目」的视图开放；其余视图切入时终端
+   * 隐藏但不销毁（面板保活、会话不断），顶栏「打开终端」按钮随之禁用。
+   */
+  showsTerminal?: boolean
   /** 侧栏导航组件；省略则该视图无侧栏（侧栏折叠） */
   Sidebar?: React.FC
   /** 中央工作区组件 */
@@ -68,6 +74,7 @@ export const featureContributions: FeatureContribution[] = [
     titleKey: 'activity.chat',
     order: 10,
     scope: 'project',
+    showsTerminal: true,
     Sidebar: ChatSessionsPanel,
     Center: ChatView
   },
@@ -77,6 +84,7 @@ export const featureContributions: FeatureContribution[] = [
     titleKey: 'activity.explorer',
     order: 20,
     scope: 'project',
+    showsTerminal: true,
     Sidebar: ExplorerPanel,
     Center: EditorView
   },
@@ -86,6 +94,7 @@ export const featureContributions: FeatureContribution[] = [
     titleKey: 'activity.git',
     order: 30,
     scope: 'project',
+    showsTerminal: true,
     Sidebar: GitPanel,
     Center: GitDiffView
   },
@@ -132,6 +141,11 @@ const byId = new Map(featureContributions.map((c) => [c.id, c]))
 /** 按 id 取贡献 */
 export function getContribution(id: string): FeatureContribution | undefined {
   return byId.get(id)
+}
+
+/** 该视图是否显示底部集成终端（命令行）。未登记的视图按不显示处理。 */
+export function viewShowsTerminal(id: string): boolean {
+  return byId.get(id)?.showsTerminal === true
 }
 
 const ordered = [...featureContributions].sort((a, b) => a.order - b.order)

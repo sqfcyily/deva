@@ -1,8 +1,16 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import { streamChat } from '../providers'
 import type { ContentPart, Message, StopReason } from '../providers/types'
-import { evaluate, rememberSession, clearSession } from './permissions'
-import { executeTool, toolSpecs, type ToolContext } from './tools'
+import { evaluate, rememberSession, rememberSessionExec, clearSession } from './permissions'
+import {
+  executeTool,
+  outsideRootTarget,
+  toolCategory,
+  toolSpecs,
+  type ToolContext,
+  type ToolResult
+} from './tools'
+import { isSensitivePath, trustRoot, untrustRoot } from './fs-guard'
 import {
   deriveTitle,
   ensureSession,
@@ -117,13 +125,36 @@ interface PermissionResponse {
   remember: boolean
 }
 
+/** ask_user 的候选项（竖排单选；description 为可选补充说明）。 */
+interface AskOption {
+  label: string
+  description?: string
+}
+
+interface AskResponse {
+  key: string
+  /** 用户最终答复文本（选中项标签或自由输入）；null 表示取消/中止。 */
+  answer: string | null
+}
+
 /** 发往渲染层的富事件（比 provider 的 StreamEvent 多了工具执行/权限阶段）。 */
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; args: unknown }
   | { type: 'tool_result'; id: string; name: string; summary: string; isError: boolean }
-  | { type: 'permission_request'; key: string; toolName: string; args: unknown }
+  /** 征求决策/澄清：暂停循环，向用户抛出单选问题，等其选择/输入后回灌为 tool_result。 */
+  | { type: 'ask_user'; key: string; question: string; options: AskOption[] }
+  | {
+      type: 'permission_request'
+      key: string
+      toolName: string
+      args: unknown
+      /** 「项目外访问」授权：被访问目标的完整绝对路径（供权限卡显式展示越界路径）。 */
+      outsideRoot?: string
+      /** 「项目外访问」授权：点「信任目录」将加入受信根的目录。 */
+      trustDir?: string
+    }
   | { type: 'usage'; input: number; output: number }
   /** 连接中断、正在自动重连（transient；attempt/max 供 UI 显示进度）。 */
   | { type: 'reconnecting'; attempt: number; max: number }
@@ -153,6 +184,8 @@ function delay(ms: number, signal: AbortSignal): Promise<boolean> {
 
 const activeTurns = new Map<string, AbortController>()
 const pending = new Map<string, { resolve: (r: { decision: 'allow' | 'deny'; remember: boolean }) => void; turnId: string }>()
+/** 待用户答复的 ask_user 询问（键 → resolve + 所属轮次）；answer 为 null 表示取消/中止。 */
+const pendingAsk = new Map<string, { resolve: (answer: string | null) => void; turnId: string }>()
 
 let idCounter = 0
 function genId(prefix: string): string {
@@ -172,6 +205,7 @@ function systemPrompt(workspaceRoot: string | null): string {
     '关于授权：当你决定写入/修改文件时，**直接调用 write_file 工具**即可——应用会自动弹出授权界面，由用户在界面上点「允许」或「拒绝」。',
     '**切勿**在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话——用户无法用文字回复授权，只能通过应用弹出的授权按钮操作；用文字征求授权等于让操作卡死。',
     '需要动手时就调用相应工具，不要只声明打算做什么便停下等待确认。若工具调用被用户拒绝，再据此说明或改用其他不需该操作的方式。',
+    '关于决策/澄清：当需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时，调用 ask_user 工具抛出**一个**单选问题，界面会让用户选择或自行输入，其答复回灌给你后再继续。能合理默认就直接做，别为琐碎选择打断用户。注意区分：征求**决策/澄清**用 ask_user；征求**写入/执行授权**仍走前述权限按钮，切勿用 ask_user 去问「是否允许」。',
     '回答使用简体中文，简洁、准确，必要时给出关键文件路径与行号。'
   ].join('\n')
 }
@@ -185,11 +219,31 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     turnId: string,
     sessionId: string,
     toolName: string,
-    args: unknown
+    args: unknown,
+    outside?: { outsideRoot: string; trustDir: string }
   ): Promise<{ decision: 'allow' | 'deny'; remember: boolean }> {
     const key = genId('perm')
-    emit(turnId, sessionId, { type: 'permission_request', key, toolName, args })
+    emit(turnId, sessionId, {
+      type: 'permission_request',
+      key,
+      toolName,
+      args,
+      outsideRoot: outside?.outsideRoot,
+      trustDir: outside?.trustDir
+    })
     return new Promise((resolve) => pending.set(key, { resolve, turnId }))
+  }
+
+  /** 抛出单选问题、暂停循环等用户答复（不过权限闸门，恒放行执行）。 */
+  function askUser(
+    turnId: string,
+    sessionId: string,
+    question: string,
+    options: AskOption[]
+  ): Promise<string | null> {
+    const key = genId('ask')
+    emit(turnId, sessionId, { type: 'ask_user', key, question, options })
+    return new Promise((resolve) => pendingAsk.set(key, { resolve, turnId }))
   }
 
   async function runTurn(
@@ -201,7 +255,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): Promise<void> {
     const controller = new AbortController()
     activeTurns.set(turnId, controller)
-    const ctx: ToolContext = { workspaceRoot }
+    // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
+    const ctx: ToolContext = { workspaceRoot, signal: controller.signal }
     const session = ensureSession(key, sessionId)
     const history = session.messages
 
@@ -237,7 +292,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               emit(turnId, sessionId, { type: 'thinking_delta', text: ev.text })
             } else if (ev.type === 'tool_call') {
               toolCalls.push({ id: ev.id, name: ev.name, args: ev.args })
-              emit(turnId, sessionId, { type: 'tool_call', id: ev.id, name: ev.name, args: ev.args })
+              // ask_user 不画通用工具卡：循环真正走到它时再发专用 ask_user 事件（避免既有工具卡又有问答卡）。
+              if (ev.name !== 'ask_user')
+                emit(turnId, sessionId, { type: 'tool_call', id: ev.id, name: ev.name, args: ev.args })
             } else if (ev.type === 'usage') {
               emit(turnId, sessionId, { type: 'usage', input: ev.input, output: ev.output })
             } else if (ev.type === 'error') {
@@ -306,11 +363,80 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             emit(turnId, sessionId, { type: 'done', stopReason: 'aborted' })
             return
           }
-          let allowed = evaluate(sessionId, key, tc.name) === 'allow'
-          if (!allowed) {
-            const r = await requestPermission(turnId, sessionId, tc.name, tc.args)
-            allowed = r.decision === 'allow'
-            if (allowed && r.remember) rememberSession(sessionId, tc.name)
+
+          // ask_user 特判：不过权限闸门，暂停循环等用户抉择，答复回灌为 tool_result。
+          if (tc.name === 'ask_user') {
+            const a = (tc.args ?? {}) as { question?: unknown; options?: unknown }
+            const question = typeof a.question === 'string' && a.question.trim() ? a.question : '请选择：'
+            const options: AskOption[] = Array.isArray(a.options)
+              ? a.options
+                  .filter((o): o is { label: string; description?: unknown } =>
+                    Boolean(o) && typeof (o as { label?: unknown }).label === 'string'
+                  )
+                  .map((o) => ({
+                    label: o.label,
+                    description: typeof o.description === 'string' ? o.description : undefined
+                  }))
+              : []
+            const answer = await askUser(turnId, sessionId, question, options)
+            resultParts.push({
+              type: 'tool_result',
+              toolUseId: tc.id,
+              content: answer === null ? '用户取消了本次询问。' : `用户回答：${answer}`,
+              isError: false
+            })
+            continue
+          }
+
+          // 「项目外访问」预检：目标落在受信根之外 → 走越界询问（而非常规闸门）。
+          const outside = outsideRootTarget(tc.name, tc.args, workspaceRoot)
+
+          let allowed: boolean
+          let policyDenied = false
+          // 「仅此次」授权临时精确放行的路径：执行后必须撤销，避免长期扩大受信面。
+          let oneShotPath: string | null = null
+          let denyContent = '用户拒绝了该操作。'
+
+          if (outside) {
+            // 硬底：凭据/系统目录（含本应用 ~/.deva 密钥库）即便同意也一律拒绝，不弹窗。
+            if (isSensitivePath(outside.abs)) {
+              allowed = false
+              policyDenied = true
+              denyContent = `该路径受安全策略保护（凭据/系统目录），拒绝访问：${outside.abs}。请勿重试。`
+            } else {
+              // 询问（复用权限卡，附完整绝对路径 + 越界告警）。
+              const r = await requestPermission(turnId, sessionId, tc.name, tc.args, {
+                outsideRoot: outside.abs,
+                trustDir: outside.dir
+              })
+              allowed = r.decision === 'allow'
+              if (allowed) {
+                // 本会话始终允许 → 加会话根（父目录/目标目录，覆盖子树）；
+                // 仅此次 → 临时精确放行该目标路径，执行后在 finally 撤销。
+                if (r.remember) trustRoot(outside.dir)
+                else {
+                  trustRoot(outside.abs)
+                  oneShotPath = outside.abs
+                }
+              }
+            }
+          } else {
+            // 常规三态判定：allow 直接执行；ask 弹权限窗；deny 为策略层硬拒（不弹窗）。
+            const decision = evaluate(sessionId, key, tc.name, tc.args)
+            allowed = decision === 'allow'
+            policyDenied = decision === 'deny'
+            if (policyDenied)
+              denyContent =
+                '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。'
+            if (decision === 'ask') {
+              const r = await requestPermission(turnId, sessionId, tc.name, tc.args)
+              allowed = r.decision === 'allow'
+              if (allowed && r.remember) {
+                // exec 记「命令前缀」（如 git status），其余工具记工具名。
+                if (toolCategory(tc.name) === 'exec') rememberSessionExec(sessionId, tc.args)
+                else rememberSession(sessionId, tc.name)
+              }
+            }
           }
 
           if (!allowed) {
@@ -318,19 +444,25 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               type: 'tool_result',
               id: tc.id,
               name: tc.name,
-              summary: '已拒绝',
+              summary: policyDenied ? '已拒绝（安全策略）' : '已拒绝',
               isError: true
             })
             resultParts.push({
               type: 'tool_result',
               toolUseId: tc.id,
-              content: '用户拒绝了该操作。',
+              content: denyContent,
               isError: true
             })
             continue
           }
 
-          const res = await executeTool(tc.name, tc.args, ctx)
+          let res: ToolResult
+          try {
+            res = await executeTool(tc.name, tc.args, ctx)
+          } finally {
+            // 撤销「仅此次」临时受信根（无论成功/异常）。
+            if (oneShotPath) untrustRoot(oneShotPath)
+          }
           emit(turnId, sessionId, {
             type: 'tool_result',
             id: tc.id,
@@ -440,6 +572,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         p.resolve({ decision: 'deny', remember: false })
       }
     }
+    // 待决问答按「取消」解开（回灌为「用户取消了本次询问」）。
+    for (const [key, p] of pendingAsk) {
+      if (p.turnId === turnId) {
+        pendingAsk.delete(key)
+        p.resolve(null)
+      }
+    }
     return { ok: true }
   })
 
@@ -465,6 +604,15 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (!p) return { ok: false }
     pending.delete(payload.key)
     p.resolve({ decision: payload.decision, remember: payload.remember })
+    return { ok: true }
+  })
+
+  // 用户对 ask_user 询问的答复（选中项标签或自由输入；null 视为取消）
+  ipcMain.handle('chat:ask-response', (_e, payload: AskResponse): { ok: boolean } => {
+    const p = pendingAsk.get(payload.key)
+    if (!p) return { ok: false }
+    pendingAsk.delete(payload.key)
+    p.resolve(payload.answer)
     return { ok: true }
   })
 }

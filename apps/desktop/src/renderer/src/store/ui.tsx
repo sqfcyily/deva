@@ -13,8 +13,6 @@ import { createContext, useContext, useMemo, useState, type ReactNode } from 're
  */
 export type ActivityView = string
 
-export type BottomTab = 'terminal' | 'problems' | 'output' | 'ports'
-
 interface UIContextValue {
   // 视图
   activeView: ActivityView
@@ -24,8 +22,6 @@ interface UIContextValue {
   toggleSidebar: () => void
   panelVisible: boolean
   togglePanel: () => void
-  bottomTab: BottomTab
-  setBottomTab: (t: BottomTab) => void
   // 各视图选中项（演示数据）
   selectedGitFile: string | null
   selectGitFile: (id: string) => void
@@ -41,7 +37,6 @@ export function UIProvider({ children }: { children: ReactNode }): React.JSX.Ele
   const [activeView, setActiveView] = useState<ActivityView>('chat')
   const [sidebarVisible, setSidebarVisible] = useState(true)
   const [panelVisible, setPanelVisible] = useState(false)
-  const [bottomTab, setBottomTab] = useState<BottomTab>('terminal')
 
   const [selectedGitFile, setSelectedGitFile] = useState<string | null>('UserService.java')
   const [selectedTable, setSelectedTable] = useState<string | null>('users')
@@ -55,8 +50,6 @@ export function UIProvider({ children }: { children: ReactNode }): React.JSX.Ele
       toggleSidebar: () => setSidebarVisible((v) => !v),
       panelVisible,
       togglePanel: () => setPanelVisible((v) => !v),
-      bottomTab,
-      setBottomTab,
       selectedGitFile,
       selectGitFile: setSelectedGitFile,
       selectedTable,
@@ -64,7 +57,7 @@ export function UIProvider({ children }: { children: ReactNode }): React.JSX.Ele
       selectedHost,
       selectHost: setSelectedHost
     }),
-    [activeView, sidebarVisible, panelVisible, bottomTab, selectedGitFile, selectedTable, selectedHost]
+    [activeView, sidebarVisible, panelVisible, selectedGitFile, selectedTable, selectedHost]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

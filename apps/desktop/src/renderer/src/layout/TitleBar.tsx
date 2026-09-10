@@ -12,6 +12,7 @@ import {
 import { useUI } from '../store/ui'
 import { useI18n } from '../i18n/i18n'
 import { useWorkspace } from '../store/workspace'
+import { viewShowsTerminal } from '../features/registry'
 
 /**
  * 顶部标题栏。整体可拖拽（-webkit-app-region: drag），交互元素设为 no-drag。
@@ -21,11 +22,13 @@ import { useWorkspace } from '../store/workspace'
  */
 export function TitleBar(): React.JSX.Element {
   const { t } = useI18n()
-  const { toggleSidebar, togglePanel, sidebarVisible, panelVisible } = useUI()
+  const { toggleSidebar, togglePanel, sidebarVisible, panelVisible, activeView } = useUI()
   const { projects, activeProjectId, activeProject, setActiveProject, closeProject, openFolder } =
     useWorkspace()
   const [menuOpen, setMenuOpen] = useState(false)
   const isWin = window.deva?.platform === 'win32'
+  // 终端仅在对话/资源管理器/版本控制视图可用；其余视图禁用「打开终端」按钮。
+  const terminalAllowed = viewShowsTerminal(activeView)
 
   const active = activeProject
 
@@ -125,9 +128,10 @@ export function TitleBar(): React.JSX.Element {
           <PanelLeft size={16} />
         </button>
         <button
-          className={`icon-btn${panelVisible ? ' is-active' : ''}`}
+          className={`icon-btn${panelVisible && terminalAllowed ? ' is-active' : ''}`}
           title={t('titlebar.togglePanel')}
           onClick={togglePanel}
+          disabled={!terminalAllowed}
         >
           <PanelBottom size={16} />
         </button>

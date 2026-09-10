@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process'
 import { promises as fs, type Dirent } from 'fs'
-import { isAbsolute, join, resolve } from 'path'
-import { assertInside } from './fs-guard'
+import { dirname, isAbsolute, join, resolve } from 'path'
+import { assertInside, isInsideRoot } from './fs-guard'
+import { isDangerousCommand, resolveExecShell } from './exec-policy'
 import type { ToolSpec } from '../providers/types'
 
 /**
@@ -109,14 +111,66 @@ export const toolSpecs: ToolSpec[] = [
       },
       required: ['path', 'old_string', 'new_string']
     }
+  },
+  {
+    name: 'run_command',
+    description:
+      '在当前项目根目录下执行一条 shell 命令并返回标准输出/错误与退出码（非交互、一次性）。用于构建、测试、git、脚本等。' +
+      (process.platform === 'win32'
+        ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
+        : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
+      '工作目录锁定为已打开的项目根（无法切到项目外；未打开项目时不可用）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。属敏感操作，需用户授权；明显危险的命令会被安全策略直接拒绝。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: '要执行的完整命令（可含参数）。' },
+        description: {
+          type: 'string',
+          description: '对该命令用途的简短说明（可选，用于界面展示）。'
+        },
+        timeout: {
+          type: 'integer',
+          description: '超时毫秒数（可选，默认 120000，最长 600000）。'
+        }
+      },
+      required: ['command']
+    }
+  },
+  {
+    name: 'ask_user',
+    description:
+      '向用户提出一个单选问题并等待其选择——仅在需求有歧义、存在多个可行方案需用户抉择、或缺少无法合理默认的关键信息时使用。' +
+      '能给出合理默认就直接做，不要为琐碎选择打断用户，也不要一次问多个问题。' +
+      '用户可从你给的候选项里选，也可自行输入答案；工具会返回用户的最终选择/输入，你据此继续。' +
+      '注意：这是「征求决策/澄清」，与「征求授权」不同——写入/执行的授权永远走工具自动弹出的授权按钮，切勿用本工具去问「是否允许」。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: '要问用户的问题（简洁、单一）。' },
+        options: {
+          type: 'array',
+          description:
+            '候选项（竖排单选，按序展示）。每项一个简短标签，可选补充说明。可省略/留空表示纯自由作答；界面总会额外提供「自己输入」项，无需你列出。',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string', description: '选项标签（简短）。' },
+              description: { type: 'string', description: '该选项的补充说明（可选）。' }
+            },
+            required: ['label']
+          }
+        }
+      },
+      required: ['question']
+    }
   }
 ]
 
-/** 工具敏感度分类，供权限闸门判定：read 恒放行，edit=项目内写入，exec=执行类（预留）。 */
+/** 工具敏感度分类，供权限闸门判定：read 恒放行，edit=项目内写入，exec=执行类（命令执行）。 */
 export type ToolCategory = 'read' | 'edit' | 'exec'
 
 const EDIT_TOOLS = new Set(['write_file', 'edit_file'])
-const EXEC_TOOLS = new Set<string>([]) // 预留：run_command / 终端等执行类工具（Phase 3）
+const EXEC_TOOLS = new Set<string>(['run_command']) // 执行类：命令行（受策略层 + 权限闸门约束）
 
 export function toolCategory(name: string): ToolCategory {
   if (EDIT_TOOLS.has(name)) return 'edit'
@@ -126,6 +180,8 @@ export function toolCategory(name: string): ToolCategory {
 
 export interface ToolContext {
   workspaceRoot: string | null
+  /** 仅 run_command 使用：随 chat:abort 中止正在跑的子进程（杀树）。其他工具忽略。 */
+  signal?: AbortSignal
 }
 
 export interface ToolResult {
@@ -143,6 +199,11 @@ const GREP_MATCH_MAX = 200
 const WEB_FETCH_TIMEOUT_MS = 30_000
 const WEB_FETCH_MAX_BYTES = 5 * 1024 * 1024
 const WEB_TEXT_MAX = 100_000
+/** run_command 护栏：输出字符上限 / 默认与最长超时 / 捕获字节上限（防暴产出）。 */
+const EXEC_OUTPUT_MAX = 30_000
+const EXEC_TIMEOUT_DEFAULT = 120_000
+const EXEC_TIMEOUT_MAX = 600_000
+const EXEC_CAPTURE_BYTES = 4 * EXEC_OUTPUT_MAX
 /** 遍历时直接跳过、不进入的噪音目录。 */
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', 'dist', 'out', 'build', '.next', 'coverage',
@@ -161,6 +222,34 @@ function resolvePath(root: string | null, p: unknown): string {
   const abs = isAbsolute(p) ? resolve(p) : root ? join(root, p) : resolve(p)
   assertInside(abs)
   return abs
+}
+
+/** 目标为「目录」的路径类工具（授权粒度取目录本身，而非其父目录）。 */
+const DIR_TARGET_TOOLS = new Set(['list_dir', 'glob', 'grep'])
+/** 目标为「文件」的路径类工具（授权粒度取父目录）。 */
+const FILE_TARGET_TOOLS = new Set(['read_file', 'write_file', 'edit_file'])
+
+/**
+ * 「项目外访问」预检：若该工具调用要访问的目标落在受信根之外，返回其绝对路径 abs 与
+ * 建议信任目录 dir；否则 null。路径解析规则与 resolvePath 完全一致（相对路径基于项目根），
+ * 以保证「预检判定在外 → 授权加根 → 执行时 assertInside 必过」的一致性。
+ * dir：目录类工具取目标目录本身，文件类工具取其父目录（契合 isInsideRoot 的子树前缀语义）。
+ * web_fetch 无 path、run_command 的 cwd 单独在执行处校验，均返回 null（走常规闸门）。
+ */
+export function outsideRootTarget(
+  name: string,
+  args: unknown,
+  root: string | null
+): { abs: string; dir: string } | null {
+  const isDir = DIR_TARGET_TOOLS.has(name)
+  if (!isDir && !FILE_TARGET_TOOLS.has(name)) return null
+  const a = (args ?? {}) as Record<string, unknown>
+  const p = a.path
+  // glob/grep 缺 path 时回落项目根（在根内，不触发）；文件类缺 path 交由执行处报参数错。
+  if (typeof p !== 'string' || !p.trim()) return null
+  const abs = isAbsolute(p) ? resolve(p) : root ? join(root, p) : resolve(p)
+  if (isInsideRoot(abs)) return null
+  return { abs, dir: isDir ? abs : dirname(abs) }
 }
 
 /** 解析「搜索根目录」：给了 path 用之，否则回落项目根；两者皆缺则报错。 */
@@ -328,6 +417,135 @@ function htmlToText(html: string): { title: string | null; text: string } {
     .replace(/\n{3,}/g, '\n\n')
     .trim()
   return { title, text: s }
+}
+
+/** run_command 一次执行的结果（供分支拼装 content/summary/isError）。 */
+interface ExecOutcome {
+  out: string
+  code: number | null
+  timedOut: boolean
+  aborted: boolean
+  spawnError?: string
+}
+
+/** 非交互环境：禁分页器、禁 git 凭据提示、禁颜色码，避免命令挂起或污染输出。 */
+function execEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_PAGER: 'cat', PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', NO_COLOR: '1' }
+}
+
+/** 杀掉子进程「整棵树」：win 用 taskkill /T /F，posix 杀进程组（spawn 时 detached 建了组）。 */
+function killTree(child: import('node:child_process').ChildProcess): void {
+  const pid = child.pid
+  if (!pid) return
+  if (process.platform === 'win32') {
+    try {
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
+    } catch {
+      /* ignore */
+    }
+    try {
+      child.kill()
+    } catch {
+      /* ignore */
+    }
+  } else {
+    try {
+      process.kill(-pid, 'SIGKILL')
+    } catch {
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+/**
+ * 在 cwd 下执行一条命令，合并捕获 stdout+stderr（按到达序），带超时与中止。
+ * shell 由 exec-policy.resolveExecShell 决定（优先 Git Bash）；detached（posix）建进程组以便杀树。
+ */
+function execCapture(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<ExecOutcome> {
+  return new Promise<ExecOutcome>((resolvePromise) => {
+    if (signal?.aborted) {
+      resolvePromise({ out: '', code: null, timedOut: false, aborted: true })
+      return
+    }
+    const sh = resolveExecShell()
+    const detached = process.platform !== 'win32'
+    let child: import('node:child_process').ChildProcess
+    try {
+      child = sh.useShell
+        ? spawn(command, { cwd, env: execEnv(), shell: true, windowsHide: true, detached })
+        : spawn(sh.file, [...sh.args, command], {
+            cwd,
+            env: execEnv(),
+            windowsHide: true,
+            detached
+          })
+    } catch (e) {
+      resolvePromise({
+        out: '',
+        code: null,
+        timedOut: false,
+        aborted: false,
+        spawnError: (e as Error)?.message ?? String(e)
+      })
+      return
+    }
+
+    const chunks: Buffer[] = []
+    let bytes = 0
+    let capped = false
+    let timedOut = false
+    let aborted = false
+    let done = false
+
+    const onData = (buf: Buffer): void => {
+      if (capped) return
+      chunks.push(buf)
+      bytes += buf.length
+      if (bytes >= EXEC_CAPTURE_BYTES) {
+        capped = true
+        killTree(child) // 暴产出：停止追加并杀树
+      }
+    }
+    child.stdout?.on('data', onData)
+    child.stderr?.on('data', onData)
+
+    const timer = setTimeout(() => {
+      timedOut = true
+      killTree(child)
+    }, timeoutMs)
+
+    const onAbort = (): void => {
+      aborted = true
+      killTree(child)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    const finish = (code: number | null, spawnError?: string): void => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      resolvePromise({
+        out: Buffer.concat(chunks).toString('utf8'), // 先拼再解码，避免多字节被切断
+        code,
+        timedOut,
+        aborted,
+        spawnError
+      })
+    }
+
+    child.on('error', (e) => finish(null, (e as Error)?.message ?? String(e)))
+    child.on('close', (code) => finish(code)) // close 等 stdio EOF，比 exit 更完整
+  })
 }
 
 export async function executeTool(
@@ -583,6 +801,59 @@ export async function executeTool(
       await fs.writeFile(abs, text.split(oldStr).join(newStr), 'utf8')
       const n = replaceAll ? count : 1
       return { content: `已替换 ${n} 处`, summary: replaceAll ? `已替换 ${n} 处` : '已编辑' }
+    }
+
+    if (name === 'run_command') {
+      const command = typeof a.command === 'string' ? a.command.trim() : ''
+      if (!command)
+        return { content: '缺少有效的 command 参数', summary: '参数无效', isError: true }
+      // cwd 硬锁项目根：无项目不 spawn；根须在受信集内（abs===root 通过）。
+      if (!ctx.workspaceRoot)
+        return {
+          content:
+            '未打开项目：无法执行命令，请先让用户打开一个项目文件夹（工作目录锁定为项目根）。',
+          summary: '未打开项目',
+          isError: true
+        }
+      try {
+        assertInside(ctx.workspaceRoot)
+      } catch {
+        return { content: '项目根不在受信目录内，拒绝执行。', summary: '受信校验失败', isError: true }
+      }
+      // 纵深兜底：即便调用方绕过 evaluate 或项目模式为 auto，危险命令也在此 deny。
+      if (isDangerousCommand(command))
+        return {
+          content: '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。',
+          summary: '已拒绝（安全策略）',
+          isError: true
+        }
+      const timeoutMs = Math.min(
+        Math.max(toInt(a.timeout) ?? EXEC_TIMEOUT_DEFAULT, 1000),
+        EXEC_TIMEOUT_MAX
+      )
+      const r = await execCapture(command, ctx.workspaceRoot, timeoutMs, ctx.signal)
+      // 先截断输出，再追加恒显状态行（截断藏不住成败信号）。
+      let body = r.out
+      if (body.length > EXEC_OUTPUT_MAX)
+        body = body.slice(0, EXEC_OUTPUT_MAX) + `\n…（输出超过 ${EXEC_OUTPUT_MAX} 字符，已截断）`
+      let status: string
+      let summary: string
+      if (r.spawnError) {
+        status = `（无法执行：${r.spawnError}）`
+        summary = '无法执行'
+      } else if (r.aborted) {
+        status = '（已中止）'
+        summary = '已中止'
+      } else if (r.timedOut) {
+        status = `（超时 >${timeoutMs}ms，已强制结束）`
+        summary = '超时'
+      } else {
+        status = `（退出码：${r.code}）`
+        summary = `退出码 ${r.code}`
+      }
+      const isError = Boolean(r.spawnError) || r.aborted || r.timedOut || r.code !== 0
+      const content = (body ? body + '\n' : '') + status
+      return { content, summary, isError }
     }
 
     return { content: `未知工具：${name}`, summary: '未知工具', isError: true }

@@ -32,9 +32,6 @@ const zhCN: MessageTree = {
   },
   panel: {
     terminal: '终端',
-    problems: '问题',
-    output: '输出',
-    ports: '端口',
     terminalExited: '进程已退出，退出码'
   },
   explorer: {
@@ -77,7 +74,14 @@ const zhCN: MessageTree = {
     connected: '已连接',
     selectHint: '从左侧选择一台主机建立连接'
   },
-  terminal: { title: '终端', newTab: '新建终端', local: '本地' },
+  terminal: {
+    title: '终端',
+    newTab: '新建终端',
+    local: '本地',
+    newTerminal: '新建终端',
+    killTerminal: '关闭终端',
+    selectShell: '选择终端 Shell'
+  },
   extensions: {
     title: '扩展',
     skills: '技能',
@@ -135,6 +139,7 @@ const zhCN: MessageTree = {
       writeFile: '写入文件',
       editFile: '编辑文件',
       runCommand: '执行命令',
+      askUser: '询问用户',
       unknown: '调用工具'
     },
     status: { running: '执行中', done: '完成', failed: '失败', denied: '已拒绝' },
@@ -143,14 +148,24 @@ const zhCN: MessageTree = {
       responding: '生成回答中',
       usingTool: '正在调用工具',
       awaitingPermission: '等待你的授权（点上方卡片按钮）',
+      awaitingAnswer: '等待你的选择（在上方问答卡选择或输入）',
       reconnecting: '连接中断，正在重连'
     },
     permission: {
       title: '需要授权',
       allow: '允许',
       allowAlways: '本会话始终允许',
-      deny: '拒绝'
+      deny: '拒绝',
+      outside: '此路径在当前项目目录之外',
+      outsideAllowOnce: '仅此次允许',
+      outsideTrustDir: '本会话信任该目录'
     },
+    ask: {
+      title: '请你决定',
+      customPlaceholder: '或自行输入答案…',
+      send: '发送'
+    },
+    md: { copy: '复制', copied: '已复制' },
     perm: {
       label: '权限',
       menuTitle: '权限模式（本项目）',
@@ -257,9 +272,6 @@ const en: MessageTree = {
   },
   panel: {
     terminal: 'Terminal',
-    problems: 'Problems',
-    output: 'Output',
-    ports: 'Ports',
     terminalExited: 'Process exited, code'
   },
   explorer: {
@@ -302,7 +314,14 @@ const en: MessageTree = {
     connected: 'Connected',
     selectHint: 'Select a host on the left to connect'
   },
-  terminal: { title: 'Terminal', newTab: 'New Terminal', local: 'local' },
+  terminal: {
+    title: 'Terminal',
+    newTab: 'New Terminal',
+    local: 'local',
+    newTerminal: 'New Terminal',
+    killTerminal: 'Kill Terminal',
+    selectShell: 'Select Shell'
+  },
   extensions: {
     title: 'Extensions',
     skills: 'Skills',
@@ -360,6 +379,7 @@ const en: MessageTree = {
       writeFile: 'Write file',
       editFile: 'Edit file',
       runCommand: 'Run command',
+      askUser: 'Ask user',
       unknown: 'Call tool'
     },
     status: { running: 'Running', done: 'Done', failed: 'Failed', denied: 'Denied' },
@@ -368,14 +388,24 @@ const en: MessageTree = {
       responding: 'Responding',
       usingTool: 'Using tool',
       awaitingPermission: 'Waiting for your permission (use the buttons above)',
+      awaitingAnswer: 'Waiting for your choice (pick or type in the card above)',
       reconnecting: 'Connection lost, reconnecting'
     },
     permission: {
       title: 'Permission required',
       allow: 'Allow',
       allowAlways: 'Always allow this session',
-      deny: 'Deny'
+      deny: 'Deny',
+      outside: 'This path is outside the current project',
+      outsideAllowOnce: 'Allow once',
+      outsideTrustDir: 'Trust this folder (session)'
     },
+    ask: {
+      title: 'Your call',
+      customPlaceholder: 'Or type your own answer…',
+      send: 'Send'
+    },
+    md: { copy: 'Copy', copied: 'Copied' },
     perm: {
       label: 'Permissions',
       menuTitle: 'Permission mode (this project)',

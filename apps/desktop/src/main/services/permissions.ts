@@ -4,6 +4,7 @@ import { join } from 'path'
 import { getDevaHome } from './config'
 import { projectKey } from './chat-store'
 import { toolCategory } from './tools'
+import { commandPrefix, isDangerousCommand, matchesPrefix, splitCommand } from './exec-policy'
 
 /**
  * 权限闸门（allow / deny / ask）+ 每项目权限模式（持久化）。
@@ -27,6 +28,8 @@ function normalizeMode(m: unknown): PermMode {
 
 // sessionId -> 本会话已记住放行的工具名集合（内存态，随重启清空）
 const sessionAllow = new Map<string, Set<string>>()
+// sessionId -> 本会话已记住放行的「命令前缀」集合（exec 专用，粒度到 `git status` 而非整个工具）
+const sessionAllowExec = new Map<string, Set<string>>()
 
 // projectKey -> 权限模式（持久化，惰性载入 + 内存缓存）
 interface PermStore {
@@ -80,15 +83,39 @@ export function setMode(key: string, mode: PermMode): void {
   persist()
 }
 
-/** 判定一次工具调用的权限：结合工具类别、会话记住、项目模式。 */
-export function evaluate(sessionId: string, key: string, toolName: string): Decision {
+/** 判定一次工具调用的权限：结合工具类别、会话记住、项目模式。exec 类另走 evaluateExec（可见命令）。 */
+export function evaluate(sessionId: string, key: string, toolName: string, args?: unknown): Decision {
   const cat = toolCategory(toolName)
   if (cat === 'read') return 'allow'
+  if (cat === 'exec') return evaluateExec(sessionId, key, args)
   if (sessionAllow.get(sessionId)?.has(toolName)) return 'allow'
   const mode = getMode(key)
   if (mode === 'auto') return 'allow'
   if (mode === 'acceptEdits' && cat === 'edit') return 'allow'
   return 'ask'
+}
+
+/**
+ * exec 类的判定（顺序即语义）：deny 压过一切（含 auto 与记住的前缀）→ auto 放行 → 记住的前缀
+ * 覆盖「每一个」子命令才放行 → 否则询问。acceptEdits 对 exec 不短路（只放行编辑）。
+ * 命令拆分后逐段核对，是防 `git status && rm -rf /` 之类注入的关键：记住的 `git status`
+ * 只覆盖第一段，其余段匹配不到前缀 → 整条落 ask。
+ */
+function evaluateExec(sessionId: string, key: string, args?: unknown): Decision {
+  const command =
+    args && typeof (args as { command?: unknown }).command === 'string'
+      ? (args as { command: string }).command
+      : ''
+  if (!command.trim()) return 'ask'
+  if (isDangerousCommand(command)) return 'deny' // 1 deny 胜过 auto + 前缀
+  if (getMode(key) === 'auto') return 'allow' // 2 auto（deny 已在上一步处理）
+  const prefixes = sessionAllowExec.get(sessionId) // 3 每个子命令都须被某前缀覆盖
+  if (prefixes && prefixes.size > 0) {
+    const subs = splitCommand(command)
+    if (subs.length > 0 && subs.every((s) => [...prefixes].some((p) => matchesPrefix(s, p))))
+      return 'allow'
+  }
+  return 'ask' // 4 否则询问
 }
 
 export function rememberSession(sessionId: string, toolName: string): void {
@@ -100,8 +127,29 @@ export function rememberSession(sessionId: string, toolName: string): void {
   set.add(toolName)
 }
 
+/**
+ * 记住一次 exec 授权：把命令拆分后逐段推导「可记住前缀」加入本会话集合。
+ * NEVER_REMEMBER_VERBS（rm/mv/curl…）经 commandPrefix 返回空串被 filter 掉 → 永不记住 → 每次重问。
+ */
+export function rememberSessionExec(sessionId: string, args: unknown): void {
+  const command =
+    args && typeof (args as { command?: unknown }).command === 'string'
+      ? (args as { command: string }).command
+      : ''
+  if (!command.trim()) return
+  const prefixes = splitCommand(command).map(commandPrefix).filter(Boolean)
+  if (prefixes.length === 0) return
+  let set = sessionAllowExec.get(sessionId)
+  if (!set) {
+    set = new Set()
+    sessionAllowExec.set(sessionId, set)
+  }
+  for (const p of prefixes) set.add(p)
+}
+
 export function clearSession(sessionId: string): void {
   sessionAllow.delete(sessionId)
+  sessionAllowExec.delete(sessionId)
 }
 
 /** 权限模式的读写 IPC（按项目：workspaceRoot → projectKey）。 */

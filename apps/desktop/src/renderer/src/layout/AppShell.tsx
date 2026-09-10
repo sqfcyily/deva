@@ -4,7 +4,7 @@ import { SidePanel } from './SidePanel'
 import { BottomPanel } from './BottomPanel'
 import { StatusBar } from './StatusBar'
 import { useUI } from '../store/ui'
-import { getContribution, defaultViewId } from '../features/registry'
+import { getContribution, defaultViewId, viewShowsTerminal } from '../features/registry'
 
 /**
  * 三行栅格：TitleBar / 主体 / StatusBar。
@@ -19,7 +19,11 @@ function CenterView(): React.JSX.Element | null {
 }
 
 export function AppShell(): React.JSX.Element {
-  const { panelVisible } = useUI()
+  const { panelVisible, activeView } = useUI()
+  // 终端仅在「贴着项目」的视图显示；切到其他视图时隐藏但保持挂载——
+  // 面板一旦打开就随 panelVisible 常驻，PTY 会话与滚动历史跨页面切换不丢，
+  // 只有用户显式关闭面板（panelVisible=false）才卸载销毁。
+  const terminalAllowed = viewShowsTerminal(activeView)
 
   return (
     <div className="app-shell">
@@ -31,7 +35,7 @@ export function AppShell(): React.JSX.Element {
           <div className="workarea__main">
             <CenterView />
           </div>
-          {panelVisible && <BottomPanel />}
+          {panelVisible && <BottomPanel hidden={!terminalAllowed} />}
         </div>
       </div>
       <StatusBar />

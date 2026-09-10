@@ -14,7 +14,15 @@ import { homedir } from 'node:os'
 
 /** 主进程 → 宿主 的入站消息。 */
 type InboundMessage =
-  | { type: 'create'; id: string; cols: number; rows: number; cwd: string | null }
+  | {
+      type: 'create'
+      id: string
+      cols: number
+      rows: number
+      cwd: string | null
+      shellPath?: string
+      shellArgs?: string[]
+    }
   | { type: 'input'; id: string; data: string }
   | { type: 'resize'; id: string; cols: number; rows: number }
   | { type: 'dispose'; id: string }
@@ -47,7 +55,7 @@ function safeCwd(cwd: string | null): string {
 function handleCreate(msg: Extract<InboundMessage, { type: 'create' }>): void {
   let proc: pty.IPty
   try {
-    proc = pty.spawn(defaultShell(), [], {
+    proc = pty.spawn(msg.shellPath || defaultShell(), msg.shellArgs ?? [], {
       name: 'xterm-256color',
       cols: msg.cols || 80,
       rows: msg.rows || 24,

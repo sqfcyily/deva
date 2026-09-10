@@ -13,12 +13,14 @@
  */
 import { BrowserWindow, ipcMain, utilityProcess, type UtilityProcess } from 'electron'
 import { join } from 'path'
+import { detectShells, resolveShell } from './shells'
 
 /** 渲染层传入的建终端参数（结构化复述，与 preload 对齐）。 */
 interface CreateOptions {
   cols: number
   rows: number
   cwd: string | null
+  shellId?: string | null
 }
 
 /** 宿主 → 主 的出站消息（与 pty-host.ts 的 OutboundMessage 对齐）。 */
@@ -81,11 +83,17 @@ export function registerTerminalIpc(getWindow: () => BrowserWindow | null): void
     })
   }
 
+  // 已装 shell 清单：只回 id/label/isDefault，绝对路径与 args 留在主进程。
+  ipcMain.handle('terminal:list-shells', () =>
+    detectShells().map(({ id, label, isDefault }) => ({ id, label, isDefault }))
+  )
+
   ipcMain.handle('terminal:create', (_evt, opts: CreateOptions): { id: string } => {
     ensureChild()
     const id = `t${++seq}`
     activeIds.add(id)
-    send({ type: 'create', id, cols: opts.cols, rows: opts.rows, cwd: opts.cwd })
+    const { path: shellPath, args: shellArgs } = resolveShell(opts.shellId ?? null)
+    send({ type: 'create', id, cols: opts.cols, rows: opts.rows, cwd: opts.cwd, shellPath, shellArgs })
     return { id }
   })
 

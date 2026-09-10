@@ -75,6 +75,18 @@ export interface PermissionResponse {
   remember: boolean
 }
 
+/** ask_user 候选项（与 services/chat.ts 对齐）。 */
+export interface AskOption {
+  label: string
+  description?: string
+}
+
+export interface AskResponse {
+  key: string
+  /** 用户答复（选中项标签或自由输入）；null 表示取消。 */
+  answer: string | null
+}
+
 /** 每项目权限模式（与 services/permissions.ts 对齐）。 */
 export type PermMode = 'ask' | 'acceptEdits' | 'auto'
 
@@ -83,6 +95,14 @@ export interface TerminalCreateOptions {
   cols: number
   rows: number
   cwd: string | null
+  /** 选定的 shell 配置 id（来自 listShells）；空则用主进程默认。 */
+  shellId?: string | null
+}
+/** 可选 shell 配置（渲染层只见 id/label/isDefault；path/args 留在主进程）。 */
+export interface ShellProfile {
+  id: string
+  label: string
+  isDefault?: boolean
 }
 export interface TerminalDataPayload {
   id: string
@@ -121,7 +141,17 @@ export type ChatStreamEvent =
   | { type: 'thinking_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; args: unknown }
   | { type: 'tool_result'; id: string; name: string; summary: string; isError: boolean }
-  | { type: 'permission_request'; key: string; toolName: string; args: unknown }
+  | { type: 'ask_user'; key: string; question: string; options: AskOption[] }
+  | {
+      type: 'permission_request'
+      key: string
+      toolName: string
+      args: unknown
+      /** 「项目外访问」授权：被访问目标的完整绝对路径。 */
+      outsideRoot?: string
+      /** 「项目外访问」授权：点「信任目录」将加入受信根的目录。 */
+      trustDir?: string
+    }
   | { type: 'usage'; input: number; output: number }
   | { type: 'reconnecting'; attempt: number; max: number }
   | { type: 'stream_reset' }
@@ -203,6 +233,9 @@ const api = {
       ipcRenderer.invoke('chat:delete-session', sessionId, workspaceRoot),
     respondPermission: (payload: PermissionResponse): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:permission-response', payload),
+    /** 回应 ask_user 询问（选中项标签或自由输入） */
+    respondAsk: (payload: AskResponse): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('chat:ask-response', payload),
     /** 订阅 chat:event，返回取消订阅函数 */
     onEvent: (cb: (payload: ChatEventPayload) => void): (() => void) => {
       const listener = (_e: unknown, payload: ChatEventPayload): void => cb(payload)
@@ -217,8 +250,10 @@ const api = {
     setMode: (workspaceRoot: string | null, mode: PermMode): Promise<{ ok: true }> =>
       ipcRenderer.invoke('perm:set-mode', workspaceRoot, mode)
   },
-  /** 集成终端：建 PTY、写输入、改尺寸、销毁；订阅数据/退出事件。 */
+  /** 集成终端：列出已装 shell、建 PTY、写输入、改尺寸、销毁；订阅数据/退出事件。 */
   terminal: {
+    /** 本机可用 shell 清单（PowerShell / cmd / Git Bash / pwsh 等，按平台探测） */
+    listShells: (): Promise<ShellProfile[]> => ipcRenderer.invoke('terminal:list-shells'),
     create: (opts: TerminalCreateOptions): Promise<{ id: string }> =>
       ipcRenderer.invoke('terminal:create', opts),
     write: (id: string, data: string): void => ipcRenderer.send('terminal:input', id, data),
