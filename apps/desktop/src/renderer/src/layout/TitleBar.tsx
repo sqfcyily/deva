@@ -7,7 +7,8 @@ import {
   ChevronDown,
   Check,
   FolderOpen,
-  FolderPlus
+  FolderPlus,
+  History
 } from 'lucide-react'
 import { useUI } from '../store/ui'
 import { useI18n } from '../i18n/i18n'
@@ -23,8 +24,19 @@ import { viewShowsTerminal } from '../features/registry'
 export function TitleBar(): React.JSX.Element {
   const { t } = useI18n()
   const { toggleSidebar, togglePanel, sidebarVisible, panelVisible, activeView } = useUI()
-  const { projects, activeProjectId, activeProject, setActiveProject, closeProject, openFolder } =
-    useWorkspace()
+  const {
+    projects,
+    activeProjectId,
+    activeProject,
+    setActiveProject,
+    closeProject,
+    openFolder,
+    recentProjects,
+    openRecent,
+    removeRecent
+  } = useWorkspace()
+  // 最近项目中「当前未打开」的部分（已打开的已在上方列出，避免重复）。
+  const recentClosed = recentProjects.filter((r) => !projects.some((p) => p.path === r.path))
   const [menuOpen, setMenuOpen] = useState(false)
   const isWin = window.deva?.platform === 'win32'
   // 终端仅在对话/资源管理器/版本控制视图可用；其余视图禁用「打开终端」按钮。
@@ -84,7 +96,43 @@ export function TitleBar(): React.JSX.Element {
                 </div>
               ))}
 
-              {projects.length > 0 && <div className="projmenu__divider" />}
+              {recentClosed.length > 0 && (
+                <>
+                  {projects.length > 0 && <div className="projmenu__divider" />}
+                  <div className="projmenu__label">{t('titlebar.recentLabel')}</div>
+                  {recentClosed.map((r) => (
+                    <div
+                      key={r.path}
+                      className="projmenu__item"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        void openRecent(r.path)
+                      }}
+                    >
+                      <span className="projmenu__check">
+                        <History size={14} />
+                      </span>
+                      <span className="projmenu__name" title={r.path}>
+                        {r.name}
+                      </span>
+                      <button
+                        className="projmenu__close"
+                        title={t('titlebar.removeRecent')}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          removeRecent(r.path)
+                        }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {(projects.length > 0 || recentClosed.length > 0) && (
+                <div className="projmenu__divider" />
+              )}
               <div
                 className="projmenu__item"
                 onClick={() => {

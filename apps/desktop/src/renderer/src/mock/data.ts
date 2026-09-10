@@ -99,54 +99,6 @@ export const fileContents: Record<string, FileContent> = {
   }
 }
 
-/* ---------------- Git：更改列表 + diff ---------------- */
-export interface GitChange {
-  id: string
-  name: string
-  path: string
-  status: 'M' | 'A' | 'D' | 'U'
-  staged: boolean
-}
-
-export const gitChanges: GitChange[] = [
-  { id: 'UserService.java', name: 'UserService.java', path: 'src/main', status: 'M', staged: true },
-  { id: 'UserServiceTest.java', name: 'UserServiceTest.java', path: 'src/test', status: 'U', staged: false },
-  { id: 'application.yml', name: 'application.yml', path: 'src/main', status: 'M', staged: false }
-]
-
-export interface DiffLine {
-  type: 'ctx' | 'add' | 'del'
-  oldNo?: number
-  newNo?: number
-  text: string
-}
-
-export const gitDiffs: Record<string, DiffLine[]> = {
-  'UserService.java': [
-    { type: 'ctx', oldNo: 13, newNo: 13, text: '        this.userRepository = userRepository;' },
-    { type: 'ctx', oldNo: 14, newNo: 14, text: '    }' },
-    { type: 'ctx', oldNo: 15, newNo: 15, text: '' },
-    { type: 'add', newNo: 16, text: '    public Optional<User> findByEmail(String email) {' },
-    { type: 'add', newNo: 17, text: '        return userRepository.findByEmail(email);' },
-    { type: 'add', newNo: 18, text: '    }' },
-    { type: 'ctx', oldNo: 16, newNo: 19, text: '}' }
-  ],
-  'UserServiceTest.java': [
-    { type: 'add', newNo: 1, text: '@Test' },
-    { type: 'add', newNo: 2, text: 'void findByEmail_returnsUser() {' },
-    { type: 'add', newNo: 3, text: '    var u = service.findByEmail("a@b.com");' },
-    { type: 'add', newNo: 4, text: '    assertTrue(u.isPresent());' },
-    { type: 'add', newNo: 5, text: '}' }
-  ],
-  'application.yml': [
-    { type: 'ctx', oldNo: 6, newNo: 6, text: '    username: root' },
-    { type: 'del', oldNo: 7, text: '  redis: {}' },
-    { type: 'add', newNo: 7, text: '  redis:' },
-    { type: 'add', newNo: 8, text: '    host: localhost' },
-    { type: 'add', newNo: 9, text: '    port: 6379' }
-  ]
-}
-
 /* ---------------- 数据库：连接 / 表 / 结构 / 数据 ---------------- */
 export interface DbColumn {
   name: string

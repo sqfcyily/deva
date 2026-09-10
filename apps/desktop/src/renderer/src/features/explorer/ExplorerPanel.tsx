@@ -8,6 +8,7 @@ import {
   FileJson,
   FileText,
   FileType,
+  History,
   type LucideIcon
 } from 'lucide-react'
 import { PanelHeader } from '../PanelHeader'
@@ -26,7 +27,8 @@ function iconForFile(name: string): LucideIcon {
 /** 文件树导航。真实目录，懒加载；点击文件 → 中央编辑器打开。 */
 export function ExplorerPanel(): React.JSX.Element {
   const { t } = useI18n()
-  const { activeProject, tree, toggleDir, openFile, openFolder, activePath } = useWorkspace()
+  const { activeProject, tree, toggleDir, openFile, openFolder, activePath, recentProjects, openRecent } =
+    useWorkspace()
 
   if (!activeProject) {
     return (
@@ -40,6 +42,23 @@ export function ExplorerPanel(): React.JSX.Element {
               {t('titlebar.openFolder')}
             </button>
           </div>
+          {recentProjects.length > 0 && (
+            <div className="side-recent">
+              <div className="side-recent__title">{t('explorer.recent')}</div>
+              {recentProjects.map((r) => (
+                <button
+                  key={r.path}
+                  className="side-recent__item"
+                  title={r.path}
+                  onClick={() => void openRecent(r.path)}
+                >
+                  <History size={13} className="side-recent__icon" />
+                  <span className="side-recent__name">{r.name}</span>
+                  <span className="side-recent__path">{r.path}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </>
     )

@@ -112,6 +112,22 @@
   - **已验证**：`typecheck`(node+web) + `build` 全绿；2070 模块编译通过（含新增三依赖），渲染层 bundle 1.57MB（highlight.js 内置多语言所致，Electron 本地无网络成本、可接受，后续如需可换 `lowlight` 按需注册语言瘦身）。
   - **v1 边界 / 待人工回归**：① **不做数学公式**（KaTeX 未接，`$...$` 按普通文本）；② 用户消息保持纯文本；③ highlight.js 全量语言进包（体积换零配置）。人工：真机 `pnpm dev`→配 key→让 Agent 回复含标题/列表/表格/围栏代码块/行内代码/链接的内容→应见排版正确、代码块带语言名+复制钮（点击复制、图标转「已复制」）、明暗主题下高亮配色随切、外链点击走系统浏览器；思考块可点击折叠/展开、箭头旋转。**用完 `taskkill //F //IM electron.exe`**。
 
+- **记住最近打开的项目（自动重开上次 + 历史列表 + 可设上限，2026-09-10；代码级完成 + typecheck/build 全绿，GUI 待人工）**：解决「每次启动都要重新用对话框选项目」——工作区此前纯内存态，关窗即丢。**用户决策**：① 启动**只自动重开上次的活动项目**（不恢复整个已开集合，启动更轻快），更早的项目进历史列表待一键再开；② 历史**默认上限 10**（设置页可改 5/10/15/20）。
+  - **持久化**（`~/.deva/config.json` 的 `workspace` 段，复用现有 `config.get/set` 顶层浅合并）：`{ recent: [{path,name,openedAt}]（最近在前、按上限截断）, last: 上次活动项目路径, recentLimit }`。`last` 单独记（活动项目可能不是 `recent[0]`，因可切回更早打开的项目）。
+  - **安全关键**：workspace fs 读写都过 `fs-guard.assertInside`（受信根校验），而**自动按路径重开会绕过 `fs:open-folder` 对话框**（`trustRoot` 原本只在对话框里调）→ 故**新增 `fs:open-path` IPC**，与对话框**同等信任语义**（只信任真实存在的目录、`trustRoot(dir)` 登记受信根；路径失效/非目录返回 null，渲染层据此从历史剔除，不报错）。**无新提权面**：这些路径本就是用户先前经对话框打开、信任过的；`isSensitivePath` 敏感目录硬地板不受影响、保持不变。
+  - **落地文件**：① `main/services/workspace.ts` 加 `fs:open-path` handler（`fs.stat` 验目录→`trustRoot`→返回 `{path,name}` 或 null）。② `preload/index.ts` `deva.fs` 加 `openPath(path)`。③ `store/workspace.tsx`（核心，重写）：新类型 `RecentProject{path,name,openedAt}`；新状态 `recentProjects/recentLimit(默认10)/hydrated(守卫回写，镜像 models store)`；抽内部 `applyOpen(proj)`（去重追加+设活动+ensureChildren+展开根+更新 recent 截断，`limitRef` 存最新上限避免回调频繁重建）；`openFolder` 改走它；**hydrate effect**（挂载一次）`config.get()`→落 recent/limit，若 `last` 有效则 `openPath` 自动重开（`setProjects(prev=>prev.length?prev:[proj])` 函数式守卫避免踩启动瞬间用户手动打开、`alive` 标志防卸载后 setState），stale 则从 recent 剔除，`finally setHydrated(true)`；**write-back effect**（hydrated 后）变更即 `config.set({workspace:{recent,last:activeProject?.path??null,recentLimit}})`；新方法 `openRecent(path)`（openPath→成功 applyOpen/null 则 removeRecent）、`removeRecent(path)`、`setRecentLimit(n)`（clamp 1..50 + 截断 recent）；`closeProject` 不动 recent（关闭≠忘记历史）。④ `TitleBar.tsx` 项目切换菜单在「已打开项目」与「打开/新建」间插「最近项目」段（仅列**当前未打开**项 `!projects.some(p=>p.path===r.path)`，History 图标+点击 openRecent+行内×removeRecent）。⑤ `ExplorerPanel.tsx` 空状态「打开文件夹」按钮下列历史（名称+灰路径，点击 openRecent）——省去每次翻目录的主要收益点。⑥ `SettingsView.tsx` GeneralPane 加「记住最近项目上限」`<select>`（5/10/15/20）。⑦ i18n zh/en 各加 `explorer.recent`/`titlebar.{recentLabel,removeRecent}`/`settings.{recentLimit,recentLimitDesc}`。⑧ `app.css` 加 `.side-recent*`（空状态历史列表：名称省略截断+灰路径 flex 撑满省略），菜单复用 `.projmenu__*`。
+  - **边界要点**：StrictMode 双挂载安全（`trustRoot` 是 Set 幂等、`setProjects` 去重、hydrate 用 `hydrated` 守卫回写、`alive` 标志）；只持久化 `last` 单个做启动重开（按用户选择，不恢复整个已开集合）；stale 路径自动剔除不报错。
+  - **待人工回归**：真机 `pnpm dev`→开项目 A→关窗重启→应**自动重开 A** 且文件树/读写正常（受信根已重登记）；再开 B、C→顶栏菜单与 Explorer 空状态出现「最近项目」历史→点历史项一键重开；设置页-通用改上限（如 5）→历史被截断；把某历史项目录改名→点它不报错并自动从列表消失。**用完 `taskkill //F //IM electron.exe`**。
+
+- **Phase 4 Git 源代码管理（调用系统 git，对标 VS Code；本地 + 远程同步，2026-09-10；代码级完成 + typecheck/build 全绿，GUI 回归待人工）**：版本控制面板从纯 mock 升级为真实 Git。**技术路线（已与用户确认）＝调用系统已装的 git 命令行，与 VS Code 完全一致**——不引 isomorphic-git、不引 diff 库，`package.json` 零新增依赖，diff/status/log 全由 git 二进制产出。**凭据/身份 100% 交系统 git + 系统凭据管理器（Windows 上 Git Credential Manager）**：Deva **零凭据存储、零 PAT UI**，用户先前在系统 git 里存过登录态则 push/pull 直接可用。
+  - **对「免装 git 铁律」的经确认例外（仅限 Git 功能）**：源代码管理刻意依赖系统装了 git；没装则该功能显示「未检测到 git」（与 VS Code 一致），提供「设置 git 路径」入口。**其余功能（对话/终端/文件/DB）不受影响，铁律对它们仍成立**。这是全项目唯一一处对铁律的让步，用户已拍板接受。
+  - **与 Agent `run_command` 明确分离（安全关键）**：本功能是**第一方、用户点击触发的固定 git 命令** → 全程 `execFile(gitPath, [argv], {cwd})`（**argv 数组、无 shell、无字符串拼接** → 从根消除注入），**不走** exec-policy 拆分/deny 闸门、**不走** Agent 权限门；用户可控串（提交信息/分支名/URL/路径）一律作独立 argv、涉及路径处用 `--` 分隔；破坏性操作（丢弃）走 **UI 确认弹窗**（`window.confirm`）。
+  - **主进程 `src/main/services/git.ts`（新建，`registerGitIpc(getWindow)`）**：`resolveGitPath()`（模块缓存，① 配置 `git.path` 覆盖对标 VS Code 设置 → ② PATH 探 `git.exe` → ③ 从 Git Bash 检测反推同装 git → null）；统一执行器 `runGit(dir,args,timeout)` 首行 `assertInside(dir)`，env `GIT_TERMINAL_PROMPT=0`（无 TTY 不挂起，GCM GUI 弹窗照常授权）+ `GIT_OPTIONAL_LOCKS=0` + `LC_ALL=C`（稳定英文错误文案便于归类），`maxBuffer=32MB`、超时 DEFAULT 30s/REMOTE 120s/CLONE 300s。频道 15 个：`git:available/status/diff/stage/unstage/discard/commit/set-config/branches/checkout/create-branch/log/init/fetch/pull/push/clone`。`status` 解析 `--porcelain=v2 --branch -z`（NUL 分隔稳过含空格/中文路径，一条命令直接给 ahead/behind/upstream，分派 staged/unstaged/conflicts）；`diff` 解析统一 diff（`@@`→hunk 头 + 行号游标推进），未跟踪文件读全文当新增（2MB 上限 + 二进制探测）；`commit` 信息写 DEVA_HOME 临时文件避免多行/特殊字符，身份缺失回 `identity-needed`；远程错误按 stderr 结构化归类 `auth/network/rejected/conflict/dirty`。
+  - **`git:clone`（唯一写受信根之外）**：`dialog.showOpenDialog` 选父目录 → `deriveRepoName(url)` 清洗末段防穿越 → `git clone url dest` → 成功 `trustRoot(dest)`（同 `fs:open-folder` 「用户主动授予信任」语义）→ 回 `{ok,path,name}`，渲染层 `openRecent` 自动打开新项目。`isSensitivePath` 敏感目录硬地板不改、不受影响。
+  - **preload / store / UI**：`preload/index.ts` 加 `deva.git` 命名空间（无任何凭据方法，全在系统 git）；`store/git.tsx`（新建，`GitProvider`/`useGit`，选中态从 `ui.tsx` 迁入——diff 需知暂存/未暂存侧，随 `useWorkspace().activeProject` 变化刷新，`main.tsx` 挂 `WorkspaceProvider>GitProvider>ChatProvider>UIProvider`）；`GitPanel.tsx` 重写为 VS Code 源代码管理布局（刷新/更多菜单〔拉取/推送/获取/克隆/新建·切换分支〕、提交 composer 显当前分支、合并冲突/已暂存/更改三分组、hover inline 暂存·取消暂存·丢弃、身份未配时内联填写、ahead/behind、结构化错误提示、空态 未检测到 git／非仓库+初始化／无更改）；`GitDiffView.tsx` 重写为真实行级 diff（`window.deva.git.diff`，竞态请求打标丢弃过期，暂存/未暂存/未跟踪三侧正确）；`mock/data.ts` 删 Git 段（GitChange/gitChanges/DiffLine/gitDiffs）；`ui.tsx` 删 `selectedGitFile/selectGitFile`；i18n zh/en 各补整套 `git.*`（`branchLabel` 避让既有 `branch`）；`app.css` 补 `.diffview__line.hunk`/`.input--sm`/`button.projmenu__item` reset + 完整 git 面板样式段（notice 用 `color-mix` 因无 *-tint token）。
+  - **v1 明确不做（后续）**：三向合并冲突编辑器、stash、rebase/cherry-pick、逐块（hunk-level）暂存、blame、tag、amend、force-push、文件系统实时 watch 自动刷新（v1 用手动+操作后+focus 刷新）、把 git 能力开放给 LLM Agent（那需另过 exec-policy/权限门）。
+  - **待人工回归**：真机 `pnpm dev` + 一个装了 git 的真实仓库→面板显真实分支/ahead-behind/三分组；改文件→出现在「更改」、暂存→移到「已暂存」、取消暂存回退；点文件→中央真实行级 diff（暂存/未暂存两侧正确）、未跟踪整文件 add、`.gitignore` 内文件不出现；写信息提交（未配 user.name/email 时内联填→`git config` 写回）→更改清空；丢弃（确认）→还原；新建/切换分支生效；**远程**：对已存凭据的私有远程 push/pull/fetch **直接成功、无需在 Deva 输凭据**，清掉凭据→GCM 弹窗完成，坏凭据→「认证失败」；clone：输 URL→选目标目录→克隆→自动打开新项目且读写正常；临时把 git 移出 PATH→面板显「未检测到 git」不崩。**用完 `taskkill //F //IM electron.exe`，绝不 `taskkill //IM node.exe`**。
+
 ---
 
 ## 3. 既定 IPC 架构约定（每个功能照此扩展，勿另起炉灶）
@@ -181,11 +197,11 @@ pnpm --filter @deva/desktop build
 
 ---
 
-## 6. 后续阶段（Phase 2 之后，按依赖排序）
+## 6. 后续阶段（Phase 4 之后，按依赖排序）
 
-- **▶ Phase 3 终端（下一步）**：真实 PTY（node-pty，需预编译打包进安装包）。**零配置铁律重点**：node-pty 是原生模块，必须为目标平台预编译并随安装包分发，绝不能让终端用户装编译工具链。先确认打包/预编译方案（prebuild / electron-rebuild），再接终端 UI；终端后续也要能作为工具回接 agent 循环（照 agent-engine.md）。
-- **Phase 4 Git**：isomorphic-git（纯 JS，免装 git）。
-- **Phase 5 数据库**：mysql2 / ioredis（DB 面板全局，不随项目切换）。
+- **✅ Phase 3 终端**：真实 PTY（`@lydell/node-pty` 预编译 N-API 二进制，永不 node-gyp）+ 多开/Shell 选择/去黑边。**已完成**，落地清单见「2. 已完成」，唯 GUI 交互待人工。打包（Phase 8）需 `asarUnpack` 覆盖 `@lydell/node-pty*`（prebuilds + ConPTY 运行时）。
+- **✅ Phase 4 Git**：**调用系统 git，对标 VS Code**（本地 + 远程同步；**非** isomorphic-git）。凭据全交系统 git/GCM，Deva 零凭据存储；**刻意依赖系统装了 git，是对「免装 git 铁律」的一次经确认的例外，仅限 Git 功能**。**已完成**，落地清单见「2. 已完成」，唯 GUI 回归待人工。
+- **▶ Phase 5 数据库（下一步）**：mysql2 / ioredis（DB 面板全局，不随项目切换）。
 - **Phase 6 远程 SSH**：ssh2（SSH 面板全局）。
 - **Phase 7 Skill / MCP / 子 Agent**：接入 agent 循环（照 skills-and-mcp.md、agent-engine.md §5）。
 - **Phase 8 打包**：electron-builder 安装包 + 应用图标 + 「双击即启动、零配置」验证（含原生模块预编译验证）。
@@ -201,13 +217,14 @@ pnpm --filter @deva/desktop build
 | `apps/desktop/src/main/services/workspace.ts` | Phase 1 fs 服务（受信根校验样板） |
 | `apps/desktop/src/main/services/config.ts` | 配置存储：`~/.deva/config.json` 非敏感项（DEVA_HOME 可覆盖）；导出 `getDevaHome()` 供 secrets 共用；`config:get-sync/get/set` |
 | `apps/desktop/src/main/services/secrets.ts` | 密钥存储：`~/.deva/secrets.json`（safeStorage 加密），从旧 userData 位置一次性迁移；`getSecret` 仅主进程内部 |
+| `apps/desktop/src/main/services/git.ts` | Phase 4 Git 服务：调用系统 git（`execFile` argv 数组、无 shell），凭据全交系统 git/GCM；`git:*` 频道；克隆经对话框选目录 + `trustRoot` |
 | `~/.deva/`（用户目录，非仓库内） | 运行期用户配置根：`config.json`（明文）+ `secrets.json`（加密）；将来 skills/mcp/agents |
 | `apps/desktop/src/preload/index.ts` | `deva.*` 白名单桥 + `DevaApi` 类型源 |
 | `apps/desktop/src/renderer/src/main.tsx` | Provider 嵌套 |
 | `apps/desktop/src/renderer/src/features/registry.ts` | 功能贡献注册表（左侧功能在此登记；ActivityBar/SidePanel/CenterView 都从这里渲染） |
 | `apps/desktop/src/renderer/src/store/*.tsx` | 各功能 store（workspace 真实；ui 保留视图态） |
 | `apps/desktop/src/renderer/src/features/chat/ChatView.tsx` | 对话视图（DeepSeek 风格，待接真实数据） |
-| `apps/desktop/src/renderer/src/mock/data.ts` | 剩余 mock（chat 待删；git/db/ssh 仍用） |
+| `apps/desktop/src/renderer/src/mock/data.ts` | 剩余 mock（chat/git 已删；db/ssh 仍用） |
 | `apps/desktop/src/renderer/src/i18n/messages.ts` | 双语资源（zh-CN/en 必须同步增改） |
 | `apps/desktop/src/renderer/src/styles/{tokens,app}.css` | 设计 token + 组件样式 |
 | `docs/modules/agent-engine.md` / `architecture/providers.md` / `modules/permissions.md` | Phase 2 设计依据 |

@@ -1292,18 +1292,21 @@ textarea {
   flex: 1;
   min-width: var(--space-2);
 }
+/* 组合器底部控件（附件 / 权限 / 模型）：Codex 式「幽灵」按钮——默认无边框透明，
+ * hover 显浅底，菜单展开时高亮，尾部箭头随开合翻转。视觉更轻、更聚焦发送按钮。 */
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  height: 26px;
+  gap: 5px;
+  height: 28px;
   max-width: 100%;
-  padding: 0 var(--space-2) 0 10px;
-  border-radius: var(--radius-full);
-  border: 1px solid var(--border);
+  padding: 0 8px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
   color: var(--fg-muted);
   background: transparent;
   font-size: 12px;
+  font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
   cursor: pointer;
@@ -1314,7 +1317,10 @@ textarea {
 }
 .chip:hover {
   background: var(--bg-hover);
-  border-color: var(--border-strong);
+  color: var(--fg);
+}
+.chip.is-open {
+  background: var(--bg-active);
   color: var(--fg);
 }
 .chip:disabled {
@@ -1328,10 +1334,21 @@ textarea {
   white-space: nowrap;
   max-width: 168px;
 }
-/* 贴片尾部的下拉箭头恒显、不随文本挤压。 */
+/* 模型贴片内的服务商品牌色点，呼应当前所选模型的服务商。 */
+.chip__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+/* 贴片尾部的下拉箭头恒显、不随文本挤压；展开时翻转 180°。 */
 .chip__caret {
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.6;
+  transition: transform 0.15s ease;
+}
+.chip.is-open .chip__caret {
+  transform: rotate(180deg);
 }
 
 /* 附件贴片：输入区待发行 + 用户气泡已发行 */
@@ -1482,6 +1499,32 @@ textarea {
   }
 }
 
+/* 下拉浮层的入场动画（自触发角缩放淡入）：Codex 式轻快弹出。 */
+@keyframes deva-pick-pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 模型/权限下拉共用的浮层外观：圆角卡片 + 细描边 + 柔和投影 + 入场动画。 */
+.model-pick__menu,
+.perm-pick__menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  z-index: 50;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  animation: deva-pick-pop 0.14s ease;
+}
+
 /* ---------- Chat：模型选择下拉 ---------- */
 .model-pick {
   position: relative;
@@ -1492,38 +1535,57 @@ textarea {
   z-index: 40;
 }
 .model-pick__menu {
-  position: absolute;
-  bottom: calc(100% + 6px);
   right: 0;
-  z-index: 50;
+  transform-origin: bottom right;
   /* 菜单宽度按内容自适应（min~max 之间），使最长模型名单行铺开、短名不留空。 */
-  min-width: 240px;
+  min-width: 248px;
   max-width: 360px;
   width: max-content;
-  max-height: 320px;
+  max-height: 340px;
   overflow-y: auto;
-  padding: var(--space-1);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.25));
+}
+/* 按服务商分组：组间以细分隔线区隔。 */
+.model-pick__group + .model-pick__group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+.model-pick__group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 3px;
+}
+.model-pick__group-name {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .model-pick__item {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2);
+  padding: 7px 8px;
+  border: none;
   border-radius: var(--radius-sm);
   color: var(--fg);
   background: transparent;
   text-align: left;
+  font-size: 13px;
+  transition: background 0.1s ease;
 }
 .model-pick__item:hover {
   background: var(--bg-hover);
 }
 .model-pick__item.is-active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-weight: 600;
 }
 .model-pick__dot {
   width: 8px;
@@ -1534,46 +1596,43 @@ textarea {
 .model-pick__name {
   flex: 1;
   min-width: 0;
-  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.model-pick__prov {
+.model-pick__check {
   flex-shrink: 0;
-  font-size: 11px;
-  color: var(--fg-subtle);
-  white-space: nowrap;
+  color: var(--accent);
 }
 .model-pick__empty {
-  padding: var(--space-2);
+  padding: 10px 8px;
   color: var(--fg-subtle);
   font-size: 12px;
+  text-align: center;
 }
 
 /* ---------- Chat：权限模式下拉 ---------- */
 .perm-pick {
   position: relative;
 }
+/* 「全自动」权限有风险：用弱红底 + 红字提示，替代旧的硬红边框。 */
 .chip.is-auto {
   color: var(--danger);
-  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+.chip.is-auto:hover,
+.chip.is-auto.is-open {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
 }
 .perm-pick__menu {
-  position: absolute;
-  bottom: calc(100% + 6px);
   left: 0;
-  z-index: 50;
-  min-width: 264px;
-  padding: var(--space-1);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.25));
+  transform-origin: bottom left;
+  min-width: 280px;
 }
 .perm-pick__title {
-  padding: var(--space-1) var(--space-2);
-  font-size: 11px;
+  padding: 6px 8px 4px;
+  font-size: 10.5px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1584,40 +1643,62 @@ textarea {
   align-items: flex-start;
   gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2);
+  padding: 8px;
+  border: none;
   border-radius: var(--radius-sm);
   color: var(--fg);
   background: transparent;
   text-align: left;
+  transition: background 0.1s ease;
 }
 .perm-pick__item:hover {
   background: var(--bg-hover);
 }
 .perm-pick__item.is-active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: var(--accent-tint);
 }
 .perm-pick__icon {
   display: grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   margin-top: 1px;
   flex-shrink: 0;
   color: var(--fg-muted);
 }
+.perm-pick__item.is-active .perm-pick__icon {
+  color: var(--accent);
+}
 .perm-pick__text {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
 .perm-pick__name {
   font-weight: 500;
-  font-size: 12px;
+  font-size: 12.5px;
+}
+.perm-pick__item.is-active .perm-pick__name {
+  color: var(--accent);
 }
 .perm-pick__desc {
   font-size: 11px;
   color: var(--fg-subtle);
   line-height: 1.35;
+}
+.perm-pick__check {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--accent);
+}
+/* 尊重系统「减少动态效果」：关闭浮层入场动画。 */
+@media (prefers-reduced-motion: reduce) {
+  .model-pick__menu,
+  .perm-pick__menu {
+    animation: none;
+  }
 }
 
 /* ---------- 设置：密钥状态 / 警告 ---------- */
@@ -2029,6 +2110,14 @@ textarea {
   padding-right: var(--space-4);
   color: var(--fg);
 }
+/* hunk 头（@@ -a,b +c,d @@），弱化底色 + 强调色文本 */
+.diffview__line.hunk {
+  background: var(--bg-active);
+}
+.diffview__line.hunk .diffview__sign,
+.diffview__line.hunk .diffview__text {
+  color: var(--accent);
+}
 
 /* ---------- 数据表 ---------- */
 .querybar {
@@ -2195,6 +2284,221 @@ textarea {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.input--sm {
+  height: 28px;
+  font-size: 12px;
+}
+
+/* ============ Git 源代码管理 ============ */
+/* projmenu__item 在 TitleBar 用于 <div>，此处 git 菜单用于 <button>：补按钮复位 */
+button.projmenu__item {
+  border: none;
+  background: transparent;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.projmenu__item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 更多操作 / 分支菜单：锚定在头部更多按钮下方、右对齐 */
+.gitmenu {
+  position: absolute;
+  top: 28px;
+  right: 0;
+  z-index: var(--z-overlay);
+  min-width: 220px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+}
+.gitmenu__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+.gitmenu__formrow {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* 文件行：名后灰路径 + hover 浮现的行内操作 + 常态状态字母 */
+.gitrow__dir {
+  margin-left: var(--space-2);
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.gitrow__letter {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+.gitrow__actions {
+  position: absolute;
+  right: var(--space-1);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: var(--space-2);
+  opacity: 0;
+  background: var(--bg-hover);
+  transition: opacity 0.12s;
+}
+.list-row.is-selected .gitrow__actions {
+  background: var(--bg-selected);
+}
+.list-row:hover .gitrow__actions {
+  opacity: 1;
+}
+.list-row:hover .gitrow__letter {
+  opacity: 0;
+}
+.gitrow__btn {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.gitrow__btn:hover {
+  color: var(--fg);
+  background: var(--bg-active);
+}
+.gitrow__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* 更改分组：标题 + 计数徽标 + hover 浮现的组级操作 */
+.gitgroup {
+  margin-top: var(--space-2);
+}
+.gitgroup__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 24px;
+  padding: 0 var(--space-2);
+}
+.gitgroup__title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+}
+.gitgroup__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.gitgroup__header:hover .gitgroup__actions {
+  opacity: 1;
+}
+.gitgroup__btn {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.gitgroup__btn:hover {
+  color: var(--fg);
+  background: var(--bg-active);
+}
+.gitgroup__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.gitgroup__count {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--bg-active);
+  color: var(--fg-subtle);
+  font-size: 11px;
+}
+
+/* ahead / behind 同步指示 */
+.gitsync {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+  padding: 0 var(--space-1);
+}
+.gitsync__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+
+/* 提交身份内联填写（identity-needed 时出现） */
+.gitidentity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+.gitidentity__hint {
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+
+/* 操作结果 / 错误提示（点击可关闭） */
+.gitnotice {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+}
+.gitnotice--error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.gitnotice--ok {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
 }
 
 /* ============ 设置：类别两栏 ============ */
@@ -2681,6 +2985,60 @@ textarea {
 }
 .btn--soft {
   background: var(--bg-elevated);
+}
+
+/* 资源管理器空状态：最近项目历史列表（一键重开，省去每次翻目录） */
+.side-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-2) var(--space-4);
+}
+.side-recent__title {
+  padding: 0 var(--space-2) var(--space-1);
+  color: var(--fg-subtle);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.side-recent__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.side-recent__item:hover {
+  background: var(--bg-hover);
+}
+.side-recent__icon {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.side-recent__name {
+  flex: none;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-recent__path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+  font-size: 11.5px;
 }
 
 /* ---------- 编辑器：可编辑文本域 + 标签增强 ---------- */

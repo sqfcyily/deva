@@ -9,6 +9,7 @@ import { registerChatIpc } from './services/chat'
 import { registerAttachmentsIpc } from './services/attachments'
 import { registerPermissionsIpc } from './services/permissions'
 import { registerTerminalIpc } from './services/terminal'
+import { registerGitIpc } from './services/git'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -104,6 +105,9 @@ app.whenReady().then(() => {
 
   // 集成终端（node-pty 跑在独立 Utility Process，主进程仅中继）
   registerTerminalIpc(() => mainWindow)
+
+  // Git 源代码管理（调用系统 git，对标 VS Code；凭据交系统 GCM）
+  registerGitIpc(() => mainWindow)
 
   createWindow()
 

@@ -9,6 +9,7 @@ import { UIProvider } from './store/ui'
 import { ModelsProvider } from './store/models'
 import { ExtensionsProvider } from './store/extensions'
 import { WorkspaceProvider } from './store/workspace'
+import { GitProvider } from './store/git'
 import { ChatProvider } from './store/chat'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -18,11 +19,13 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <ModelsProvider>
           <ExtensionsProvider>
             <WorkspaceProvider>
-              <ChatProvider>
-                <UIProvider>
-                  <App />
-                </UIProvider>
-              </ChatProvider>
+              <GitProvider>
+                <ChatProvider>
+                  <UIProvider>
+                    <App />
+                  </UIProvider>
+                </ChatProvider>
+              </GitProvider>
             </WorkspaceProvider>
           </ExtensionsProvider>
         </ModelsProvider>

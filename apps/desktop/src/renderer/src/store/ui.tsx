@@ -3,8 +3,9 @@ import { createContext, useContext, useMemo, useState, type ReactNode } from 're
 /**
  * 全局 UI 状态。
  * - activeView：左侧活动栏选中项，决定中央区显示什么内容。
- * - 各视图的当前选中项（git 更改 / 数据表 / 主机），由侧边导航设置、中央区消费。
- * 项目与文件（真实数据）已迁移至 store/workspace。Git/DB/SSH 仍为演示数据，待后续阶段接入。
+ * - 各视图的当前选中项（数据表 / 主机），由侧边导航设置、中央区消费。
+ * 项目与文件（真实数据）已迁移至 store/workspace；Git 选中态已迁至 store/git。
+ * DB/SSH 仍为演示数据，待后续阶段接入。
  */
 
 /**
@@ -23,8 +24,6 @@ interface UIContextValue {
   panelVisible: boolean
   togglePanel: () => void
   // 各视图选中项（演示数据）
-  selectedGitFile: string | null
-  selectGitFile: (id: string) => void
   selectedTable: string | null
   selectTable: (id: string) => void
   selectedHost: string | null
@@ -38,7 +37,6 @@ export function UIProvider({ children }: { children: ReactNode }): React.JSX.Ele
   const [sidebarVisible, setSidebarVisible] = useState(true)
   const [panelVisible, setPanelVisible] = useState(false)
 
-  const [selectedGitFile, setSelectedGitFile] = useState<string | null>('UserService.java')
   const [selectedTable, setSelectedTable] = useState<string | null>('users')
   const [selectedHost, setSelectedHost] = useState<string | null>('prod-web-01')
 
@@ -50,14 +48,12 @@ export function UIProvider({ children }: { children: ReactNode }): React.JSX.Ele
       toggleSidebar: () => setSidebarVisible((v) => !v),
       panelVisible,
       togglePanel: () => setPanelVisible((v) => !v),
-      selectedGitFile,
-      selectGitFile: setSelectedGitFile,
       selectedTable,
       selectTable: setSelectedTable,
       selectedHost,
       selectHost: setSelectedHost
     }),
-    [activeView, sidebarVisible, panelVisible, selectedGitFile, selectedTable, selectedHost]
+    [activeView, sidebarVisible, panelVisible, selectedTable, selectedHost]
   )
 
   return <UIContext.Provider value={value}>{children}</UIContext.Provider>

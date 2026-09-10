@@ -55,6 +55,15 @@ function persist(): void {
   }
 }
 
+/**
+ * 主进程内读取整份配置（只读快照）。
+ * 供其它服务在进程内复用（如 git.ts 读 `git.path` 覆盖），避免各自重复读文件。
+ */
+export function getConfig(): Record<string, unknown> {
+  ensureLoaded()
+  return config
+}
+
 export function registerConfigIpc(): void {
   ensureLoaded()
 

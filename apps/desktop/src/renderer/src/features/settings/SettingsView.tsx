@@ -12,6 +12,7 @@ import {
 import { useTheme, type ThemeMode } from '../../theme/ThemeContext'
 import { useI18n } from '../../i18n/i18n'
 import type { Locale } from '../../i18n/messages'
+import { useWorkspace } from '../../store/workspace'
 import { ModelSettings } from './ModelSettings'
 
 /**
@@ -59,6 +60,7 @@ export function SettingsView(): React.JSX.Element {
 
 function GeneralPane(): React.JSX.Element {
   const { t, locale, setLocale } = useI18n()
+  const { recentLimit, setRecentLimit } = useWorkspace()
   return (
     <div className="pane">
       <h1 className="pane__title">{t('settings.general')}</h1>
@@ -71,6 +73,22 @@ function GeneralPane(): React.JSX.Element {
         >
           <option value="zh-CN">简体中文</option>
           <option value="en">English</option>
+        </select>
+      </div>
+      <div className="settings__row">
+        <div>
+          <div className="settings__row-label">{t('settings.recentLimit')}</div>
+          <div className="settings__row-desc">{t('settings.recentLimitDesc')}</div>
+        </div>
+        <select
+          className="select"
+          value={recentLimit}
+          onChange={(e) => setRecentLimit(Number(e.target.value))}
+        >
+          <option value={5}>5</option>
+          <option value={10}>10</option>
+          <option value={15}>15</option>
+          <option value={20}>20</option>
         </select>
       </div>
     </div>

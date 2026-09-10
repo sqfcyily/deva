@@ -4,6 +4,7 @@ import {
   Square,
   Paperclip,
   Sparkles,
+  Check,
   ChevronDown,
   ChevronRight,
   FileText,
@@ -194,10 +195,11 @@ export function ChatView(): React.JSX.Element {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`
   }
 
-  // 可选模型：仅列启用的服务商下启用的模型
-  const options = providers
+  // 可选模型：按服务商分组（仅启用的服务商 / 其下启用的模型），供分组下拉渲染。
+  const groups = providers
     .filter((p) => p.enabled)
-    .flatMap((p) => p.models.filter((m) => m.enabled).map((m) => ({ p, m })))
+    .map((p) => ({ p, models: p.models.filter((m) => m.enabled) }))
+    .filter((g) => g.models.length > 0)
 
   return (
     <div className="chat">
@@ -272,7 +274,7 @@ export function ChatView(): React.JSX.Element {
             {/* 权限模式选择（按项目，即时持久化） */}
             <div className="perm-pick">
               <button
-                className={`chip${permMode === 'auto' ? ' is-auto' : ''}`}
+                className={`chip${permMode === 'auto' ? ' is-auto' : ''}${permOpen ? ' is-open' : ''}`}
                 type="button"
                 title={t('chat.perm.menuTitle')}
                 onClick={() => setPermOpen((v) => !v)}
@@ -284,11 +286,13 @@ export function ChatView(): React.JSX.Element {
               {permOpen && (
                 <>
                   <div className="model-pick__backdrop" onClick={() => setPermOpen(false)} />
-                  <div className="perm-pick__menu">
+                  <div className="perm-pick__menu" role="menu">
                     <div className="perm-pick__title">{t('chat.perm.menuTitle')}</div>
                     {PERM_MODES.map(({ mode, icon }) => (
                       <button
                         key={mode}
+                        role="menuitemradio"
+                        aria-checked={mode === permMode}
                         className={`perm-pick__item${mode === permMode ? ' is-active' : ''}`}
                         onClick={() => {
                           setPermMode(mode)
@@ -300,6 +304,7 @@ export function ChatView(): React.JSX.Element {
                           <span className="perm-pick__name">{t(`chat.perm.mode.${mode}`)}</span>
                           <span className="perm-pick__desc">{t(`chat.perm.mode.${mode}Desc`)}</span>
                         </span>
+                        {mode === permMode && <Check size={15} className="perm-pick__check" />}
                       </button>
                     ))}
                   </div>
@@ -311,7 +316,17 @@ export function ChatView(): React.JSX.Element {
 
             {/* 模型选择 */}
             <div className="model-pick">
-              <button className="chip" type="button" onClick={() => setPickOpen((v) => !v)}>
+              <button
+                className={`chip${pickOpen ? ' is-open' : ''}`}
+                type="button"
+                onClick={() => setPickOpen((v) => !v)}
+              >
+                {activeModel && (
+                  <span
+                    className="chip__dot"
+                    style={{ background: activeModel.provider.accent }}
+                  />
+                )}
                 <span className="chip__label">
                   {activeModel ? activeModel.model.name : t('chat.selectModel')}
                 </span>
@@ -320,28 +335,38 @@ export function ChatView(): React.JSX.Element {
               {pickOpen && (
                 <>
                   <div className="model-pick__backdrop" onClick={() => setPickOpen(false)} />
-                  <div className="model-pick__menu">
-                    {options.length === 0 && (
+                  <div className="model-pick__menu" role="menu">
+                    {groups.length === 0 && (
                       <div className="model-pick__empty">{t('chat.noModel')}</div>
                     )}
-                    {options.map(({ p, m }) => {
-                      const active = activeModel?.provider.id === p.id && activeModel?.model.id === m.id
-                      return (
-                        <button
-                          key={`${p.id}:${m.id}`}
-                          className={`model-pick__item${active ? ' is-active' : ''}`}
-                          title={m.name}
-                          onClick={() => {
-                            setActiveModel(p.id, m.id)
-                            setPickOpen(false)
-                          }}
-                        >
+                    {groups.map(({ p, models }) => (
+                      <div key={p.id} className="model-pick__group">
+                        <div className="model-pick__group-head">
                           <span className="model-pick__dot" style={{ background: p.accent }} />
-                          <span className="model-pick__name">{m.name}</span>
-                          <span className="model-pick__prov">{p.name}</span>
-                        </button>
-                      )
-                    })}
+                          <span className="model-pick__group-name">{p.name}</span>
+                        </div>
+                        {models.map((m) => {
+                          const active =
+                            activeModel?.provider.id === p.id && activeModel?.model.id === m.id
+                          return (
+                            <button
+                              key={m.id}
+                              role="menuitemradio"
+                              aria-checked={active}
+                              className={`model-pick__item${active ? ' is-active' : ''}`}
+                              title={m.name}
+                              onClick={() => {
+                                setActiveModel(p.id, m.id)
+                                setPickOpen(false)
+                              }}
+                            >
+                              <span className="model-pick__name">{m.name}</span>
+                              {active && <Check size={14} className="model-pick__check" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    ))}
                   </div>
                 </>
               )}

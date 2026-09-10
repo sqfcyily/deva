@@ -50,6 +50,22 @@ export function registerWorkspaceIpc(getWindow: () => BrowserWindow | null): voi
     return { path: dir, name: basename(dir) || dir }
   })
 
+  // 按已知路径打开（无对话框）：供「记住最近项目」自动重开 / 点击历史项使用。
+  // 与 fs:open-folder 同等信任语义——只信任真实存在的目录，登记受信根；
+  // 路径失效（被删/移动/非目录）返回 null，渲染层据此从历史列表剔除。
+  ipcMain.handle('fs:open-path', async (_e, dirPath: string): Promise<OpenFolderResult | null> => {
+    if (typeof dirPath !== 'string' || dirPath.trim().length === 0) return null
+    const dir = resolve(dirPath)
+    try {
+      const st = await fs.stat(dir)
+      if (!st.isDirectory()) return null
+    } catch {
+      return null
+    }
+    trustRoot(dir)
+    return { path: dir, name: basename(dir) || dir }
+  })
+
   // 读取目录（单层，懒加载）：目录在前，随后按名排序
   ipcMain.handle('fs:read-dir', async (_e, dirPath: string): Promise<DirEntry[]> => {
     assertInside(dirPath)
