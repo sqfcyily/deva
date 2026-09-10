@@ -2345,6 +2345,9 @@ button.projmenu__item:disabled {
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
+  /* 纯装饰标签：hover 时它 opacity:0 会形成层叠上下文并盖在操作按钮上，
+     opacity:0 仍会截获点击 → 遮住「+」中心（只剩边缘可点）。故禁用其指针事件。 */
+  pointer-events: none;
 }
 .gitrow__actions {
   position: absolute;
@@ -2485,20 +2488,62 @@ button.projmenu__item:disabled {
 }
 
 /* 操作结果 / 错误提示（点击可关闭） */
+/* 提交输入框 + 悬浮层（进度条 / 错误提示）的定位上下文：让悬浮层脱离文档流、不推动输入框。 */
+.gitcommit {
+  position: relative;
+}
+
+/* 错误提示：绝对悬浮在输入框上（动画下方），遮住输入框；不占布局。数秒后自动消失，点击可立即关闭。 */
 .gitnotice {
-  margin-top: var(--space-2);
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  right: 4px;
+  z-index: 6;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   font-size: 12px;
+  line-height: 1.4;
   cursor: pointer;
+  box-shadow: var(--shadow-md, 0 6px 18px rgba(0, 0, 0, 0.35));
 }
 .gitnotice--error {
   color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: color-mix(in srgb, var(--danger) 16%, var(--bg-elevated, var(--bg-panel)));
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
 }
-.gitnotice--ok {
-  color: var(--success);
-  background: color-mix(in srgb, var(--success) 12%, transparent);
+
+/* 操作进行中的进度条（对标 VS Code 源代码管理）：绝对悬浮在输入框正上方的一条流动细条。
+   绝对定位 → 不占布局、不推动输入框，故动画出现/消失时输入框不上下抖动。 */
+.gitprogress {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 5;
+}
+.gitprogress__bit {
+  width: 30%;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--accent);
+  will-change: transform;
+  animation: deva-git-progress 1.2s ease-in-out infinite;
+}
+@keyframes deva-git-progress {
+  0% {
+    transform: translateX(-100%) scaleX(1);
+  }
+  50% {
+    transform: translateX(120%) scaleX(1.6);
+  }
+  100% {
+    transform: translateX(333%) scaleX(1);
+  }
 }
 
 /* ============ 设置：类别两栏 ============ */

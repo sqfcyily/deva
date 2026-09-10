@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process'
 import { existsSync, promises as fs } from 'node:fs'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
-import { dialog, ipcMain, type BrowserWindow, type OpenDialogOptions } from 'electron'
-import { assertInside, trustRoot } from './fs-guard'
+import { ipcMain } from 'electron'
+import { assertInside } from './fs-guard'
 import { getConfig, getDevaHome } from './config'
 import { detectShells } from './shells'
 
@@ -155,7 +155,6 @@ function resolveGitPath(): string | null {
 const MAX_BUFFER = 32 * 1024 * 1024 // 32MB：大仓 status/diff 兜底
 const DEFAULT_TIMEOUT = 30_000
 const REMOTE_TIMEOUT = 120_000
-const CLONE_TIMEOUT = 300_000
 const MAX_FILE_BYTES = 2 * 1024 * 1024 // 未跟踪文件读全文的上限（对齐 workspace）
 
 interface RunResult {
@@ -165,7 +164,7 @@ interface RunResult {
 }
 
 /**
- * 底层执行（不做 assertInside）：供 `git --version`、`git clone`（父目录经对话框选择）用。
+ * 底层执行（不做 assertInside）：供 `git --version` 等无仓库根上下文的命令用。
  * 用户可控串一律作独立 argv；env 关掉交互提示与可选锁，锁定英文错误文案便于解析。
  */
 function runGitRaw(cwd: string | undefined, args: string[], timeout = DEFAULT_TIMEOUT): Promise<RunResult> {
@@ -452,13 +451,6 @@ function classifyCommitError(stderr: string): GitFailReason {
   return 'error'
 }
 
-/** 从 clone URL 推导目标目录名（仅取末段、去 .git、清洗非法字符，杜绝路径穿越）。 */
-function deriveRepoName(url: string): string {
-  const s = url.trim().replace(/[/\\]+$/, '')
-  const seg = s.split(/[/\\:]/).pop() || 'repo'
-  return seg.replace(/\.git$/i, '').replace(/[^\w.-]/g, '-') || 'repo'
-}
-
 /** 把渲染层传来的路径数组归一为绝对路径并逐个 assertInside（越界即抛）。 */
 function safeAbsPaths(paths: unknown): string[] {
   if (!Array.isArray(paths)) return []
@@ -474,7 +466,7 @@ function safeAbsPaths(paths: unknown): string[] {
 
 // ── IPC 注册 ─────────────────────────────────────────────────────────────────
 
-export function registerGitIpc(getWindow: () => BrowserWindow | null): void {
+export function registerGitIpc(): void {
   // git 是否可用（定位成功 + --version 跑通）
   ipcMain.handle('git:available', async () => {
     const git = resolveGitPath()
@@ -703,27 +695,5 @@ export function registerGitIpc(getWindow: () => BrowserWindow | null): void {
     return res.code === 0
       ? { ok: true as const }
       : { ok: false as const, reason: classifyRemoteError(res.stderr), message: res.stderr.trim() }
-  })
-
-  // 克隆（唯一写受信根之外）：对话框选父目录 → clone → trustRoot(dest)
-  ipcMain.handle('git:clone', async (_e, url: string) => {
-    if (typeof url !== 'string' || !url.trim())
-      return { ok: false as const, reason: 'error' as GitFailReason }
-    const git = resolveGitPath()
-    if (!git) return { ok: false as const, reason: 'no-git' as GitFailReason }
-    const win = getWindow()
-    const opts: OpenDialogOptions = { properties: ['openDirectory'], title: '选择克隆的目标位置' }
-    const dlg = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
-    if (dlg.canceled || dlg.filePaths.length === 0)
-      return { ok: false as const, reason: 'canceled' as GitFailReason }
-    const parent = resolve(dlg.filePaths[0])
-    const dest = join(parent, deriveRepoName(url))
-    if (existsSync(dest))
-      return { ok: false as const, reason: 'error' as GitFailReason, message: `目标已存在：${dest}` }
-    const res = await runGitRaw(parent, ['clone', url.trim(), dest], CLONE_TIMEOUT)
-    if (res.code !== 0)
-      return { ok: false as const, reason: classifyRemoteError(res.stderr), message: res.stderr.trim() }
-    trustRoot(dest)
-    return { ok: true as const, path: dest, name: basename(dest) }
   })
 }

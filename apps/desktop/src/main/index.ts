@@ -107,7 +107,7 @@ app.whenReady().then(() => {
   registerTerminalIpc(() => mainWindow)
 
   // Git 源代码管理（调用系统 git，对标 VS Code；凭据交系统 GCM）
-  registerGitIpc(() => mainWindow)
+  registerGitIpc()
 
   createWindow()
 

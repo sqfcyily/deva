@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   RefreshCw,
   MoreHorizontal,
@@ -11,8 +11,7 @@ import {
   ArrowUp,
   ArrowDown,
   DownloadCloud,
-  UploadCloud,
-  Copy
+  UploadCloud
 } from 'lucide-react'
 import { PanelHeader } from '../PanelHeader'
 import { useI18n } from '../../i18n/i18n'
@@ -29,7 +28,7 @@ const STATUS_COLOR: Record<string, string> = {
   T: 'var(--warning)'
 }
 
-type Notice = { kind: 'error' | 'ok'; text: string } | null
+type Notice = { kind: 'error'; text: string } | null
 
 /** 版本控制导航（真实 git，对标 VS Code 源代码管理面板）。 */
 export function GitPanel(): React.JSX.Element {
@@ -48,13 +47,19 @@ export function GitPanel(): React.JSX.Element {
   } = git
 
   const [menuOpen, setMenuOpen] = useState(false)
-  const [menuMode, setMenuMode] = useState<'root' | 'branch' | 'clone'>('root')
+  const [menuMode, setMenuMode] = useState<'root' | 'branch'>('root')
   const [branchName, setBranchName] = useState('')
-  const [cloneUrl, setCloneUrl] = useState('')
   const [notice, setNotice] = useState<Notice>(null)
   const [showIdentity, setShowIdentity] = useState(false)
   const [idName, setIdName] = useState('')
   const [idEmail, setIdEmail] = useState('')
+
+  // 错误提示悬浮显示数秒后自动消失（对标 VS Code 的瞬时提示）。
+  useEffect(() => {
+    if (!notice) return
+    const id = window.setTimeout(() => setNotice(null), 4000)
+    return () => window.clearTimeout(id)
+  }, [notice])
 
   const branch = status?.branch ?? (status?.detached ? 'HEAD' : '')
 
@@ -173,21 +178,14 @@ export function GitPanel(): React.JSX.Element {
     void doCommit()
   }
 
+  // 远程操作（拉取/推送/获取）：进度由输入框上方的动画条呈现（对标 VS Code），成功不弹提示，仅报错。
   const remote = async (
-    fn: () => Promise<{ ok: boolean; reason?: GitFailReason; message?: string }>,
-    okText: string
+    fn: () => Promise<{ ok: boolean; reason?: GitFailReason; message?: string }>
   ): Promise<void> => {
     closeMenu()
+    setNotice(null)
     const res = await fn()
-    setNotice(res.ok ? { kind: 'ok', text: okText } : { kind: 'error', text: reasonText(res.reason, res.message) })
-  }
-
-  // 克隆：成功即切到新项目（panel 随 repoDir 变化自刷新），无需成功提示；仅报错。
-  const doClone = async (url: string): Promise<void> => {
-    closeMenu()
-    if (!url.trim()) return
-    const res = await git.clone(url.trim())
-    setNotice(res.ok ? null : { kind: 'error', text: reasonText(res.reason, res.message) })
+    if (!res.ok) setNotice({ kind: 'error', text: reasonText(res.reason, res.message) })
   }
 
   const confirmDiscard = (files: GitFileStatus[]): void => {
@@ -272,7 +270,7 @@ export function GitPanel(): React.JSX.Element {
                         <button
                           className="projmenu__item"
                           disabled={busy}
-                          onClick={() => void remote(git.pull, t('git.pulled'))}
+                          onClick={() => void remote(git.pull)}
                         >
                           <span className="projmenu__check">
                             <DownloadCloud size={15} />
@@ -282,7 +280,7 @@ export function GitPanel(): React.JSX.Element {
                         <button
                           className="projmenu__item"
                           disabled={busy}
-                          onClick={() => void remote(git.push, t('git.pushed'))}
+                          onClick={() => void remote(git.push)}
                         >
                           <span className="projmenu__check">
                             <UploadCloud size={15} />
@@ -292,7 +290,7 @@ export function GitPanel(): React.JSX.Element {
                         <button
                           className="projmenu__item"
                           disabled={busy}
-                          onClick={() => void remote(git.fetch, t('git.fetched'))}
+                          onClick={() => void remote(git.fetch)}
                         >
                           <span className="projmenu__check">
                             <RefreshCw size={15} />
@@ -327,19 +325,6 @@ export function GitPanel(): React.JSX.Element {
                             <span className="projmenu__name">{b.name}</span>
                           </button>
                         ))}
-                        <div className="projmenu__divider" />
-                        <button
-                          className="projmenu__item"
-                          onClick={() => {
-                            setCloneUrl('')
-                            setMenuMode('clone')
-                          }}
-                        >
-                          <span className="projmenu__check">
-                            <Copy size={15} />
-                          </span>
-                          <span className="projmenu__name">{t('git.clone')}</span>
-                        </button>
                       </>
                     )}
                     {menuMode === 'branch' && (
@@ -374,33 +359,6 @@ export function GitPanel(): React.JSX.Element {
                         </div>
                       </div>
                     )}
-                    {menuMode === 'clone' && (
-                      <div className="gitmenu__form">
-                        <input
-                          className="input input--sm"
-                          autoFocus
-                          placeholder={t('git.cloneUrl')}
-                          value={cloneUrl}
-                          onChange={(e) => setCloneUrl(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && cloneUrl.trim()) void doClone(cloneUrl)
-                            else if (e.key === 'Escape') setMenuMode('root')
-                          }}
-                        />
-                        <div className="gitmenu__formrow">
-                          <button className="btn btn--sm btn--ghost" onClick={() => setMenuMode('root')}>
-                            {t('git.cancel')}
-                          </button>
-                          <button
-                            className="btn btn--sm btn--primary"
-                            disabled={!cloneUrl.trim()}
-                            onClick={() => void doClone(cloneUrl)}
-                          >
-                            {t('git.clone').replace('…', '')}
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 </>
               )}
@@ -412,18 +370,31 @@ export function GitPanel(): React.JSX.Element {
       <div className="sidepanel__body">
         {/* 提交区 */}
         <div style={{ padding: '8px 4px 4px' }}>
-          <div className="composer__box" style={{ margin: 0, borderRadius: 'var(--radius-sm)', padding: 8 }}>
-            <textarea
-              className="composer__input"
-              rows={2}
-              placeholder={t('git.commitPlaceholder').replace('{branch}', branch || 'HEAD')}
-              style={{ maxHeight: 96 }}
-              value={commitMessage}
-              onChange={(e) => git.setCommitMessage(e.target.value)}
-              onKeyDown={(e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canCommit) void doCommit()
-              }}
-            />
+          {/* 输入框 + 悬浮层：进度条与错误提示都绝对定位、不占布局，故动画出现/消失时输入框不上下抖动 */}
+          <div className="gitcommit">
+            {/* 操作进行中：悬浮在输入框正上方的细条流动动画（对标 VS Code，不推动输入框） */}
+            <div className="gitprogress" aria-hidden={!busy}>
+              {busy && <div className="gitprogress__bit" />}
+            </div>
+            <div className="composer__box" style={{ margin: 0, borderRadius: 'var(--radius-sm)', padding: 8 }}>
+              <textarea
+                className="composer__input"
+                rows={2}
+                placeholder={t('git.commitPlaceholder').replace('{branch}', branch || 'HEAD')}
+                style={{ maxHeight: 96 }}
+                value={commitMessage}
+                onChange={(e) => git.setCommitMessage(e.target.value)}
+                onKeyDown={(e) => {
+                  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canCommit) void doCommit()
+                }}
+              />
+            </div>
+            {/* 错误提示：悬浮在动画下方、遮住输入框，数秒后自动消失（点击可立即关闭） */}
+            {notice && (
+              <div className={`gitnotice gitnotice--${notice.kind}`} onClick={() => setNotice(null)}>
+                {notice.text}
+              </div>
+            )}
           </div>
           <button
             className="btn btn--primary btn--sm"
@@ -432,7 +403,7 @@ export function GitPanel(): React.JSX.Element {
             onClick={() => void doCommit()}
           >
             <Check size={14} />
-            {busy ? t('git.committing') : `${t('git.commit')}${branch ? ` (${branch})` : ''}`}
+            {`${t('git.commit')}${branch ? ` (${branch})` : ''}`}
           </button>
 
           {/* ahead / behind */}
@@ -477,13 +448,6 @@ export function GitPanel(): React.JSX.Element {
               >
                 {t('git.saveIdentity')}
               </button>
-            </div>
-          )}
-
-          {/* 结果 / 错误提示 */}
-          {notice && (
-            <div className={`gitnotice gitnotice--${notice.kind}`} onClick={() => setNotice(null)}>
-              {notice.text}
             </div>
           )}
         </div>

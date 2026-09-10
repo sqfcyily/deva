@@ -123,13 +123,12 @@ interface GitContextValue {
   pull: () => Promise<GitActionResult>
   push: () => Promise<GitActionResult>
   setIdentity: (name: string, email: string, global: boolean) => Promise<void>
-  clone: (url: string) => Promise<GitActionResult>
 }
 
 const GitContext = createContext<GitContextValue | null>(null)
 
 export function GitProvider({ children }: { children: ReactNode }): React.JSX.Element {
-  const { activeProject, openRecent } = useWorkspace()
+  const { activeProject } = useWorkspace()
   const repoDir = activeProject?.path ?? null
 
   const [available, setAvailable] = useState<boolean | null>(null)
@@ -320,26 +319,6 @@ export function GitProvider({ children }: { children: ReactNode }): React.JSX.El
     []
   )
 
-  const clone = useCallback(
-    async (url: string): Promise<GitActionResult> => {
-      setBusy(true)
-      setError(null)
-      try {
-        const res = await window.deva.git.clone(url)
-        if (res.ok && res.path) {
-          // 克隆已 trustRoot(dest)，经 workspace 打开为活动项目 → repoDir 变化触发刷新。
-          await openRecent(res.path)
-        } else if (!res.ok && res.message) {
-          setError(res.message)
-        }
-        return res
-      } finally {
-        setBusy(false)
-      }
-    },
-    [openRecent]
-  )
-
   const value = useMemo<GitContextValue>(
     () => ({
       available,
@@ -369,8 +348,7 @@ export function GitProvider({ children }: { children: ReactNode }): React.JSX.El
       fetch,
       pull,
       push,
-      setIdentity,
-      clone
+      setIdentity
     }),
     [
       available,
@@ -397,8 +375,7 @@ export function GitProvider({ children }: { children: ReactNode }): React.JSX.El
       fetch,
       pull,
       push,
-      setIdentity,
-      clone
+      setIdentity
     ]
   )
 

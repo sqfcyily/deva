@@ -174,13 +174,6 @@ export interface GitOpResult {
   reason?: GitFailReason
   message?: string
 }
-export interface GitCloneResult {
-  ok: boolean
-  reason?: GitFailReason
-  message?: string
-  path?: string
-  name?: string
-}
 
 /** 服务商探针「线缆类型」（与 services/provider.ts 对齐）。 */
 export interface ProbeConfig {
@@ -385,9 +378,7 @@ const api = {
     pull: (dir: string): Promise<GitOpResult> => ipcRenderer.invoke('git:pull', dir),
     /** 推送（无 upstream 时传 branch 触发 -u origin <branch> 首推，否则传 null） */
     push: (dir: string, setUpstreamBranch: string | null): Promise<GitOpResult> =>
-      ipcRenderer.invoke('git:push', dir, setUpstreamBranch),
-    /** 克隆：对话框选父目录 → clone → trustRoot(dest) → 回 {path,name} 供渲染层打开 */
-    clone: (url: string): Promise<GitCloneResult> => ipcRenderer.invoke('git:clone', url)
+      ipcRenderer.invoke('git:push', dir, setUpstreamBranch)
   }
 }
 
