@@ -1251,6 +1251,91 @@ textarea {
 .btn--ghost:hover {
   background: var(--bg-hover);
 }
+.btn--danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.btn--danger:hover {
+  background: var(--danger);
+  filter: brightness(1.07);
+}
+
+/* ---------- 全局对话框（Modal / Confirm / Prompt） ---------- */
+@keyframes deva-modal-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes deva-modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.modal__backdrop {
+  position: fixed;
+  inset: 0;
+  /* 高于下拉菜单/浮层（--z-overlay=100），低于 toast（--z-toast=1000） */
+  z-index: calc(var(--z-overlay) + 200);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: rgba(0, 0, 0, 0.42);
+  animation: deva-modal-fade 0.12s ease;
+}
+.modal__card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: calc(100vw - var(--space-6));
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  animation: deva-modal-pop 0.14s ease;
+}
+.modal__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.modal__body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+}
+.modal__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.modal__label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+/* 覆盖 .input 的 flex:1（其为横向布局设计），使其在纵向卡片里占满宽度 */
+.modal__field .input {
+  flex: none;
+  width: 100%;
+}
+.modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
 
 /* ---------- Chat 输入区 ---------- */
 .composer {
@@ -2319,17 +2404,6 @@ button.projmenu__item:disabled {
   border-radius: var(--radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow);
-}
-.gitmenu__form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
-}
-.gitmenu__formrow {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2);
 }
 
 /* 文件行：名后灰路径 + hover 浮现的行内操作 + 常态状态字母 */

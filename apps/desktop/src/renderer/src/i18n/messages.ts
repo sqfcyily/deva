@@ -83,6 +83,7 @@ const zhCN: MessageTree = {
     branchLabel: '分支',
     switchBranch: '切换分支',
     createBranch: '新建分支…',
+    createBranchTitle: '新建分支',
     newBranchName: '新分支名称',
     create: '创建',
     cancel: '取消',
@@ -308,7 +309,14 @@ const zhCN: MessageTree = {
     col: '列',
     noWorkspace: '未打开项目'
   },
-  common: { comingSoon: '功能开发中', mock: '演示数据', global: '全局' }
+  common: {
+    comingSoon: '功能开发中',
+    mock: '演示数据',
+    global: '全局',
+    confirm: '确定',
+    cancel: '取消',
+    delete: '删除'
+  }
 }
 
 const en: MessageTree = {
@@ -385,6 +393,7 @@ const en: MessageTree = {
     branchLabel: 'Branch',
     switchBranch: 'Switch Branch',
     createBranch: 'Create Branch…',
+    createBranchTitle: 'Create Branch',
     newBranchName: 'New branch name',
     create: 'Create',
     cancel: 'Cancel',
@@ -609,7 +618,14 @@ const en: MessageTree = {
     col: 'Col',
     noWorkspace: 'No project'
   },
-  common: { comingSoon: 'Coming soon', mock: 'Demo data', global: 'Global' }
+  common: {
+    comingSoon: 'Coming soon',
+    mock: 'Demo data',
+    global: 'Global',
+    confirm: 'OK',
+    cancel: 'Cancel',
+    delete: 'Delete'
+  }
 }
 
 export const messages: Record<Locale, MessageTree> = { 'zh-CN': zhCN, en }

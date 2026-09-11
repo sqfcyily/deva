@@ -19,6 +19,7 @@ import { PanelHeader } from '../PanelHeader'
 import { useI18n } from '../../i18n/i18n'
 import { useModels } from '../../store/models'
 import { useGit, type GitFileStatus, type GitFailReason } from '../../store/git'
+import { useDialog } from '../../components/DialogProvider'
 
 /** 状态字母配色（对齐 VS Code 语义色）。 */
 const STATUS_COLOR: Record<string, string> = {
@@ -37,6 +38,7 @@ type Notice = { kind: 'error'; text: string } | null
 export function GitPanel(): React.JSX.Element {
   const { t, locale } = useI18n()
   const git = useGit()
+  const dialog = useDialog()
   const { activeModel } = useModels()
   const {
     available,
@@ -51,8 +53,6 @@ export function GitPanel(): React.JSX.Element {
   } = git
 
   const [menuOpen, setMenuOpen] = useState(false)
-  const [menuMode, setMenuMode] = useState<'root' | 'branch'>('root')
-  const [branchName, setBranchName] = useState('')
   const [notice, setNotice] = useState<Notice>(null)
   const [showIdentity, setShowIdentity] = useState(false)
   const [idName, setIdName] = useState('')
@@ -94,7 +94,6 @@ export function GitPanel(): React.JSX.Element {
 
   const closeMenu = (): void => {
     setMenuOpen(false)
-    setMenuMode('root')
   }
 
   // ── 空态：无 git / 无项目 / 非仓库 ────────────────────────────────
@@ -229,19 +228,24 @@ export function GitPanel(): React.JSX.Element {
     if (!res.ok) setNotice({ kind: 'error', text: reasonText(res.reason, res.message) })
   }
 
-  const confirmDiscard = (files: GitFileStatus[]): void => {
+  const confirmDiscard = async (files: GitFileStatus[]): Promise<void> => {
     if (files.length === 0) return
     const msg =
       files.length === 1
         ? t('git.discardConfirm').replace('{name}', files[0].name)
         : t('git.discardConfirmMany').replace('{count}', String(files.length))
-    if (window.confirm(msg)) void git.discard(files)
+    const ok = await dialog.confirm({
+      title: t('git.discard'),
+      message: msg,
+      confirmText: t('git.discard'),
+      variant: 'danger'
+    })
+    if (ok) void git.discard(files)
   }
 
   const openMenu = (): void => {
     if (!menuOpen) void git.loadBranches()
     setMenuOpen((v) => !v)
-    setMenuMode('root')
   }
 
   // 文件行渲染（普通函数而非内嵌组件，避免每次父级重渲染导致整列 remount）
@@ -269,7 +273,7 @@ export function GitPanel(): React.JSX.Element {
             </button>
           ) : (
             <>
-              <button className="gitrow__btn" title={t('git.discard')} disabled={busy} onClick={() => confirmDiscard([file])}>
+              <button className="gitrow__btn" title={t('git.discard')} disabled={busy} onClick={() => void confirmDiscard([file])}>
                 <Undo2 size={14} />
               </button>
               <button className="gitrow__btn" title={t('git.stage')} disabled={busy} onClick={() => void git.stage([file])}>
@@ -306,100 +310,72 @@ export function GitPanel(): React.JSX.Element {
                 <>
                   <div className="backdrop" onClick={closeMenu} />
                   <div className="gitmenu">
-                    {menuMode === 'root' && (
-                      <>
-                        <button
-                          className="projmenu__item"
-                          disabled={busy}
-                          onClick={() => void remote(git.pull)}
-                        >
-                          <span className="projmenu__check">
-                            <DownloadCloud size={15} />
-                          </span>
-                          <span className="projmenu__name">{t('git.pull')}</span>
-                        </button>
-                        <button
-                          className="projmenu__item"
-                          disabled={busy}
-                          onClick={() => void remote(git.push)}
-                        >
-                          <span className="projmenu__check">
-                            <UploadCloud size={15} />
-                          </span>
-                          <span className="projmenu__name">{t('git.push')}</span>
-                        </button>
-                        <button
-                          className="projmenu__item"
-                          disabled={busy}
-                          onClick={() => void remote(git.fetch)}
-                        >
-                          <span className="projmenu__check">
-                            <RefreshCw size={15} />
-                          </span>
-                          <span className="projmenu__name">{t('git.fetch')}</span>
-                        </button>
-                        <div className="projmenu__divider" />
-                        <button
-                          className="projmenu__item"
-                          onClick={() => {
-                            setBranchName('')
-                            setMenuMode('branch')
-                          }}
-                        >
-                          <span className="projmenu__check">
-                            <GitBranchIcon size={15} />
-                          </span>
-                          <span className="projmenu__name">{t('git.createBranch')}</span>
-                        </button>
-                        {branches.length > 0 && <div className="projmenu__divider" />}
-                        {branches.map((b) => (
-                          <button
-                            key={b.name}
-                            className={`projmenu__item${b.current ? ' is-active' : ''}`}
-                            disabled={busy || b.current}
-                            onClick={() => {
-                              closeMenu()
-                              void git.checkout(b.name)
-                            }}
-                          >
-                            <span className="projmenu__check">{b.current && <Check size={14} />}</span>
-                            <span className="projmenu__name">{b.name}</span>
-                          </button>
-                        ))}
-                      </>
-                    )}
-                    {menuMode === 'branch' && (
-                      <div className="gitmenu__form">
-                        <input
-                          className="input input--sm"
-                          autoFocus
-                          placeholder={t('git.newBranchName')}
-                          value={branchName}
-                          onChange={(e) => setBranchName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' && branchName.trim()) {
-                              closeMenu()
-                              void git.createBranch(branchName.trim(), true)
-                            } else if (e.key === 'Escape') setMenuMode('root')
-                          }}
-                        />
-                        <div className="gitmenu__formrow">
-                          <button className="btn btn--sm btn--ghost" onClick={() => setMenuMode('root')}>
-                            {t('git.cancel')}
-                          </button>
-                          <button
-                            className="btn btn--sm btn--primary"
-                            disabled={!branchName.trim()}
-                            onClick={() => {
-                              closeMenu()
-                              void git.createBranch(branchName.trim(), true)
-                            }}
-                          >
-                            {t('git.create')}
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                    <button
+                      className="projmenu__item"
+                      disabled={busy}
+                      onClick={() => void remote(git.pull)}
+                    >
+                      <span className="projmenu__check">
+                        <DownloadCloud size={15} />
+                      </span>
+                      <span className="projmenu__name">{t('git.pull')}</span>
+                    </button>
+                    <button
+                      className="projmenu__item"
+                      disabled={busy}
+                      onClick={() => void remote(git.push)}
+                    >
+                      <span className="projmenu__check">
+                        <UploadCloud size={15} />
+                      </span>
+                      <span className="projmenu__name">{t('git.push')}</span>
+                    </button>
+                    <button
+                      className="projmenu__item"
+                      disabled={busy}
+                      onClick={() => void remote(git.fetch)}
+                    >
+                      <span className="projmenu__check">
+                        <RefreshCw size={15} />
+                      </span>
+                      <span className="projmenu__name">{t('git.fetch')}</span>
+                    </button>
+                    <div className="projmenu__divider" />
+                    <button
+                      className="projmenu__item"
+                      onClick={() => {
+                        closeMenu()
+                        void (async () => {
+                          const name = await dialog.prompt({
+                            title: t('git.createBranchTitle'),
+                            label: t('git.newBranchName'),
+                            placeholder: t('git.newBranchName'),
+                            confirmText: t('git.create')
+                          })
+                          if (name) void git.createBranch(name, true)
+                        })()
+                      }}
+                    >
+                      <span className="projmenu__check">
+                        <GitBranchIcon size={15} />
+                      </span>
+                      <span className="projmenu__name">{t('git.createBranch')}</span>
+                    </button>
+                    {branches.length > 0 && <div className="projmenu__divider" />}
+                    {branches.map((b) => (
+                      <button
+                        key={b.name}
+                        className={`projmenu__item${b.current ? ' is-active' : ''}`}
+                        disabled={busy || b.current}
+                        onClick={() => {
+                          closeMenu()
+                          void git.checkout(b.name)
+                        }}
+                      >
+                        <span className="projmenu__check">{b.current && <Check size={14} />}</span>
+                        <span className="projmenu__name">{b.name}</span>
+                      </button>
+                    ))}
                   </div>
                 </>
               )}
@@ -543,7 +519,7 @@ export function GitPanel(): React.JSX.Element {
                   className="gitgroup__btn"
                   title={t('git.discard')}
                   disabled={busy}
-                  onClick={() => confirmDiscard(unstaged)}
+                  onClick={() => void confirmDiscard(unstaged)}
                 >
                   <Undo2 size={14} />
                 </button>

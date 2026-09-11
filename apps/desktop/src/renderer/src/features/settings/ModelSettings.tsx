@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useModels } from '../../store/models'
+import { useDialog } from '../../components/DialogProvider'
 import { seedProviders, type ProviderAdapter } from '../../mock/models'
 import { Switch } from './Switch'
 
@@ -29,6 +30,7 @@ type FetchStatus = 'idle' | 'loading' | 'done' | 'error'
 
 export function ModelSettings(): React.JSX.Element {
   const { t } = useI18n()
+  const dialog = useDialog()
   const {
     providers,
     selectedProviderId,
@@ -111,9 +113,15 @@ export function ModelSettings(): React.JSX.Element {
     if (!v) setNameDraft(next)
   }
 
-  const onDeleteProvider = (): void => {
+  const onDeleteProvider = async (): Promise<void> => {
     if (!selectedProvider) return
-    if (window.confirm(t('models.deleteProviderConfirm'))) removeProvider(selectedProvider.id)
+    const ok = await dialog.confirm({
+      title: selectedProvider.name,
+      message: t('models.deleteProviderConfirm'),
+      confirmText: t('common.delete'),
+      variant: 'danger'
+    })
+    if (ok) removeProvider(selectedProvider.id)
   }
 
   const resetHost = (): void => {
@@ -304,7 +312,7 @@ export function ModelSettings(): React.JSX.Element {
               <button
                 className="icon-btn provider-detail__del"
                 title={t('models.deleteProvider')}
-                onClick={onDeleteProvider}
+                onClick={() => void onDeleteProvider()}
               >
                 <Trash2 size={15} />
               </button>

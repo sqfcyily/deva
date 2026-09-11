@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { GitBranch, Plus, Minus, Undo2 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useGit, type GitDiffLine } from '../../store/git'
+import { useDialog } from '../../components/DialogProvider'
 
 /**
  * 中央 diff 视图：展示当前选中更改的行级差异（真实 git，经 window.deva.git.diff）。
@@ -10,6 +11,7 @@ import { useGit, type GitDiffLine } from '../../store/git'
 export function GitDiffView(): React.JSX.Element {
   const { t } = useI18n()
   const git = useGit()
+  const dialog = useDialog()
   const { selected, repoDir, busy } = git
 
   const [lines, setLines] = useState<GitDiffLine[] | null>(null)
@@ -88,8 +90,15 @@ export function GitDiffView(): React.JSX.Element {
               title={t('git.discard')}
               disabled={busy}
               onClick={() => {
-                if (window.confirm(t('git.discardConfirm').replace('{name}', file.name)))
-                  void git.discard([file])
+                void (async () => {
+                  const ok = await dialog.confirm({
+                    title: t('git.discard'),
+                    message: t('git.discardConfirm').replace('{name}', file.name),
+                    confirmText: t('git.discard'),
+                    variant: 'danger'
+                  })
+                  if (ok) void git.discard([file])
+                })()
               }}
             >
               <Undo2 size={15} />
