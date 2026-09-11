@@ -53,6 +53,9 @@ const DEFAULT_RECENT_LIMIT = 10
 const RECENT_LIMIT_MIN = 1
 const RECENT_LIMIT_MAX = 50
 
+/** 空标签分片的稳定引用（避免每次渲染新建 [] 触发下游 memo 抖动）。 */
+const NO_TABS: Tab[] = []
+
 /** 持久化在 config.json 的 workspace 段。 */
 interface WorkspacePersisted {
   recent?: RecentProject[]
@@ -116,9 +119,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
   const [childrenMap, setChildrenMap] = useState<Record<string, DirEntry[]>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
-  // 编辑器
-  const [tabs, setTabs] = useState<Tab[]>([])
-  const [activePath, setActivePath] = useState<string | null>(null)
+  // 编辑器：标签与活动文件按项目分片（对外派生为「当前项目」的标签/活动文件）。
+  // 内容缓存以绝对路径为键、天然唯一，保持全局不分片。
+  const [tabsByProject, setTabsByProject] = useState<Record<string, Tab[]>>({})
+  const [activePathByProject, setActivePathByProject] = useState<Record<string, string | null>>({})
   const [content, setContent] = useState<Record<string, string>>({})
   const [savedContent, setSavedContent] = useState<Record<string, string>>({})
   const [fileState, setFileState] = useState<Record<string, FileState>>({})
@@ -127,6 +131,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
     () => projects.find((p) => p.id === activeProjectId) ?? null,
     [projects, activeProjectId]
   )
+
+  // 当前项目的编辑器标签 / 活动文件（派生自分片；无项目则空）。
+  const tabs = activeProjectId ? tabsByProject[activeProjectId] ?? NO_TABS : NO_TABS
+  const activePath = activeProjectId ? activePathByProject[activeProjectId] ?? null : null
 
   const ensureChildren = useCallback(async (dir: string): Promise<void> => {
     const list = await window.deva.fs.readDir(dir)
@@ -271,6 +279,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
       setActiveProjectId((cur) => (cur === id ? next[0]?.id ?? null : cur))
       return next
     })
+    // 一并丢弃该项目的编辑器标签分片（关闭即释放，重开是新的一组）。
+    setTabsByProject((prev) => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
+    setActivePathByProject((prev) => {
+      if (!(id in prev)) return prev
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
   }, [])
 
   const toggleDir = useCallback(
@@ -301,10 +322,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
 
   const openFile = useCallback(
     async (path: string): Promise<void> => {
-      setTabs((prev) =>
-        prev.some((t) => t.path === path) ? prev : [...prev, { path, name: baseName(path) }]
-      )
-      setActivePath(path)
+      // 打开进「当前活动项目」的标签组（文件本就从该项目树点开）；切项目不影响本次归属。
+      const pid = activeProjectId
+      if (!pid) return
+      setTabsByProject((prev) => {
+        const list = prev[pid] ?? NO_TABS
+        if (list.some((t) => t.path === path)) return prev
+        return { ...prev, [pid]: [...list, { path, name: baseName(path) }] }
+      })
+      setActivePathByProject((prev) => ({ ...prev, [pid]: path }))
       if (content[path] !== undefined || fileState[path] !== undefined) return
       const res = await window.deva.fs.readFile(path)
       if (res.binary) {
@@ -317,21 +343,37 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
         setFileState((s) => ({ ...s, [path]: 'ok' }))
       }
     },
-    [content, fileState]
+    [activeProjectId, content, fileState]
   )
 
-  const closeTab = useCallback((path: string): void => {
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.path === path)
-      const next = prev.filter((t) => t.path !== path)
-      setActivePath((cur) => {
-        if (cur !== path) return cur
-        if (next.length === 0) return null
-        return (next[idx] ?? next[idx - 1] ?? next[0]).path
+  const setActivePath = useCallback(
+    (path: string): void => {
+      const pid = activeProjectId
+      if (!pid) return
+      setActivePathByProject((prev) => ({ ...prev, [pid]: path }))
+    },
+    [activeProjectId]
+  )
+
+  const closeTab = useCallback(
+    (path: string): void => {
+      const pid = activeProjectId
+      if (!pid) return
+      setTabsByProject((prev) => {
+        const list = prev[pid] ?? NO_TABS
+        const idx = list.findIndex((t) => t.path === path)
+        if (idx === -1) return prev
+        const next = list.filter((t) => t.path !== path)
+        setActivePathByProject((ap) => {
+          if ((ap[pid] ?? null) !== path) return ap
+          const fallback = next.length === 0 ? null : (next[idx] ?? next[idx - 1] ?? next[0]).path
+          return { ...ap, [pid]: fallback }
+        })
+        return { ...prev, [pid]: next }
       })
-      return next
-    })
-  }, [])
+    },
+    [activeProjectId]
+  )
 
   const editContent = useCallback((path: string, text: string): void => {
     setContent((c) => ({ ...c, [path]: text }))
@@ -397,6 +439,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }): React.
       tabs,
       activePath,
       openFile,
+      setActivePath,
       closeTab,
       contentOf,
       stateOf,

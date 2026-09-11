@@ -6,6 +6,13 @@ import { registerWorkspaceIpc } from './services/workspace'
 import { registerSecretsIpc } from './services/secrets'
 import { registerProviderIpc } from './services/provider'
 import { registerChatIpc } from './services/chat'
+import { registerSkillsIpc } from './services/skills'
+import { registerAgentsIpc } from './services/agents'
+import {
+  autoConnectEnabledServers,
+  disconnectAllServers,
+  registerMcpIpc
+} from './services/mcp'
 import { registerAttachmentsIpc } from './services/attachments'
 import { registerPermissionsIpc } from './services/permissions'
 import { registerTerminalIpc } from './services/terminal'
@@ -98,6 +105,15 @@ app.whenReady().then(() => {
   // 会话编排（Agent 主循环：流式 → 工具 → 权限 → 回灌）
   registerChatIpc(() => mainWindow)
 
+  // 技能（Skills，全局 ~/.deva/skills/*/SKILL.md；渐进式披露，启用态入 config.json）
+  registerSkillsIpc(() => mainWindow)
+
+  // 子智能体（Subagents，全局 ~/.deva/agents/*.md；run_subagent 进程内递归派生，启用态入 config.json）
+  registerAgentsIpc()
+
+  // MCP 服务（全局 ~/.deva/mcp.json；主进程内起真实客户端，工具命名空间化后并入 Agent 工具表，默认 ask 过闸）
+  registerMcpIpc(() => mainWindow)
+
   // 附加文件（原生选择框 + 白名单闸门，base64 只在主进程）
   registerAttachmentsIpc(() => mainWindow)
 
@@ -115,9 +131,17 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // 自动连接已启用的全局 MCP 服务（各自失败降级，不阻塞启动）。
+  autoConnectEnabledServers()
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// 退出前断开全部 MCP 连接（清理 stdio 子进程，避免遗留孤儿进程）。
+app.on('before-quit', () => {
+  void disconnectAllServers()
 })
 
 app.on('window-all-closed', () => {

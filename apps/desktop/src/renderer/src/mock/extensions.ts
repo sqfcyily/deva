@@ -1,36 +1,79 @@
 /**
- * 扩展（技能 / MCP 服务 / 子智能体）的种子数据。全局配置，与项目无关。
- * 每一项都带有可在中央详情页展示与编辑的字段。后续接入真实存储时整体替换。
+ * 扩展（技能 / MCP 服务 / 子智能体）的**类型定义**。全部为全局配置，与项目无关。
+ * 用户内容首启为空态（由用户上传/对话创建，或手放于 ~/.deva 下，source='custom'）；
+ * 唯一的内置项是系统元技能 `create-skill`（source='builtin'，随二进制内置、不落盘/不可删）。
+ * 技能与 MCP 已接入真实存储（~/.deva/skills、~/.deva/mcp.json，经 deva.skills / deva.mcp IPC）；
+ * 子智能体的真实运行时随后续阶段接入。
  */
 
 export type ExtKind = 'skill' | 'mcp' | 'subagent'
-export type ExtSource = 'builtin' | 'custom'
+/** 作用域：首版仅全局。 */
+export type ExtScope = 'global'
+/** 来源：`custom` = 用户自定义；`builtin` = 系统内置（目前仅元技能 create-skill）。 */
+export type ExtSource = 'custom' | 'builtin'
 
 export interface Skill {
+  /** 文件夹名，稳定身份（与 deva.skills 的 SkillRecord.id 对齐）。 */
   id: string
+  /** 显示名（frontmatter name）；对话中 /name 与 skill 工具据此匹配。 */
   name: string
   desc: string
-  /** 触发方式，如「手动 / 提交前」 */
+  /** 触发方式说明（自由文本，仅展示）。 */
   trigger: string
-  /** 技能指令（提示词） */
+  /** 建议工具（frontmatter allowed-tools，仅提示，不参与授权）。 */
+  allowedTools: string[]
+  /** 完整操作指令（SKILL.md 正文）。 */
   instructions: string
+  scope: ExtScope
   source: ExtSource
   enabled: boolean
+}
+
+export type McpTransport = 'stdio' | 'sse' | 'http'
+/** 运行期连接状态（不落盘；由主进程广播）。 */
+export type McpStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+/** env / header 编辑行：键 + 明文值；secret=true 表示值经加密存储（写后不回显，value 恒空占位）。 */
+export interface McpKV {
+  key: string
+  value: string
+  secret: boolean
+}
+
+/** 已发现工具的展示项（原始名 + 命名空间化名 + 描述）。 */
+export interface McpTool {
+  name: string
+  /** 命名空间化名（`id__tool`）；子智能体工具白名单据此匹配运行期工具表。 */
+  fqName: string
+  description: string
 }
 
 export interface McpServer {
   id: string
   name: string
   desc: string
-  transport: 'stdio' | 'sse' | 'http'
-  /** stdio：启动命令；sse/http：留空 */
+  transport: McpTransport
+  /** stdio：启动命令 */
   command: string
-  /** sse/http：服务地址；stdio：留空 */
+  /** stdio：命令参数（逐个） */
+  args: string[]
+  /** sse/http：服务地址 */
   url: string
-  /** 该服务暴露的工具 */
-  tools: string[]
+  /** stdio：环境变量（明文或密钥引用） */
+  env: McpKV[]
+  /** sse/http：请求头（明文或密钥引用） */
+  headers: McpKV[]
+  scope: ExtScope
   source: ExtSource
   enabled: boolean
+  /** ↓ 运行期（来自 deva.mcp.list / onStatus，不落盘） */
+  status: McpStatus
+  /** 已发现工具数 */
+  toolCount: number
+  /** 最近一次连接失败的中文说明（无则 null） */
+  lastError: string | null
+  /** 已发现工具清单（连接成功后有值） */
+  tools: McpTool[]
 }
 
 export interface SubAgent {
@@ -43,96 +86,7 @@ export interface SubAgent {
   tools: string[]
   /** 角色系统提示词 */
   prompt: string
+  scope: ExtScope
   source: ExtSource
   enabled: boolean
 }
-
-export const seedSkills: Skill[] = [
-  {
-    id: 'code-review',
-    name: 'code-review',
-    desc: '按清单对改动做多维代码评审',
-    trigger: '手动 / 提交前',
-    instructions:
-      '对暂存的改动逐一审查：正确性、可读性、边界条件、测试覆盖。\n按严重程度排序，给出可执行的修改建议。',
-    source: 'builtin',
-    enabled: true
-  },
-  {
-    id: 'commit-message',
-    name: 'commit-message',
-    desc: '依据暂存改动生成规范提交信息',
-    trigger: 'git 暂存后',
-    instructions: '读取暂存 diff，生成 Conventional Commits 风格的提交信息，首行不超过 50 字符。',
-    source: 'builtin',
-    enabled: true
-  },
-  {
-    id: 'sql-explain',
-    name: 'sql-explain',
-    desc: '解释执行计划并给出优化建议',
-    trigger: '选中 SQL',
-    instructions: '对选中的 SQL 执行 EXPLAIN，解读执行计划，指出全表扫描/缺失索引并给出优化建议。',
-    source: 'builtin',
-    enabled: false
-  }
-]
-
-export const seedMcp: McpServer[] = [
-  {
-    id: 'filesystem',
-    name: 'filesystem',
-    desc: '受控访问本地文件系统',
-    transport: 'stdio',
-    command: 'npx -y @modelcontextprotocol/server-filesystem',
-    url: '',
-    tools: ['read_file', 'write_file', 'list_dir', 'search_files'],
-    source: 'builtin',
-    enabled: true
-  },
-  {
-    id: 'github',
-    name: 'github',
-    desc: '仓库、Issue、PR 操作',
-    transport: 'http',
-    command: '',
-    url: 'https://api.githubcopilot.com/mcp',
-    tools: ['create_issue', 'get_pull_request', 'search_code'],
-    source: 'custom',
-    enabled: true
-  },
-  {
-    id: 'playwright',
-    name: 'playwright',
-    desc: '浏览器自动化与抓取',
-    transport: 'stdio',
-    command: 'npx @playwright/mcp@latest',
-    url: '',
-    tools: ['browser_navigate', 'browser_click', 'browser_snapshot'],
-    source: 'custom',
-    enabled: false
-  }
-]
-
-export const seedSubAgents: SubAgent[] = [
-  {
-    id: 'explorer',
-    name: 'explorer',
-    desc: '只读代码检索，快速定位实现',
-    model: 'claude-3-5-haiku',
-    tools: ['read_file', 'grep', 'glob'],
-    prompt: '你是只读代码检索助手。定位相关实现并汇报文件与行号，不修改任何文件。',
-    source: 'builtin',
-    enabled: true
-  },
-  {
-    id: 'planner',
-    name: 'planner',
-    desc: '拆解需求，产出实现方案',
-    model: 'claude-3-7-sonnet',
-    tools: ['read_file', 'search'],
-    prompt: '你是方案设计助手。将需求拆解为可执行步骤，指出关键文件与取舍，不直接写代码。',
-    source: 'builtin',
-    enabled: true
-  }
-]

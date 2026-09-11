@@ -53,11 +53,12 @@ async function persist(): Promise<void> {
 
 /**
  * 主进程内部使用：取解密后的密钥。返回 null 表示未配置或无法解密。
- * 仅供 provider 适配层在发起请求时调用，绝不经 IPC 返回渲染层。
+ * 仅供 provider 适配层 / MCP 连接层在发起请求时调用，绝不经 IPC 返回渲染层。
+ * 键约定：provider 用 providerId；MCP 用 `mcp:<serverId>:<field>`。
  */
-export async function getSecret(providerId: string): Promise<string | null> {
+export async function getSecret(key: string): Promise<string | null> {
   await ensureLoaded()
-  const enc = store[providerId]
+  const enc = store[key]
   if (!enc) return null
   if (!safeStorage.isEncryptionAvailable()) return null
   try {
@@ -65,6 +66,55 @@ export async function getSecret(providerId: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+/**
+ * 主进程内部使用：写入 / 更新密钥（空串视为删除）。加密不可用时拒绝写入（绝不静默存明文）。
+ * 供 secrets:set IPC 与 MCP 连接层（mcp:<id>:<field>）共用。
+ */
+export async function setSecret(
+  key: string,
+  value: string
+): Promise<{ ok: boolean; available: boolean }> {
+  await ensureLoaded()
+  const available = safeStorage.isEncryptionAvailable()
+  if (!value) {
+    delete store[key]
+    await persist()
+    return { ok: true, available }
+  }
+  if (!available) return { ok: false, available }
+  store[key] = safeStorage.encryptString(value).toString('base64')
+  await persist()
+  return { ok: true, available }
+}
+
+/** 是否已配置某密钥（布尔，不回显明文）。 */
+export async function hasSecret(key: string): Promise<boolean> {
+  await ensureLoaded()
+  return Boolean(store[key])
+}
+
+/** 删除某密钥（幂等）。 */
+export async function deleteSecret(key: string): Promise<void> {
+  await ensureLoaded()
+  if (key in store) {
+    delete store[key]
+    await persist()
+  }
+}
+
+/** 删除某前缀下的所有密钥（如删除 MCP 服务时清 `mcp:<id>:` 全部字段）。 */
+export async function deleteSecretsByPrefix(prefix: string): Promise<void> {
+  await ensureLoaded()
+  let changed = false
+  for (const k of Object.keys(store)) {
+    if (k.startsWith(prefix)) {
+      delete store[k]
+      changed = true
+    }
+  }
+  if (changed) await persist()
 }
 
 export function registerSecretsIpc(): void {

@@ -87,6 +87,97 @@ export interface AskResponse {
   answer: string | null
 }
 
+/** 技能记录（与 services/skills.ts 的 SkillRecord 对齐）。 */
+export interface SkillRecord {
+  id: string
+  name: string
+  description: string
+  trigger: string
+  allowedTools: string[]
+  instructions: string
+  enabled: boolean
+  /** 来源：`builtin` = 应用内置（不可删/编辑、恒启用）；`custom` = 用户创建/导入。 */
+  source: 'builtin' | 'custom'
+}
+
+/** 技能导入结果（skills:import 回传；error 为稳定错误码，渲染层据此本地化）。 */
+export interface SkillImportResult {
+  ok: boolean
+  id?: string
+  name?: string
+  error?: string
+}
+
+/** 子智能体记录（与 services/agents.ts 的 AgentRecord 对齐）。 */
+export interface AgentRecord {
+  id: string
+  name: string
+  description: string
+  /** 模型引用 `"providerId:modelId"`；空串 = 跟随主对话。 */
+  model: string
+  /** 工具白名单（内置 / MCP 名）；空数组 = 全部内置工具。 */
+  tools: string[]
+  /** 正文 = 子智能体系统提示词。 */
+  prompt: string
+  enabled: boolean
+}
+
+/** 子智能体新建/更新入参（有 id 覆盖，无 id 新建）。 */
+export interface AgentUpsertInput {
+  id?: string
+  name: string
+  description?: string
+  model?: string
+  tools?: string[]
+  prompt?: string
+  enabled?: boolean
+}
+
+/** MCP「线缆类型」（与 services/mcp.ts + mcp-config.ts 对齐，按既定模式在 preload 内复述）。 */
+export type McpTransport = 'stdio' | 'sse' | 'http'
+export type McpStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+/** env / header 值：明文字符串，或指向加密库的引用（真实值在主进程 `mcp:<id>:<secretRef>`）。 */
+export type McpValue = string | { secretRef: string }
+
+/** MCP 服务配置（不含运行期状态；`mcp:get` 返回此形状）。 */
+export interface McpServerConfig {
+  id: string
+  name: string
+  description: string
+  transport: McpTransport
+  command?: string
+  args?: string[]
+  env?: Record<string, McpValue>
+  url?: string
+  headers?: Record<string, McpValue>
+}
+
+/** MCP 新建/更新入参（有 id 覆盖，无 id 新建）。 */
+export interface McpServerInput {
+  id?: string
+  name: string
+  description?: string
+  transport: McpTransport
+  command?: string
+  args?: string[]
+  env?: Record<string, McpValue>
+  url?: string
+  headers?: Record<string, McpValue>
+  enabled?: boolean
+}
+
+/** 回渲染层的合并视图（配置 + 启用态 + 运行期状态）。 */
+export interface McpServerView extends McpServerConfig {
+  enabled: boolean
+  scope: 'global'
+  source: 'custom'
+  status: McpStatus
+  toolCount: number
+  lastError: string | null
+  /** 已发现工具的展示清单（原始名 + 命名空间化名 + 描述）。 */
+  tools: { name: string; fqName: string; description: string }[]
+}
+
 /** 每项目权限模式（与 services/permissions.ts 对齐）。 */
 export type PermMode = 'ask' | 'acceptEdits' | 'auto'
 
@@ -218,8 +309,18 @@ export interface ProviderListModelsResult {
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  | { type: 'tool_call'; id: string; name: string; args: unknown }
-  | { type: 'tool_result'; id: string; name: string; summary: string; isError: boolean }
+  /** depth>0 + agent：本事件来自某子智能体（渲染层据此折叠进「子智能体任务」卡）。 */
+  | { type: 'tool_call'; id: string; name: string; args: unknown; depth?: number; agent?: string }
+  | {
+      type: 'tool_result'
+      id: string
+      name: string
+      summary: string
+      isError: boolean
+      /** depth>0 + agent：来自子智能体的工具结果（折叠进 Task 卡）。 */
+      depth?: number
+      agent?: string
+    }
   | { type: 'ask_user'; key: string; question: string; options: AskOption[] }
   | {
       type: 'permission_request'
@@ -230,6 +331,9 @@ export type ChatStreamEvent =
       outsideRoot?: string
       /** 「项目外访问」授权：点「信任目录」将加入受信根的目录。 */
       trustDir?: string
+      /** depth>0 + agent：该权限请求来自某子智能体（权限卡照常浮出，可附子智能体标签）。 */
+      depth?: number
+      agent?: string
     }
   | { type: 'usage'; input: number; output: number }
   | { type: 'reconnecting'; attempt: number; max: number }
@@ -279,6 +383,59 @@ const api = {
     /** 顶层浅合并补丁（值为 undefined 删除该键） */
     set: (patch: Record<string, unknown>): Promise<{ ok: true }> =>
       ipcRenderer.invoke('config:set', patch)
+  },
+  /** 技能（全局 ~/.deva/skills）：列出 / 读取 / 上传导入 / 删除 / 启停。创建仅经上传或对话（create_skill 工具），无手写落盘。 */
+  skills: {
+    list: (): Promise<SkillRecord[]> => ipcRenderer.invoke('skills:list'),
+    get: (id: string): Promise<SkillRecord | null> => ipcRenderer.invoke('skills:get', id),
+    import: (): Promise<SkillImportResult> => ipcRenderer.invoke('skills:import'),
+    remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('skills:remove', id),
+    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('skills:set-enabled', id, enabled)
+  },
+  /** 子智能体（全局 ~/.deva/agents）：列出 / 读取 / 新建更新 / 删除 / 启停。 */
+  agents: {
+    list: (): Promise<AgentRecord[]> => ipcRenderer.invoke('agents:list'),
+    get: (id: string): Promise<AgentRecord | null> => ipcRenderer.invoke('agents:get', id),
+    upsert: (input: AgentUpsertInput): Promise<AgentRecord> =>
+      ipcRenderer.invoke('agents:upsert', input),
+    remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('agents:remove', id),
+    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('agents:set-enabled', id, enabled)
+  },
+  /**
+   * MCP 服务（全局 ~/.deva/mcp.json）：列出 / 读取 / 增改删 / 启停 / 连接管理 / 密钥。
+   * 连接、子进程 spawn、密钥解密全部在主进程；渲染层只见配置与运行期状态，明文密钥永不回传。
+   */
+  mcp: {
+    list: (): Promise<McpServerView[]> => ipcRenderer.invoke('mcp:list'),
+    get: (id: string): Promise<McpServerConfig | null> => ipcRenderer.invoke('mcp:get', id),
+    upsert: (input: McpServerInput): Promise<McpServerConfig> =>
+      ipcRenderer.invoke('mcp:upsert', input),
+    remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('mcp:remove', id),
+    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('mcp:set-enabled', id, enabled),
+    /** 连接（或重连）一个服务，返回其最新视图（失败视图带 lastError）。 */
+    connect: (id: string): Promise<McpServerView | null> => ipcRenderer.invoke('mcp:connect', id),
+    disconnect: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('mcp:disconnect', id),
+    /** 测试连通 = 连接一次并返回结果视图（成功即保持连接）。 */
+    test: (id: string): Promise<McpServerView | null> => ipcRenderer.invoke('mcp:test', id),
+    /** 写入某服务的某密钥字段（空串即删除；明文永不回渲染层）。 */
+    setSecret: (
+      id: string,
+      field: string,
+      value: string
+    ): Promise<{ ok: boolean; available: boolean }> =>
+      ipcRenderer.invoke('mcp:set-secret', id, field, value),
+    /** 是否已配置某密钥字段（布尔，不回显明文）。 */
+    hasSecret: (id: string, field: string): Promise<boolean> =>
+      ipcRenderer.invoke('mcp:has-secret', id, field),
+    /** 订阅 mcp:status 状态广播，返回取消订阅函数（仿 chat.onEvent）。 */
+    onStatus: (cb: (view: McpServerView) => void): (() => void) => {
+      const listener = (_e: unknown, view: McpServerView): void => cb(view)
+      ipcRenderer.on('mcp:status', listener)
+      return () => ipcRenderer.removeListener('mcp:status', listener)
+    }
   },
   /** 密钥安全存储：只写不读明文（set 空串即删除）。 */
   secrets: {

@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { useWorkspace } from '../../store/workspace'
 import { useTheme } from '../../theme/ThemeContext'
 import { DARK_THEME, LIGHT_THEME, xtermBg } from './xtermTheme'
 
@@ -12,35 +11,34 @@ import { DARK_THEME, LIGHT_THEME, xtermBg } from './xtermTheme'
  *
  * 生命周期（v1）：随实例挂载建 PTY、卸载即 dispose。非活动页签用 CSS 隐藏但保持
  * 挂载（PTY 存活、滚动历史保留）；重新可见时再 fit。进程退出经 onExit 上抛，由
- * 父组件移除该页签。cwd 取当前项目根（挂载时定格），无项目则主进程回退到用户主目录。
+ * 父组件移除该页签。cwd 由父组件按「该终端所属项目」传入（挂载时定格），无项目则
+ * 主进程回退到用户主目录——隐藏保活的实例属于它自己的项目，故不能读全局活动项目。
  */
 interface Props {
   /** 渲染层页签 id（用于 onExit 回传，非 PTY id）。 */
   id: string
   /** 选定的 shell 配置 id；空则用主进程默认 shell。 */
   shellId: string | null
+  /** 该终端所属项目根路径；null 则主进程回退到用户主目录（挂载时定格）。 */
+  cwd: string | null
   /** 是否为当前活动页签（隐藏页签仍挂载）。 */
   visible: boolean
   /** PTY 退出时回调（父组件据此移除页签）。 */
   onExit: (id: string) => void
 }
 
-export function TerminalInstance({ id, shellId, visible, onExit }: Props): React.JSX.Element {
+export function TerminalInstance({ id, shellId, cwd, visible, onExit }: Props): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const ptyIdRef = useRef<string | null>(null)
   const disposedRef = useRef(false)
 
-  const { activeProject } = useWorkspace()
   const { resolved } = useTheme()
 
-  // cwd 在挂载时定格（effect 仅跑一次）；onExit 可能每次 render 变，故用 ref 读最新值。
-  const cwdRef = useRef<string | null>(activeProject?.path ?? null)
+  // cwd 在挂载时定格（创建 PTY 只用一次）；onExit 可能每次 render 变，故用 ref 读最新值。
+  const cwdRef = useRef<string | null>(cwd)
   const onExitRef = useRef(onExit)
-  useEffect(() => {
-    cwdRef.current = activeProject?.path ?? null
-  }, [activeProject])
   useEffect(() => {
     onExitRef.current = onExit
   }, [onExit])

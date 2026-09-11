@@ -3,6 +3,7 @@ import { promises as fs, type Dirent } from 'fs'
 import { dirname, isAbsolute, join, resolve } from 'path'
 import { assertInside, isInsideRoot } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
+import { upsertSkill } from './skills'
 import type { ToolSpec } from '../providers/types'
 
 /**
@@ -163,19 +164,84 @@ export const toolSpecs: ToolSpec[] = [
       },
       required: ['question']
     }
+  },
+  {
+    name: 'create_skill',
+    description:
+      '创建并启用一个新的**技能（Skill）**，写入用户的全局技能目录（~/.deva/skills）。' +
+      '仅在用户明确想创建技能、且你已收集好要素并向用户复述确认后调用。' +
+      '这是写入受保护目录的唯一途径——**严禁**用 write_file / run_command 去写 SKILL.md（那些工具无法写入该目录）。' +
+      '创建后技能自动启用，用户可用 /技能名 触发。属敏感操作，需用户授权。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: '技能名，建议英文小写加短横线（如 code-review）；/技能名 据此触发。'
+        },
+        description: {
+          type: 'string',
+          description: '一句话说明「何时该用这个技能」，会进入系统提示词，务必精准。'
+        },
+        trigger: { type: 'string', description: '触发方式的自由文本说明（可选）。' },
+        allowedTools: {
+          type: 'array',
+          description: '建议用到的工具名清单（仅提示，不授予任何权限；可选）。',
+          items: { type: 'string' }
+        },
+        instructions: {
+          type: 'string',
+          description: '技能正文：完整操作步骤，用 Markdown 编写。这是技能的核心内容。'
+        }
+      },
+      required: ['name', 'instructions']
+    }
   }
 ]
 
-/** 工具敏感度分类，供权限闸门判定：read 恒放行，edit=项目内写入，exec=执行类（命令执行）。 */
-export type ToolCategory = 'read' | 'edit' | 'exec'
+/**
+ * 工具敏感度分类，供权限闸门判定：read 恒放行，edit=项目内写入，exec=执行类（命令执行），
+ * mcp=外部 MCP 服务暴露的工具（默认 ask，可按会话记住；结果恒作数据）。
+ */
+export type ToolCategory = 'read' | 'edit' | 'exec' | 'mcp'
 
 const EDIT_TOOLS = new Set(['write_file', 'edit_file'])
 const EXEC_TOOLS = new Set<string>(['run_command']) // 执行类：命令行（受策略层 + 权限闸门约束）
+/**
+ * 明确的只读/无副作用内置工具白名单。ask_user / skill / run_subagent 均在循环内「闸门前特判」，
+ * 恒放行执行（不真正走 evaluate），列在此处只是兜底：万一改动导致它们落到闸门，也按 read 放行。
+ */
+const READ_TOOLS = new Set([
+  'read_file',
+  'list_dir',
+  'glob',
+  'grep',
+  'web_fetch',
+  'ask_user',
+  'skill',
+  'run_subagent'
+])
+
+/** 已连接 MCP 服务注册的命名空间化工具名（serverId__toolName）。连接时注册、断开时反注册。 */
+const mcpToolNames = new Set<string>()
+export function registerMcpToolNames(names: string[]): void {
+  for (const n of names) mcpToolNames.add(n)
+}
+export function unregisterMcpToolNames(names: string[]): void {
+  for (const n of names) mcpToolNames.delete(n)
+}
+export function isMcpTool(name: string): boolean {
+  return mcpToolNames.has(name)
+}
 
 export function toolCategory(name: string): ToolCategory {
   if (EDIT_TOOLS.has(name)) return 'edit'
   if (EXEC_TOOLS.has(name)) return 'exec'
-  return 'read'
+  if (READ_TOOLS.has(name)) return 'read'
+  if (mcpToolNames.has(name)) return 'mcp'
+  // 未知/幻觉工具名：一律按 mcp 走闸（ask），绝不再默认成 read 自动放行——关后门。
+  // 内置 create_skill 刻意不列入任何集合，天然落此默认分支 → 判 ask 过闸（与创建技能须经用户授权一致）。
+  return 'mcp'
 }
 
 export interface ToolContext {
@@ -854,6 +920,31 @@ export async function executeTool(
       const isError = Boolean(r.spawnError) || r.aborted || r.timedOut || r.code !== 0
       const content = (body ? body + '\n' : '') + status
       return { content, summary, isError }
+    }
+
+    if (name === 'create_skill') {
+      const skillName = typeof a.name === 'string' ? a.name.trim() : ''
+      const instructions = typeof a.instructions === 'string' ? a.instructions.trim() : ''
+      if (!skillName)
+        return { content: '缺少技能 name（技能显示名，/技能名 据此触发）', summary: '参数无效', isError: true }
+      if (!instructions)
+        return { content: '缺少 instructions（技能正文，即完整操作步骤）', summary: '参数无效', isError: true }
+      const allowedTools = Array.isArray(a.allowedTools)
+        ? a.allowedTools.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+        : []
+      // 直调主进程 upsertSkill（渲染层写不进 ~/.deva；本工具已过权限闸）——自动启用。
+      const rec = upsertSkill({
+        name: skillName,
+        description: typeof a.description === 'string' ? a.description : '',
+        trigger: typeof a.trigger === 'string' ? a.trigger : '',
+        allowedTools,
+        instructions,
+        enabled: true
+      })
+      return {
+        content: `已创建并启用技能「${rec.name}」(id: ${rec.id})，用户可用 /${rec.name} 触发。`,
+        summary: '已创建技能'
+      }
     }
 
     return { content: `未知工具：${name}`, summary: '未知工具', isError: true }

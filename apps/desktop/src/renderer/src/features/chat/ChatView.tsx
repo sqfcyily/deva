@@ -27,6 +27,7 @@ import {
   Image as ImageIcon,
   FileCode2,
   MessageCircleQuestion,
+  Bot,
   Pencil,
   X
 } from 'lucide-react'
@@ -103,12 +104,13 @@ type Activity =
   | { kind: 'thinking' }
   | { kind: 'responding' }
   | { kind: 'tool'; toolName: string }
+  | { kind: 'subagent'; agent: string }
   | { kind: 'permission' }
   | { kind: 'ask' }
 
 /**
  * 从最后一条助手消息的块序列推断"此刻在干什么"：
- * 未答复的问答卡 / 未解决的权限卡 > 仍在运行的工具 > 末块有正文=生成回答 > 其余=思考中。
+ * 未答复的问答卡 / 未解决的权限卡 > 运行中的工具 / 子智能体 > 末块有正文=生成回答 > 其余=思考中。
  */
 function deriveActivity(messages: ChatMessage[]): Activity {
   const last = messages[messages.length - 1]
@@ -119,6 +121,8 @@ function deriveActivity(messages: ChatMessage[]): Activity {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i]
     if (b.kind === 'tool' && b.status === 'running') return { kind: 'tool', toolName: b.name }
+    if (b.kind === 'subagent' && b.status === 'running')
+      return { kind: 'subagent', agent: b.agent }
   }
   const tail = blocks[blocks.length - 1]
   if (tail?.kind === 'text' && tail.text.trim()) return { kind: 'responding' }
@@ -212,10 +216,11 @@ export function ChatView(): React.JSX.Element {
           </div>
         ) : (
           <div className="chat__thread">
-            {messages.map((m) => (
+            {messages.map((m, i) => (
               <MessageRow
                 key={m.id}
                 msg={m}
+                active={streaming && i === messages.length - 1}
                 onPermission={respondPermission}
                 onAsk={respondAsk}
               />
@@ -454,9 +459,11 @@ function StatusIndicator({
   const label =
     activity.kind === 'tool'
       ? `${t('chat.work.usingTool')} · ${t(TOOL_META[activity.toolName]?.key ?? 'chat.tool.unknown')}`
-      : activity.kind === 'responding'
-        ? t('chat.work.responding')
-        : t('chat.work.thinking')
+      : activity.kind === 'subagent'
+        ? `${t('chat.work.subagent')} · ${activity.agent || t('chat.subagent.fallback')}`
+        : activity.kind === 'responding'
+          ? t('chat.work.responding')
+          : t('chat.work.thinking')
 
   return (
     <div className="chat__status" role="status" aria-live="polite">
@@ -476,10 +483,12 @@ function StatusIndicator({
 const MessageRow = memo(
   function MessageRow({
     msg,
+    active,
     onPermission,
     onAsk
   }: {
     msg: ChatMessage
+    active: boolean
     onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
     onAsk: (key: string, answer: string) => void
   }): React.JSX.Element {
@@ -512,27 +521,40 @@ const MessageRow = memo(
       <div className="msg msg--agent">
         <div className="msg__content">
           {msg.blocks.map((b, i) => (
-            <BlockView key={i} block={b} onPermission={onPermission} onAsk={onAsk} />
+            <BlockView
+              key={i}
+              block={b}
+              thinkingDone={!(active && i === msg.blocks.length - 1)}
+              onPermission={onPermission}
+              onAsk={onAsk}
+            />
           ))}
         </div>
       </div>
     )
   },
-  (prev, next) => prev.msg === next.msg
+  (prev, next) => prev.msg === next.msg && prev.active === next.active
 )
 
 /**
- * 思考块（可折叠）。对齐 Codex/DeepSeek 的推理折叠；默认展开，点标题收起。
- * 正文按弱化配色渲染 Markdown（muted）。
+ * 思考块（可折叠）。对齐 Codex/DeepSeek 的推理折叠：思考中默认展开，思考完成后自动收起
+ * （用户仍可手动点开）。标签随状态在「思考中」/「已思考」间切换。正文按弱化配色渲染 Markdown（muted）。
  */
-function ThinkingBlock({ text }: { text: string }): React.JSX.Element {
+function ThinkingBlock({ text, done }: { text: string; done: boolean }): React.JSX.Element {
   const { t } = useI18n()
-  const [open, setOpen] = useState(true)
+  // 初始：思考中展开、已完成（如历史消息）收起。
+  const [open, setOpen] = useState(!done)
+  // 完成的瞬间（done: false→true）自动收起一次；此后用户可自由再展开。
+  const wasDone = useRef(done)
+  useEffect(() => {
+    if (done && !wasDone.current) setOpen(false)
+    wasDone.current = done
+  }, [done])
   return (
     <div className={open ? 'msg__think is-open' : 'msg__think'}>
       <button type="button" className="msg__think-head" onClick={() => setOpen((v) => !v)}>
         <ChevronRight size={13} className="msg__think-caret" />
-        <span className="msg__think-label">{t('chat.thinking')}</span>
+        <span className="msg__think-label">{done ? t('chat.thought') : t('chat.thinking')}</span>
       </button>
       {open && (
         <div className="msg__think-body">
@@ -545,10 +567,12 @@ function ThinkingBlock({ text }: { text: string }): React.JSX.Element {
 
 function BlockView({
   block,
+  thinkingDone,
   onPermission,
   onAsk
 }: {
   block: ChatBlock
+  thinkingDone: boolean
   onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
   onAsk: (key: string, answer: string) => void
 }): React.JSX.Element | null {
@@ -564,7 +588,7 @@ function BlockView({
   }
 
   if (block.kind === 'thinking') {
-    return <ThinkingBlock text={block.text} />
+    return <ThinkingBlock text={block.text} done={thinkingDone} />
   }
 
   if (block.kind === 'tool') {
@@ -583,6 +607,10 @@ function BlockView({
     )
   }
 
+  if (block.kind === 'subagent') {
+    return <SubagentCard block={block} />
+  }
+
   if (block.kind === 'permission') {
     const meta = TOOL_META[block.toolName] ?? { icon: <Wrench size={14} />, key: 'chat.tool.unknown' }
     const outside = block.outsideRoot
@@ -595,6 +623,11 @@ function BlockView({
             <ShieldAlert size={15} />
           </span>
           {t('chat.permission.title')}
+          {block.agent && (
+            <span className="permission__from">
+              <Bot size={12} /> {block.agent}
+            </span>
+          )}
         </div>
         {outside && (
           <div className="permission__warn">
@@ -731,6 +764,69 @@ function AskCard({
             </button>
           </div>
         </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 子智能体折叠 Task 卡（仿 Claude Code）：默认收起、只显示结论徽标；展开后看任务描述与内部工具调用序列。
+ * 子智能体的权限请求不在此卡内——照常作为顶层权限卡浮出确认（见 reduceBlocks）。
+ */
+function SubagentCard({
+  block
+}: {
+  block: Extract<ChatBlock, { kind: 'subagent' }>
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const name = block.agent || t('chat.subagent.fallback')
+  const count = block.children.length
+  return (
+    <div className={`subagent${open ? ' is-open' : ''}`}>
+      <button type="button" className="subagent__head" onClick={() => setOpen((v) => !v)}>
+        <ChevronRight size={13} className="subagent__caret" />
+        <span className="subagent__head-icon">
+          <Bot size={14} />
+        </span>
+        <span className="subagent__title">
+          {t('chat.subagent.title')} · <strong>{name}</strong>
+          {count > 0 && (
+            <span className="subagent__count">
+              {count} {t('chat.subagent.stepUnit')}
+            </span>
+          )}
+        </span>
+        <ToolBadge status={block.status} summary={block.summary} />
+      </button>
+      {open && (
+        <div className="subagent__body">
+          {block.task && (
+            <div className="subagent__task">
+              <span className="subagent__task-label">{t('chat.subagent.task')}</span>
+              <span className="subagent__task-text">{block.task}</span>
+            </div>
+          )}
+          {count === 0 ? (
+            <div className="subagent__empty">{t('chat.subagent.noSteps')}</div>
+          ) : (
+            <div className="subagent__steps">
+              {block.children.map((c) => {
+                const meta = TOOL_META[c.name] ?? { icon: <Wrench size={13} />, key: 'chat.tool.unknown' }
+                const hint = argHint(c.args)
+                return (
+                  <div key={c.id} className="subagent__step">
+                    <span className="subagent__step-icon">{meta.icon}</span>
+                    <span className="subagent__step-title">
+                      {t(meta.key)} {hint && <code>{hint}</code>}
+                    </span>
+                    <ToolBadge status={c.status} summary={c.summary} />
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

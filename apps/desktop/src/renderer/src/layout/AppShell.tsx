@@ -7,7 +7,7 @@ import { useUI } from '../store/ui'
 import { getContribution, defaultViewId, viewShowsTerminal } from '../features/registry'
 
 /**
- * 三行栅格：TitleBar / 主体 / StatusBar。
+ * 三行栅格：TitleBar（浏览器式，内含常驻项目 tab 条）/ 主体 / StatusBar。
  * 主体三列：ActivityBar / SidePanel / 中央工作区（含底部面板）。
  * 中央区内容由当前活动视图决定，具体组件来自功能贡献注册表；
  * 未知视图回退到默认贡献（首个，通常是「对话」）。

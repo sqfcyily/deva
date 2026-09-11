@@ -16,7 +16,7 @@ export function StatusBar(): React.JSX.Element {
   return (
     <footer className="statusbar">
       {activeProject && (
-        <span className="statusbar__item is-clickable" title={activeProject.path}>
+        <span className="statusbar__item" title={activeProject.path}>
           <FolderGit2 size={12} />
           {activeProject.name}
         </span>

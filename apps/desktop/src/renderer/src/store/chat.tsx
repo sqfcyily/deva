@@ -35,10 +35,36 @@ export interface AskOption {
   description?: string
 }
 
+/** 折叠 Task 卡内的子工具项（子智能体内部的一次工具调用，收纳进卡内不占主流）。 */
+export interface SubagentChild {
+  id: string
+  name: string
+  args: unknown
+  status: ToolStatus
+  summary?: string
+}
+
 export type ChatBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: ToolStatus; summary?: string }
+  | {
+      /**
+       * 子智能体折叠 Task 卡：run_subagent 调用的「壳」。默认仅显示结论摘要（summary），
+       * 内部工具调用（depth>0 事件）收纳进 children，可展开查看；嵌套权限请求不进此卡，照常浮出。
+       */
+      kind: 'subagent'
+      /** run_subagent 工具调用 id（用于匹配其 depth=0 的 tool_result 壳结果）。 */
+      id: string
+      /** 子智能体显示名（取自调用参数 agent）。 */
+      agent: string
+      /** 任务描述（取自调用参数 prompt，仅展开时预览）。 */
+      task?: string
+      status: ToolStatus
+      /** 结论摘要（壳结果 summary，如「子智能体「X」已完成」）。 */
+      summary?: string
+      children: SubagentChild[]
+    }
   | {
       kind: 'permission'
       key: string
@@ -49,6 +75,8 @@ export type ChatBlock =
       outsideRoot?: string
       /** 「项目外访问」授权：点「信任目录」将信任的目录。 */
       trustDir?: string
+      /** 来自子智能体时的显示名（depth>0）；权限卡照常浮出，仅附标签。 */
+      agent?: string
     }
   | {
       kind: 'ask'
@@ -105,8 +133,16 @@ type DisplayMessage =
 type StreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  | { type: 'tool_call'; id: string; name: string; args: unknown }
-  | { type: 'tool_result'; id: string; name: string; summary: string; isError: boolean }
+  | { type: 'tool_call'; id: string; name: string; args: unknown; depth?: number; agent?: string }
+  | {
+      type: 'tool_result'
+      id: string
+      name: string
+      summary: string
+      isError: boolean
+      depth?: number
+      agent?: string
+    }
   | { type: 'ask_user'; key: string; question: string; options: AskOption[] }
   | {
       type: 'permission_request'
@@ -115,6 +151,8 @@ type StreamEvent =
       args: unknown
       outsideRoot?: string
       trustDir?: string
+      depth?: number
+      agent?: string
     }
   | { type: 'usage'; input: number; output: number }
   | { type: 'reconnecting'; attempt: number; max: number }
@@ -165,20 +203,39 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
         attachments: dm.attachments.length ? dm.attachments : undefined
       }
     }
-    const blocks: ChatBlock[] = dm.blocks.map((b) =>
-      b.kind === 'text'
-        ? { kind: 'text', text: b.text }
-        : {
-            kind: 'tool',
-            id: b.id,
-            name: b.name,
-            args: b.args,
-            status: b.status === 'error' ? 'error' : 'ok',
-            summary: b.summary
-          }
-    )
+    const blocks: ChatBlock[] = dm.blocks.map((b) => {
+      if (b.kind === 'text') return { kind: 'text', text: b.text }
+      const status: ToolStatus = b.status === 'error' ? 'error' : 'ok'
+      // 历史回填：run_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children 为空、仅存结论）。
+      if (b.name === 'run_subagent') {
+        const a = (b.args ?? {}) as { agent?: unknown; prompt?: unknown }
+        return {
+          kind: 'subagent',
+          id: b.id,
+          agent: typeof a.agent === 'string' ? a.agent : '',
+          task: typeof a.prompt === 'string' ? a.prompt : undefined,
+          status,
+          summary: b.summary,
+          children: []
+        }
+      }
+      return { kind: 'tool', id: b.id, name: b.name, args: b.args, status, summary: b.summary }
+    })
     return { id: genId(), role: 'assistant', blocks }
   })
+}
+
+/**
+ * 找到「当前正在执行」的子智能体 Task 卡下标 = 最早一张仍在运行的卡。
+ * 一轮里若模型连发多个 run_subagent，其壳卡在流式阶段就已全部开出（皆 running），但主进程按
+ * 工具调用顺序**串行**执行；故正向扫描取第一张 running 卡，即此刻真正在跑、其嵌套事件应归入的那张。
+ */
+function openSubagentIndex(blocks: ChatBlock[]): number {
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i]
+    if (b.kind === 'subagent' && b.status === 'running') return i
+  }
+  return -1
 }
 
 /** 把一个流事件并入助手消息的块序列（纯函数，返回新数组）。 */
@@ -194,10 +251,63 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       if (last?.kind === 'thinking') next[next.length - 1] = { ...last, text: last.text + ev.text }
       else next.push({ kind: 'thinking', text: ev.text })
       return next
-    case 'tool_call':
+    case 'tool_call': {
+      // 子智能体内部调用（depth>0）→ 收纳进当前开着的 Task 卡，不占主对话流。
+      if (ev.depth && ev.depth > 0) {
+        const si = openSubagentIndex(next)
+        if (si >= 0) {
+          const card = next[si] as Extract<ChatBlock, { kind: 'subagent' }>
+          next[si] = {
+            ...card,
+            children: [...card.children, { id: ev.id, name: ev.name, args: ev.args, status: 'running' }]
+          }
+          return next
+        }
+        // 兜底：无开着的卡（异常）→ 退化为普通工具卡，避免事件丢失。
+        next.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, status: 'running' })
+        return next
+      }
+      // run_subagent 的壳调用（depth 0）→ 开一张折叠 Task 卡。
+      if (ev.name === 'run_subagent') {
+        const a = (ev.args ?? {}) as { agent?: unknown; prompt?: unknown }
+        next.push({
+          kind: 'subagent',
+          id: ev.id,
+          agent: typeof a.agent === 'string' ? a.agent : ev.agent ?? '',
+          task: typeof a.prompt === 'string' ? a.prompt : undefined,
+          status: 'running',
+          children: []
+        })
+        return next
+      }
       next.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, status: 'running' })
       return next
+    }
     case 'tool_result': {
+      // 子智能体内部结果（depth>0）→ 更新 Task 卡内对应子项状态。
+      if (ev.depth && ev.depth > 0) {
+        const si = openSubagentIndex(next)
+        if (si >= 0) {
+          const card = next[si] as Extract<ChatBlock, { kind: 'subagent' }>
+          const j = card.children.findIndex((c) => c.id === ev.id)
+          if (j >= 0) {
+            const child = card.children[j]
+            const status: ToolStatus =
+              child.status === 'denied' ? 'denied' : ev.isError ? 'error' : 'ok'
+            const children = card.children.slice()
+            children[j] = { ...child, status, summary: status === 'denied' ? child.summary : ev.summary }
+            next[si] = { ...card, children }
+          }
+        }
+        return next
+      }
+      // run_subagent 壳结果（depth 0）→ 定格 Task 卡状态与结论摘要。
+      const si = next.findIndex((b) => b.kind === 'subagent' && b.id === ev.id)
+      if (si >= 0) {
+        const card = next[si] as Extract<ChatBlock, { kind: 'subagent' }>
+        next[si] = { ...card, status: ev.isError ? 'error' : 'ok', summary: ev.summary }
+        return next
+      }
       const i = next.findIndex((b) => b.kind === 'tool' && b.id === ev.id)
       if (i >= 0) {
         const b = next[i] as Extract<ChatBlock, { kind: 'tool' }>
@@ -209,13 +319,15 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       return next
     }
     case 'permission_request':
+      // 子智能体的权限请求照常浮出为顶层权限卡（不进 Task 卡），仅附子智能体标签。
       next.push({
         kind: 'permission',
         key: ev.key,
         toolName: ev.toolName,
         args: ev.args,
         outsideRoot: ev.outsideRoot,
-        trustDir: ev.trustDir
+        trustDir: ev.trustDir,
+        agent: ev.agent
       })
       return next
     case 'ask_user':
@@ -238,12 +350,13 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
 function dropStepPartial(blocks: ChatBlock[]): ChatBlock[] {
   let lastTool = -1
   for (let i = blocks.length - 1; i >= 0; i--) {
-    if (blocks[i].kind === 'tool') {
+    // 工具卡与子智能体 Task 卡都是「步骤边界」：其后才是本步残缺的 thinking/text 尾部。
+    if (blocks[i].kind === 'tool' || blocks[i].kind === 'subagent') {
       lastTool = i
       break
     }
   }
-  if (lastTool === blocks.length - 1) return blocks // 已在工具块处收尾，无残缺
+  if (lastTool === blocks.length - 1) return blocks // 已在工具/Task 卡处收尾，无残缺
   return blocks.slice(0, lastTool + 1)
 }
 
@@ -509,6 +622,16 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
               if (b.kind === 'tool' && b.status === 'running') {
                 next[i] = { ...b, status: 'denied', summary: undefined }
                 break
+              }
+              // 子智能体内部工具被拒：其运行中的子项在开着的 Task 卡内，就地标记 denied。
+              if (b.kind === 'subagent' && b.status === 'running') {
+                const cj = b.children.map((c) => c.status).lastIndexOf('running')
+                if (cj >= 0) {
+                  const children = b.children.slice()
+                  children[cj] = { ...children[cj], status: 'denied', summary: undefined }
+                  next[i] = { ...b, children }
+                  break
+                }
               }
             }
           }

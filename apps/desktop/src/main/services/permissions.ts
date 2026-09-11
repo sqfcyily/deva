@@ -88,6 +88,8 @@ export function evaluate(sessionId: string, key: string, toolName: string, args?
   const cat = toolCategory(toolName)
   if (cat === 'read') return 'allow'
   if (cat === 'exec') return evaluateExec(sessionId, key, args)
+  // 以下 edit 与 mcp 共用一条路径：先看会话记住 → auto 全放行 → acceptEdits 仅对 edit 短路 → 否则 ask。
+  // MCP 工具（外部服务）因此默认 ask、可按会话记住、auto 下放行、acceptEdits 下仍逐次询问。
   if (sessionAllow.get(sessionId)?.has(toolName)) return 'allow'
   const mode = getMode(key)
   if (mode === 'auto') return 'allow'

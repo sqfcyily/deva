@@ -64,6 +64,21 @@ export function getConfig(): Record<string, unknown> {
   return config
 }
 
+/**
+ * 主进程内写配置（顶层浅合并，值为 undefined 时删除该键），并落盘。
+ * 供 skills.ts / agents.ts 等服务在进程内维护启用态（config.json 内的 skills/agents 段），
+ * 与渲染层的 `config:set` IPC 走同一份内存态 + 持久化路径。
+ */
+export function setConfig(patch: Record<string, unknown>): void {
+  ensureLoaded()
+  if (!patch || typeof patch !== 'object') return
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) delete config[k]
+    else config[k] = v
+  }
+  persist()
+}
+
 export function registerConfigIpc(): void {
   ensureLoaded()
 
@@ -81,14 +96,7 @@ export function registerConfigIpc(): void {
 
   // 顶层浅合并补丁：值为 undefined 时删除该键。
   ipcMain.handle('config:set', (_e, patch: Record<string, unknown>) => {
-    ensureLoaded()
-    if (patch && typeof patch === 'object') {
-      for (const [k, v] of Object.entries(patch)) {
-        if (v === undefined) delete config[k]
-        else config[k] = v
-      }
-      persist()
-    }
+    setConfig(patch)
     return { ok: true as const }
   })
 }
