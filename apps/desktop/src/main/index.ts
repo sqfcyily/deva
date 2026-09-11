@@ -10,6 +10,7 @@ import { registerAttachmentsIpc } from './services/attachments'
 import { registerPermissionsIpc } from './services/permissions'
 import { registerTerminalIpc } from './services/terminal'
 import { registerGitIpc } from './services/git'
+import { registerClipboardIpc } from './services/clipboard'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -108,6 +109,9 @@ app.whenReady().then(() => {
 
   // Git 源代码管理（调用系统 git，对标 VS Code；凭据交系统 GCM）
   registerGitIpc()
+
+  // 系统剪贴板（原生 clipboard，供终端右键复制/粘贴——sandbox 下比 navigator.clipboard 可靠）
+  registerClipboardIpc()
 
   createWindow()
 

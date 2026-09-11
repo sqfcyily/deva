@@ -11,10 +11,13 @@ import {
   ArrowUp,
   ArrowDown,
   DownloadCloud,
-  UploadCloud
+  UploadCloud,
+  Sparkles,
+  Loader2
 } from 'lucide-react'
 import { PanelHeader } from '../PanelHeader'
 import { useI18n } from '../../i18n/i18n'
+import { useModels } from '../../store/models'
 import { useGit, type GitFileStatus, type GitFailReason } from '../../store/git'
 
 /** 状态字母配色（对齐 VS Code 语义色）。 */
@@ -34,6 +37,7 @@ type Notice = { kind: 'error'; text: string } | null
 export function GitPanel(): React.JSX.Element {
   const { t } = useI18n()
   const git = useGit()
+  const { activeModel } = useModels()
   const {
     available,
     hasProject,
@@ -53,6 +57,7 @@ export function GitPanel(): React.JSX.Element {
   const [showIdentity, setShowIdentity] = useState(false)
   const [idName, setIdName] = useState('')
   const [idEmail, setIdEmail] = useState('')
+  const [generating, setGenerating] = useState(false)
 
   // 错误提示悬浮显示数秒后自动消失（对标 VS Code 的瞬时提示）。
   useEffect(() => {
@@ -152,6 +157,8 @@ export function GitPanel(): React.JSX.Element {
   const staged = status?.staged ?? []
   const unstaged = status?.unstaged ?? []
   const canCommit = commitMessage.trim().length > 0 && staged.length > 0 && !busy
+  // 有任何改动（已暂存或未暂存）即可让 AI 据 diff 生成提交信息。
+  const canGenerate = (staged.length > 0 || unstaged.length > 0) && !busy && !generating
 
   const doCommit = async (): Promise<void> => {
     if (!commitMessage.trim()) {
@@ -176,6 +183,36 @@ export function GitPanel(): React.JSX.Element {
     setShowIdentity(false)
     // 身份配好后自动重试提交
     void doCommit()
+  }
+
+  // AI 生成提交信息：把「将要提交」的 diff 交当前默认模型生成，回填到输入框（不自动提交）。
+  const genMessage = async (): Promise<void> => {
+    const dir = git.repoDir
+    if (!dir || !canGenerate) return
+    if (!activeModel) {
+      setNotice({ kind: 'error', text: t('chat.noModel') })
+      return
+    }
+    setGenerating(true)
+    setNotice(null)
+    try {
+      const res = await window.deva.git.generateCommitMessage(dir, {
+        adapter: activeModel.provider.adapter,
+        providerId: activeModel.provider.id,
+        baseURL: activeModel.provider.apiHost,
+        model: activeModel.model.id
+      })
+      if (res.ok && res.text) git.setCommitMessage(res.text)
+      else
+        setNotice({
+          kind: 'error',
+          text: res.reason === 'empty' ? t('git.genEmpty') : reasonText(res.reason, res.message)
+        })
+    } catch (e) {
+      setNotice({ kind: 'error', text: (e as Error)?.message ?? t('chat.error') })
+    } finally {
+      setGenerating(false)
+    }
   }
 
   // 远程操作（拉取/推送/获取）：进度由输入框上方的动画条呈现（对标 VS Code），成功不弹提示，仅报错。
@@ -372,22 +409,34 @@ export function GitPanel(): React.JSX.Element {
         <div style={{ padding: '8px 4px 4px' }}>
           {/* 输入框 + 悬浮层：进度条与错误提示都绝对定位、不占布局，故动画出现/消失时输入框不上下抖动 */}
           <div className="gitcommit">
-            {/* 操作进行中：悬浮在输入框正上方的细条流动动画（对标 VS Code，不推动输入框） */}
-            <div className="gitprogress" aria-hidden={!busy}>
-              {busy && <div className="gitprogress__bit" />}
+            {/* 操作进行中（含 AI 生成）：悬浮在输入框正上方的细条流动动画（对标 VS Code，不推动输入框） */}
+            <div className="gitprogress" aria-hidden={!(busy || generating)}>
+              {(busy || generating) && <div className="gitprogress__bit" />}
             </div>
-            <div className="composer__box" style={{ margin: 0, borderRadius: 'var(--radius-sm)', padding: 8 }}>
+            <div
+              className="composer__box"
+              style={{ position: 'relative', margin: 0, borderRadius: 'var(--radius-sm)', padding: '4px 8px' }}
+            >
               <textarea
                 className="composer__input"
                 rows={2}
                 placeholder={t('git.commitPlaceholder').replace('{branch}', branch || 'HEAD')}
-                style={{ maxHeight: 96 }}
+                style={{ maxHeight: 96, paddingRight: 24 }}
                 value={commitMessage}
                 onChange={(e) => git.setCommitMessage(e.target.value)}
                 onKeyDown={(e) => {
                   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canCommit) void doCommit()
                 }}
               />
+              {/* 右下角：把 diff 交 AI 生成提交信息 */}
+              <button
+                className="gitgen__btn"
+                title={t('git.genCommit')}
+                disabled={!canGenerate}
+                onClick={() => void genMessage()}
+              >
+                {generating ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
+              </button>
             </div>
             {/* 错误提示：悬浮在动画下方、遮住输入框，数秒后自动消失（点击可立即关闭） */}
             {notice && (

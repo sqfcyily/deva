@@ -80,6 +80,22 @@ export function TerminalInstance({ id, shellId, visible, onExit }: Props): React
       if (ptyIdRef.current) window.deva.terminal.write(ptyIdRef.current, d)
     })
 
+    // 右键（对标 Windows Terminal）：有选中→复制并取消选中；无选中→粘贴剪贴板文本；
+    // 剪贴板为空则不动作。始终吞掉默认浏览器菜单。
+    const onContextMenu = (e: MouseEvent): void => {
+      e.preventDefault()
+      if (term.hasSelection()) {
+        const sel = term.getSelection()
+        if (sel) void window.deva.clipboard.writeText(sel)
+        term.clearSelection()
+        return
+      }
+      void window.deva.clipboard.readText().then((text) => {
+        if (text) term.paste(text) // paste 会触发 onData → 转发给 PTY
+      })
+    }
+    container.addEventListener('contextmenu', onContextMenu)
+
     // 首帧布局就绪后再 fit，并按实际行列创建 PTY。
     const raf = requestAnimationFrame(() => {
       if (disposedRef.current) return
@@ -115,6 +131,7 @@ export function TerminalInstance({ id, shellId, visible, onExit }: Props): React
       disposedRef.current = true
       cancelAnimationFrame(raf)
       ro.disconnect()
+      container.removeEventListener('contextmenu', onContextMenu)
       offData()
       offExit()
       if (ptyIdRef.current) window.deva.terminal.dispose(ptyIdRef.current)

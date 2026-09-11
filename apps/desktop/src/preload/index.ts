@@ -175,6 +175,21 @@ export interface GitOpResult {
   message?: string
 }
 
+/** AI 生成提交信息所用的模型配置（与 chat 的模型形状一致；密钥仍在主进程按 providerId 解密）。 */
+export interface GitGenModel {
+  adapter: 'anthropic' | 'openai'
+  providerId: string
+  baseURL: string
+  model: string
+}
+/** 生成结果：成功时 text 为提交信息；失败时 reason/message 说明原因。 */
+export interface GitGenerateResult {
+  ok: boolean
+  text?: string
+  reason?: GitFailReason
+  message?: string
+}
+
 /** 服务商探针「线缆类型」（与 services/provider.ts 对齐）。 */
 export interface ProbeConfig {
   adapter: 'anthropic' | 'openai'
@@ -378,7 +393,19 @@ const api = {
     pull: (dir: string): Promise<GitOpResult> => ipcRenderer.invoke('git:pull', dir),
     /** 推送（无 upstream 时传 branch 触发 -u origin <branch> 首推，否则传 null） */
     push: (dir: string, setUpstreamBranch: string | null): Promise<GitOpResult> =>
-      ipcRenderer.invoke('git:push', dir, setUpstreamBranch)
+      ipcRenderer.invoke('git:push', dir, setUpstreamBranch),
+    /** AI 生成提交信息：把「将要提交」的 diff 交模型生成（密钥在主进程解密，不经渲染层） */
+    generateCommitMessage: (dir: string, model: GitGenModel): Promise<GitGenerateResult> =>
+      ipcRenderer.invoke('git:generate-commit-message', dir, model)
+  },
+  /**
+   * 系统剪贴板纯文本读写（走主进程原生 clipboard）。
+   * sandbox 下 navigator.clipboard.readText 不可靠，故读/写统一走这里。
+   */
+  clipboard: {
+    readText: (): Promise<string> => ipcRenderer.invoke('clipboard:read-text'),
+    writeText: (text: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('clipboard:write-text', text)
   }
 }
 

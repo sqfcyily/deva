@@ -2493,6 +2493,30 @@ button.projmenu__item:disabled {
   position: relative;
 }
 
+/* AI 生成提交信息：悬浮在提交框右下角的小图标按钮（对标 VS Code 的"生成提交信息"）。 */
+.gitgen__btn {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.gitgen__btn:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--bg-active);
+}
+.gitgen__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* 错误提示：绝对悬浮在输入框上（动画下方），遮住输入框；不占布局。数秒后自动消失，点击可立即关闭。 */
 .gitnotice {
   position: absolute;

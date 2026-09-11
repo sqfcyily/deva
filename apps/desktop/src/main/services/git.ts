@@ -5,6 +5,7 @@ import { ipcMain } from 'electron'
 import { assertInside } from './fs-guard'
 import { getConfig, getDevaHome } from './config'
 import { detectShells } from './shells'
+import { streamChat } from '../providers'
 
 /**
  * Git 源代码管理服务（主进程）。
@@ -464,6 +465,47 @@ function safeAbsPaths(paths: unknown): string[] {
   return out
 }
 
+// ── AI 生成提交信息 ───────────────────────────────────────────────────────────
+
+/** 生成提交信息所用的模型配置（与 preload / chat 的模型形状对齐；密钥仍由主进程按 providerId 解密）。 */
+interface GenModelConfig {
+  adapter: 'anthropic' | 'openai'
+  providerId: string
+  baseURL: string
+  model: string
+}
+
+const MAX_DIFF_CHARS = 24_000 // 送入模型的 diff 上限（超出截断，避免超长上下文）
+const GEN_TIMEOUT_MS = 60_000 // 生成整体超时兜底（无 TTY，防挂起）
+
+const COMMIT_SYSTEM_PROMPT = [
+  '你是一位资深工程师，请根据提供的 git diff 生成一条规范、准确的提交信息（commit message）。',
+  '规则：',
+  '1. 首行为简洁标题，遵循 Conventional Commits：`<type>(<scope>): <subject>`；type 从 feat/fix/docs/style/refactor/perf/test/build/chore 中选取，scope 可省略；标题不超过 72 个字符。',
+  '2. 若改动较复杂，空一行后用简短正文分点说明「做了什么、为什么」，每行不超过 72 字符。',
+  '3. subject 与正文用简体中文，type 前缀保持英文。',
+  '4. 只输出提交信息本身：不要用代码块或反引号包裹，不要加任何解释、前后缀或引号。'
+].join('\n')
+
+/** 清洗模型输出：去掉可能的代码块围栏 / 整体反引号或引号包裹与首尾空白。 */
+function cleanCommitMessage(raw: string): string {
+  let s = raw.trim()
+  const fence = /^```[a-zA-Z]*\r?\n([\s\S]*?)\r?\n```$/.exec(s)
+  if (fence) s = fence[1].trim()
+  s = s.replace(/^`+|`+$/g, '').trim()
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith('“') && s.endsWith('”'))) {
+    s = s.slice(1, -1).trim()
+  }
+  return s
+}
+
+/** provider 错误类别 → git 结构化原因（供渲染层复用既有提示文案）。 */
+function genReason(kind: string): GitFailReason {
+  if (kind === 'auth') return 'auth'
+  if (kind === 'network') return 'network'
+  return 'error'
+}
+
 // ── IPC 注册 ─────────────────────────────────────────────────────────────────
 
 export function registerGitIpc(): void {
@@ -696,4 +738,73 @@ export function registerGitIpc(): void {
       ? { ok: true as const }
       : { ok: false as const, reason: classifyRemoteError(res.stderr), message: res.stderr.trim() }
   })
+
+  // AI 生成提交信息：取「将要提交」的 diff（优先已暂存，无则回退工作区已跟踪改动）→ 交模型生成。
+  // 密钥仍按 providerId 在主进程内解密注入（streamChat），不经渲染层；diff 只在本地读取、送模型。
+  ipcMain.handle(
+    'git:generate-commit-message',
+    async (_e, dir: string, model: GenModelConfig) => {
+      assertInside(dir)
+      if (!model || typeof model.model !== 'string' || !model.model.trim())
+        return { ok: false as const, reason: 'error' as GitFailReason, message: 'no-model' }
+
+      // 优先已暂存改动（index↔HEAD）；若无暂存则回退到工作区已跟踪改动（worktree↔index）。
+      let res = await runGit(dir, ['diff', '--cached', '--no-color', '--no-ext-diff'])
+      if (res.code === 0 && !res.stdout.trim())
+        res = await runGit(dir, ['diff', '--no-color', '--no-ext-diff'])
+      if (res.code !== 0)
+        return { ok: false as const, reason: 'error' as GitFailReason, message: res.stderr.trim() }
+
+      let patch = res.stdout
+      if (!patch.trim()) return { ok: false as const, reason: 'empty' as GitFailReason }
+      let truncated = false
+      if (patch.length > MAX_DIFF_CHARS) {
+        patch = patch.slice(0, MAX_DIFF_CHARS)
+        truncated = true
+      }
+      const userText =
+        '以下是本次将要提交的改动（git diff）。请据此生成提交信息：\n\n' +
+        patch +
+        (truncated ? '\n\n（diff 内容较长，已截断，仅供参考）' : '')
+
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), GEN_TIMEOUT_MS)
+      try {
+        let text = ''
+        let errKind: string | null = null
+        let errMsg = ''
+        for await (const ev of streamChat(
+          { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
+          {
+            model: model.model,
+            system: COMMIT_SYSTEM_PROMPT,
+            messages: [{ role: 'user', content: userText }],
+            maxTokens: 400,
+            temperature: 0.3,
+            signal: ctrl.signal
+          }
+        )) {
+          if (ev.type === 'text_delta') text += ev.text
+          else if (ev.type === 'error') {
+            errKind = ev.error.kind
+            errMsg = ev.error.message
+          }
+        }
+        if (errKind && !text.trim())
+          return { ok: false as const, reason: genReason(errKind), message: errMsg }
+        const cleaned = cleanCommitMessage(text)
+        if (!cleaned)
+          return { ok: false as const, reason: 'error' as GitFailReason, message: 'empty-response' }
+        return { ok: true as const, text: cleaned }
+      } catch (e) {
+        return {
+          ok: false as const,
+          reason: 'error' as GitFailReason,
+          message: (e as Error)?.message ?? String(e)
+        }
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+  )
 }

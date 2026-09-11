@@ -55,6 +55,8 @@ const zhCN: MessageTree = {
     message: '提交信息',
     commitPlaceholder: '消息（{branch}）',
     commitEmpty: '请先填写提交信息',
+    genCommit: '使用 AI 生成提交信息',
+    genEmpty: '没有可用于生成提交信息的改动',
     diff: '差异',
     selectHint: '从左侧选择一个更改查看 diff',
     // 文件行操作
@@ -351,6 +353,8 @@ const en: MessageTree = {
     message: 'Message',
     commitPlaceholder: 'Message ({branch})',
     commitEmpty: 'Enter a commit message first',
+    genCommit: 'Generate commit message with AI',
+    genEmpty: 'No changes to generate a commit message from',
     diff: 'Diff',
     selectHint: 'Select a change on the left to view the diff',
     // file row actions
