@@ -15,7 +15,7 @@ const zhCN: MessageTree = {
     chat: '对话',
     explorer: '资源管理器',
     git: '版本控制',
-    database: '数据库',
+    database: '数据源',
     ssh: '远程连接',
     extensions: '扩展',
     settings: '设置'
@@ -317,7 +317,7 @@ const en: MessageTree = {
     chat: 'Chat',
     explorer: 'Explorer',
     git: 'Source Control',
-    database: 'Database',
+    database: 'Data Sources',
     ssh: 'Remote',
     extensions: 'Extensions',
     settings: 'Settings'
