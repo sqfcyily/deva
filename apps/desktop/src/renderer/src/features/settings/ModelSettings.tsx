@@ -37,6 +37,7 @@ export function ModelSettings(): React.JSX.Element {
     updateProvider,
     toggleModel,
     addModel,
+    addModels,
     removeModel,
     addCustomProvider,
     removeProvider,
@@ -50,6 +51,8 @@ export function ModelSettings(): React.JSX.Element {
   const [showKey, setShowKey] = useState(false)
   const [addingModel, setAddingModel] = useState(false)
   const [newModelId, setNewModelId] = useState('')
+  // 从服务端清单多选待添加的模型 id 集合（未落盘的选择态）
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [keyDraft, setKeyDraft] = useState('')
   const [savingKey, setSavingKey] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
@@ -70,6 +73,7 @@ export function ModelSettings(): React.JSX.Element {
     setShowKey(false)
     setAddingModel(false)
     setNewModelId('')
+    setSelectedIds(new Set())
     setNameDraft(selectedProvider?.name ?? '')
     setTestState({ status: 'idle', message: '' })
     setFetchState({ status: 'idle', list: [] })
@@ -158,6 +162,7 @@ export function ModelSettings(): React.JSX.Element {
   const startAddModel = (): void => {
     setAddingModel(true)
     setNewModelId('')
+    setSelectedIds(new Set())
     if (!selectedProvider) return
     const token = ++fetchTokenRef.current
     setFetchState({ status: 'loading', list: [] })
@@ -180,12 +185,45 @@ export function ModelSettings(): React.JSX.Element {
   const closeAddModel = (): void => {
     setAddingModel(false)
     setNewModelId('')
+    setSelectedIds(new Set())
   }
 
   const confirmAddModel = (explicitId?: string): void => {
     const id = (explicitId ?? newModelId).trim()
     if (id && selectedProvider) addModel(selectedProvider.id, id)
     closeAddModel()
+  }
+
+  // 切换某个候选模型的选择态（多选，不关闭面板）
+  const toggleSel = (id: string): void =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  // 当前筛选出的候选是否已全选（空列表视为未全选）
+  const allFilteredSelected =
+    suggestions.length > 0 && suggestions.every((id) => selectedIds.has(id))
+
+  // 全选 / 清空：仅作用于当前筛选出的候选
+  const toggleSelectAll = (): void =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allFilteredSelected) suggestions.forEach((id) => next.delete(id))
+      else suggestions.forEach((id) => next.add(id))
+      return next
+    })
+
+  // 确认添加：有勾选则批量添加所选，否则回退到「手动输入的单个 id」
+  const confirmAdd = (): void => {
+    if (selectedIds.size > 0) {
+      if (selectedProvider) addModels(selectedProvider.id, [...selectedIds])
+      closeAddModel()
+      return
+    }
+    confirmAddModel()
   }
 
   const saveKey = async (providerId: string): Promise<void> => {
@@ -246,6 +284,7 @@ export function ModelSettings(): React.JSX.Element {
             {selectedProvider.kind === 'custom' ? (
               <input
                 className="provider-detail__name-input"
+                size={1}
                 value={nameDraft}
                 placeholder={t('models.providerNamePlaceholder')}
                 onChange={(e) => setNameDraft(e.target.value)}
@@ -438,13 +477,19 @@ export function ModelSettings(): React.JSX.Element {
                     value={newModelId}
                     onChange={(e) => setNewModelId(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') confirmAddModel()
+                      if (e.key === 'Enter') confirmAdd()
                       if (e.key === 'Escape') closeAddModel()
                     }}
                   />
-                  <button className="btn btn--primary btn--sm" onClick={() => confirmAddModel()}>
+                  <button
+                    className="btn btn--primary btn--sm"
+                    disabled={selectedIds.size === 0 && !newModelId.trim()}
+                    onClick={confirmAdd}
+                  >
                     <Check size={14} />
-                    {t('models.add')}
+                    {selectedIds.size > 0
+                      ? t('models.addSelected').replace('{count}', String(selectedIds.size))
+                      : t('models.add')}
                   </button>
                   <button className="btn btn--ghost btn--sm" onClick={closeAddModel}>
                     <X size={14} />
@@ -461,21 +506,42 @@ export function ModelSettings(): React.JSX.Element {
                   <div className="model-combo__hint">{t('models.fetchModelsFail')}</div>
                 )}
                 {fetchState.status === 'done' && suggestions.length > 0 && (
-                  <div className="model-combo__panel">
-                    {suggestions.map((id) => (
+                  <>
+                    <div className="model-combo__bar">
+                      <span className="model-combo__count">
+                        {t('models.selectedCount').replace('{count}', String(selectedIds.size))}
+                      </span>
+                      <div className="model-combo__spacer" />
                       <button
-                        key={id}
-                        className="model-combo__opt"
+                        className="model-combo__link"
                         onMouseDown={(e) => {
-                          // onMouseDown 先于 input blur，避免点击丢失
                           e.preventDefault()
-                          confirmAddModel(id)
+                          toggleSelectAll()
                         }}
                       >
-                        {id}
+                        {allFilteredSelected ? t('models.clearSelection') : t('models.selectAll')}
                       </button>
-                    ))}
-                  </div>
+                    </div>
+                    <div className="model-combo__panel">
+                      {suggestions.map((id) => {
+                        const on = selectedIds.has(id)
+                        return (
+                          <button
+                            key={id}
+                            className={`model-combo__opt${on ? ' is-selected' : ''}`}
+                            onMouseDown={(e) => {
+                              // onMouseDown 先于 input blur，避免点击丢失焦点
+                              e.preventDefault()
+                              toggleSel(id)
+                            }}
+                          >
+                            <span className="model-combo__check">{on && <Check size={13} />}</span>
+                            <span className="model-combo__opt-id">{id}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </>
                 )}
               </div>
             )}

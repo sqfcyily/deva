@@ -2866,7 +2866,10 @@ button.projmenu__item:disabled {
 
 /* 服务商详情：可编辑名称 / 删除 / 无钥提醒 */
 .provider-detail__name-input {
-  min-width: 0;
+  /* 随内容自适应宽度（Electron/Chromium 支持 field-sizing），
+     使「自定义」标签像官方 h2 一样紧贴名称，两种服务商布局一致 */
+  field-sizing: content;
+  min-width: 3ch;
   max-width: 260px;
   margin-left: -6px;
   padding: 2px 6px;
@@ -2953,7 +2956,9 @@ button.projmenu__item:disabled {
   background: var(--bg-panel);
 }
 .model-combo__opt {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   width: 100%;
   padding: 7px var(--space-3);
   border: none;
@@ -2969,6 +2974,49 @@ button.projmenu__item:disabled {
 }
 .model-combo__opt:hover {
   background: var(--bg-hover);
+}
+.model-combo__opt.is-selected {
+  background: var(--accent-tint);
+  color: var(--fg);
+}
+/* 勾选位：固定宽度占位，未选中时保留空位使 id 左缘对齐 */
+.model-combo__check {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  color: var(--accent);
+}
+.model-combo__opt-id {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 全选 / 已选计数条 */
+.model-combo__bar {
+  display: flex;
+  align-items: center;
+  padding: 4px 2px 6px;
+}
+.model-combo__count {
+  color: var(--fg-subtle);
+  font-size: 12px;
+}
+.model-combo__spacer {
+  flex: 1 1 auto;
+}
+.model-combo__link {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.model-combo__link:hover {
+  text-decoration: underline;
 }
 
 /* 图标旋转（测试 / 拉取中） */

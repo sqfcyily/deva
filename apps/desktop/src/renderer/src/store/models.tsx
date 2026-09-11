@@ -21,6 +21,8 @@ interface ModelsContextValue {
   ) => void
   toggleModel: (providerId: string, modelId: string) => void
   addModel: (providerId: string, id: string) => void
+  /** 批量添加模型：去重并跳过已存在，一次落盘。用于从服务端清单多选添加。 */
+  addModels: (providerId: string, ids: string[]) => void
   removeModel: (providerId: string, modelId: string) => void
   addCustomProvider: (name: string) => void
   /** 删除服务商（含其密钥、悬空默认模型的清理）。 */
@@ -141,6 +143,18 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
             ? p
             : { ...p, models: [...p.models, { id, name: id, enabled: true }] }
         ),
+      addModels: (pid, ids) =>
+        patchProvider(pid, (p) => {
+          const have = new Set(p.models.map((mm) => mm.id))
+          const fresh: ModelDef[] = []
+          for (const raw of ids) {
+            const id = raw.trim()
+            if (!id || have.has(id)) continue // 跳过空串、已存在、以及本批次内重复
+            have.add(id)
+            fresh.push({ id, name: id, enabled: true })
+          }
+          return fresh.length ? { ...p, models: [...p.models, ...fresh] } : p
+        }),
       removeModel: (pid, mid) => {
         patchProvider(pid, (p) => ({ ...p, models: p.models.filter((mm) => mm.id !== mid) }))
         // 删掉的正是默认模型 → 清空默认，避免悬空
