@@ -182,6 +182,8 @@ export interface GitGenModel {
   baseURL: string
   model: string
 }
+/** 生成语言：跟随界面语言；主进程只区分 en 与其余（回退简体中文）。 */
+export type GitGenLocale = 'zh-CN' | 'en'
 /** 生成结果：成功时 text 为提交信息；失败时 reason/message 说明原因。 */
 export interface GitGenerateResult {
   ok: boolean
@@ -394,9 +396,13 @@ const api = {
     /** 推送（无 upstream 时传 branch 触发 -u origin <branch> 首推，否则传 null） */
     push: (dir: string, setUpstreamBranch: string | null): Promise<GitOpResult> =>
       ipcRenderer.invoke('git:push', dir, setUpstreamBranch),
-    /** AI 生成提交信息：把「将要提交」的 diff 交模型生成（密钥在主进程解密，不经渲染层） */
-    generateCommitMessage: (dir: string, model: GitGenModel): Promise<GitGenerateResult> =>
-      ipcRenderer.invoke('git:generate-commit-message', dir, model)
+    /** AI 生成提交信息：把「将要提交」的 diff 交模型生成（密钥在主进程解密，不经渲染层）；locale 跟随界面语言 */
+    generateCommitMessage: (
+      dir: string,
+      model: GitGenModel,
+      locale: GitGenLocale
+    ): Promise<GitGenerateResult> =>
+      ipcRenderer.invoke('git:generate-commit-message', dir, model, locale)
   },
   /**
    * 系统剪贴板纯文本读写（走主进程原生 clipboard）。

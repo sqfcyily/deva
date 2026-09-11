@@ -35,7 +35,7 @@ type Notice = { kind: 'error'; text: string } | null
 
 /** 版本控制导航（真实 git，对标 VS Code 源代码管理面板）。 */
 export function GitPanel(): React.JSX.Element {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const git = useGit()
   const { activeModel } = useModels()
   const {
@@ -196,12 +196,16 @@ export function GitPanel(): React.JSX.Element {
     setGenerating(true)
     setNotice(null)
     try {
-      const res = await window.deva.git.generateCommitMessage(dir, {
-        adapter: activeModel.provider.adapter,
-        providerId: activeModel.provider.id,
-        baseURL: activeModel.provider.apiHost,
-        model: activeModel.model.id
-      })
+      const res = await window.deva.git.generateCommitMessage(
+        dir,
+        {
+          adapter: activeModel.provider.adapter,
+          providerId: activeModel.provider.id,
+          baseURL: activeModel.provider.apiHost,
+          model: activeModel.model.id
+        },
+        locale
+      )
       if (res.ok && res.text) git.setCommitMessage(res.text)
       else
         setNotice({

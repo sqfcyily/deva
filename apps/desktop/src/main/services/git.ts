@@ -478,7 +478,9 @@ interface GenModelConfig {
 const MAX_DIFF_CHARS = 24_000 // 送入模型的 diff 上限（超出截断，避免超长上下文）
 const GEN_TIMEOUT_MS = 60_000 // 生成整体超时兜底（无 TTY，防挂起）
 
-const COMMIT_SYSTEM_PROMPT = [
+type GenLocale = 'zh-CN' | 'en'
+
+const COMMIT_SYSTEM_PROMPT_ZH = [
   '你是一位资深工程师，请根据提供的 git diff 生成一条规范、准确的提交信息（commit message）。',
   '规则：',
   '1. 首行为简洁标题，遵循 Conventional Commits：`<type>(<scope>): <subject>`；type 从 feat/fix/docs/style/refactor/perf/test/build/chore 中选取，scope 可省略；标题不超过 72 个字符。',
@@ -486,6 +488,41 @@ const COMMIT_SYSTEM_PROMPT = [
   '3. subject 与正文用简体中文，type 前缀保持英文。',
   '4. 只输出提交信息本身：不要用代码块或反引号包裹，不要加任何解释、前后缀或引号。'
 ].join('\n')
+
+const COMMIT_SYSTEM_PROMPT_EN = [
+  'You are a senior engineer. Based on the provided git diff, write a well-formed, accurate commit message.',
+  'Rules:',
+  '1. The first line is a concise subject following Conventional Commits: `<type>(<scope>): <subject>`; choose type from feat/fix/docs/style/refactor/perf/test/build/chore, scope is optional; keep the subject within 72 characters.',
+  '2. If the change is complex, leave a blank line and add a short body of bullet points explaining what changed and why, each line within 72 characters.',
+  '3. Write the subject and body in English; keep the type prefix in English.',
+  '4. Output only the commit message itself: do not wrap it in code fences or backticks, and do not add any explanation, prefix/suffix, or quotes.'
+].join('\n')
+
+/** 归一到受支持的生成语言；未知或缺省一律回退简体中文（保持既有行为）。 */
+function normGenLocale(v: unknown): GenLocale {
+  return v === 'en' ? 'en' : 'zh-CN'
+}
+
+/** 系统提示词（按语言）：用目标语言下指令，产出更贴近该语言。 */
+function commitSystemPrompt(locale: GenLocale): string {
+  return locale === 'en' ? COMMIT_SYSTEM_PROMPT_EN : COMMIT_SYSTEM_PROMPT_ZH
+}
+
+/** diff 外层引导语（按语言）；截断时追加说明，避免中文引导语混入英文语境。 */
+function commitUserText(locale: GenLocale, patch: string, truncated: boolean): string {
+  if (locale === 'en') {
+    return (
+      'Here is the change to be committed (git diff). Write the commit message accordingly:\n\n' +
+      patch +
+      (truncated ? '\n\n(The diff is long and has been truncated; shown for reference only.)' : '')
+    )
+  }
+  return (
+    '以下是本次将要提交的改动（git diff）。请据此生成提交信息：\n\n' +
+    patch +
+    (truncated ? '\n\n（diff 内容较长，已截断，仅供参考）' : '')
+  )
+}
 
 /** 清洗模型输出：去掉可能的代码块围栏 / 整体反引号或引号包裹与首尾空白。 */
 function cleanCommitMessage(raw: string): string {
@@ -743,7 +780,7 @@ export function registerGitIpc(): void {
   // 密钥仍按 providerId 在主进程内解密注入（streamChat），不经渲染层；diff 只在本地读取、送模型。
   ipcMain.handle(
     'git:generate-commit-message',
-    async (_e, dir: string, model: GenModelConfig) => {
+    async (_e, dir: string, model: GenModelConfig, locale?: GenLocale) => {
       assertInside(dir)
       if (!model || typeof model.model !== 'string' || !model.model.trim())
         return { ok: false as const, reason: 'error' as GitFailReason, message: 'no-model' }
@@ -762,10 +799,8 @@ export function registerGitIpc(): void {
         patch = patch.slice(0, MAX_DIFF_CHARS)
         truncated = true
       }
-      const userText =
-        '以下是本次将要提交的改动（git diff）。请据此生成提交信息：\n\n' +
-        patch +
-        (truncated ? '\n\n（diff 内容较长，已截断，仅供参考）' : '')
+      const lang = normGenLocale(locale)
+      const userText = commitUserText(lang, patch, truncated)
 
       const ctrl = new AbortController()
       const timer = setTimeout(() => ctrl.abort(), GEN_TIMEOUT_MS)
@@ -777,7 +812,7 @@ export function registerGitIpc(): void {
           { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
           {
             model: model.model,
-            system: COMMIT_SYSTEM_PROMPT,
+            system: commitSystemPrompt(lang),
             messages: [{ role: 'user', content: userText }],
             maxTokens: 400,
             temperature: 0.3,
