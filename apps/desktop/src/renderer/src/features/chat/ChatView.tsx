@@ -60,6 +60,9 @@ interface Picked {
   reason?: string
 }
 
+/** 距底 ≤ 此像素即视为「贴住底部」，留缓冲避免临界抖动。 */
+const BOTTOM_THRESHOLD = 64
+
 /** 附件类型 → 图标。 */
 function iconFor(kind: AttachKind | 'unsupported'): React.ReactNode {
   if (kind === 'image') return <ImageIcon size={13} />
@@ -135,6 +138,7 @@ export function ChatView(): React.JSX.Element {
     messages,
     streaming,
     streamStatus,
+    currentSessionId,
     send,
     stop,
     respondPermission,
@@ -150,11 +154,44 @@ export function ChatView(): React.JSX.Element {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
+  // 是否「贴住底部」：决定流式新内容是否自动跟随滚动。用户上滚离开底部即脱离跟随，
+  // 回到底部（或点「回到最新」）即重新跟随。ref 供滚动副作用同步读取（避免闭包过期、且其变化不触发副作用重跑），
+  // state 仅驱动「回到最新」按钮显隐。
+  const stickRef = useRef(true)
+  const [atBottom, setAtBottom] = useState(true)
 
+  // 新内容到达时，仅当仍贴住底部才自动滚到底；用户上滚查看历史时保持不动。
   useEffect(() => {
+    if (!stickRef.current) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [messages, streaming])
+
+  // 切换会话（含首次挂载）：复位为贴底并直接滚到底（ChatView 不按会话重挂载，故需显式复位）。
+  useEffect(() => {
+    stickRef.current = true
+    setAtBottom(true)
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [currentSessionId])
+
+  // 监听用户滚动：据距底距离更新「是否贴底」。程序化滚到底同样会触发，结果仍为贴底、幂等。
+  const onScroll = (): void => {
+    const el = scrollRef.current
+    if (!el) return
+    const atBot = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD
+    stickRef.current = atBot
+    setAtBottom((prev) => (prev === atBot ? prev : atBot))
+  }
+
+  // 回到最新：平滑滚到底并恢复自动跟随。
+  const jumpToLatest = (): void => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    stickRef.current = true
+    setAtBottom(true)
+  }
 
   const supportedPending = pending.filter((p) => p.supported)
   const canSend = Boolean(input.trim()) || supportedPending.length > 0
@@ -179,6 +216,9 @@ export function ChatView(): React.JSX.Element {
     setInput('')
     setPending([])
     if (taRef.current) taRef.current.style.height = 'auto'
+    // 发送后必看到自己的消息与回复：无论此刻是否上滚，都恢复贴底跟随。
+    stickRef.current = true
+    setAtBottom(true)
     void send(
       text,
       atts.map((p) => ({ path: p.path, name: p.name, kind: p.kind as AttachKind }))
@@ -207,7 +247,7 @@ export function ChatView(): React.JSX.Element {
 
   return (
     <div className="chat">
-      <div className="chat__scroll" ref={scrollRef}>
+      <div className="chat__scroll" ref={scrollRef} onScroll={onScroll}>
         {messages.length === 0 ? (
           <div className="chat__empty">
             <Sparkles size={30} />
@@ -238,6 +278,18 @@ export function ChatView(): React.JSX.Element {
 
       {/* 输入区 */}
       <div className="composer">
+        {/* 回到最新：仅当用户上滚离开底部且已有消息时浮现，锚在输入框顶边正上方居中 */}
+        {!atBottom && messages.length > 0 && (
+          <button
+            className="chat__jump"
+            type="button"
+            onClick={jumpToLatest}
+            title={t('chat.jumpToLatest')}
+            aria-label={t('chat.jumpToLatest')}
+          >
+            <ChevronDown size={18} />
+          </button>
+        )}
         <div className="composer__box">
           {pending.length > 0 && (
             <div className="composer__attachments">

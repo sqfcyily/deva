@@ -991,7 +991,8 @@ textarea {
 }
 .card__head {
   display: flex;
-  align-items: center;
+  /* 顶对齐而非居中：命令过长换行时，图标与退出码徽标仍钉在首行，不随多行标题浮到中间造成错位 */
+  align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   background: var(--bg-panel);
@@ -1002,9 +1003,15 @@ textarea {
   display: grid;
   place-items: center;
   color: var(--accent);
+  flex-shrink: 0;
+  /* 图标框恰为一行高，令其在首行内垂直居中——单行时与旧居中效果一致，多行时对齐首行 */
+  height: 1.5em;
 }
 .card__title {
   font-weight: 600;
+  /* 允许标题收缩并换行，长命令在自身列内折行，而不是把徽标挤走或撑出横向滚动 */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .card__title code {
   font-family: var(--font-mono);
@@ -1020,6 +1027,9 @@ textarea {
   border-radius: var(--radius-full);
   font-size: 11px;
   font-weight: 600;
+  /* 徽标不被压缩、"退出码 N" 不换行，稳定停在首行右上角 */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .badge--ok {
   color: var(--success);
@@ -1475,9 +1485,39 @@ textarea {
 
 /* ---------- Chat 输入区 ---------- */
 .composer {
+  position: relative;
   border-top: 1px solid var(--border);
   padding: var(--space-3) var(--space-4) var(--space-4);
   background: var(--bg);
+}
+/* 「回到最新」浮标：锚在输入框顶边正上方居中，不受输入框高度变化影响 */
+.chat__jump {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: var(--space-3);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--fg-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  z-index: 5;
+  transition:
+    color 0.15s,
+    background 0.15s,
+    border-color 0.15s;
+}
+.chat__jump:hover {
+  color: var(--fg);
+  background: var(--bg-hover);
+  border-color: var(--accent);
 }
 .composer__box {
   max-width: 860px;
