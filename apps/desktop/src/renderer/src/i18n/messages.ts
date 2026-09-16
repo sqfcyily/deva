@@ -259,7 +259,9 @@ const zhCN: MessageTree = {
       deny: '拒绝',
       outside: '此路径在当前项目目录之外',
       outsideAllowOnce: '仅此次允许',
-      outsideTrustDir: '本会话信任该目录'
+      outsideTrustDir: '本会话信任该目录',
+      protected: '受保护的版本控制/编辑器配置目录（.git/.claude/.vscode），写入需授权',
+      allowOnce: '仅此次允许'
     },
     ask: {
       title: '请你决定',
@@ -614,7 +616,9 @@ const en: MessageTree = {
       deny: 'Deny',
       outside: 'This path is outside the current project',
       outsideAllowOnce: 'Allow once',
-      outsideTrustDir: 'Trust this folder (session)'
+      outsideTrustDir: 'Trust this folder (session)',
+      protected: 'Protected VCS/editor config folder (.git/.claude/.vscode); write requires approval',
+      allowOnce: 'Allow once'
     },
     ask: {
       title: 'Your call',

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { promises as fs, type Dirent } from 'fs'
 import { dirname, isAbsolute, join, resolve } from 'path'
-import { assertInside, isInsideRoot } from './fs-guard'
+import { assertInside, isSensitivePath } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
 import { upsertSkill } from './skills'
 import type { ToolSpec } from '../providers/types'
@@ -282,48 +282,54 @@ function looksBinary(buf: Buffer): boolean {
   return false
 }
 
-/** 把工具参数里的 path 解析为绝对路径并校验受信根。 */
-function resolvePath(root: string | null, p: unknown): string {
+/**
+ * 读取类路径解析：把 path 解析为绝对路径，仅拒绝 Tier-1 敏感目录（凭据/系统）。
+ * 刻意不校验受信根——读操作可及任意「非敏感」目录（对标 Claude Code：读不受工作区边界约束）。
+ */
+function resolveReadPath(root: string | null, p: unknown): string {
   if (typeof p !== 'string' || !p.trim()) throw new Error('缺少有效的 path 参数')
   const abs = isAbsolute(p) ? resolve(p) : root ? join(root, p) : resolve(p)
+  if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/系统敏感目录（安全策略），请勿重试。')
+  return abs
+}
+
+/**
+ * 写入类路径解析：在读取解析（含 Tier-1 拒绝）之上，再校验目标落在受信根内。
+ * 越界写入由权限闸门的「越界卡」在授权后临时加根放行，故执行时此校验必过；
+ * 未授权的越界写入到不了这里（闸门已拦）。
+ */
+function resolveWritePath(root: string | null, p: unknown): string {
+  const abs = resolveReadPath(root, p)
   assertInside(abs)
   return abs
 }
 
-/** 目标为「目录」的路径类工具（授权粒度取目录本身，而非其父目录）。 */
-const DIR_TARGET_TOOLS = new Set(['list_dir', 'glob', 'grep'])
-/** 目标为「文件」的路径类工具（授权粒度取父目录）。 */
-const FILE_TARGET_TOOLS = new Set(['read_file', 'write_file', 'edit_file'])
-
 /**
- * 「项目外访问」预检：若该工具调用要访问的目标落在受信根之外，返回其绝对路径 abs 与
- * 建议信任目录 dir；否则 null。路径解析规则与 resolvePath 完全一致（相对路径基于项目根），
- * 以保证「预检判定在外 → 授权加根 → 执行时 assertInside 必过」的一致性。
- * dir：目录类工具取目标目录本身，文件类工具取其父目录（契合 isInsideRoot 的子树前缀语义）。
- * web_fetch 无 path、run_command 的 cwd 单独在执行处校验，均返回 null（走常规闸门）。
+ * 写入类工具（write_file / edit_file）的目标：目标文件绝对路径 abs 与授权目录 dir（父目录）。
+ * 供权限闸门做 Tier-1 硬底 / Tier-2 保护目录(.git/.claude/.vscode) / 越界 三档分类。
+ * 路径解析规则与 resolveWritePath 完全一致（相对路径基于项目根），确保「闸门判定 → 执行」一致。
+ * 非写入类或缺 path → null（read/exec/mcp 走常规闸门，无路径越界概念）。
  */
-export function outsideRootTarget(
+export function writeTargetPath(
   name: string,
   args: unknown,
   root: string | null
 ): { abs: string; dir: string } | null {
-  const isDir = DIR_TARGET_TOOLS.has(name)
-  if (!isDir && !FILE_TARGET_TOOLS.has(name)) return null
+  if (!EDIT_TOOLS.has(name)) return null
   const a = (args ?? {}) as Record<string, unknown>
   const p = a.path
-  // glob/grep 缺 path 时回落项目根（在根内，不触发）；文件类缺 path 交由执行处报参数错。
   if (typeof p !== 'string' || !p.trim()) return null
   const abs = isAbsolute(p) ? resolve(p) : root ? join(root, p) : resolve(p)
-  if (isInsideRoot(abs)) return null
-  return { abs, dir: isDir ? abs : dirname(abs) }
+  return { abs, dir: dirname(abs) }
 }
 
-/** 解析「搜索根目录」：给了 path 用之，否则回落项目根；两者皆缺则报错。 */
-function resolveDir(root: string | null, p: unknown): string {
-  if (typeof p === 'string' && p.trim()) return resolvePath(root, p)
+/** 解析「搜索根目录」（读取语义）：给了 path 用之，否则回落项目根；两者皆缺则报错。 */
+function resolveReadDir(root: string | null, p: unknown): string {
+  if (typeof p === 'string' && p.trim()) return resolveReadPath(root, p)
   if (!root) throw new Error('未打开项目，且未提供 path')
-  assertInside(root)
-  return resolve(root)
+  const abs = resolve(root)
+  if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/系统敏感目录（安全策略），请勿重试。')
+  return abs
 }
 
 function toInt(v: unknown): number | null {
@@ -397,6 +403,8 @@ async function collectFiles(root: string): Promise<{ abs: string; rel: string }[
       const childRel = rel ? `${rel}/${e.name}` : e.name
       if (e.isDirectory()) {
         if (IGNORE_DIRS.has(e.name)) continue
+        // 读遍历（glob/grep）现可作用于任意目录，遍历时绝不进入 Tier-1 凭据/系统目录。
+        if (isSensitivePath(childAbs)) continue
         await walk(childAbs, childRel)
       } else if (e.isFile()) {
         out.push({ abs: childAbs, rel: childRel })
@@ -622,7 +630,7 @@ export async function executeTool(
   const a = (args ?? {}) as Record<string, unknown>
   try {
     if (name === 'read_file') {
-      const abs = resolvePath(ctx.workspaceRoot, a.path)
+      const abs = resolveReadPath(ctx.workspaceRoot, a.path)
       const stat = await fs.stat(abs)
       if (stat.size > MAX_READ_BYTES)
         return {
@@ -650,7 +658,7 @@ export async function executeTool(
     }
 
     if (name === 'list_dir') {
-      const abs = resolvePath(ctx.workspaceRoot, a.path)
+      const abs = resolveReadPath(ctx.workspaceRoot, a.path)
       const dirents = await fs.readdir(abs, { withFileTypes: true })
       const rows = dirents
         .filter((d) => d.isDirectory() || d.isFile())
@@ -663,7 +671,7 @@ export async function executeTool(
     if (name === 'glob') {
       const pattern = typeof a.pattern === 'string' ? a.pattern.trim() : ''
       if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
-      const dir = resolveDir(ctx.workspaceRoot, a.path)
+      const dir = resolveReadDir(ctx.workspaceRoot, a.path)
       const re = globToRegExp(pattern)
       const files = await collectFiles(dir)
       const matched = files.filter((f) => re.test(f.rel))
@@ -699,7 +707,7 @@ export async function executeTool(
       } catch (e) {
         return { content: `无效的正则：${(e as Error).message}`, summary: '正则错误', isError: true }
       }
-      const dir = resolveDir(ctx.workspaceRoot, a.path)
+      const dir = resolveReadDir(ctx.workspaceRoot, a.path)
       let globRe: RegExp | null = null
       if (typeof a.glob === 'string' && a.glob.trim()) globRe = globToRegExp(a.glob.trim())
       const files = await collectFiles(dir)
@@ -823,14 +831,14 @@ export async function executeTool(
     }
 
     if (name === 'write_file') {
-      const abs = resolvePath(ctx.workspaceRoot, a.path)
+      const abs = resolveWritePath(ctx.workspaceRoot, a.path)
       const content = typeof a.content === 'string' ? a.content : ''
       await fs.writeFile(abs, content, 'utf8')
       return { content: `已写入 ${Buffer.byteLength(content, 'utf8')} 字节`, summary: '已写入' }
     }
 
     if (name === 'edit_file') {
-      const abs = resolvePath(ctx.workspaceRoot, a.path)
+      const abs = resolveWritePath(ctx.workspaceRoot, a.path)
       const oldStr = typeof a.old_string === 'string' ? a.old_string : ''
       const newStr = typeof a.new_string === 'string' ? a.new_string : ''
       if (!oldStr)

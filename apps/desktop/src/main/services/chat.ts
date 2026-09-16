@@ -1,11 +1,17 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import { streamChat } from '../providers'
 import type { ContentPart, Message, StopReason, ToolSpec } from '../providers/types'
-import { evaluate, rememberSession, rememberSessionExec, clearSession } from './permissions'
+import {
+  evaluate,
+  evaluateEdit,
+  rememberSession,
+  rememberSessionExec,
+  clearSession
+} from './permissions'
 import {
   executeTool,
   isMcpTool,
-  outsideRootTarget,
+  writeTargetPath,
   toolCategory,
   toolSpecs,
   type ToolContext,
@@ -16,7 +22,14 @@ import { enabledAgentSummaries, getEnabledAgentByName, type AgentRecord } from '
 import { enabledPersonas } from './personas'
 import { resolveModelRef } from './model-resolve'
 import { dispatchMcpTool, getMcpToolSpecs } from './mcp'
-import { isSensitivePath, trustRoot, untrustRoot } from './fs-guard'
+import {
+  isInsideRoot,
+  isProtectedPath,
+  isSensitivePath,
+  isWithinDir,
+  trustRoot,
+  untrustRoot
+} from './fs-guard'
 import {
   deriveTitle,
   ensureSession,
@@ -203,6 +216,8 @@ export type ChatStreamEvent =
       outsideRoot?: string
       /** 「项目外访问」授权：点「信任目录」将加入受信根的目录。 */
       trustDir?: string
+      /** Tier-2 保护目录（.git/.claude/.vscode）写入：即便 auto/acceptEdits 也逐次授权，仅「仅此次/拒绝」。 */
+      protectedWrite?: boolean
       /** depth>0 + agent：该权限请求来自某子智能体（权限卡照常浮出，可附子智能体标签）。 */
       depth?: number
       agent?: string
@@ -419,7 +434,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     toolName: string,
     args: unknown,
     outside?: { outsideRoot: string; trustDir: string },
-    meta?: { depth: number; agent?: string }
+    meta?: { depth: number; agent?: string },
+    opts?: { protectedWrite?: boolean }
   ): Promise<{ decision: 'allow' | 'deny'; remember: boolean }> {
     const key = genId('perm')
     emit(turnId, sessionId, {
@@ -429,6 +445,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       args,
       outsideRoot: outside?.outsideRoot,
       trustDir: outside?.trustDir,
+      protectedWrite: opts?.protectedWrite,
       ...(meta ?? {})
     })
     return new Promise((resolve) => pending.set(key, { resolve, turnId }))
@@ -693,8 +710,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           continue
         }
 
-        // 「项目外访问」预检：目标落在受信根之外 → 走越界询问（而非常规闸门）。
-        const outside = outsideRootTarget(tc.name, tc.args, ctx.workspaceRoot)
+        // 权限闸门（按工具类别分流）：
+        //  · edit（write_file/edit_file）：先算目标绝对路径，四档判定——
+        //      Tier-1 硬底拒绝 / Tier-2 保护目录逐次授权 / 项目外越界卡 / 项目内按模式判定。
+        //  · read/exec/mcp：无路径越界概念（read 可及任意「非敏感」目录，Tier-1 在工具内兜底）。
+        const cat = toolCategory(tc.name)
 
         let allowed: boolean
         let policyDenied = false
@@ -702,35 +722,66 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         let oneShotPath: string | null = null
         let denyContent = '用户拒绝了该操作。'
 
-        if (outside) {
-          // 硬底：凭据/系统目录（含本应用 ~/.deva 密钥库）即便同意也一律拒绝，不弹窗。
-          if (isSensitivePath(outside.abs)) {
+        if (cat === 'edit') {
+          const target = writeTargetPath(tc.name, tc.args, ctx.workspaceRoot)
+          const abs = target?.abs ?? null
+          if (abs && isSensitivePath(abs)) {
+            // Tier-1 硬底：凭据/系统目录（含本应用 ~/.deva 密钥库），即便授权也一律拒绝，不弹窗。
             allowed = false
             policyDenied = true
-            denyContent = `该路径受安全策略保护（凭据/系统目录），拒绝访问：${outside.abs}。请勿重试。`
-          } else {
-            // 询问（复用权限卡，附完整绝对路径 + 越界告警）。
+            denyContent = `该路径受安全策略保护（凭据/系统目录），拒绝写入：${abs}。请勿重试。`
+          } else if (abs && isProtectedPath(abs)) {
+            // Tier-2 保护目录（.git/.claude/.vscode）：写入即便 auto/acceptEdits 也必须逐次授权，
+            // 且刻意不记住——保护目录永远逐次询问。授权后一次性精确放行该文件（含项目外的 .git），
+            // 使执行时的受信校验通过；执行后在 finally 撤销。
             const r = await requestPermission(
               turnId,
               sessionId,
               tc.name,
               tc.args,
-              { outsideRoot: outside.abs, trustDir: outside.dir },
+              undefined,
+              evMeta,
+              { protectedWrite: true }
+            )
+            allowed = r.decision === 'allow'
+            if (allowed) {
+              trustRoot(abs)
+              oneShotPath = abs
+            }
+          } else if (abs && !isInsideRoot(abs)) {
+            // 项目外写入：走越界卡（仅此次 / 信任目录）。auto 亦不例外——不做「写任意目录」后门。
+            const r = await requestPermission(
+              turnId,
+              sessionId,
+              tc.name,
+              tc.args,
+              { outsideRoot: abs, trustDir: target!.dir },
               evMeta
             )
             allowed = r.decision === 'allow'
             if (allowed) {
-              // 本会话始终允许 → 加会话根（父目录/目标目录，覆盖子树）；
-              // 仅此次 → 临时精确放行该目标路径，执行后在 finally 撤销。
-              if (r.remember) trustRoot(outside.dir)
+              // 本会话始终允许 → 加会话根（父目录，覆盖子树）；仅此次 → 临时精确放行该目标。
+              if (r.remember) trustRoot(target!.dir)
               else {
-                trustRoot(outside.abs)
-                oneShotPath = outside.abs
+                trustRoot(abs)
+                oneShotPath = abs
               }
+            }
+          } else {
+            // 项目内写入（或缺 path，交执行处报参数错）：acceptEdits 仅放行「当前活动工作区」，
+            // auto 放行所有受信根；否则弹窗（记住则本会话始终允许该工具）。
+            const inWorkspace = abs ? isWithinDir(abs, ctx.workspaceRoot) : true
+            const decision = evaluateEdit(sessionId, key, tc.name, inWorkspace)
+            allowed = decision === 'allow'
+            if (decision === 'ask') {
+              const r = await requestPermission(turnId, sessionId, tc.name, tc.args, undefined, evMeta)
+              allowed = r.decision === 'allow'
+              if (allowed && r.remember) rememberSession(sessionId, tc.name)
             }
           }
         } else {
-          // 常规三态判定：allow 直接执行；ask 弹权限窗；deny 为策略层硬拒（不弹窗）。
+          // read / exec / mcp：常规三态判定——read 恒放行；exec 危险命令 deny、auto/记住的前缀放行；
+          // mcp 默认 ask、可按会话记住。allow 直接执行；ask 弹权限窗；deny 为策略层硬拒（不弹窗）。
           const decision = evaluate(sessionId, key, tc.name, tc.args)
           allowed = decision === 'allow'
           policyDenied = decision === 'deny'
@@ -742,7 +793,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             allowed = r.decision === 'allow'
             if (allowed && r.remember) {
               // exec 记「命令前缀」（如 git status），其余工具记工具名。
-              if (toolCategory(tc.name) === 'exec') rememberSessionExec(sessionId, tc.args)
+              if (cat === 'exec') rememberSessionExec(sessionId, tc.args)
               else rememberSession(sessionId, tc.name)
             }
           }

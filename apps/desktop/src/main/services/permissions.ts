@@ -98,6 +98,28 @@ export function evaluate(sessionId: string, key: string, toolName: string, args?
 }
 
 /**
+ * 写入/编辑类的判定（结合会话记住 + 模式 + 目标相对「当前活动工作区」的位置）：
+ *   1 本会话已记住该工具（用户点过「本会话始终允许」）→ 放行。
+ *   2 auto → 放行（跨「所有」受信根，含其它已打开工作区）。
+ *   3 acceptEdits 且目标在「当前活动工作区」内 → 放行；在其它受信根内则仍询问。
+ *   4 否则询问。
+ * 说明：越界（不在任何受信根）由 chat.ts 的「越界卡」处理，Tier-1 硬底与 .git/.claude/.vscode
+ * 保护目录亦在闸门层前置处理——三者都不会进入本函数。
+ */
+export function evaluateEdit(
+  sessionId: string,
+  key: string,
+  toolName: string,
+  inWorkspace: boolean
+): Decision {
+  if (sessionAllow.get(sessionId)?.has(toolName)) return 'allow'
+  const mode = getMode(key)
+  if (mode === 'auto') return 'allow'
+  if (mode === 'acceptEdits' && inWorkspace) return 'allow'
+  return 'ask'
+}
+
+/**
  * exec 类的判定（顺序即语义）：deny 压过一切（含 auto 与记住的前缀）→ auto 放行 → 记住的前缀
  * 覆盖「每一个」子命令才放行 → 否则询问。acceptEdits 对 exec 不短路（只放行编辑）。
  * 命令拆分后逐段核对，是防 `git status && rm -rf /` 之类注入的关键：记住的 `git status`

@@ -1267,6 +1267,14 @@ textarea {
 .permission--outside .permission__desc code {
   word-break: break-all;
 }
+/* Tier-2 保护目录（.git/.claude/.vscode）写入：加重告警观感，路径可换行不撑破卡片。 */
+.permission--protected {
+  border-color: color-mix(in srgb, var(--warning) 70%, var(--border));
+  background: color-mix(in srgb, var(--warning) 12%, var(--bg-elevated));
+}
+.permission--protected .permission__desc code {
+  word-break: break-all;
+}
 
 /* 决策/澄清问答卡（ask_user）：以 accent 观感区别于权限卡的 warning。 */
 .ask {

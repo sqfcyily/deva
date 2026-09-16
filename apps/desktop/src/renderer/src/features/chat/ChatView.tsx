@@ -690,10 +690,16 @@ function BlockView({
   if (block.kind === 'permission') {
     const meta = TOOL_META[block.toolName] ?? { icon: <Wrench size={14} />, key: 'chat.tool.unknown' }
     const outside = block.outsideRoot
+    const protectedWrite = Boolean(block.protectedWrite) && !outside
     // 越界卡：主体显示被访问目标的完整绝对路径；否则回退常规参数提示。
     const path = outside ?? argHint(block.args)
+    const cls = outside
+      ? 'permission permission--outside'
+      : protectedWrite
+        ? 'permission permission--protected'
+        : 'permission'
     return (
-      <div className={outside ? 'permission permission--outside' : 'permission'}>
+      <div className={cls}>
         <div className="permission__head">
           <span className="permission__head-icon">
             <ShieldAlert size={15} />
@@ -711,6 +717,12 @@ function BlockView({
             <span>{t('chat.permission.outside')}</span>
           </div>
         )}
+        {protectedWrite && (
+          <div className="permission__warn">
+            <AlertTriangle size={13} />
+            <span>{t('chat.permission.protected')}</span>
+          </div>
+        )}
         <div className="permission__desc">
           {t(meta.key)}
           {path && (
@@ -722,6 +734,19 @@ function BlockView({
         {block.resolved ? (
           <div className="permission__resolved">
             {block.resolved === 'allow' ? t('chat.permission.allow') : t('chat.permission.deny')}
+          </div>
+        ) : protectedWrite ? (
+          // 保护目录写入：仅「仅此次允许 / 拒绝」，刻意不提供「本会话始终允许」（永远逐次询问）。
+          <div className="permission__actions">
+            <button
+              className="btn btn--primary btn--sm"
+              onClick={() => onPermission(block.key, 'allow', false)}
+            >
+              {t('chat.permission.allowOnce')}
+            </button>
+            <button className="btn btn--sm" onClick={() => onPermission(block.key, 'deny', false)}>
+              {t('chat.permission.deny')}
+            </button>
           </div>
         ) : (
           <div className="permission__actions">

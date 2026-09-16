@@ -357,6 +357,8 @@ export type ChatStreamEvent =
       outsideRoot?: string
       /** 「项目外访问」授权：点「信任目录」将加入受信根的目录。 */
       trustDir?: string
+      /** Tier-2 保护目录（.git/.claude/.vscode）写入：逐次授权，仅「仅此次/拒绝」。 */
+      protectedWrite?: boolean
       /** depth>0 + agent：该权限请求来自某子智能体（权限卡照常浮出，可附子智能体标签）。 */
       depth?: number
       agent?: string

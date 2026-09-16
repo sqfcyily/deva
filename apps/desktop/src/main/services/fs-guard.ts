@@ -71,6 +71,29 @@ export function assertInside(target: string): void {
 }
 
 /**
+ * target 是否落在指定目录 dir 之内（含 dir 本身）。以真实路径比较（跟随符号链接）。
+ * 用于区分「当前活动工作区」与「其它受信根」：acceptEdits 仅自动接受当前工作区内的写入。
+ */
+export function isWithinDir(target: string, dir: string | null): boolean {
+  if (!dir) return false
+  const real = realResolve(target)
+  const dreal = realResolve(dir)
+  return real === dreal || real.startsWith(dreal + sep)
+}
+
+/**
+ * Tier-2 受保护目录：版本控制 / 编辑器配置（.git / .claude / .vscode）。
+ * 「写入/编辑」命中这里的路径，即便处于 auto / acceptEdits 模式也必须逐次授权（对标 Claude Code
+ * 的 bypass-immune 路径）；「读取」不受限。以真实路径的「路径段精确匹配」判定——
+ * `.gitignore`、`.github` 等不会误命中，只有恰好名为 .git/.claude/.vscode 的段才算。
+ */
+const PROTECTED_SEGMENTS = new Set(['.git', '.claude', '.vscode'])
+export function isProtectedPath(target: string): boolean {
+  const real = realResolve(target)
+  return real.split(/[\\/]+/).some((seg) => PROTECTED_SEGMENTS.has(seg))
+}
+
+/**
  * 敏感路径硬底：凭据/密钥与系统关键目录。
  * 即便用户在「项目外访问」询问里点了允许，命中这里的路径仍一律拒绝——
  * 防止把授权流程变成读取 ~/.ssh、~/.deva（本应用密钥库）等的后门。

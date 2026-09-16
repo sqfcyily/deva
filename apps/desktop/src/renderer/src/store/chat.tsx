@@ -75,6 +75,8 @@ export type ChatBlock =
       outsideRoot?: string
       /** 「项目外访问」授权：点「信任目录」将信任的目录。 */
       trustDir?: string
+      /** Tier-2 保护目录（.git/.claude/.vscode）写入：仅「仅此次/拒绝」，不提供「始终允许」。 */
+      protectedWrite?: boolean
       /** 来自子智能体时的显示名（depth>0）；权限卡照常浮出，仅附标签。 */
       agent?: string
     }
@@ -169,6 +171,7 @@ type StreamEvent =
       args: unknown
       outsideRoot?: string
       trustDir?: string
+      protectedWrite?: boolean
       depth?: number
       agent?: string
     }
@@ -354,6 +357,7 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
         args: ev.args,
         outsideRoot: ev.outsideRoot,
         trustDir: ev.trustDir,
+        protectedWrite: ev.protectedWrite,
         agent: ev.agent
       })
       return next
