@@ -3,6 +3,7 @@ import {
   Sparkles,
   Plug,
   Bot,
+  Drama,
   Trash2,
   Lock,
   Unlock,
@@ -15,7 +16,7 @@ import { useExtensions } from '../../store/extensions'
 import { useModels } from '../../store/models'
 import { Switch } from '../settings/Switch'
 import { Markdown } from '../chat/Markdown'
-import type { Skill, McpServer, McpKV, McpStatus, SubAgent } from '../../mock/extensions'
+import type { Skill, McpServer, McpKV, McpStatus, SubAgent, Persona } from '../../mock/extensions'
 
 /** 子智能体可选的内置工具（与主进程 buildSubagentTools 的内置集合一致，排除 ask_user/skill/run_subagent）。 */
 const BUILTIN_AGENT_TOOLS = [
@@ -30,17 +31,24 @@ const BUILTIN_AGENT_TOOLS = [
 ]
 
 /**
- * 扩展中央详情：展示并编辑左侧选中的技能 / MCP 服务 / 子智能体。
- * 技能 / MCP 落盘生效；子智能体暂内存态。全局配置，与项目无关。
+ * 扩展中央详情：展示并编辑左侧选中的 Agent 提示词 / 技能 / MCP 服务 / 子智能体。
+ * Agent 提示词 / MCP / 子智能体可编辑落盘；技能只读。全局配置，与项目无关。
+ *
+ * 视觉：小号灰标签 + 盒式输入（与模型页 .input 同风格），机器字段（命令/参数/env/工具名/传输）
+ * 一律等宽，散文（名字/描述/提示词）走无衬线；单色 + 一个强调色，状态用克制字形。
  */
 export function ExtensionsView(): React.JSX.Element {
   const { t } = useI18n()
-  const { skills, mcp, subagents, selected } = useExtensions()
+  const { skills, mcp, subagents, personas, selected } = useExtensions()
 
   if (!selected) {
-    return <div className="provider-detail provider-detail--empty">{t('extensions.detailEmpty')}</div>
+    return <div className="ext-detail ext-detail--empty">{t('extensions.detailEmpty')}</div>
   }
 
+  if (selected.kind === 'persona') {
+    const item = personas.find((p) => p.id === selected.id)
+    return item ? <PersonaDetail item={item} /> : <Missing />
+  }
   if (selected.kind === 'skill') {
     const item = skills.find((s) => s.id === selected.id)
     return item ? <SkillDetail item={item} /> : <Missing />
@@ -55,7 +63,7 @@ export function ExtensionsView(): React.JSX.Element {
 
 function Missing(): React.JSX.Element {
   const { t } = useI18n()
-  return <div className="provider-detail provider-detail--empty">{t('extensions.detailEmpty')}</div>
+  return <div className="ext-detail ext-detail--empty">{t('extensions.detailEmpty')}</div>
 }
 
 function DetailHead({
@@ -64,28 +72,31 @@ function DetailHead({
   id,
   name,
   enabled,
-  source = 'custom'
+  source = 'custom',
+  mono = false
 }: {
   icon: LucideIcon
-  kind: 'skill' | 'mcp' | 'subagent'
+  kind: 'skill' | 'mcp' | 'subagent' | 'persona'
   id: string
   name: string
   enabled: boolean
   /** 内置项（source='builtin'）隐藏删除与启停，改渲染「内置」徽标。 */
   source?: 'builtin' | 'custom'
+  /** 名字用等宽（id 型：技能 / MCP / 子智能体）。人名型（提示词）用无衬线。 */
+  mono?: boolean
 }): React.JSX.Element {
   const { t } = useI18n()
   const { toggle, remove } = useExtensions()
   const builtin = source === 'builtin'
   return (
-    <header className="provider-detail__head">
+    <header className="ext-detail__head">
       <span className="ext-detail__icon">
         <Icon size={18} />
       </span>
-      <h2 className="provider-detail__name">{name}</h2>
-      <span className="scope-badge">{t('common.global')}</span>
-      {builtin && <span className="scope-badge">{t('extensions.builtin')}</span>}
-      <div className="provider-detail__spacer" />
+      <h2 className={`ext-detail__name${mono ? ' ext-detail__name--mono' : ''}`}>{name}</h2>
+      <span className="ext-detail__scope">{t('common.global')}</span>
+      {builtin && <span className="ext-detail__scope">{t('extensions.builtin')}</span>}
+      <span className="ext-detail__spacer" />
       {!builtin && (
         <>
           <button
@@ -95,7 +106,7 @@ function DetailHead({
           >
             <Trash2 size={16} />
           </button>
-          <span className="provider-detail__enable">{t('extensions.enable')}</span>
+          <span className="ext-detail__enable">{t('extensions.enable')}</span>
           <Switch checked={enabled} onChange={() => toggle(kind, id)} />
         </>
       )}
@@ -105,33 +116,68 @@ function DetailHead({
 
 function NameDescFields({
   kind,
-  item
+  item,
+  withDesc = true
 }: {
-  kind: 'skill' | 'mcp' | 'subagent'
+  kind: 'skill' | 'mcp' | 'subagent' | 'persona'
   item: { id: string; name: string; desc: string }
+  /**
+   * 描述是否可编辑。仅**子智能体**为 true——其描述会注入 `run_subagent` 工具枚举，
+   * 是主智能体的路由依据。MCP（服务器级 desc）与提示词的描述**都不进模型上下文**，
+   * 属纯冗余字段，故隐藏不再让用户填。
+   */
+  withDesc?: boolean
 }): React.JSX.Element {
   const { t } = useI18n()
   const { update } = useExtensions()
   return (
     <>
-      <div className="field">
-        <label className="field__label">{t('extensions.name')}</label>
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.name')}</label>
         <input
-          className="input"
+          className="ext-input"
           value={item.name}
           onChange={(e) => update(kind, item.id, { name: e.target.value })}
         />
       </div>
-      <div className="field">
-        <label className="field__label">{t('extensions.description')}</label>
-        <input
-          className="input"
-          placeholder={t('extensions.descPlaceholder')}
-          value={item.desc}
-          onChange={(e) => update(kind, item.id, { desc: e.target.value })}
+      {withDesc && (
+        <div className="ext-field">
+          <label className="ext-field__label">{t('extensions.description')}</label>
+          <input
+            className="ext-input"
+            placeholder={t('extensions.descPlaceholder')}
+            value={item.desc}
+            onChange={(e) => update(kind, item.id, { desc: e.target.value })}
+          />
+        </div>
+      )}
+    </>
+  )
+}
+
+/**
+ * Agent 提示词详情：可编辑。名称/描述 + 一段追加进主智能体系统提示词的提示词正文。
+ * 已启用者在每轮对话前追加进主智能体系统提示词（多条叠加；仅主智能体，不影响子智能体）。
+ */
+function PersonaDetail({ item }: { item: Persona }): React.JSX.Element {
+  const { t } = useI18n()
+  const { update } = useExtensions()
+  return (
+    <section className="ext-detail" key={item.id}>
+      <DetailHead icon={Drama} kind="persona" id={item.id} name={item.name} enabled={item.enabled} />
+      <NameDescFields kind="persona" item={item} withDesc={false} />
+      <div className="ext-field ext-field--grow">
+        <label className="ext-field__label">{t('extensions.personaPrompt')}</label>
+        <p className="ext-field__note">{t('extensions.personaPromptHint')}</p>
+        <textarea
+          className="ext-area"
+          rows={10}
+          placeholder={t('extensions.personaPromptPlaceholder')}
+          value={item.prompt}
+          onChange={(e) => update('persona', item.id, { prompt: e.target.value })}
         />
       </div>
-    </>
+    </section>
   )
 }
 
@@ -143,7 +189,7 @@ function SkillDetail({ item }: { item: Skill }): React.JSX.Element {
   const { t } = useI18n()
   const builtin = item.source === 'builtin'
   return (
-    <section className="provider-detail" key={item.id}>
+    <section className="ext-detail" key={item.id}>
       <DetailHead
         icon={Sparkles}
         kind="skill"
@@ -151,29 +197,30 @@ function SkillDetail({ item }: { item: Skill }): React.JSX.Element {
         name={item.name}
         enabled={item.enabled}
         source={item.source}
+        mono
       />
-      {builtin && <p className="field__note">{t('extensions.createSkillHint')}</p>}
-      <div className="field">
-        <label className="field__label">{t('extensions.description')}</label>
+      {builtin && <p className="ext-field__note">{t('extensions.createSkillHint')}</p>}
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.description')}</label>
         <p className="ext-detail__text">
           {item.desc || <span className="ext-detail__muted">{t('extensions.descEmpty')}</span>}
         </p>
       </div>
-      <div className="field">
-        <label className="field__label">{t('extensions.trigger')}</label>
-        <p className="ext-detail__text">
-          {item.trigger || <span className="ext-detail__muted">{t('extensions.triggerEmpty')}</span>}
-        </p>
-        <p className="field__note">
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.trigger')}</label>
+        {item.trigger && <p className="ext-detail__text">{item.trigger}</p>}
+        <p className="ext-field__note">
           {t('extensions.triggerHint')} <code className="field__kbd">/{item.name}</code>
         </p>
       </div>
-      <div className="field">
-        <label className="field__label">{t('extensions.allowedTools')}</label>
-        <ToolTags tools={item.allowedTools} />
-      </div>
-      <div className="field">
-        <label className="field__label">{t('extensions.instructions')}</label>
+      {item.allowedTools.length > 0 && (
+        <div className="ext-field">
+          <label className="ext-field__label">{t('extensions.allowedTools')}</label>
+          <ToolTags tools={item.allowedTools} />
+        </div>
+      )}
+      <div className="ext-field ext-field--grow">
+        <label className="ext-field__label">{t('extensions.instructions')}</label>
         {item.instructions.trim() ? (
           <div className="ext-detail__md">
             <Markdown text={item.instructions} />
@@ -188,11 +235,12 @@ function SkillDetail({ item }: { item: Skill }): React.JSX.Element {
 
 // ── MCP 详情 ────────────────────────────────────────────────────────────────
 
-const STATUS_TONE: Record<McpStatus, string> = {
-  connected: 'var(--success)',
-  connecting: 'var(--warning)',
-  error: 'var(--danger)',
-  disconnected: 'var(--border-strong)'
+/** 运行期状态字形（面板 / 详情共用的克制视觉：● 连接 / ! 错 / ○ 断）。 */
+const STATUS_GLYPH: Record<McpStatus, string> = {
+  connected: '●',
+  connecting: '●',
+  error: '!',
+  disconnected: '○'
 }
 
 function McpDetail({ item }: { item: McpServer }): React.JSX.Element {
@@ -209,27 +257,26 @@ function McpDetail({ item }: { item: McpServer }): React.JSX.Element {
   }
 
   return (
-    <section className="provider-detail" key={item.id}>
-      <DetailHead icon={Plug} kind="mcp" id={item.id} name={item.name} enabled={item.enabled} />
+    <section className="ext-detail" key={item.id}>
+      <DetailHead icon={Plug} kind="mcp" id={item.id} name={item.name} enabled={item.enabled} mono />
 
-      <div className="mcp-status">
-        <span className="ext-dot" style={{ color: STATUS_TONE[item.status] }} />
-        <span className="mcp-status__label">{t(`extensions.status.${item.status}`)}</span>
-        {item.status === 'connected' && item.toolCount > 0 && (
-          <span className="mcp-status__count">
-            {item.toolCount} {t('extensions.tools')}
-          </span>
-        )}
-        <div className="provider-detail__spacer" />
-        <button className="btn btn--sm" onClick={() => mcpTest(item.id)}>
+      <div className="ext-status">
+        <span className={`ext-status__live ext-status__live--${item.status}`}>
+          {STATUS_GLYPH[item.status]} {t(`extensions.status.${item.status}`)}
+          {item.status === 'connected' && item.toolCount > 0
+            ? ` · ${item.toolCount} ${t('extensions.tools')}`
+            : ''}
+        </span>
+        <span className="ext-detail__spacer" />
+        <button className="ext-linkbtn" onClick={() => mcpTest(item.id)}>
           {t('extensions.test')}
         </button>
         {item.status === 'connected' ? (
-          <button className="btn btn--sm" onClick={() => mcpDisconnect(item.id)}>
+          <button className="ext-linkbtn" onClick={() => mcpDisconnect(item.id)}>
             {t('extensions.disconnect')}
           </button>
         ) : (
-          <button className="btn btn--sm" onClick={() => mcpConnect(item.id)}>
+          <button className="ext-linkbtn" onClick={() => mcpConnect(item.id)}>
             {t('extensions.connect')}
           </button>
         )}
@@ -238,12 +285,12 @@ function McpDetail({ item }: { item: McpServer }): React.JSX.Element {
         <div className="mcp-error">{item.lastError}</div>
       )}
 
-      <NameDescFields kind="mcp" item={item} />
+      <NameDescFields kind="mcp" item={item} withDesc={false} />
 
-      <div className="field">
-        <label className="field__label">{t('extensions.transport')}</label>
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.transport')}</label>
         <select
-          className="select"
+          className="ext-select ext-select--mono"
           value={item.transport}
           onChange={(e) =>
             update('mcp', item.id, { transport: e.target.value as McpServer['transport'] })
@@ -257,18 +304,18 @@ function McpDetail({ item }: { item: McpServer }): React.JSX.Element {
 
       {isStdio ? (
         <>
-          <div className="field">
-            <label className="field__label">{t('extensions.command')}</label>
+          <div className="ext-field">
+            <label className="ext-field__label">{t('extensions.command')}</label>
             <input
-              className="input"
+              className="ext-input ext-input--mono"
               placeholder={t('extensions.commandPlaceholder')}
               value={item.command}
               onChange={(e) => update('mcp', item.id, { command: e.target.value })}
             />
           </div>
           <ArgsField item={item} />
-          <div className="field">
-            <label className="field__label">{t('extensions.env')}</label>
+          <div className="ext-field">
+            <label className="ext-field__label">{t('extensions.env')}</label>
             <KvEditor
               rows={item.env}
               onChange={(rows) => update('mcp', item.id, { env: rows })}
@@ -278,17 +325,17 @@ function McpDetail({ item }: { item: McpServer }): React.JSX.Element {
         </>
       ) : (
         <>
-          <div className="field">
-            <label className="field__label">{t('extensions.url')}</label>
+          <div className="ext-field">
+            <label className="ext-field__label">{t('extensions.url')}</label>
             <input
-              className="input"
+              className="ext-input ext-input--mono"
               placeholder={t('extensions.urlPlaceholder')}
               value={item.url}
               onChange={(e) => update('mcp', item.id, { url: e.target.value })}
             />
           </div>
-          <div className="field">
-            <label className="field__label">{t('extensions.headers')}</label>
+          <div className="ext-field">
+            <label className="ext-field__label">{t('extensions.headers')}</label>
             <KvEditor
               rows={item.headers}
               onChange={(rows) => update('mcp', item.id, { headers: rows })}
@@ -298,10 +345,12 @@ function McpDetail({ item }: { item: McpServer }): React.JSX.Element {
         </>
       )}
 
-      {secretWarn && <p className="field__note field__note--warn">{t('extensions.secretUnavailable')}</p>}
+      {secretWarn && (
+        <p className="ext-field__note ext-field__note--warn">{t('extensions.secretUnavailable')}</p>
+      )}
 
-      <div className="field">
-        <label className="field__label">{t('extensions.discoveredTools')}</label>
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.discoveredTools')}</label>
         {item.tools.length === 0 ? (
           <div className="ext-tools--empty">{t('extensions.noToolsYet')}</div>
         ) : (
@@ -327,10 +376,10 @@ function ArgsField({ item }: { item: McpServer }): React.JSX.Element {
   const { update } = useExtensions()
   const [text, setText] = useState(item.args.join('\n'))
   return (
-    <div className="field">
-      <label className="field__label">{t('extensions.args')}</label>
+    <div className="ext-field">
+      <label className="ext-field__label">{t('extensions.args')}</label>
       <textarea
-        className="textarea"
+        className="ext-area ext-area--mono"
         rows={3}
         placeholder={t('extensions.argsPlaceholder')}
         value={text}
@@ -397,14 +446,14 @@ function KvEditor({
       {rows.map((r, i) => (
         <div className="kv-row" key={i}>
           <input
-            className="input kv-row__key"
+            className="ext-input ext-input--mono kv-row__key"
             placeholder={t('extensions.kvKey')}
             value={r.key}
             onChange={(e) => setRow(i, { key: e.target.value })}
           />
           {r.secret ? (
             <input
-              className="input kv-row__val"
+              className="ext-input ext-input--mono kv-row__val"
               type="password"
               placeholder={t('extensions.secretPlaceholder')}
               value={drafts[i] ?? ''}
@@ -413,7 +462,7 @@ function KvEditor({
             />
           ) : (
             <input
-              className="input kv-row__val"
+              className="ext-input ext-input--mono kv-row__val"
               placeholder={t('extensions.kvValue')}
               value={r.value}
               onChange={(e) => setRow(i, { value: e.target.value })}
@@ -475,13 +524,13 @@ function SubAgentDetail({ item }: { item: SubAgent }): React.JSX.Element {
   }
 
   return (
-    <section className="provider-detail" key={item.id}>
-      <DetailHead icon={Bot} kind="subagent" id={item.id} name={item.name} enabled={item.enabled} />
+    <section className="ext-detail" key={item.id}>
+      <DetailHead icon={Bot} kind="subagent" id={item.id} name={item.name} enabled={item.enabled} mono />
       <NameDescFields kind="subagent" item={item} />
-      <div className="field">
-        <label className="field__label">{t('extensions.model')}</label>
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.model')}</label>
         <select
-          className="select"
+          className="ext-select"
           value={item.model}
           onChange={(e) => update('subagent', item.id, { model: e.target.value })}
         >
@@ -498,9 +547,9 @@ function SubAgentDetail({ item }: { item: SubAgent }): React.JSX.Element {
           ))}
         </select>
       </div>
-      <div className="field">
-        <label className="field__label">{t('extensions.tools')}</label>
-        <p className="field__note">{t('extensions.toolsHint')}</p>
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.tools')}</label>
+        <p className="ext-field__note">{t('extensions.toolsHint')}</p>
         <ToolPickGroup
           title={t('extensions.builtinTools')}
           tools={BUILTIN_AGENT_TOOLS.map((name) => ({ value: name, label: name }))}
@@ -524,10 +573,10 @@ function SubAgentDetail({ item }: { item: SubAgent }): React.JSX.Element {
           />
         )}
       </div>
-      <div className="field">
-        <label className="field__label">{t('extensions.systemPrompt')}</label>
+      <div className="ext-field ext-field--grow">
+        <label className="ext-field__label">{t('extensions.systemPrompt')}</label>
         <textarea
-          className="textarea"
+          className="ext-area"
           rows={6}
           value={item.prompt}
           onChange={(e) => update('subagent', item.id, { prompt: e.target.value })}
@@ -578,7 +627,7 @@ function ToolTags({ tools }: { tools: string[] }): React.JSX.Element {
   return (
     <div className="ext-tools">
       {tools.map((tool) => (
-        <span key={tool} className="model-tag">
+        <span key={tool} className="ext-tag">
           {tool}
         </span>
       ))}

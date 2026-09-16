@@ -109,7 +109,11 @@ export function httpError(status: number, body: string): NormalizedError {
   if (status === 429)
     return { kind: 'rate_limit', retryable: true, message: '触发限流（429），请稍后重试。' }
   if (status === 400 && /context|token|length|maximum/i.test(body))
-    return { kind: 'context_length', retryable: false, message: '上下文超出模型上限。' }
+    return {
+      kind: 'context_length',
+      retryable: false,
+      message: '对话长度已超出该模型的上下文上限，无法继续。请新建对话，或换用上下文更大的模型后重试。'
+    }
   if (status >= 500)
     return { kind: 'server', retryable: true, message: `服务端错误（${status}）。` }
   return {

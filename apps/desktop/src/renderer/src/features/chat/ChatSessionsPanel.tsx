@@ -22,7 +22,7 @@ function useRelativeTime(): (ts: number) => string {
 /** 对话历史会话列表（按项目，真实持久化数据）。 */
 export function ChatSessionsPanel(): React.JSX.Element {
   const { t } = useI18n()
-  const { sessions, currentSessionId, selectSession, newSession, deleteSession, streaming } =
+  const { sessions, currentSessionId, selectSession, newSession, deleteSession, sessionStates } =
     useChat()
   const rel = useRelativeTime()
 
@@ -31,12 +31,8 @@ export function ChatSessionsPanel(): React.JSX.Element {
       <PanelHeader
         title={t('activity.chat')}
         actions={
-          <button
-            className="icon-btn"
-            title={t('chat.newChat')}
-            onClick={newSession}
-            disabled={streaming}
-          >
+          // 新建随时可用：即使别的会话正在流式（多对话并行）。
+          <button className="icon-btn" title={t('chat.newChat')} onClick={newSession}>
             <Plus size={16} />
           </button>
         }
@@ -45,32 +41,44 @@ export function ChatSessionsPanel(): React.JSX.Element {
         {sessions.length === 0 ? (
           <div className="sidepanel__empty">{t('chat.noSessions')}</div>
         ) : (
-          sessions.map((s) => (
-            <div
-              key={s.id}
-              className={`list-row${s.id === currentSessionId ? ' is-selected' : ''}`}
-              onClick={() => selectSession(s.id)}
-              role="button"
-              tabIndex={0}
-            >
-              <span className="list-row__icon">
-                <MessageSquare size={14} />
-              </span>
-              <span className="list-row__label">{s.title || t('chat.untitled')}</span>
-              <span className="list-row__meta">{rel(s.updatedAt)}</span>
-              <button
-                className="list-row__action"
-                title={t('chat.delete')}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  deleteSession(s.id)
-                }}
-                disabled={streaming}
+          sessions.map((s) => {
+            // 待处理（有未答权限/提问）优先于生成中；同一会话可同时具备时以待处理为准。
+            const st = sessionStates[s.id]
+            const status = st?.attention ? 'attention' : st?.streaming ? 'streaming' : null
+            return (
+              <div
+                key={s.id}
+                className={`list-row${s.id === currentSessionId ? ' is-selected' : ''}`}
+                onClick={() => selectSession(s.id)}
+                role="button"
+                tabIndex={0}
               >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))
+                <span className="list-row__icon">
+                  <MessageSquare size={14} />
+                </span>
+                <span className="list-row__label">{s.title || t('chat.untitled')}</span>
+                {status && (
+                  <span
+                    className={`list-row__status is-${status}`}
+                    title={t(status === 'attention' ? 'chat.session.attention' : 'chat.session.running')}
+                  >
+                    {status === 'attention' ? '!' : ''}
+                  </span>
+                )}
+                <span className="list-row__meta">{rel(s.updatedAt)}</span>
+                <button
+                  className="list-row__action"
+                  title={t('chat.delete')}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    deleteSession(s.id)
+                  }}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            )
+          })
         )}
       </div>
     </>

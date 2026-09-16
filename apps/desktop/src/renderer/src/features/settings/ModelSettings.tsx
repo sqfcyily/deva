@@ -56,7 +56,10 @@ export function ModelSettings(): React.JSX.Element {
   // 从服务端清单多选待添加的模型 id 集合（未落盘的选择态）
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [keyDraft, setKeyDraft] = useState('')
-  const [savingKey, setSavingKey] = useState(false)
+  // 密钥自动保存的状态指示（替代原「保存」按钮的反馈）
+  const [keySaveState, setKeySaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
+  // 输入防抖计时器：边打字边落盘，失焦/回车/测试前立即冲刷
+  const keyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [nameDraft, setNameDraft] = useState('')
   const [testState, setTestState] = useState<{ status: TestStatus; message: string }>({
     status: 'idle',
@@ -71,7 +74,9 @@ export function ModelSettings(): React.JSX.Element {
 
   // 切换服务商：清空各类草稿与瞬态结果（避免跨服务商残留）
   useEffect(() => {
+    clearKeyTimer() // 作废上一服务商的在途自动保存
     setKeyDraft('')
+    setKeySaveState('idle')
     setShowKey(false)
     setAddingModel(false)
     setNewModelId('')
@@ -81,6 +86,9 @@ export function ModelSettings(): React.JSX.Element {
     setFetchState({ status: 'idle', list: [] })
     fetchTokenRef.current++
   }, [selectedProviderId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 卸载时清理防抖计时器，避免泄漏与卸载后 setState
+  useEffect(() => () => clearKeyTimer(), [])
 
   const seedHost = useMemo(
     () => seedProviders.find((p) => p.id === selectedProviderId)?.apiHost,
@@ -148,7 +156,7 @@ export function ModelSettings(): React.JSX.Element {
       setTestState({ status: 'fail', message: t('models.testNeedKey') })
       return
     }
-    if (draft) await saveKey(selectedProvider.id)
+    if (draft) await flushKey(selectedProvider.id)
     setTestState({ status: 'testing', message: '' })
     try {
       const r = await window.deva.provider.test({
@@ -234,27 +242,39 @@ export function ModelSettings(): React.JSX.Element {
     confirmAddModel()
   }
 
-  const saveKey = async (providerId: string): Promise<void> => {
-    const key = keyDraft.trim()
-    if (!key) return
-    setSavingKey(true)
-    try {
-      await setApiKey(providerId, key)
-      setKeyDraft('')
-      setShowKey(false)
-    } finally {
-      setSavingKey(false)
+  function clearKeyTimer(): void {
+    if (keyTimerRef.current) {
+      clearTimeout(keyTimerRef.current)
+      keyTimerRef.current = null
     }
   }
 
-  const clearKey = async (providerId: string): Promise<void> => {
-    setSavingKey(true)
-    try {
-      await setApiKey(providerId, '')
-      setKeyDraft('')
-    } finally {
-      setSavingKey(false)
-    }
+  // 真正落盘：仅保存非空草稿（清空交由「清除」按钮，避免误删已配置密钥）。
+  // 不清空 keyDraft（自动保存要边打字边存，清空会打断输入）；切换服务商时才清。
+  const doSaveKey = async (providerId: string, value: string): Promise<void> => {
+    const key = value.trim()
+    if (!key) return
+    setKeySaveState('saving')
+    const res = await setApiKey(providerId, key)
+    setKeySaveState(res.ok ? 'saved' : 'idle')
+  }
+
+  // 输入变化：更新草稿并防抖自动保存（~600ms）
+  const onKeyChange = (providerId: string, value: string): void => {
+    setKeyDraft(value)
+    setKeySaveState('idle')
+    clearKeyTimer()
+    if (!value.trim()) return
+    keyTimerRef.current = setTimeout(() => {
+      keyTimerRef.current = null
+      void doSaveKey(providerId, value)
+    }, 600)
+  }
+
+  // 立即冲刷在途保存（失焦 / 回车 / 测试前调用）
+  const flushKey = async (providerId: string): Promise<void> => {
+    clearKeyTimer()
+    await doSaveKey(providerId, keyDraft)
   }
 
   return (
@@ -357,52 +377,47 @@ export function ModelSettings(): React.JSX.Element {
           <div className="field">
             <label className="field__label">
               {t('models.apiKey')}
-              {hasKey(selectedProvider.id) && (
+              {keySaveState === 'saving' ? (
+                <span className="key-status">{t('models.keySaving')}</span>
+              ) : keySaveState === 'saved' ? (
+                <span className="key-status">
+                  <ShieldCheck size={12} />
+                  {t('models.keySaved')}
+                </span>
+              ) : hasKey(selectedProvider.id) ? (
                 <span className="key-status">
                   <ShieldCheck size={12} />
                   {t('models.keyConfigured')}
                 </span>
-              )}
+              ) : null}
             </label>
             <div className="field__control">
-              <input
-                className="input"
-                type={showKey ? 'text' : 'password'}
-                placeholder={
-                  hasKey(selectedProvider.id)
-                    ? t('models.keyReplaceHint')
-                    : t('models.apiKeyPlaceholder')
-                }
-                value={keyDraft}
-                disabled={!secretsAvailable}
-                onChange={(e) => setKeyDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void saveKey(selectedProvider.id)
-                }}
-              />
-              <button
-                className="icon-btn"
-                title={showKey ? 'hide' : 'show'}
-                onClick={() => setShowKey((v) => !v)}
-              >
-                {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
-              </button>
-              <button
-                className="btn btn--primary btn--sm"
-                disabled={!keyDraft.trim() || savingKey || !secretsAvailable}
-                onClick={() => void saveKey(selectedProvider.id)}
-              >
-                {t('models.saveKey')}
-              </button>
-              {hasKey(selectedProvider.id) && (
+              {/* 眼睛按钮内嵌输入框右侧 */}
+              <div className="input-affix">
+                <input
+                  className="input input--affix-r"
+                  type={showKey ? 'text' : 'password'}
+                  placeholder={
+                    hasKey(selectedProvider.id)
+                      ? t('models.keyReplaceHint')
+                      : t('models.apiKeyPlaceholder')
+                  }
+                  value={keyDraft}
+                  disabled={!secretsAvailable}
+                  onChange={(e) => onKeyChange(selectedProvider.id, e.target.value)}
+                  onBlur={() => void flushKey(selectedProvider.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void flushKey(selectedProvider.id)
+                  }}
+                />
                 <button
-                  className="btn btn--ghost btn--sm"
-                  disabled={savingKey}
-                  onClick={() => void clearKey(selectedProvider.id)}
+                  className="input-affix__btn"
+                  title={showKey ? 'hide' : 'show'}
+                  onClick={() => setShowKey((v) => !v)}
                 >
-                  {t('models.clearKey')}
+                  {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
-              )}
+              </div>
             </div>
             {!secretsAvailable && <div className="field__warn">{t('models.secretsUnavailable')}</div>}
             {selectedProvider.docUrl && (

@@ -7,11 +7,13 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { ExtKind, Skill, McpServer, McpKV, SubAgent } from '../mock/extensions'
+import type { ExtKind, Skill, McpServer, McpKV, SubAgent, Persona } from '../mock/extensions'
 import type {
   SkillRecord,
   AgentRecord,
   AgentUpsertInput,
+  PersonaRecord,
+  PersonaUpsertInput,
   McpServerConfig,
   McpServerInput,
   McpServerView,
@@ -28,10 +30,10 @@ import { useDialog } from '../components/DialogProvider'
  * `deva.agents.list()` 读取 ~/.deva，增删改启停都落盘；MCP 还订阅 `deva.mcp.onStatus`
  * 实时打运行期状态补丁（连接/断开/错误）。子智能体经 `run_subagent` 工具在主进程内递归派生。
  */
-type AnyExt = Skill | McpServer | SubAgent
-// 三类各自的部分补丁（并集，非交集）：`tools` 在 McpServer 与 SubAgent 上类型不同
+type AnyExt = Skill | McpServer | SubAgent | Persona
+// 各类各自的部分补丁（并集，非交集）：`tools` 在 McpServer 与 SubAgent 上类型不同
 // （McpTool[] vs string[]），交集会退化为不可满足的 `McpTool[] & string[]`，故用并集。
-type ExtPatch = Partial<Skill> | Partial<McpServer> | Partial<SubAgent>
+type ExtPatch = Partial<Skill> | Partial<McpServer> | Partial<SubAgent> | Partial<Persona>
 
 export interface Selection {
   kind: ExtKind
@@ -42,6 +44,7 @@ interface ExtensionsContextValue {
   skills: Skill[]
   mcp: McpServer[]
   subagents: SubAgent[]
+  personas: Persona[]
   selected: Selection | null
   select: (kind: ExtKind, id: string) => void
   toggle: (kind: ExtKind, id: string) => void
@@ -102,6 +105,30 @@ function subToInput(a: SubAgent): AgentUpsertInput {
     tools: a.tools,
     prompt: a.prompt,
     enabled: a.enabled
+  }
+}
+
+/** PersonaRecord（主进程）→ 渲染层 Persona（description → desc + 全局/自定义徽标字段）。 */
+function personaRecToPersona(rec: PersonaRecord): Persona {
+  return {
+    id: rec.id,
+    name: rec.name,
+    desc: rec.description,
+    prompt: rec.prompt,
+    scope: 'global',
+    source: 'custom',
+    enabled: rec.enabled
+  }
+}
+
+/** Persona → upsert 入参（desc → description）。 */
+function personaToInput(p: Persona): PersonaUpsertInput {
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.desc,
+    prompt: p.prompt,
+    enabled: p.enabled
   }
 }
 
@@ -192,6 +219,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
   const [skills, setSkills] = useState<Skill[]>([])
   const [mcp, setMcp] = useState<McpServer[]>([])
   const [subagents, setSubagents] = useState<SubAgent[]>([])
+  const [personas, setPersonas] = useState<Persona[]>([])
   const [selected, setSelected] = useState<Selection | null>(null)
 
   // 最新 mcp 快照（供 onStatus 回调 / update 合并读取，避免闭包过期）。
@@ -264,9 +292,26 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
     }
   }, [])
 
+  // 挂载：从磁盘载入 Agent 提示词（Personas）。
+  useEffect(() => {
+    let alive = true
+    void window.deva?.personas
+      ?.list()
+      .then((list) => {
+        if (alive) setPersonas(list.map(personaRecToPersona))
+      })
+      .catch(() => {
+        /* 读失败 → 保持空态 */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
   const setterFor = (kind: ExtKind): React.Dispatch<React.SetStateAction<AnyExt[]>> => {
     if (kind === 'skill') return setSkills as React.Dispatch<React.SetStateAction<AnyExt[]>>
     if (kind === 'mcp') return setMcp as React.Dispatch<React.SetStateAction<AnyExt[]>>
+    if (kind === 'persona') return setPersonas as React.Dispatch<React.SetStateAction<AnyExt[]>>
     return setSubagents as React.Dispatch<React.SetStateAction<AnyExt[]>>
   }
 
@@ -318,10 +363,10 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
           name: '新 MCP 服务',
           description: '',
           transport: 'stdio',
-          enabled: false
+          enabled: true
         })
         if (!cfg) return
-        const m = configToMcp(cfg, false)
+        const m = configToMcp(cfg, true)
         setMcp((list) => [...list, m])
         setSelected({ kind: 'mcp', id: m.id })
       })()
@@ -335,7 +380,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
           model: '',
           tools: [],
           prompt: '',
-          enabled: false
+          enabled: true
         })
         if (!rec) return
         const a = agentRecToSub(rec)
@@ -344,10 +389,26 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       })()
     }
 
+    const addPersona = (): void => {
+      void (async () => {
+        const rec = await window.deva?.personas?.upsert({
+          name: '新提示词',
+          description: '',
+          prompt: '',
+          enabled: true
+        })
+        if (!rec) return
+        const p = personaRecToPersona(rec)
+        setPersonas((list) => [...list, p])
+        setSelected({ kind: 'persona', id: p.id })
+      })()
+    }
+
     return {
       skills,
       mcp,
       subagents,
+      personas,
       selected,
       select: (kind, id) => setSelected({ kind, id }),
       toggle: (kind, id) => {
@@ -361,6 +422,9 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
           // 启停即连接 / 断开（状态经 onStatus 回流）。
           const cur = mcpRef.current.find((m) => m.id === id)
           if (cur) void window.deva?.mcp?.setEnabled(id, !cur.enabled).catch(() => {})
+        } else if (kind === 'persona') {
+          const cur = personas.find((p) => p.id === id)
+          if (cur) void window.deva?.personas?.setEnabled(id, !cur.enabled).catch(() => {})
         } else {
           const cur = subagents.find((a) => a.id === id)
           if (cur) void window.deva?.agents?.setEnabled(id, !cur.enabled).catch(() => {})
@@ -377,6 +441,12 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
             void window.deva?.mcp
               ?.upsert(mcpToInput({ ...cur, ...(patch as Partial<McpServer>) }))
               .catch(() => {})
+        } else if (kind === 'persona') {
+          const cur = personas.find((p) => p.id === id)
+          if (cur)
+            void window.deva?.personas
+              ?.upsert(personaToInput({ ...cur, ...(patch as Partial<Persona>) }))
+              .catch(() => {})
         } else {
           const cur = subagents.find((a) => a.id === id)
           if (cur)
@@ -392,12 +462,14 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         setSelected((cur) => (cur && cur.kind === kind && cur.id === id ? null : cur))
         if (kind === 'skill') void window.deva?.skills?.remove(id).catch(() => {})
         else if (kind === 'mcp') void window.deva?.mcp?.remove(id).catch(() => {})
+        else if (kind === 'persona') void window.deva?.personas?.remove(id).catch(() => {})
         else void window.deva?.agents?.remove(id).catch(() => {})
       },
       add: (kind) => {
-        // 技能的「+」即上传导入（无手写空建）；MCP / 子智能体仍为可编辑空建。
+        // 技能的「+」即上传导入（无手写空建）；MCP / 子智能体 / Agent 提示词为可编辑空建。
         if (kind === 'skill') return importSkill()
         if (kind === 'mcp') return addMcp()
+        if (kind === 'persona') return addPersona()
         return addSubagent()
       },
       importSkill,
@@ -413,7 +485,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         }
       }
     }
-  }, [skills, mcp, subagents, selected, t, dialog])
+  }, [skills, mcp, subagents, personas, selected, t, dialog])
 
   return <ExtensionsContext.Provider value={value}>{children}</ExtensionsContext.Provider>
 }

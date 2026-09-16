@@ -18,6 +18,12 @@ export interface StoredSession {
   createdAt: number
   updatedAt: number
   messages: Message[]
+  /**
+   * 上一轮真实输入 token 数（来自 provider 的 usage.input）。
+   * 上下文压缩的**首选触发依据**（最准，天然覆盖图片/工具场景）；缺失时压缩逻辑回退字符估算。
+   * 压缩后清零（历史已缩短，旧计数失效）。见 services/compaction.ts。
+   */
+  lastInputTokens?: number
 }
 
 /** 会话元信息（左侧列表用，不含正文）。 */

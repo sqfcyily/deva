@@ -2,8 +2,6 @@ import {
   MessagesSquare,
   Files,
   GitBranch,
-  Database,
-  Server,
   Blocks,
   Settings,
   type LucideIcon
@@ -13,16 +11,12 @@ import {
 import { ChatView } from './chat/ChatView'
 import { EditorView } from './explorer/EditorView'
 import { GitDiffView } from './git/GitDiffView'
-import { TableDataView } from './database/TableDataView'
-import { SshSessionView } from './ssh/SshSessionView'
 import { ExtensionsView } from './extensions/ExtensionsView'
 import { SettingsView } from './settings/SettingsView'
 // 侧栏导航
 import { ChatSessionsPanel } from './chat/ChatSessionsPanel'
 import { ExplorerPanel } from './explorer/ExplorerPanel'
 import { GitPanel } from './git/GitPanel'
-import { DatabasePanel } from './database/DatabasePanel'
-import { SshPanel } from './ssh/SshPanel'
 import { ExtensionsPanel } from './extensions/ExtensionsPanel'
 
 export type FeatureScope = 'project' | 'global'
@@ -97,24 +91,6 @@ export const featureContributions: FeatureContribution[] = [
     showsTerminal: true,
     Sidebar: GitPanel,
     Center: GitDiffView
-  },
-  {
-    id: 'database',
-    icon: Database,
-    titleKey: 'activity.database',
-    order: 40,
-    scope: 'global',
-    Sidebar: DatabasePanel,
-    Center: TableDataView
-  },
-  {
-    id: 'ssh',
-    icon: Server,
-    titleKey: 'activity.ssh',
-    order: 50,
-    scope: 'global',
-    Sidebar: SshPanel,
-    Center: SshSessionView
   },
   {
     id: 'extensions',

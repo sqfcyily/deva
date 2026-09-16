@@ -273,6 +273,26 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 会话活动态角标：生成中=脉冲点，待处理=醒目「!」。位于标题与时间之间，不随悬停隐藏。 */
+.list-row__status {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.list-row__status.is-streaming {
+  border-radius: 50%;
+  /* 用 box-shadow 画一个 7px 实心圆点，避免额外的伪元素/子节点。 */
+  box-shadow: inset 0 0 0 3.5px var(--accent);
+  animation: deva-pulse 1.2s ease-in-out infinite;
+}
+.list-row__status.is-attention {
+  color: var(--warning);
+}
 .list-row__meta {
   flex-shrink: 0;
   font-size: 11px;
@@ -1746,6 +1766,25 @@ textarea {
   color: var(--danger, #e5484d);
   background: color-mix(in srgb, var(--danger, #e5484d) 14%, transparent);
 }
+/* 回合终止说明（截断/空回合）：弱化的警示提示，比红色错误更轻。 */
+.msg__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--warning, #f5a623) 35%, var(--border));
+  background: color-mix(in srgb, var(--warning, #f5a623) 8%, transparent);
+  color: var(--fg-muted);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.msg__notice svg {
+  flex-shrink: 0;
+  margin-top: 0.15em;
+  color: var(--warning, #f5a623);
+}
 .permission__resolved {
   font-size: 12px;
   font-weight: 600;
@@ -2598,6 +2637,43 @@ textarea {
   height: 28px;
   font-size: 12px;
 }
+/* 输入框内嵌右侧图标按钮（如密钥显隐眼睛） */
+.input-affix {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.input-affix .input {
+  width: 100%;
+}
+.input--affix-r {
+  padding-right: 34px;
+}
+.input-affix__btn {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.input-affix__btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.input-affix__btn:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+  cursor: default;
+}
 
 /* ============ Git 源代码管理 ============ */
 /* projmenu__item 在 TitleBar 用于 <div>，此处 git 菜单用于 <button>：补按钮复位 */
@@ -3355,27 +3431,6 @@ button.projmenu__item:disabled {
   width: 24px;
   height: 24px;
 }
-.ext-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-/* MCP 运行期状态着色（面板圆点 + 详情状态行共用） */
-.ext-dot--connected {
-  color: var(--success);
-}
-.ext-dot--disconnected {
-  color: var(--border-strong);
-}
-.ext-dot--error {
-  color: var(--danger);
-}
-.ext-dot--connecting {
-  color: var(--warning);
-  animation: ext-pulse 1.1s ease-in-out infinite;
-}
 @keyframes ext-pulse {
   0%,
   100% {
@@ -3385,19 +3440,12 @@ button.projmenu__item:disabled {
     opacity: 0.3;
   }
 }
-/* 面板行右侧计数（如已发现工具数） */
-.ext-count {
-  margin-right: 6px;
-  font-size: 11px;
-  color: var(--fg-subtle);
-}
+/* 详情头图标：去掉着色底盒，改扁平强调色描线（Codex 味：低装饰） */
 .ext-detail__icon {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  background: var(--accent-tint);
+  width: 22px;
+  height: 22px;
   color: var(--accent);
 }
 .textarea {
@@ -3452,17 +3500,6 @@ button.projmenu__item:disabled {
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
 }
-.ext-row-badge {
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  background: var(--accent-tint);
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 600;
-  vertical-align: middle;
-}
-
 /* ---------- 子智能体：工具多选筹码 ---------- */
 .tool-pick {
   margin-top: var(--space-2);
@@ -3484,8 +3521,8 @@ button.projmenu__item:disabled {
 .tool-chip {
   padding: 3px 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-pill, 999px);
-  background: var(--bg-inset);
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--fg-muted);
   font-size: 12px;
   font-family: var(--font-mono);
@@ -3506,21 +3543,6 @@ button.projmenu__item:disabled {
 }
 
 /* ---------- MCP 详情：状态行 / 键值编辑 / 工具清单 ---------- */
-.mcp-status {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  max-width: 620px;
-  margin-bottom: var(--space-4);
-}
-.mcp-status__label {
-  font-size: 13px;
-  color: var(--fg);
-}
-.mcp-status__count {
-  font-size: 12px;
-  color: var(--fg-subtle);
-}
 .mcp-error {
   max-width: 620px;
   margin: calc(-1 * var(--space-2)) 0 var(--space-4);
@@ -3563,30 +3585,310 @@ button.projmenu__item:disabled {
 .mcp-tools {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
   max-width: 620px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
+/* 已发现工具：等宽机器名（左）+ 散文描述（右），行间细线，去卡片盒 */
 .mcp-tools__item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
+  display: grid;
+  grid-template-columns: minmax(120px, 34%) 1fr;
+  gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+.mcp-tools__item:last-child {
+  border-bottom: none;
 }
 .mcp-tools__name {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--accent);
+  word-break: break-word;
 }
 .mcp-tools__desc {
   font-size: 12px;
   color: var(--fg-subtle);
   line-height: 1.5;
+}
+
+/* ============ 扩展：Codex 味去表单化排版 ============ */
+
+/* ---------- 侧栏：分组标题 + 安静单行（名字 + 可选 mono 小标 + 克制字形） ---------- */
+.ext-section__title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+}
+.ext-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px var(--space-4);
+  cursor: pointer;
+  user-select: none;
+}
+.ext-row:hover {
+  background: var(--bg-inset);
+}
+.ext-row.is-selected {
+  background: var(--bg-selected);
+}
+.ext-row__main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.ext-row__name {
+  font-size: 13px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ext-row.is-off .ext-row__name {
+  color: var(--fg-subtle);
+}
+.ext-row__tag {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+.ext-row__glyph {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+}
+.ext-glyph--on {
+  color: var(--accent);
+}
+.ext-glyph--off {
+  color: var(--border-strong);
+}
+.ext-glyph--error {
+  color: var(--danger);
+  font-weight: 700;
+}
+.ext-glyph--connecting {
+  color: var(--accent);
+  animation: ext-pulse 1.1s ease-in-out infinite;
+}
+
+/* ---------- 详情：容器 + 头部（无底线，低装饰） ---------- */
+.ext-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: var(--space-5) var(--space-6);
+  user-select: text;
+}
+/* 提示词字段：吃满详情剩余高度，让文本域随窗口拉高、消除下方留白 */
+.ext-field--grow {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ext-field--grow .ext-area,
+.ext-field--grow .ext-detail__md {
+  flex: 1 1 auto;
+  min-height: 160px;
+}
+/* 技能指令（只读 Markdown）撑满时解除固定高度上限，改由容器高度约束 + 内部滚动 */
+.ext-field--grow .ext-detail__md {
+  max-height: none;
+}
+.ext-detail--empty {
+  display: grid;
+  place-items: center;
+  color: var(--fg-subtle);
+  font-size: 13px;
+}
+.ext-detail__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+.ext-detail__name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+}
+/* id 型名字（技能 / MCP / 子智能体）走等宽；人名型（提示词）保持无衬线 */
+.ext-detail__name--mono {
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+.ext-detail__scope {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+}
+.ext-detail__spacer {
+  flex: 1 1 auto;
+}
+.ext-detail__enable {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* ---------- 字段：小灰标签 + 盒式输入（与模型页 .input 同风格） ---------- */
+.ext-field {
+  max-width: 620px;
+  margin-bottom: var(--space-4);
+}
+.ext-field__label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+}
+.ext-field__note {
+  margin: 0 0 var(--space-2);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-subtle);
+}
+.ext-field__note--warn {
+  color: var(--warning);
+}
+
+.ext-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 13px;
+  font-family: var(--font-sans);
+}
+.ext-input::placeholder {
+  color: var(--fg-subtle);
+}
+.ext-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+/* 机器字段（命令 / 参数 / env / url / headers）走等宽 */
+.ext-input--mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.ext-area {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  resize: vertical;
+}
+.ext-area:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.ext-area--mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ext-select {
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+.ext-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.ext-select--mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* ---------- MCP 状态行：单行 mono，动作走文字按钮 ---------- */
+.ext-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 620px;
+  margin-bottom: var(--space-4);
+}
+.ext-status__live {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.ext-status__live--connected {
+  color: var(--success);
+}
+.ext-status__live--connecting {
+  color: var(--accent);
+}
+.ext-status__live--error {
+  color: var(--danger);
+}
+.ext-status__live--disconnected {
+  color: var(--fg-subtle);
+}
+.ext-linkbtn {
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ext-linkbtn:hover {
+  text-decoration: underline;
+}
+
+/* ---------- 只读工具标签（技能 allowedTools 回显） ---------- */
+.ext-tag {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 /* ---------- 资源管理器：空状态 ---------- */

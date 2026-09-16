@@ -72,7 +72,8 @@ export async function* streamAnthropic(
       description: t.description,
       input_schema: t.inputSchema
     })),
-    max_tokens: req.maxTokens ?? 4096,
+    // 输出上限：未指定时给 8192（现代 Claude 模型普遍支持，显著降低长回复被截断的概率）。
+    max_tokens: req.maxTokens ?? 8192,
     temperature: req.temperature,
     stream: true
   }

@@ -38,6 +38,13 @@ export interface ChatSendRequest {
   attachments?: string[]
 }
 
+/** 手动 /compact 压缩请求（无用户文本、无后续模型轮；locale 在主进程解析）。 */
+export interface ChatCompactRequest {
+  sessionId: string
+  model: ChatModelConfig
+  workspaceRoot: string | null
+}
+
 /** 附件类型（与 services/attachments.ts 对齐）。 */
 export type AttachmentKind = 'image' | 'document' | 'text' | 'unsupported'
 
@@ -129,6 +136,25 @@ export interface AgentUpsertInput {
   description?: string
   model?: string
   tools?: string[]
+  prompt?: string
+  enabled?: boolean
+}
+
+/** Agent 提示词记录（与 services/personas.ts 的 PersonaRecord 对齐）。 */
+export interface PersonaRecord {
+  id: string
+  name: string
+  description: string
+  /** 正文 = 追加进主智能体系统提示词的内容。 */
+  prompt: string
+  enabled: boolean
+}
+
+/** Agent 提示词新建/更新入参（有 id 覆盖，无 id 新建）。 */
+export interface PersonaUpsertInput {
+  id?: string
+  name: string
+  description?: string
   prompt?: string
   enabled?: boolean
 }
@@ -339,6 +365,13 @@ export type ChatStreamEvent =
   | { type: 'reconnecting'; attempt: number; max: number }
   | { type: 'stream_reset' }
   | { type: 'error'; kind: string; message: string }
+  /** 上下文压缩结果（自动或手动 /compact）。 */
+  | {
+      type: 'compacted'
+      scope: 'auto' | 'manual'
+      status: 'compacted' | 'none' | 'failed'
+      message?: string
+    }
   | { type: 'done'; stopReason: string }
 
 export interface ChatEventPayload {
@@ -403,6 +436,16 @@ const api = {
     setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke('agents:set-enabled', id, enabled)
   },
+  /** Agent 提示词（全局 ~/.deva/personas）：列出 / 读取 / 新建更新 / 删除 / 启停。 */
+  personas: {
+    list: (): Promise<PersonaRecord[]> => ipcRenderer.invoke('personas:list'),
+    get: (id: string): Promise<PersonaRecord | null> => ipcRenderer.invoke('personas:get', id),
+    upsert: (input: PersonaUpsertInput): Promise<PersonaRecord> =>
+      ipcRenderer.invoke('personas:upsert', input),
+    remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('personas:remove', id),
+    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('personas:set-enabled', id, enabled)
+  },
   /**
    * MCP 服务（全局 ~/.deva/mcp.json）：列出 / 读取 / 增改删 / 启停 / 连接管理 / 密钥。
    * 连接、子进程 spawn、密钥解密全部在主进程；渲染层只见配置与运行期状态，明文密钥永不回传。
@@ -458,6 +501,9 @@ const api = {
   chat: {
     send: (req: ChatSendRequest): Promise<{ turnId: string }> =>
       ipcRenderer.invoke('chat:send', req),
+    /** 手动压缩历史（/compact）：无后续模型轮，只回发 compacted + done 事件。 */
+    compact: (req: ChatCompactRequest): Promise<{ turnId: string }> =>
+      ipcRenderer.invoke('chat:compact', req),
     abort: (turnId: string): Promise<{ ok: true }> => ipcRenderer.invoke('chat:abort', turnId),
     reset: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:reset', sessionId, workspaceRoot),

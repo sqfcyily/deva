@@ -15,8 +15,6 @@ const zhCN: MessageTree = {
     chat: '对话',
     explorer: '资源管理器',
     git: '版本控制',
-    database: '数据源',
-    ssh: '远程连接',
     extensions: '扩展',
     settings: '设置'
   },
@@ -110,29 +108,6 @@ const zhCN: MessageTree = {
     // 二进制/过大 diff 占位由后端给出
     diffEmpty: '无差异内容'
   },
-  database: {
-    title: '数据库',
-    addConnection: '新建连接',
-    empty: '暂无数据库连接',
-    data: '数据',
-    structure: '结构',
-    query: '查询',
-    run: '运行',
-    selectHint: '从左侧选择一张表查看数据与结构',
-    colName: '列名',
-    colType: '类型',
-    colNullable: '可空',
-    colKey: '键',
-    rowsCount: '行'
-  },
-  ssh: {
-    title: '远程连接',
-    addHost: '新建主机',
-    empty: '暂无远程主机',
-    connect: '连接',
-    connected: '已连接',
-    selectHint: '从左侧选择一台主机建立连接'
-  },
   terminal: {
     title: '终端',
     newTab: '新建终端',
@@ -143,6 +118,7 @@ const zhCN: MessageTree = {
   },
   extensions: {
     title: '扩展',
+    personas: '提示词',
     skills: '技能',
     mcp: 'MCP 服务',
     subagents: '子智能体',
@@ -151,6 +127,10 @@ const zhCN: MessageTree = {
     addSkill: '新建技能',
     addMcp: '添加 MCP 服务',
     addSubagent: '新建子智能体',
+    addPersona: '新建提示词',
+    personaPrompt: '提示词内容',
+    personaPromptHint: '启用后会追加进主智能体的系统提示词，用于设定性格、语气、行文风格与偏好；可同时启用多条（叠加）。',
+    personaPromptPlaceholder: '例如：用轻松幽默的语气回答；代码优先 TypeScript；给结论先给要点…',
     enable: '启用',
     name: '名称',
     description: '描述',
@@ -203,7 +183,6 @@ const zhCN: MessageTree = {
     builtin: '内置',
     createSkillHint: '在对话中输入 /create-skill，即可在引导下创建你自己的技能。',
     descEmpty: '（无描述）',
-    triggerEmpty: '（未填写触发方式）',
     instructionsEmpty: '（无正文）',
     importFailed: '导入技能失败',
     importErrMissingName: '技能缺少 name 字段（SKILL.md 的 frontmatter 必须包含 name）。',
@@ -228,6 +207,13 @@ const zhCN: MessageTree = {
     empty: '有什么可以帮你？',
     emptyHint: '描述任务，Deva 会读写项目文件、按需请求授权来完成。',
     error: '出错了',
+    notice: {
+      truncated: '回复已达输出长度上限被截断，可发送「继续」让我接着写。',
+      empty: '本轮未产生回复：可能已接近上下文长度上限，建议新建对话，或精简内容后重试。',
+      compacted: '较早的对话已压缩为摘要，以节省上下文。',
+      compactNone: '当前对话较短，无需压缩。',
+      compactFailed: '压缩失败，历史保持不变。'
+    },
     noModel: '尚未选择模型，请在「设置 › 模型」中配置并设为默认。',
     noKey: '该模型尚未配置 API 密钥，请在「设置 › 模型」中填写。',
     newChat: '新对话',
@@ -235,6 +221,8 @@ const zhCN: MessageTree = {
     noSessions: '暂无对话',
     delete: '删除',
     time: { now: '刚刚', min: '分钟前', hr: '小时前', yesterday: '昨天', day: '天前' },
+    // 左侧会话列表活动态角标：生成中（脉冲点）/ 待处理（等待权限或提问的「!」）。
+    session: { running: '生成中', attention: '待处理' },
     tool: {
       readFile: '读取文件',
       listDir: '列出目录',
@@ -337,8 +325,8 @@ const zhCN: MessageTree = {
     newProviderName: '自定义服务商',
     keyConfigured: '已配置',
     keyReplaceHint: '已配置密钥（如需更换请重新输入）',
-    saveKey: '保存',
-    clearKey: '清除',
+    keySaving: '保存中…',
+    keySaved: '已保存',
     secretsUnavailable: '当前系统不支持安全加密存储，暂无法保存密钥',
     testConnTesting: '测试中…',
     testConnOk: '连接正常',
@@ -382,8 +370,6 @@ const en: MessageTree = {
     chat: 'Chat',
     explorer: 'Explorer',
     git: 'Source Control',
-    database: 'Data Sources',
-    ssh: 'Remote',
     extensions: 'Extensions',
     settings: 'Settings'
   },
@@ -476,29 +462,6 @@ const en: MessageTree = {
     saveIdentity: 'Save Identity',
     diffEmpty: 'No diff to show'
   },
-  database: {
-    title: 'Database',
-    addConnection: 'New Connection',
-    empty: 'No database connections',
-    data: 'Data',
-    structure: 'Structure',
-    query: 'Query',
-    run: 'Run',
-    selectHint: 'Select a table on the left to view data and structure',
-    colName: 'Name',
-    colType: 'Type',
-    colNullable: 'Nullable',
-    colKey: 'Key',
-    rowsCount: 'rows'
-  },
-  ssh: {
-    title: 'Remote',
-    addHost: 'New Host',
-    empty: 'No remote hosts',
-    connect: 'Connect',
-    connected: 'Connected',
-    selectHint: 'Select a host on the left to connect'
-  },
   terminal: {
     title: 'Terminal',
     newTab: 'New Terminal',
@@ -509,6 +472,7 @@ const en: MessageTree = {
   },
   extensions: {
     title: 'Extensions',
+    personas: 'Prompts',
     skills: 'Skills',
     mcp: 'MCP Servers',
     subagents: 'Sub-agents',
@@ -517,6 +481,12 @@ const en: MessageTree = {
     addSkill: 'New skill',
     addMcp: 'Add MCP server',
     addSubagent: 'New sub-agent',
+    addPersona: 'New prompt',
+    personaPrompt: 'Prompt',
+    personaPromptHint:
+      'When enabled, this is appended to the main agent’s system prompt to set personality, tone, writing style, and preferences. Multiple can be enabled at once (stacked).',
+    personaPromptPlaceholder:
+      'e.g. Answer in a light, witty tone; prefer TypeScript; lead with the key points…',
     enable: 'Enabled',
     name: 'Name',
     description: 'Description',
@@ -569,7 +539,6 @@ const en: MessageTree = {
     builtin: 'Built-in',
     createSkillHint: 'Type /create-skill in chat to create your own skill with guided help.',
     descEmpty: '(no description)',
-    triggerEmpty: '(no trigger specified)',
     instructionsEmpty: '(no content)',
     importFailed: 'Skill import failed',
     importErrMissingName: 'The skill is missing a name (SKILL.md frontmatter must include name).',
@@ -594,6 +563,13 @@ const en: MessageTree = {
     empty: 'How can I help?',
     emptyHint: 'Describe a task; Deva reads and writes project files, asking permission as needed.',
     error: 'Something went wrong',
+    notice: {
+      truncated: 'Reply cut off at the output length limit — send “continue” and I’ll pick up where I left off.',
+      empty: 'No reply this turn: the context may be near its length limit — try a new chat, or shorten and retry.',
+      compacted: 'Earlier conversation was compacted into a summary to save context.',
+      compactNone: 'This conversation is still short — nothing to compact.',
+      compactFailed: 'Compaction failed; history is unchanged.'
+    },
     noModel: 'No model selected — configure one under Settings › Models and set it as default.',
     noKey: 'This model has no API key — add one under Settings › Models.',
     newChat: 'New chat',
@@ -601,6 +577,7 @@ const en: MessageTree = {
     noSessions: 'No conversations',
     delete: 'Delete',
     time: { now: 'just now', min: 'min ago', hr: 'hr ago', yesterday: 'yesterday', day: 'days ago' },
+    session: { running: 'Generating', attention: 'Needs input' },
     tool: {
       readFile: 'Read file',
       listDir: 'List directory',
@@ -703,8 +680,8 @@ const en: MessageTree = {
     newProviderName: 'Custom Provider',
     keyConfigured: 'Configured',
     keyReplaceHint: 'Key configured (re-enter to replace)',
-    saveKey: 'Save',
-    clearKey: 'Clear',
+    keySaving: 'Saving…',
+    keySaved: 'Saved',
     secretsUnavailable: 'Secure encrypted storage is unavailable on this system; keys cannot be saved',
     testConnTesting: 'Testing…',
     testConnOk: 'Connected',

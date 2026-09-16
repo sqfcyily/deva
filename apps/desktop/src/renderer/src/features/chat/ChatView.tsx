@@ -24,6 +24,7 @@ import {
   XCircle,
   Loader2,
   AlertTriangle,
+  Info,
   Image as ImageIcon,
   FileCode2,
   MessageCircleQuestion,
@@ -225,11 +226,34 @@ export function ChatView(): React.JSX.Element {
     )
   }
 
+  // 在光标处插入换行并同步 state / 自适应高度（Ctrl/Alt+Enter 走此路，浏览器默认不会为这些组合键插入换行）。
+  const insertNewlineAtCursor = (el: HTMLTextAreaElement): void => {
+    const start = el.selectionStart ?? el.value.length
+    const end = el.selectionEnd ?? el.value.length
+    const next = `${el.value.slice(0, start)}\n${el.value.slice(end)}`
+    setInput(next)
+    // 同步原生值与光标，避免下一帧受控回填把光标拽回，并即时重算高度。
+    el.value = next
+    const caret = start + 1
+    el.selectionStart = caret
+    el.selectionEnd = caret
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+  }
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      e.preventDefault()
-      submit()
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
+    // Shift/Ctrl/Alt + Enter 一律换行；仅裸 Enter 发送。
+    if (e.shiftKey || e.ctrlKey || e.altKey) {
+      // Shift+Enter 交给浏览器默认换行；Ctrl/Alt+Enter 默认不换行，需手动插入。
+      if (e.ctrlKey || e.altKey) {
+        e.preventDefault()
+        insertNewlineAtCursor(e.currentTarget)
+      }
+      return
     }
+    e.preventDefault()
+    submit()
   }
 
   const autoGrow = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
@@ -725,6 +749,23 @@ function BlockView({
 
   if (block.kind === 'ask') {
     return <AskCard block={block} onAsk={onAsk} />
+  }
+
+  // notice：回合终止说明（截断/空回合）或上下文压缩结果，弱化提示样式，区别于红色错误
+  if (block.kind === 'notice') {
+    const NOTICE_KEY: Record<typeof block.code, string> = {
+      truncated: 'chat.notice.truncated',
+      empty: 'chat.notice.empty',
+      compacted: 'chat.notice.compacted',
+      compact_none: 'chat.notice.compactNone',
+      compact_failed: 'chat.notice.compactFailed'
+    }
+    return (
+      <div className="msg__notice">
+        <Info size={14} />
+        <span>{t(NOTICE_KEY[block.code])}</span>
+      </div>
+    )
   }
 
   // error

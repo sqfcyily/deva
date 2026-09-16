@@ -137,11 +137,13 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
           ...p,
           models: p.models.map((mm) => (mm.id === mid ? { ...mm, enabled: !mm.enabled } : mm))
         })),
+      // 新增模型即启用：模型本身 enabled:true，并顺带启用所属服务商
+      //（服务商被禁用则模型不可用），使刚添加的模型立即可选。
       addModel: (pid, id) =>
         patchProvider(pid, (p) =>
           p.models.some((mm) => mm.id === id)
             ? p
-            : { ...p, models: [...p.models, { id, name: id, enabled: true }] }
+            : { ...p, enabled: true, models: [...p.models, { id, name: id, enabled: true }] }
         ),
       addModels: (pid, ids) =>
         patchProvider(pid, (p) => {
@@ -153,7 +155,7 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
             have.add(id)
             fresh.push({ id, name: id, enabled: true })
           }
-          return fresh.length ? { ...p, models: [...p.models, ...fresh] } : p
+          return fresh.length ? { ...p, enabled: true, models: [...p.models, ...fresh] } : p
         }),
       removeModel: (pid, mid) => {
         patchProvider(pid, (p) => ({ ...p, models: p.models.filter((mm) => mm.id !== mid) }))

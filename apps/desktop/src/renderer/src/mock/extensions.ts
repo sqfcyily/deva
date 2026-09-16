@@ -6,7 +6,7 @@
  * 子智能体的真实运行时随后续阶段接入。
  */
 
-export type ExtKind = 'skill' | 'mcp' | 'subagent'
+export type ExtKind = 'persona' | 'skill' | 'mcp' | 'subagent'
 /** 作用域：首版仅全局。 */
 export type ExtScope = 'global'
 /** 来源：`custom` = 用户自定义；`builtin` = 系统内置（目前仅元技能 create-skill）。 */
@@ -85,6 +85,18 @@ export interface SubAgent {
   /** 允许使用的工具 */
   tools: string[]
   /** 角色系统提示词 */
+  prompt: string
+  scope: ExtScope
+  source: ExtSource
+  enabled: boolean
+}
+
+/** Agent 提示词（Persona）：一段追加进主智能体系统提示词的自定义指令（性格 / 语气 / 风格 / 偏好）。 */
+export interface Persona {
+  id: string
+  name: string
+  desc: string
+  /** 提示词正文（追加进主智能体系统提示词）。 */
   prompt: string
   scope: ExtScope
   source: ExtSource

@@ -13,6 +13,7 @@ import {
 } from './tools'
 import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
 import { enabledAgentSummaries, getEnabledAgentByName, type AgentRecord } from './agents'
+import { enabledPersonas } from './personas'
 import { resolveModelRef } from './model-resolve'
 import { dispatchMcpTool, getMcpToolSpecs } from './mcp'
 import { isSensitivePath, trustRoot, untrustRoot } from './fs-guard'
@@ -27,10 +28,18 @@ import {
   type ChatSessionMeta
 } from './chat-store'
 import { ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
+import {
+  compactSession,
+  isCompactionSummary,
+  needsCompaction,
+  stripMarker,
+  type CompactStatus
+} from './compaction'
 
 /**
  * 会话编排（Agent 主循环）。
- * 流式生成 → 收集工具调用 → 过权限闸门 → 执行 → 结果回灌 → 继续，直至无工具调用或达上限。
+ * 流式生成 → 收集工具调用 → 过权限闸门 → 执行 → 结果回灌 → 继续，直至模型不再调用工具
+ * （主轮不设步数上限，对标 Claude Code 的 agentic loop；子轮保留安全上限，见 runAgentLoop 调用处）。
  * 对话历史只存主进程（sessions），渲染层仅发新用户文本；工具/密钥/文件访问都在主进程内闭环。
  */
 
@@ -52,10 +61,19 @@ interface ChatSendRequest {
   attachments?: string[]
 }
 
+/** 手动 /compact 请求：无用户文本、无后续模型轮，只压缩历史并回发结果事件。 */
+interface ChatCompactRequest {
+  sessionId: string
+  model: ChatModelConfig
+  workspaceRoot: string | null
+}
+
 /** 重建历史用的展示消息（主进程从 provider Message[] 归约，去掉 base64 负载）。 */
 type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
+  /** 压缩摘要气泡：重开会话时把带标记的摘要 user 消息还原成「已压缩」提示 + 摘要正文。 */
+  | { kind: 'notice'; code: 'compacted' }
 
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
@@ -87,6 +105,22 @@ function toDisplayMessages(messages: Message[]): DisplayMessage[] {
     }
 
     // user
+
+    // 压缩摘要（带标记的 user 消息）：Codex 式重开——只呈现「已压缩」提示 + 摘要正文，
+    // 不重建被压缩掉的早期气泡（与真正发给模型的内容一致）。渲染为一条 assistant 展示消息，
+    // 且置 lastAssistant=null（它无工具块、其后紧跟真实用户轮，不会被 tool_result 回填）。
+    if (isCompactionSummary(m) && typeof m.content === 'string') {
+      out.push({
+        role: 'assistant',
+        blocks: [
+          { kind: 'notice', code: 'compacted' },
+          { kind: 'text', text: stripMarker(m.content) }
+        ]
+      })
+      lastAssistant = null
+      continue
+    }
+
     if (typeof m.content === 'string') {
       out.push({ role: 'user', text: m.content, attachments: [] })
       continue
@@ -179,9 +213,17 @@ export type ChatStreamEvent =
   /** 重连前置：丢弃本步骤已画出的残缺尾部，随后重新流式（无法无缝续传，只能重发本步）。 */
   | { type: 'stream_reset' }
   | { type: 'error'; kind: string; message: string }
+  /**
+   * 上下文压缩结果（自动或手动 /compact）。渲染层据此在助手气泡追加软提示块；
+   * status: compacted=已压缩 / none=无需压缩 / failed=失败（历史未动）。
+   */
+  | { type: 'compacted'; scope: 'auto' | 'manual'; status: CompactStatus; message?: string }
   | { type: 'done'; stopReason: StopReason }
 
-const MAX_STEPS = 25
+// 主对话单轮工具步数上限：Infinity = 不设上限，一直循环到模型不再调用工具为止（对标 Claude Code 的
+// agentic loop）。天然刹车 = 用户随时可中止（controller.signal，见 runAgentLoop 内的 aborted 判定）
+// + 接近上下文上限时自动压缩（compaction）。子智能体不吃此值，另有自己的安全上限（见 run_subagent）。
+const MAX_STEPS = Infinity
 /** 单个步骤因可重试网络错误自动重连的最大次数。 */
 const MAX_RECONNECT = 3
 
@@ -213,7 +255,8 @@ function genId(prefix: string): string {
 
 function systemPrompt(
   workspaceRoot: string | null,
-  skills: { name: string; description: string }[] = []
+  skills: { name: string; description: string }[] = [],
+  personas: { name: string; prompt: string }[] = []
 ): string {
   const loc = workspaceRoot
     ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
@@ -236,6 +279,14 @@ function systemPrompt(
     )
   }
   lines.push('回答使用简体中文，简洁、准确，必要时给出关键文件路径与行号。')
+  if (personas.length) {
+    // 用户自定义的「Agent 提示词」（性格 / 语气 / 行文风格 / 偏好）：追加、可叠加多条。
+    // 固定前言框定其边界——只在不违反工具使用原则的前提下遵循，绝不借此关闭安全铁律。
+    lines.push(
+      '以下是用户自定义的附加指令（如性格、语气、行文风格、偏好）。在不违反工具使用原则的前提下，请在本次对话中始终遵循：',
+      ...personas.map((p) => `【${p.name}】\n${p.prompt.trim()}`)
+    )
+  }
   return lines.join('\n')
 }
 
@@ -353,6 +404,8 @@ interface AgentLoopArgs {
   skillSummaries: { name: string; description: string }[]
   /** 子智能体显示名（depth>0 时随事件下发，供渲染层折叠 Task 卡；主轮 undefined）。 */
   agentName?: string
+  /** 每收到一次真实 usage.input 即回调（主轮据此持久化 lastInputTokens 作压缩触发依据）。 */
+  onUsage?: (input: number) => void
 }
 
 export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
@@ -468,6 +521,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               })
           } else if (ev.type === 'usage') {
             emit(turnId, sessionId, { type: 'usage', input: ev.input, output: ev.output })
+            args.onUsage?.(ev.input)
           } else if (ev.type === 'error') {
             // 可重试且非用户中止 → 暂不上报，走自动重连；否则作为致命错误立即上报。
             if (ev.error.retryable && !controller.signal.aborted) retryableDrop = true
@@ -765,11 +819,34 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
     const ctx: ToolContext = { workspaceRoot, signal: controller.signal }
     const session = ensureSession(key, sessionId)
+
+    // 自动压缩：接近上下文窗口时，先把较早历史摘要替换，再进入本轮。
+    // 必须在捕获 history 之前做——compactSession 会重赋 session.messages（否则 history 成悬空旧引用）。
+    // 失败 / 无需压缩都发事件供渲染层弱提示，且绝不阻断本轮（宁可这一轮不压也要照常回答）。
+    if (!controller.signal.aborted && needsCompaction(session, config.model)) {
+      try {
+        const r = await compactSession({ session, key, model: config, signal: controller.signal })
+        if (r.status !== 'none')
+          emit(turnId, sessionId, {
+            type: 'compacted',
+            scope: 'auto',
+            status: r.status,
+            message: r.message
+          })
+      } catch {
+        /* 压缩自身抛错（极少）：忽略，历史未动，本轮照常 */
+      }
+    }
+
     const history = session.messages
+    // 本轮真实输入 token（用于压缩触发判定）：runAgentLoop 每收到一次 usage 即回调，取最后一次。
+    let lastInput = 0
 
     // 本轮技能快照（在轮开始时定格）：系统提示词只列 name+description（便宜的渐进式披露），
     // 有启用技能时才向模型提供 skill 工具（命中后再加载完整正文）。
     const skillSummaries = enabledSkillSummaries()
+    // 本轮 persona 快照（仅主智能体）：已启用的「Agent 提示词」追加进系统提示词；子智能体不注入。
+    const personas = enabledPersonas()
     const skillTool = buildSkillTool(skillSummaries)
     // 有启用子智能体时才向模型提供 run_subagent 工具（枚举已启用名）。
     const subagentTool = buildSubagentTool(enabledAgentSummaries())
@@ -788,7 +865,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         sessionId,
         key,
         history,
-        system: systemPrompt(workspaceRoot, skillSummaries),
+        system: systemPrompt(workspaceRoot, skillSummaries, personas),
         tools: turnTools,
         model: config,
         ctx,
@@ -797,7 +874,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         depth: 0,
         allowAskUser: true,
         allowSubagents: true,
-        skillSummaries
+        skillSummaries,
+        onUsage: (n) => {
+          if (n > 0) lastInput = n
+        }
       })
       emit(turnId, sessionId, { type: 'done', stopReason })
     } catch (e) {
@@ -809,6 +889,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       emit(turnId, sessionId, { type: 'done', stopReason: 'error' })
     } finally {
       activeTurns.delete(turnId)
+      // 记录本轮真实输入 token 作为下轮压缩触发依据（比字符估算准，天然覆盖图片/工具）。
+      if (lastInput > 0) session.lastInputTokens = lastInput
       // 本轮对 history 的原地改写落盘；更新时间用于左侧列表排序
       session.updatedAt = Date.now()
       saveProject(key)
@@ -865,6 +947,40 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     void runTurn(key, sessionId, turnId, model, workspaceRoot)
     return { turnId }
   })
+
+  // 手动压缩（输入框 /compact）：立即压缩历史，只回发 compacted + done，无后续模型轮。
+  ipcMain.handle(
+    'chat:compact',
+    async (_e, payload: ChatCompactRequest): Promise<{ turnId: string }> => {
+      const { sessionId, model, workspaceRoot } = payload
+      const key = projectKey(workspaceRoot)
+      const turnId = genId('turn')
+      const controller = new AbortController()
+      activeTurns.set(turnId, controller)
+      try {
+        const session = getSession(key, sessionId)
+        let status: CompactStatus = 'none'
+        let message: string | undefined
+        if (session) {
+          const r = await compactSession({ session, key, model, signal: controller.signal })
+          status = r.status
+          message = r.message
+        }
+        emit(turnId, sessionId, { type: 'compacted', scope: 'manual', status, message })
+      } catch (e) {
+        emit(turnId, sessionId, {
+          type: 'compacted',
+          scope: 'manual',
+          status: 'failed',
+          message: (e as Error)?.message ?? String(e)
+        })
+      } finally {
+        activeTurns.delete(turnId)
+        emit(turnId, sessionId, { type: 'done', stopReason: 'end_turn' })
+      }
+      return { turnId }
+    }
+  )
 
   // 左侧会话列表（按项目）
   ipcMain.handle(

@@ -87,6 +87,13 @@ export type ChatBlock =
       answer?: string
     }
   | { kind: 'error'; message: string }
+  /**
+   * 回合终止 / 上下文压缩提示（非错误，弱化样式）。
+   * truncated=达输出长度上限被截断；empty=通篇无可见回复；
+   * compacted=较早历史已压缩为摘要；compact_none=无需压缩；compact_failed=压缩失败历史未动。
+   * 正文按 code 在渲染层翻译（随语言切换生效，不在 store 里定格文案）。
+   */
+  | { kind: 'notice'; code: 'truncated' | 'empty' | 'compacted' | 'compact_none' | 'compact_failed' }
 
 export interface ChatMessage {
   id: string
@@ -121,10 +128,21 @@ export interface StreamStatus {
   reconnecting: { attempt: number; max: number } | null
 }
 
+/**
+ * 单个会话的活动态快照（供左侧会话列表角标）。
+ * streaming=该会话正有一轮在跑（可能在后台）；attention=有「待用户处理」项（未决权限 / 未答问答）——
+ * 后台会话若触发授权/问询会阻塞在主进程等答复，靠此角标提示用户切回去处理，避免无声卡住。
+ */
+export interface SessionLiveState {
+  streaming: boolean
+  attention: boolean
+}
+
 /** 与 preload/主进程 DisplayMessage 结构一致（渲染层结构化复述）。 */
 type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
+  | { kind: 'notice'; code: 'compacted' }
 type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: AttachKind }[] }
   | { role: 'assistant'; blocks: DisplayBlock[] }
@@ -158,6 +176,12 @@ type StreamEvent =
   | { type: 'reconnecting'; attempt: number; max: number }
   | { type: 'stream_reset' }
   | { type: 'error'; kind: string; message: string }
+  | {
+      type: 'compacted'
+      scope: 'auto' | 'manual'
+      status: 'compacted' | 'none' | 'failed'
+      message?: string
+    }
   | { type: 'done'; stopReason: string }
 
 interface ChatContextValue {
@@ -167,6 +191,8 @@ interface ChatContextValue {
   streaming: boolean
   /** 流式实时状态（底部工作指示器用；非 streaming 时为归零值）。 */
   streamStatus: StreamStatus
+  /** 各会话的活动态（键=sessionId）：左侧列表据此显示「生成中 / 待处理」角标。 */
+  sessionStates: Record<string, SessionLiveState>
   send: (text: string, attachments?: SendAttachment[]) => Promise<void>
   stop: () => void
   newSession: () => void
@@ -205,6 +231,7 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
     }
     const blocks: ChatBlock[] = dm.blocks.map((b) => {
       if (b.kind === 'text') return { kind: 'text', text: b.text }
+      if (b.kind === 'notice') return { kind: 'notice', code: b.code }
       const status: ToolStatus = b.status === 'error' ? 'error' : 'ok'
       // 历史回填：run_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children 为空、仅存结论）。
       if (b.name === 'run_subagent') {
@@ -336,6 +363,17 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
     case 'error':
       next.push({ kind: 'error', message: ev.message })
       return next
+    case 'compacted': {
+      // 压缩结果软提示：compacted=已压缩 / none=无需压缩 / failed=失败（历史未动）。
+      const code =
+        ev.status === 'compacted'
+          ? 'compacted'
+          : ev.status === 'none'
+            ? 'compact_none'
+            : 'compact_failed'
+      next.push({ kind: 'notice', code })
+      return next
+    }
     default:
       return blocks
   }
@@ -360,6 +398,34 @@ function dropStepPartial(blocks: ChatBlock[]): ChatBlock[] {
   return blocks.slice(0, lastTool + 1)
 }
 
+/** 本轮是否已有「可见回复」：正文/工具/子卡/权限/问答/错误/提示任一即算；纯思考或全空不算。 */
+function hasVisibleAnswer(blocks: ChatBlock[]): boolean {
+  return blocks.some(
+    (b) =>
+      (b.kind === 'text' && b.text.trim() !== '') ||
+      b.kind === 'tool' ||
+      b.kind === 'subagent' ||
+      b.kind === 'permission' ||
+      b.kind === 'ask' ||
+      b.kind === 'error' ||
+      b.kind === 'notice'
+  )
+}
+
+/**
+ * 回合终止时按 stopReason 补一条「中断原因」提示（解决「不显示中断原因」）：
+ * - max_tokens：回复达输出长度上限被截断——无论是否已有正文都提示，解释为何戛然而止；
+ * - 自然结束（end_turn/stop）却通篇无可见回复：本轮未产生回复（多因上下文接近上限）；
+ * - aborted（用户主动停止）不提示；error（已另有红色错误块）也不重复提示。
+ * 无需补提示时返回原数组引用（updateLastAssistant 据引用相等短路，不触发无谓重渲染）。
+ */
+function appendTerminalNotice(blocks: ChatBlock[], stopReason: string): ChatBlock[] {
+  if (stopReason === 'max_tokens') return [...blocks, { kind: 'notice', code: 'truncated' }]
+  if ((stopReason === 'end_turn' || stopReason === 'stop') && !hasVisibleAnswer(blocks))
+    return [...blocks, { kind: 'notice', code: 'empty' }]
+  return blocks
+}
+
 function updateLastAssistant(
   list: ChatMessage[],
   fn: (blocks: ChatBlock[]) => ChatBlock[]
@@ -374,6 +440,42 @@ function updateLastAssistant(
   return copy
 }
 
+/**
+ * 单个会话的活动态（渲染层内存）。每个正在跑 / 正被查看的会话各持一份，按 sessionId 存进一张
+ * Map——这样一个会话流式时，切到另一个会话仍能各看各的、各发各的，后台那轮继续把事件累进它自己这份。
+ */
+interface SessionRuntime {
+  messages: ChatMessage[]
+  streaming: boolean
+  /** 本轮 turnId（stop / abort 用）；无进行中回合为 null。 */
+  turnId: string | null
+  /** 计时锚点：本轮开始时刻（供「已用秒数」）。 */
+  startedAt: number
+  /** 主进程 reconnecting 事件驱动的真实重连态（非猜测）；null=未在重连。 */
+  reconnecting: { attempt: number; max: number } | null
+}
+
+/** 空活动态（共享冻结常量作 patch 种子；任何真实变更都返回新对象，绝不原地改）。 */
+const EMPTY_RUNTIME: SessionRuntime = Object.freeze({
+  messages: Object.freeze([]) as unknown as ChatMessage[],
+  streaming: false,
+  turnId: null,
+  startedAt: 0,
+  reconnecting: null
+})
+
+/** 当前所视会话无活动态时对外暴露的空消息数组（稳定引用，避免每次渲染新建）。 */
+const EMPTY_MESSAGES: ChatMessage[] = Object.freeze([]) as unknown as ChatMessage[]
+
+/** 该会话是否有「待用户处理」项（末条助手消息含未决权限 / 未答问答）——供后台会话角标提示。 */
+function hasAttention(messages: ChatMessage[]): boolean {
+  const last = messages[messages.length - 1]
+  if (!last || last.role !== 'assistant') return false
+  return last.blocks.some(
+    (b) => (b.kind === 'permission' && !b.resolved) || (b.kind === 'ask' && b.answer === undefined)
+  )
+}
+
 export function ChatProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const { t } = useI18n()
   const { activeModel } = useModels()
@@ -381,28 +483,54 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   const [currentSessionId, setCurrentSessionId] = useState<string>('')
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [streaming, setStreaming] = useState(false)
+  // 各会话活动态（键=sessionId）。ref 供事件回调 / 命令同步读写（不受渲染闭包过期影响），state 驱动渲染。
+  const [runtimes, setRuntimes] = useState<Map<string, SessionRuntime>>(() => new Map())
   const [permMode, setPermModeState] = useState<PermMode>('ask')
-  const [streamStatus, setStreamStatus] = useState<StreamStatus>(IDLE_STATUS)
+  // 每秒自增以触发重渲染，刷新当前所视会话「已用秒数」（不绑定变量，仅需其副作用）。
+  const [, setTick] = useState(0)
 
+  const runtimesRef = useRef(runtimes)
   const sessionIdRef = useRef<string>('')
   const projectPathRef = useRef<string | null>(null)
-  const currentTurnRef = useRef<string | null>(null)
-  const streamingRef = useRef(false)
-  // 计时锚点：本轮开始时刻（供"已用秒数"计时）。
-  const startedAtRef = useRef(0)
-  // 是否正处于自动重连中（真实信号，来自主进程 reconnecting 事件）。
-  const reconnectingRef = useRef(false)
-  const setStreamingBoth = (v: boolean): void => {
-    streamingRef.current = v
-    setStreaming(v)
-  }
 
   const setCurrent = (id: string): void => {
     sessionIdRef.current = id
     setCurrentSessionId(id)
   }
+
+  // 会话活动态的唯一写入口：读 ref → 产出新态 → 引用不变则短路（不触发重渲染）→ 否则换新 Map 提交。
+  // ref 与 state 同步更新，保证事件回调里的后续读取拿到最新值。
+  const patchRuntime = useCallback(
+    (sid: string, fn: (r: SessionRuntime) => SessionRuntime): void => {
+      const cur = runtimesRef.current.get(sid) ?? EMPTY_RUNTIME
+      const next = fn(cur)
+      if (next === cur) return
+      const map = new Map(runtimesRef.current)
+      map.set(sid, next)
+      runtimesRef.current = map
+      setRuntimes(map)
+    },
+    []
+  )
+
+  // 只改某会话消息序列的便捷 patch（复用 updateLastAssistant 的引用短路，无变更则不提交）。
+  const patchMessages = useCallback(
+    (sid: string, mutate: (blocks: ChatBlock[]) => ChatBlock[]): void => {
+      patchRuntime(sid, (r) => {
+        const messages = updateLastAssistant(r.messages, mutate)
+        return messages === r.messages ? r : { ...r, messages }
+      })
+    },
+    [patchRuntime]
+  )
+
+  const dropRuntime = useCallback((sid: string): void => {
+    if (!runtimesRef.current.has(sid)) return
+    const map = new Map(runtimesRef.current)
+    map.delete(sid)
+    runtimesRef.current = map
+    setRuntimes(map)
+  }, [])
 
   // 拉取当前项目会话清单（左侧只列真实已落盘的会话）。
   const refreshSessions = useCallback(async (): Promise<void> => {
@@ -412,14 +540,14 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     setSessions(list)
   }, [])
 
-  // 起一个全新的空会话：只切换当前会话 + 清空右侧，不往左侧插占位条目。
+  // 起一个全新的空会话：只切换当前会话（新 id 无活动态 → 视图自然空），不落盘、不进左侧。
   // 会话在用户首次发送时由主进程惰性建档，随后 refreshSessions 才让它出现在左侧。
   const startFresh = useCallback((): void => {
     setCurrent(genId('sess'))
-    setMessages([])
   }, [])
 
-  // 切项目：重载会话清单 + 载入最近一条（无则起新会话）。
+  // 切项目：重载会话清单 + 载入最近一条到其活动态（无则起新会话）。
+  // 已有活动态（如后台正在流式的会话）不重载，避免冲掉实时累积的内容。
   useEffect(() => {
     const path = activeProject?.path ?? null
     projectPathRef.current = path
@@ -427,22 +555,23 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     void (async () => {
       const list = await window.deva.chat.listSessions(path)
       if (cancelled || projectPathRef.current !== path) return
+      setSessions(list)
       if (list.length) {
-        setSessions(list)
         const id = list[0].id
         setCurrent(id)
-        const dms = await window.deva.chat.loadSession(id, path)
-        if (cancelled || sessionIdRef.current !== id) return
-        setMessages(displayToMessages(dms as DisplayMessage[]))
+        if (!runtimesRef.current.has(id)) {
+          const dms = await window.deva.chat.loadSession(id, path)
+          if (cancelled || sessionIdRef.current !== id || runtimesRef.current.has(id)) return
+          patchRuntime(id, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
+        }
       } else {
-        setSessions([])
         startFresh()
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [activeProject?.path, startFresh])
+  }, [activeProject?.path, startFresh, patchRuntime])
 
   // 切项目：加载该项目的权限模式（各项目可不同；未设置默认 ask）。
   useEffect(() => {
@@ -457,62 +586,135 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
   }, [activeProject?.path])
 
-  // 订阅主进程流事件（挂载一次）。按 sessionId 过滤，忽略他会话事件。
+  // 订阅主进程流事件（挂载一次）。按 payload.sessionId 路由进对应会话的活动态——
+  // 不再丢弃「非当前会话」事件：后台那轮照常累积，切回去即见其实时流。
   useEffect(() => {
     const unsub = window.deva.chat.onEvent((payload) => {
-      if (payload.sessionId !== sessionIdRef.current) return
+      const sid = payload.sessionId
       const ev = payload.event as StreamEvent
       if (ev.type === 'done') {
-        reconnectingRef.current = false
-        setStreamingBoth(false)
+        patchRuntime(sid, (r) => ({
+          ...r,
+          streaming: false,
+          turnId: null,
+          reconnecting: null,
+          // 据终止原因补「中断说明」：截断/空回合给出可见提示，正常回合原样短路。
+          messages: updateLastAssistant(r.messages, (b) => appendTerminalNotice(b, ev.stopReason))
+        }))
         void refreshSessions() // 标题/排序可能已更新
         return
       }
       // 主进程真实信号：断流后正在自动重连（展示"连接中断，正在重连"横幅）。
       if (ev.type === 'reconnecting') {
-        reconnectingRef.current = true
-        setStreamStatus((s) => ({ ...s, reconnecting: { attempt: ev.attempt, max: ev.max } }))
+        patchRuntime(sid, (r) => ({ ...r, reconnecting: { attempt: ev.attempt, max: ev.max } }))
         return
       }
       // 重连即将重跑当前步骤：丢弃这一步已画出的残缺尾部，避免重复内容。
       if (ev.type === 'stream_reset') {
-        setMessages((prev) => updateLastAssistant(prev, dropStepPartial))
+        patchMessages(sid, dropStepPartial)
         return
       }
       if (ev.type === 'usage') return
-      // 任何真实内容事件到达即视为"已恢复"，收起重连横幅。
-      if (reconnectingRef.current) {
-        reconnectingRef.current = false
-        setStreamStatus((s) => ({ ...s, reconnecting: null }))
-      }
-      setMessages((prev) => updateLastAssistant(prev, (blocks) => reduceBlocks(blocks, ev)))
+      // 内容事件：并入消息；若正处于重连横幅则收起（任何真实内容到达即视为"已恢复"）。
+      patchRuntime(sid, (r) => {
+        const messages = updateLastAssistant(r.messages, (blocks) => reduceBlocks(blocks, ev))
+        if (messages === r.messages && r.reconnecting === null) return r
+        return { ...r, messages, reconnecting: null }
+      })
     })
     return unsub
-  }, [refreshSessions])
+  }, [refreshSessions, patchRuntime, patchMessages])
 
-  // 流式计时器：streaming 期间每秒刷新「已用秒数」（reconnecting 由事件驱动，不在此动）。
-  // 非流式时整体归零（含清掉可能残留的重连横幅）。
+  const viewed = runtimes.get(currentSessionId)
+  const viewedStreaming = viewed?.streaming ?? false
+
+  // 流式计时器：仅当前所视会话流式时每秒触发重渲染刷新「已用秒数」（后台会话的秒数无人看，不必计）。
   useEffect(() => {
-    if (!streaming) {
-      setStreamStatus(IDLE_STATUS)
-      return
-    }
-    const tick = (): void => {
-      const sec = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000))
-      setStreamStatus((s) => ({ ...s, elapsedSec: sec }))
-    }
-    tick()
-    const id = window.setInterval(tick, 1000)
+    if (!viewedStreaming) return
+    const id = window.setInterval(() => setTick((n) => (n + 1) % 1_000_000), 1000)
     return () => window.clearInterval(id)
-  }, [streaming])
+  }, [viewedStreaming, currentSessionId])
+
+  // 对外暴露「当前所视会话」的那一份活动态（messages/streaming/streamStatus）。
+  const messages = viewed?.messages ?? EMPTY_MESSAGES
+  const streaming = viewedStreaming
+  // streamStatus 在渲染作用域即时算（每次渲染读新的 Date.now()）：流式期间 setTick 每秒触发渲染 → 秒数走动。
+  const streamStatus: StreamStatus =
+    viewed && viewed.streaming
+      ? {
+          elapsedSec: Math.max(0, Math.floor((Date.now() - viewed.startedAt) / 1000)),
+          reconnecting: viewed.reconnecting
+        }
+      : IDLE_STATUS
+
+  // 各会话活动态摘要（左侧列表角标用）；仅 runtimes 变化时重算。
+  const sessionStates = useMemo<Record<string, SessionLiveState>>(() => {
+    const out: Record<string, SessionLiveState> = {}
+    for (const [id, r] of runtimes)
+      out[id] = { streaming: r.streaming, attention: hasAttention(r.messages) }
+    return out
+  }, [runtimes])
 
   const value = useMemo<ChatContextValue>(() => {
     const send = async (text: string, attachments?: SendAttachment[]): Promise<void> => {
+      const sid = sessionIdRef.current
       const body = text.trim()
       const atts = attachments ?? []
-      if ((!body && atts.length === 0) || streamingRef.current) return
+      // 只挡「本会话」正在进行的回合——别的会话流式与否，都不影响此处发送（多对话并行的关键）。
+      if ((!body && atts.length === 0) || runtimesRef.current.get(sid)?.streaming) return
 
       const model = activeModel
+
+      // 手动 /compact：不加用户气泡（该指令不该留在历史里），只挂一个助手提示位，
+      // 直接请主进程压缩历史；结果经 compacted 事件回到该助手气泡（compacted/none/failed）。
+      if (body.toLowerCase() === '/compact' && atts.length === 0) {
+        if (!model) {
+          patchRuntime(sid, (r) => ({
+            ...r,
+            messages: [
+              ...r.messages,
+              {
+                id: genId(),
+                role: 'assistant',
+                blocks: [{ kind: 'error', message: t('chat.noModel') }]
+              }
+            ]
+          }))
+          return
+        }
+        patchRuntime(sid, (r) => ({
+          ...r,
+          messages: [...r.messages, { id: genId(), role: 'assistant', blocks: [] }],
+          streaming: true,
+          turnId: null,
+          startedAt: Date.now(),
+          reconnecting: null
+        }))
+        try {
+          const { turnId } = await window.deva.chat.compact({
+            sessionId: sid,
+            model: {
+              adapter: model.provider.adapter,
+              providerId: model.provider.id,
+              baseURL: model.provider.apiHost,
+              model: model.model.id
+            },
+            workspaceRoot: projectPathRef.current
+          })
+          patchRuntime(sid, (r) => ({ ...r, turnId }))
+          void refreshSessions()
+        } catch (e) {
+          const msg = (e as Error)?.message ?? String(e)
+          patchRuntime(sid, (r) => ({
+            ...r,
+            streaming: false,
+            turnId: null,
+            messages: updateLastAssistant(r.messages, (b) => [...b, { kind: 'error', message: msg }])
+          }))
+        }
+        return
+      }
+
       const blocks: ChatBlock[] = body ? [{ kind: 'text', text: body }] : []
       const userMsg: ChatMessage = {
         id: genId(),
@@ -522,23 +724,33 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       }
 
       if (!model) {
-        setMessages((prev) => [
-          ...prev,
-          userMsg,
-          { id: genId(), role: 'assistant', blocks: [{ kind: 'error', message: t('chat.noModel') }] }
-        ])
+        patchRuntime(sid, (r) => ({
+          ...r,
+          messages: [
+            ...r.messages,
+            userMsg,
+            {
+              id: genId(),
+              role: 'assistant',
+              blocks: [{ kind: 'error', message: t('chat.noModel') }]
+            }
+          ]
+        }))
         return
       }
 
-      setMessages((prev) => [...prev, userMsg, { id: genId(), role: 'assistant', blocks: [] }])
-      // 计时锚点先于置流：计时器启动即读到有效起点，避免首帧秒数为负。
-      startedAtRef.current = Date.now()
-      reconnectingRef.current = false
-      setStreamStatus(IDLE_STATUS)
-      setStreamingBoth(true)
+      // 乐观追加用户气泡 + 空助手位，并置本会话为流式（计时锚点随置流写入，避免首帧秒数为负）。
+      patchRuntime(sid, (r) => ({
+        ...r,
+        messages: [...r.messages, userMsg, { id: genId(), role: 'assistant', blocks: [] }],
+        streaming: true,
+        turnId: null,
+        startedAt: Date.now(),
+        reconnecting: null
+      }))
       try {
         const { turnId } = await window.deva.chat.send({
-          sessionId: sessionIdRef.current,
+          sessionId: sid,
           text: body,
           model: {
             adapter: model.provider.adapter,
@@ -549,58 +761,65 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
           workspaceRoot: projectPathRef.current,
           attachments: atts.length ? atts.map((a) => a.path) : undefined
         })
-        currentTurnRef.current = turnId
+        patchRuntime(sid, (r) => ({ ...r, turnId }))
         // 主进程发送时已惰性建档并落盘：立即刷新左侧，让新会话即时出现并高亮
         void refreshSessions()
       } catch (e) {
-        setStreamingBoth(false)
         const msg = (e as Error)?.message ?? String(e)
-        setMessages((prev) =>
-          updateLastAssistant(prev, (b) => [...b, { kind: 'error', message: msg }])
-        )
+        patchRuntime(sid, (r) => ({
+          ...r,
+          streaming: false,
+          turnId: null,
+          messages: updateLastAssistant(r.messages, (b) => [...b, { kind: 'error', message: msg }])
+        }))
       }
     }
 
     const stop = (): void => {
-      if (currentTurnRef.current) void window.deva.chat.abort(currentTurnRef.current)
+      const turnId = runtimesRef.current.get(sessionIdRef.current)?.turnId
+      if (turnId) void window.deva.chat.abort(turnId)
     }
 
+    // 新建 / 切换 / 删除随时可用——即使别的会话正在流式（这正是多对话并行的关键）。
     const newSession = (): void => {
-      if (streamingRef.current) return
       startFresh()
     }
 
     const selectSession = (id: string): void => {
-      if (id === sessionIdRef.current || streamingRef.current) return
+      if (id === sessionIdRef.current) return
       setCurrent(id)
+      // 已有活动态（正在流式或此前已载入）→ 直接呈现，绝不重载冲掉实时内容。
+      if (runtimesRef.current.has(id)) return
       void (async () => {
         const dms = await window.deva.chat.loadSession(id, projectPathRef.current)
-        if (sessionIdRef.current !== id) return
-        setMessages(displayToMessages(dms as DisplayMessage[]))
+        // 载入期间可能已切走 / 已有活动态生成 → 丢弃过期结果。
+        if (sessionIdRef.current !== id || runtimesRef.current.has(id)) return
+        patchRuntime(id, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
       })()
     }
 
     const deleteSession = (id: string): void => {
-      if (streamingRef.current) return
+      // 删除正在跑的会话：先中止其回合，再落盘删除并移除其活动态。
+      const turnId = runtimesRef.current.get(id)?.turnId
+      if (turnId) void window.deva.chat.abort(turnId)
       void (async () => {
         await window.deva.chat.deleteSession(id, projectPathRef.current)
+        dropRuntime(id)
         const path = projectPathRef.current
         const list = await window.deva.chat.listSessions(path)
         if (projectPathRef.current !== path) return
-        if (id === sessionIdRef.current) {
-          if (list.length) {
-            const nid = list[0].id
-            setSessions(list)
-            setCurrent(nid)
-            const dms = await window.deva.chat.loadSession(nid, path)
-            if (sessionIdRef.current !== nid) return
-            setMessages(displayToMessages(dms as DisplayMessage[]))
-          } else {
-            setSessions([])
-            startFresh()
-          }
+        setSessions(list)
+        if (id !== sessionIdRef.current) return
+        // 删的是当前会话：切到最近一条（载入其历史）或起新会话。
+        if (list.length) {
+          const nid = list[0].id
+          setCurrent(nid)
+          if (runtimesRef.current.has(nid)) return
+          const dms = await window.deva.chat.loadSession(nid, path)
+          if (sessionIdRef.current !== nid || runtimesRef.current.has(nid)) return
+          patchRuntime(nid, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
         } else {
-          setSessions(list)
+          startFresh()
         }
       })()
     }
@@ -611,41 +830,38 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       remember: boolean
     ): void => {
       void window.deva.chat.respondPermission({ key, decision, remember })
-      setMessages((prev) =>
-        updateLastAssistant(prev, (blocks) => {
-          const next = blocks.map((b) =>
-            b.kind === 'permission' && b.key === key ? { ...b, resolved: decision } : b
-          )
-          if (decision === 'deny') {
-            for (let i = next.length - 1; i >= 0; i--) {
-              const b = next[i]
-              if (b.kind === 'tool' && b.status === 'running') {
-                next[i] = { ...b, status: 'denied', summary: undefined }
+      // 权限卡属当前所视会话（ChatView 只渲染它的卡）→ 就地收敛该会话的消息。
+      patchMessages(sessionIdRef.current, (blocks) => {
+        const next = blocks.map((b) =>
+          b.kind === 'permission' && b.key === key ? { ...b, resolved: decision } : b
+        )
+        if (decision === 'deny') {
+          for (let i = next.length - 1; i >= 0; i--) {
+            const b = next[i]
+            if (b.kind === 'tool' && b.status === 'running') {
+              next[i] = { ...b, status: 'denied', summary: undefined }
+              break
+            }
+            // 子智能体内部工具被拒：其运行中的子项在开着的 Task 卡内，就地标记 denied。
+            if (b.kind === 'subagent' && b.status === 'running') {
+              const cj = b.children.map((c) => c.status).lastIndexOf('running')
+              if (cj >= 0) {
+                const children = b.children.slice()
+                children[cj] = { ...children[cj], status: 'denied', summary: undefined }
+                next[i] = { ...b, children }
                 break
-              }
-              // 子智能体内部工具被拒：其运行中的子项在开着的 Task 卡内，就地标记 denied。
-              if (b.kind === 'subagent' && b.status === 'running') {
-                const cj = b.children.map((c) => c.status).lastIndexOf('running')
-                if (cj >= 0) {
-                  const children = b.children.slice()
-                  children[cj] = { ...children[cj], status: 'denied', summary: undefined }
-                  next[i] = { ...b, children }
-                  break
-                }
               }
             }
           }
-          return next
-        })
-      )
+        }
+        return next
+      })
     }
 
     const respondAsk = (key: string, answer: string): void => {
       void window.deva.chat.respondAsk({ key, answer })
-      setMessages((prev) =>
-        updateLastAssistant(prev, (blocks) =>
-          blocks.map((b) => (b.kind === 'ask' && b.key === key ? { ...b, answer } : b))
-        )
+      patchMessages(sessionIdRef.current, (blocks) =>
+        blocks.map((b) => (b.kind === 'ask' && b.key === key ? { ...b, answer } : b))
       )
     }
 
@@ -660,6 +876,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       messages,
       streaming,
       streamStatus,
+      sessionStates,
       send,
       stop,
       newSession,
@@ -676,11 +893,15 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     messages,
     streaming,
     streamStatus,
+    sessionStates,
     permMode,
     activeModel,
     t,
     startFresh,
-    refreshSessions
+    refreshSessions,
+    patchRuntime,
+    patchMessages,
+    dropRuntime
   ])
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
