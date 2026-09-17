@@ -11,7 +11,9 @@ import {
   ShieldCheck,
   Loader2,
   RotateCcw,
-  AlertTriangle
+  AlertTriangle,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useModels } from '../../store/models'
@@ -20,7 +22,8 @@ import { seedProviders, type ProviderAdapter } from '../../mock/models'
 import { Switch } from './Switch'
 
 /**
- * 模型设置页（设置 › 模型）。左侧服务商列表 + 右侧配置详情。
+ * 模型设置页（设置 › 模型）。钻取式（主从抽屉）导航：列表态只列服务商，点进去为配置详情 + 返回。
+ * 同一时刻单列，避免把设置弹框撑宽。
  * 支持官方与自定义（OpenAI / Anthropic 兼容）服务：配置密钥 / 协议 / 地址 / 模型清单，设默认模型，
  * 一键测试连通性，并可从服务端拉取模型清单辅助添加（支持手动输入与匹配选择）。
  */
@@ -50,6 +53,8 @@ export function ModelSettings(): React.JSX.Element {
     secretsAvailable
   } = useModels()
 
+  // 钻取导航：'list' 浏览服务商列表，'detail' 编辑单个服务商
+  const [view, setView] = useState<'list' | 'detail'>('list')
   const [showKey, setShowKey] = useState(false)
   const [addingModel, setAddingModel] = useState(false)
   const [newModelId, setNewModelId] = useState('')
@@ -129,7 +134,22 @@ export function ModelSettings(): React.JSX.Element {
       confirmText: t('common.delete'),
       variant: 'danger'
     })
-    if (ok) removeProvider(selectedProvider.id)
+    if (ok) {
+      removeProvider(selectedProvider.id)
+      setView('list') // 删除后退回列表
+    }
+  }
+
+  // 点击列表项：选中并钻入详情
+  const openProvider = (id: string): void => {
+    selectProvider(id)
+    setView('detail')
+  }
+
+  // 新建自定义服务商后直接进入其详情编辑（addCustomProvider 已把它设为选中项）
+  const onAddProvider = (): void => {
+    addCustomProvider(t('models.newProviderName'))
+    setView('detail')
   }
 
   const resetHost = (): void => {
@@ -279,34 +299,57 @@ export function ModelSettings(): React.JSX.Element {
 
   return (
     <div className="models">
-      {/* 左：服务商列表 */}
-      <aside className="models__list">
-        <div className="models__list-title">{t('models.providers')}</div>
-        <div className="models__list-scroll">
-          {providers.map((p) => (
+      {view === 'list' || !selectedProvider ? (
+        /* 列表态：扁平行列表，与通用/扩展页同构；右上角图标按钮新增服务商 */
+        <>
+          <div className="models__head">
+            <h2 className="models__title">{t('models.providers')}</h2>
             <button
-              key={p.id}
-              className={`provider-row${p.id === selectedProviderId ? ' is-active' : ''}`}
-              onClick={() => selectProvider(p.id)}
+              className="models__add-btn"
+              title={t('models.addProvider')}
+              aria-label={t('models.addProvider')}
+              onClick={onAddProvider}
             >
-              <span className="provider-row__dot" style={{ background: p.accent }} />
-              <span className="provider-row__name">{p.name}</span>
-              {p.enabled && !hasKey(p.id) && (
-                <AlertTriangle className="provider-row__warn" size={13} />
-              )}
-              {p.enabled && <span className="provider-row__on" />}
+              <Plus size={16} />
             </button>
-          ))}
-        </div>
-        <button className="models__add" onClick={() => addCustomProvider(t('models.newProviderName'))}>
-          <Plus size={15} />
-          {t('models.addProvider')}
-        </button>
-      </aside>
-
-      {/* 右：配置详情 */}
-      {selectedProvider ? (
+          </div>
+          <div className="models__rows">
+            {providers.map((p) => (
+              <button
+                key={p.id}
+                className="provider-row"
+                onClick={() => openProvider(p.id)}
+              >
+                <span className="provider-row__dot" style={{ background: p.accent }} />
+                <span className="provider-row__main">
+                  <span className="provider-row__name">
+                    <span className="provider-row__name-text">{p.name}</span>
+                    <span className={`tag${p.kind === 'official' ? ' tag--official' : ''}`}>
+                      {p.kind === 'official' ? t('models.official') : t('models.custom')}
+                    </span>
+                  </span>
+                  <span className="provider-row__sub">
+                    {t('models.modelCount').replace('{count}', String(p.models.length))}
+                  </span>
+                </span>
+                <span className="provider-row__aside">
+                  {p.enabled && !hasKey(p.id) && (
+                    <AlertTriangle className="provider-row__warn" size={14} />
+                  )}
+                  {p.enabled && hasKey(p.id) && <span className="provider-row__on" />}
+                  <ChevronRight size={16} />
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : (
+        /* 详情态：编辑单个服务商，顶部「返回」回列表 */
         <section className="provider-detail" key={selectedProvider.id}>
+          <button className="provider-detail__back" onClick={() => setView('list')}>
+            <ChevronLeft size={16} />
+            {t('common.back')}
+          </button>
           <header className="provider-detail__head">
             <span className="provider-detail__dot" style={{ background: selectedProvider.accent }} />
             {selectedProvider.kind === 'custom' ? (
@@ -609,8 +652,6 @@ export function ModelSettings(): React.JSX.Element {
             </div>
           </div>
         </section>
-      ) : (
-        <section className="provider-detail provider-detail--empty">{t('models.empty')}</section>
       )}
     </div>
   )

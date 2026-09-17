@@ -290,11 +290,10 @@ const KEEP_TOKENS_MIN = 2000
  */
 export async function compactSession(args: {
   session: StoredSession
-  key: string
   model: CompactModelConfig
   signal: AbortSignal
 }): Promise<{ status: CompactStatus; message?: string }> {
-  const { session, key, model, signal } = args
+  const { session, model, signal } = args
   const cfg = compactionConfig()
   const locale = String(getConfig().locale ?? 'zh-CN')
   const window = windowForModel(model.model, cfg.defaultWindow)
@@ -325,7 +324,7 @@ export async function compactSession(args: {
   session.messages = [summaryMsg, ...tail]
   session.lastInputTokens = undefined // 历史已缩短，旧计数失效
   session.updatedAt = Date.now()
-  saveProject(key)
+  saveProject(session.id)
   return { status: 'compacted' }
 }
 

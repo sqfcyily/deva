@@ -243,6 +243,13 @@ const zhCN: MessageTree = {
       stepUnit: '步',
       noSteps: '无内部工具调用'
     },
+    agentcard: {
+      title: '角色名片',
+      fallback: '未命名角色',
+      hint: '点击查看并确认',
+      accepted: '已添加',
+      rejected: '已拒绝'
+    },
     work: {
       thinking: '思考中',
       responding: '生成回答中',
@@ -266,7 +273,9 @@ const zhCN: MessageTree = {
     ask: {
       title: '请你决定',
       customPlaceholder: '或自行输入答案…',
-      send: '发送'
+      send: '发送',
+      submit: '提交',
+      noAnswer: '（未作答）'
     },
     md: { copy: '复制', copied: '已复制' },
     perm: {
@@ -345,7 +354,8 @@ const zhCN: MessageTree = {
     providerNamePlaceholder: '服务商名称',
     fetchingModels: '正在获取模型清单…',
     fetchModelsFail: '无法获取模型列表，可手动输入模型 ID',
-    pickOrType: '选择或输入模型 ID'
+    pickOrType: '选择或输入模型 ID',
+    modelCount: '{count} 个模型'
   },
   status: {
     ready: '就绪',
@@ -362,7 +372,65 @@ const zhCN: MessageTree = {
     confirm: '确定',
     cancel: '取消',
     close: '关闭',
-    delete: '删除'
+    delete: '删除',
+    back: '返回'
+  },
+  // 对话优先外壳（chat-first）专用文案。t 只收 key、不插值——含名字/计数/相对时间的动态串在 JS 组。
+  cf: {
+    brandTag: '对话优先',
+    newChat: '新对话',
+    search: '搜索',
+    tabChats: '消息',
+    tabRoster: '角色',
+    noPersona: '还没有角色，点下方「添加角色」创建一个',
+    addPersona: '添加角色',
+    addManual: '手动添加',
+    addByChat: '通过对话添加',
+    addByChatPrompt: '我想创建一个新角色，请一步步引导我明确它的定位、性格与专长，最后用角色名片提交给我确认。',
+    localUser: '本机用户',
+    settings: '设置',
+    defaultModel: '跟随默认',
+    viewProfile: '查看资料',
+    mountHint: '挂载一个文件夹，让当前对话聚焦其中',
+    unmountHint: '卸载文件夹，回到全机通用助手',
+    focusing: '聚焦中',
+    mountWorkspace: '挂载工作区',
+    fullMachine: '全机通用助手',
+    assistant: '助手',
+    attach: '附加文件',
+    send: '发送',
+    newline: '换行',
+    cancel: '取消',
+    save: '保存',
+    prefModel: '偏好模型',
+    authTools: '可用工具',
+    allTools: '全部内置工具',
+    startChat: '开始对话',
+    editPersona: '编辑角色',
+    editorNewTitle: '新建角色',
+    editorEditTitle: '编辑角色',
+    editorProposeTitle: '确认角色名片',
+    accept: '接受',
+    reject: '拒绝',
+    close: '关闭',
+    fName: '名称',
+    fEmoji: 'Emoji',
+    fColor: '主题色',
+    fSpecialty: '专长',
+    fTagline: '开场白',
+    fModel: '偏好模型',
+    fTools: '可用工具',
+    fToolsHint: '不选 = 允许全部内置工具；一旦勾选，则仅限所选（只收窄可见性，不放宽安全闸门）。',
+    fPrompt: '系统提示词',
+    extHint: '在此启停技能、MCP 服务、子智能体与角色（全局生效）。',
+    extEmpty: '暂无扩展',
+    kindSkill: '技能',
+    kindMcp: 'MCP',
+    kindSubagent: '子智能体',
+    kindPersona: '角色',
+    builtin: '内置',
+    mcpConnected: '已连接',
+    mcpDisconnected: '未连接'
   }
 }
 
@@ -600,6 +668,13 @@ const en: MessageTree = {
       stepUnit: 'steps',
       noSteps: 'No internal tool calls'
     },
+    agentcard: {
+      title: 'Agent card',
+      fallback: 'Unnamed agent',
+      hint: 'Click to review & confirm',
+      accepted: 'Added',
+      rejected: 'Rejected'
+    },
     work: {
       thinking: 'Thinking',
       responding: 'Responding',
@@ -623,7 +698,9 @@ const en: MessageTree = {
     ask: {
       title: 'Your call',
       customPlaceholder: 'Or type your own answer…',
-      send: 'Send'
+      send: 'Send',
+      submit: 'Submit',
+      noAnswer: '(no answer)'
     },
     md: { copy: 'Copy', copied: 'Copied' },
     perm: {
@@ -702,7 +779,8 @@ const en: MessageTree = {
     providerNamePlaceholder: 'Provider name',
     fetchingModels: 'Fetching model list…',
     fetchModelsFail: 'Could not fetch models — enter a model ID manually',
-    pickOrType: 'Pick or type a model ID'
+    pickOrType: 'Pick or type a model ID',
+    modelCount: '{count} models'
   },
   status: {
     ready: 'Ready',
@@ -719,7 +797,67 @@ const en: MessageTree = {
     confirm: 'OK',
     cancel: 'Cancel',
     close: 'Close',
-    delete: 'Delete'
+    delete: 'Delete',
+    back: 'Back'
+  },
+  // Chat-first shell strings. t takes a key only; dynamic strings (names/counts/relative time) are composed in JS.
+  cf: {
+    brandTag: 'Chat-first',
+    newChat: 'New chat',
+    search: 'Search',
+    tabChats: 'Chats',
+    tabRoster: 'Roster',
+    noPersona: 'No personas yet — click “Add persona” below to create one',
+    addPersona: 'Add persona',
+    addManual: 'Add manually',
+    addByChat: 'Add via chat',
+    addByChatPrompt:
+      'I want to create a new persona. Please guide me step by step to define its role, personality, and expertise, then submit it to me as a persona card to confirm.',
+    localUser: 'Local user',
+    settings: 'Settings',
+    defaultModel: 'Follow default',
+    viewProfile: 'View profile',
+    mountHint: 'Mount a folder to focus this conversation inside it',
+    unmountHint: 'Unmount the folder and return to the whole-machine assistant',
+    focusing: 'focusing',
+    mountWorkspace: 'Mount workspace',
+    fullMachine: 'Whole-machine assistant',
+    assistant: 'Assistant',
+    attach: 'Attach file',
+    send: 'Send',
+    newline: 'newline',
+    cancel: 'Cancel',
+    save: 'Save',
+    prefModel: 'Preferred model',
+    authTools: 'Available tools',
+    allTools: 'All built-in tools',
+    startChat: 'Start chat',
+    editPersona: 'Edit persona',
+    editorNewTitle: 'New persona',
+    editorEditTitle: 'Edit persona',
+    editorProposeTitle: 'Confirm agent card',
+    accept: 'Accept',
+    reject: 'Reject',
+    close: 'Close',
+    fName: 'Name',
+    fEmoji: 'Emoji',
+    fColor: 'Color',
+    fSpecialty: 'Specialty',
+    fTagline: 'Tagline',
+    fModel: 'Preferred model',
+    fTools: 'Available tools',
+    fToolsHint:
+      'None selected = all built-in tools allowed; once you pick any, only those are visible (narrows visibility only, never loosens the security gate).',
+    fPrompt: 'System prompt',
+    extHint: 'Enable or disable skills, MCP servers, sub-agents, and personas (applies globally).',
+    extEmpty: 'No extensions',
+    kindSkill: 'Skill',
+    kindMcp: 'MCP',
+    kindSubagent: 'Sub-agent',
+    kindPersona: 'Persona',
+    builtin: 'Built-in',
+    mcpConnected: 'Connected',
+    mcpDisconnected: 'Not connected'
   }
 }
 

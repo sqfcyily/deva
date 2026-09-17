@@ -32,7 +32,7 @@ export function ChatSessionsPanel(): React.JSX.Element {
         title={t('activity.chat')}
         actions={
           // 新建随时可用：即使别的会话正在流式（多对话并行）。
-          <button className="icon-btn" title={t('chat.newChat')} onClick={newSession}>
+          <button className="icon-btn" title={t('chat.newChat')} onClick={() => newSession()}>
             <Plus size={16} />
           </button>
         }

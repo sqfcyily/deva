@@ -30,6 +30,8 @@ import {
   MessageCircleQuestion,
   Bot,
   Pencil,
+  Circle,
+  CheckSquare,
   X
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
@@ -103,8 +105,8 @@ function argHint(args: unknown): string | null {
   return null
 }
 
-/** 底部指示器要表达的当前活动。 */
-type Activity =
+/** 底部指示器要表达的当前活动。（对话优先外壳复用 StatusIndicator/deriveActivity，故导出。） */
+export type Activity =
   | { kind: 'thinking' }
   | { kind: 'responding' }
   | { kind: 'tool'; toolName: string }
@@ -116,11 +118,11 @@ type Activity =
  * 从最后一条助手消息的块序列推断"此刻在干什么"：
  * 未答复的问答卡 / 未解决的权限卡 > 运行中的工具 / 子智能体 > 末块有正文=生成回答 > 其余=思考中。
  */
-function deriveActivity(messages: ChatMessage[]): Activity {
+export function deriveActivity(messages: ChatMessage[]): Activity {
   const last = messages[messages.length - 1]
   if (!last || last.role !== 'assistant') return { kind: 'thinking' }
   const blocks = last.blocks
-  if (blocks.some((b) => b.kind === 'ask' && !b.answer)) return { kind: 'ask' }
+  if (blocks.some((b) => b.kind === 'ask' && b.answers === undefined)) return { kind: 'ask' }
   if (blocks.some((b) => b.kind === 'permission' && !b.resolved)) return { kind: 'permission' }
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i]
@@ -485,7 +487,7 @@ export function ChatView(): React.JSX.Element {
  * 三种形态：活跃（脉动点 + 活动文案 + 已用秒数）/ 等待授权 / 自动重连（含[停止]）。
  * "自动重连"是主进程 reconnecting 事件驱动的真实信号，非渲染层猜测。
  */
-function StatusIndicator({
+export function StatusIndicator({
   activity,
   status,
   onStop
@@ -566,7 +568,7 @@ const MessageRow = memo(
     msg: ChatMessage
     active: boolean
     onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
-    onAsk: (key: string, answer: string) => void
+    onAsk: (key: string, answers: string[]) => void
   }): React.JSX.Element {
     if (msg.role === 'user') {
     const text = msg.blocks.map((b) => (b.kind === 'text' ? b.text : '')).join('')
@@ -641,16 +643,19 @@ function ThinkingBlock({ text, done }: { text: string; done: boolean }): React.J
   )
 }
 
-function BlockView({
+export function BlockView({
   block,
   thinkingDone,
   onPermission,
-  onAsk
+  onAsk,
+  onOpenProposal
 }: {
   block: ChatBlock
   thinkingDone: boolean
   onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
-  onAsk: (key: string, answer: string) => void
+  onAsk: (key: string, answers: string[]) => void
+  /** 点角色名片 → 打开预填的 PersonaEditor（仅对话优先外壳传入；旧壳不传 → 名片只读展示）。 */
+  onOpenProposal?: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
 }): React.JSX.Element | null {
   const { t } = useI18n()
 
@@ -685,6 +690,10 @@ function BlockView({
 
   if (block.kind === 'subagent') {
     return <SubagentCard block={block} />
+  }
+
+  if (block.kind === 'agentcard') {
+    return <AgentCard block={block} onOpen={onOpenProposal} />
   }
 
   if (block.kind === 'permission') {
@@ -802,25 +811,68 @@ function BlockView({
   )
 }
 
+/** 单个问题的作答草稿：已选标签集合 + 自由输入文本。 */
+interface AskDraft {
+  picks: string[]
+  custom: string
+}
+
+/** 把一题的草稿收敛成一条可读答案：已选标签 + 非空自由输入，按「、」拼接。 */
+function draftToAnswer(d: AskDraft): string {
+  const parts = [...d.picks]
+  const c = d.custom.trim()
+  if (c) parts.push(c)
+  return parts.join('、')
+}
+
 /**
- * 问答卡（征求决策/澄清）：Codex 式竖排编号单选 + 自由输入兜底。
- * 点任一候选项即以其标签作答；也可在底部自行输入答案。作答后就地收敛为已答态。
+ * 问答卡（征求决策/澄清）：支持一次问多个问题、每题单选或多选、每题都可自行输入，用户选好后统一提交。
+ * 全部问题都作答后「提交」才可用；作答后就地收敛为已答态，逐题回述答案。
  */
 function AskCard({
   block,
   onAsk
 }: {
   block: Extract<ChatBlock, { kind: 'ask' }>
-  onAsk: (key: string, answer: string) => void
+  onAsk: (key: string, answers: string[]) => void
 }): React.JSX.Element {
   const { t } = useI18n()
-  const [custom, setCustom] = useState('')
-  const answered = block.answer !== undefined
+  const { questions } = block
+  const multiQ = questions.length > 1
+  const answered = block.answers !== undefined
+  const [drafts, setDrafts] = useState<AskDraft[]>(() =>
+    questions.map(() => ({ picks: [], custom: '' }))
+  )
 
-  const submitCustom = (): void => {
-    const v = custom.trim()
-    if (!v || answered) return
-    onAsk(block.key, v)
+  const patchDraft = (qi: number, patch: Partial<AskDraft>): void => {
+    setDrafts((prev) => prev.map((d, i) => (i === qi ? { ...d, ...patch } : d)))
+  }
+
+  const togglePick = (qi: number, label: string): void => {
+    if (answered) return
+    const q = questions[qi]
+    const cur = drafts[qi].picks
+    if (q.multi) {
+      patchDraft(qi, {
+        picks: cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]
+      })
+    } else {
+      // 单选：再点已选项即取消；否则替换为该项。
+      patchDraft(qi, { picks: cur[0] === label && cur.length === 1 ? [] : [label] })
+    }
+  }
+
+  // 每题「已作答」= 选了至少一项，或填了自由输入。全部作答才允许提交。
+  const isDone = (qi: number): boolean =>
+    drafts[qi].picks.length > 0 || drafts[qi].custom.trim().length > 0
+  const allDone = questions.every((_, qi) => isDone(qi))
+
+  const submit = (): void => {
+    if (answered || !allDone) return
+    onAsk(
+      block.key,
+      questions.map((_, qi) => draftToAnswer(drafts[qi]))
+    )
   }
 
   return (
@@ -831,57 +883,82 @@ function AskCard({
         </span>
         {t('chat.ask.title')}
       </div>
-      <div className="ask__question">{block.question}</div>
 
-      {answered ? (
-        <div className="ask__resolved">
-          <CheckCircle2 size={13} />
-          <span>{block.answer}</span>
-        </div>
-      ) : (
-        <>
-          {block.options.length > 0 && (
-            <div className="ask__options">
-              {block.options.map((o, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  className="ask__option"
-                  onClick={() => onAsk(block.key, o.label)}
-                >
-                  <span className="ask__option-num">{i + 1}</span>
-                  <span className="ask__option-body">
-                    <span className="ask__option-label">{o.label}</span>
-                    {o.description && <span className="ask__option-desc">{o.description}</span>}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="ask__custom">
-            <Pencil size={13} className="ask__custom-icon" />
-            <input
-              className="ask__custom-input"
-              value={custom}
-              placeholder={t('chat.ask.customPlaceholder')}
-              onChange={(e) => setCustom(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                  e.preventDefault()
-                  submitCustom()
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="btn btn--primary btn--sm"
-              onClick={submitCustom}
-              disabled={!custom.trim()}
-            >
-              {t('chat.ask.send')}
-            </button>
+      {questions.map((q, qi) => (
+        <div className="ask__q" key={qi}>
+          <div className="ask__question">
+            {multiQ && <span className="ask__q-num">{qi + 1}.</span>}
+            {q.question}
           </div>
-        </>
+
+          {answered ? (
+            <div className="ask__resolved">
+              <CheckCircle2 size={13} />
+              <span>{block.answers?.[qi] || t('chat.ask.noAnswer')}</span>
+            </div>
+          ) : (
+            <>
+              {q.options.length > 0 && (
+                <div className="ask__options">
+                  {q.options.map((o, i) => {
+                    const on = drafts[qi].picks.includes(o.label)
+                    const Icon = q.multi
+                      ? on
+                        ? CheckSquare
+                        : Square
+                      : on
+                        ? CheckCircle2
+                        : Circle
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        className={`ask__option${on ? ' is-on' : ''}`}
+                        onClick={() => togglePick(qi, o.label)}
+                      >
+                        <Icon size={15} className="ask__option-mark" />
+                        <span className="ask__option-body">
+                          <span className="ask__option-label">{o.label}</span>
+                          {o.description && (
+                            <span className="ask__option-desc">{o.description}</span>
+                          )}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              <div className="ask__custom">
+                <Pencil size={13} className="ask__custom-icon" />
+                <input
+                  className="ask__custom-input"
+                  value={drafts[qi].custom}
+                  placeholder={t('chat.ask.customPlaceholder')}
+                  onChange={(e) => patchDraft(qi, { custom: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing && allDone) {
+                      e.preventDefault()
+                      submit()
+                    }
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      ))}
+
+      {!answered && (
+        <div className="ask__actions">
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            onClick={submit}
+            disabled={!allDone}
+          >
+            {t('chat.ask.submit')}
+          </button>
+        </div>
       )}
     </div>
   )
@@ -946,6 +1023,69 @@ function SubagentCard({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * 角色名片（propose_agent 提议）：微信名片式紧凑卡。
+ * pending → 可点，点开预填的 PersonaEditor 供查看/微调/接受/拒绝；accepted/rejected 为终态、不可点。
+ * 旧壳（ChatView）不传 onOpen → 名片始终只读展示（不影响旧壳）。
+ */
+function AgentCard({
+  block,
+  onOpen
+}: {
+  block: Extract<ChatBlock, { kind: 'agentcard' }>
+  onOpen?: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const { draft, status } = block
+  const pending = status === 'pending'
+  const clickable = pending && Boolean(onOpen)
+  const name = draft.name || t('chat.agentcard.fallback')
+  const hint =
+    status === 'accepted'
+      ? t('chat.agentcard.accepted')
+      : status === 'rejected'
+        ? t('chat.agentcard.rejected')
+        : t('chat.agentcard.hint')
+  return (
+    <div
+      className={`agentcard agentcard--${status}${clickable ? ' is-clickable' : ''}`}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={clickable ? () => onOpen?.(block) : undefined}
+      onKeyDown={
+        clickable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onOpen?.(block)
+              }
+            }
+          : undefined
+      }
+    >
+      <span
+        className="agentcard__avatar"
+        style={{ background: `${draft.color}22`, borderColor: draft.color, color: draft.color }}
+      >
+        {draft.emoji || '🤖'}
+      </span>
+      <span className="agentcard__body">
+        <span className="agentcard__title">{t('chat.agentcard.title')}</span>
+        <span className="agentcard__name">{name}</span>
+        {draft.desc && <span className="agentcard__desc">{draft.desc}</span>}
+      </span>
+      <span
+        className={`agentcard__hint${
+          status === 'accepted' ? ' is-accepted' : status === 'rejected' ? ' is-rejected' : ''
+        }`}
+      >
+        {status === 'accepted' && <Check size={13} />}
+        {hint}
+      </span>
     </div>
   )
 }

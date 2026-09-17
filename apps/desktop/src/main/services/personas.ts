@@ -2,7 +2,7 @@ import { ipcMain } from 'electron'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getConfig, getDevaHome, setConfig } from './config'
-import { fmScalar, fmString, parseFrontmatter } from './frontmatter'
+import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
 
 /**
  * Agent 提示词（Personas）服务：发现 / 解析 / 读写 `~/.deva/personas/<id>.md`（全局，与项目无关）。
@@ -31,7 +31,18 @@ export interface PersonaRecord {
   id: string
   /** frontmatter name，显示名（缺省回落 id）。 */
   name: string
+  /** 专长，一句话（frontmatter description）。 */
   description: string
+  /** 头像 emoji（对话优先外壳用；旧壳忽略）。 */
+  emoji: string
+  /** 身份主题色（头像描边 / 名字色）。 */
+  color: string
+  /** 开场白 / 口头禅。 */
+  tagline: string
+  /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认（见 model-resolve.ts）。 */
+  model: string
+  /** 工具白名单（内置 / MCP 名）；空数组 = 允许全部内置工具（只收窄可见性，不放宽闸门）。 */
+  tools: string[]
   /** .md 正文 = 要追加进系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -42,6 +53,11 @@ export interface PersonaUpsertInput {
   id?: string
   name: string
   description?: string
+  emoji?: string
+  color?: string
+  tagline?: string
+  model?: string
+  tools?: string[]
   prompt?: string
   /** 可选：一并设置启用态（新建默认关）。 */
   enabled?: boolean
@@ -98,6 +114,11 @@ function parsePersona(id: string, raw: string, enabled: boolean): PersonaRecord 
     id,
     name,
     description: fmString(data, 'description'),
+    emoji: fmString(data, 'emoji'),
+    color: fmString(data, 'color'),
+    tagline: fmString(data, 'tagline'),
+    model: fmString(data, 'model'),
+    tools: fmArray(data, 'tools'),
     prompt: body.trim(),
     enabled
   }
@@ -141,9 +162,24 @@ export function getPersona(id: string): PersonaRecord | null {
 }
 
 /** 组装 persona.md 文本（frontmatter + 正文）。 */
-function composePersonaMd(input: { name: string; description: string; prompt: string }): string {
+function composePersonaMd(input: {
+  name: string
+  description: string
+  emoji: string
+  color: string
+  tagline: string
+  model: string
+  tools: string[]
+  prompt: string
+}): string {
   const lines = ['---', `name: ${fmScalar(input.name)}`]
   if (input.description) lines.push(`description: ${fmScalar(input.description)}`)
+  if (input.emoji) lines.push(`emoji: ${fmScalar(input.emoji)}`)
+  // 颜色多为 `#rrggbb`，必须经 fmScalar 引号化，否则 `#` 被 YAML 当注释吃掉。
+  if (input.color) lines.push(`color: ${fmScalar(input.color)}`)
+  if (input.tagline) lines.push(`tagline: ${fmScalar(input.tagline)}`)
+  if (input.model) lines.push(`model: ${fmScalar(input.model)}`)
+  if (input.tools.length) lines.push(`tools: [${input.tools.map(fmScalar).join(', ')}]`)
   lines.push('---', '', input.prompt.trim(), '')
   return lines.join('\n')
 }
@@ -158,6 +194,11 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
   const md = composePersonaMd({
     name,
     description: (input.description ?? '').trim(),
+    emoji: (input.emoji ?? '').trim(),
+    color: (input.color ?? '').trim(),
+    tagline: (input.tagline ?? '').trim(),
+    model: (input.model ?? '').trim(),
+    tools: (input.tools ?? []).filter((t) => typeof t === 'string' && t.trim()),
     prompt: input.prompt ?? ''
   })
 
@@ -177,6 +218,11 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
       id,
       name,
       description: (input.description ?? '').trim(),
+      emoji: (input.emoji ?? '').trim(),
+      color: (input.color ?? '').trim(),
+      tagline: (input.tagline ?? '').trim(),
+      model: (input.model ?? '').trim(),
+      tools: input.tools ?? [],
       prompt: input.prompt ?? '',
       enabled: input.enabled === true
     }
@@ -211,6 +257,39 @@ export function enabledPersonas(): { name: string; prompt: string }[] {
   return listPersonas()
     .filter((p) => p.enabled && p.prompt.trim())
     .map((p) => ({ name: p.name, prompt: p.prompt }))
+}
+
+/** 兜底「通用」persona 的系统提示词（附加指令，安全/工具铁律仍优先）。 */
+const GENERAL_PERSONA_PROMPT =
+  '你是「通用」，一位友好、务实的个人工作助手。可处理日常事务：整理文件、写作、查资料、跑命令、写代码等。回答简洁直接，动手前把关键步骤讲清楚。'
+
+/**
+ * 首启种子：确保存在 1 个「通用」persona 兜底（对话优先外壳的默认身份）。
+ * 幂等 + 防复活：用 config.json 的 `personas.seededGeneral` 守卫位，独立于文件是否存在——
+ * 用户之后删掉「通用」不会再生。
+ */
+export function ensureSeededPersonas(): void {
+  const personas = getConfig().personas
+  const base = personas && typeof personas === 'object' ? (personas as Record<string, unknown>) : {}
+  if (base.seededGeneral === true) return
+
+  upsertPersona({
+    id: 'general',
+    name: '通用',
+    description: '全能通用助手',
+    emoji: '🤖',
+    color: '#7c7cf0',
+    tagline: '有什么我能帮上忙的？',
+    model: '',
+    tools: [],
+    prompt: GENERAL_PERSONA_PROMPT,
+    enabled: true
+  })
+
+  // 置守卫位：读-合并，保住 upsert 刚写入的 enabled 映射（R3：setConfig 顶层浅合并，别清空子对象）。
+  const after = getConfig().personas
+  const merged = after && typeof after === 'object' ? (after as Record<string, unknown>) : {}
+  setConfig({ personas: { ...merged, seededGeneral: true } })
 }
 
 /** Agent 提示词读写 IPC（全局；启用态入 config.json）。 */

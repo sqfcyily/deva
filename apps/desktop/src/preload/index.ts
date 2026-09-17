@@ -36,6 +36,15 @@ export interface ChatSendRequest {
   workspaceRoot: string | null
   /** 用户经原生选择框挑选的附件绝对路径（正文由主进程读取，base64 不经渲染层）。 */
   attachments?: string[]
+  /** 首发绑定的 persona id（对话优先外壳：一对话一身份，单选定值）。缺省 = 旧壳叠加行为。 */
+  personaId?: string
+  /** 本对话聚焦工作区绝对路径；null = 全机通用助手（无聚焦）。缺省 = 不改动已存值。 */
+  focusRoot?: string | null
+  /**
+   * 本对话模型引用 `"providerId:modelId"`（快照固定/只改当前对话）：新建带角色偏好快照、聊天中切换即更新。
+   * 缺省 = 不改动已存值；空串 = 显式回落全局默认。删除的模型由主进程 resolveModelRef 自动回落默认。
+   */
+  modelRef?: string
 }
 
 /** 手动 /compact 压缩请求（无用户文本、无后续模型轮；locale 在主进程解析）。 */
@@ -65,12 +74,30 @@ export interface ChatSessionMeta {
   title: string
   createdAt: number
   updatedAt: number
+  /** 绑定的 persona id（对话优先外壳：驱动列表头像/主题色）。旧壳会话缺省。 */
+  personaId?: string
+  /** 聚焦工作区绝对路径；null = 全机通用助手。 */
+  focusRoot?: string | null
+  /** 本对话模型引用 `"providerId:modelId"`；空串/缺省 = 跟随全局默认。见 ChatSendRequest.modelRef。 */
+  model?: string
+}
+
+/** 角色名片草稿（与 services/chat.ts 的 AgentDraft 对齐）。 */
+export interface AgentDraft {
+  name: string
+  desc: string
+  emoji: string
+  color: string
+  model: string
+  prompt: string
 }
 
 /** 重建历史用的展示块 / 消息（与 services/chat.ts 的 DisplayMessage 对齐）。 */
 export type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
+  | { kind: 'notice'; code: 'compacted' }
+  | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
 
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
@@ -88,10 +115,17 @@ export interface AskOption {
   description?: string
 }
 
+/** ask_user 单个问题：题干 + 候选项 + 是否多选（与 services/chat.ts 对齐）。 */
+export interface AskQuestion {
+  question: string
+  options: AskOption[]
+  multi: boolean
+}
+
 export interface AskResponse {
   key: string
-  /** 用户答复（选中项标签或自由输入）；null 表示取消。 */
-  answer: string | null
+  /** 用户对每个问题的答复（answers[i] 对应 questions[i]）；null 表示取消。 */
+  answers: string[] | null
 }
 
 /** 技能记录（与 services/skills.ts 的 SkillRecord 对齐）。 */
@@ -144,7 +178,18 @@ export interface AgentUpsertInput {
 export interface PersonaRecord {
   id: string
   name: string
+  /** 专长，一句话（frontmatter description）。 */
   description: string
+  /** 头像 emoji（对话优先外壳用）。 */
+  emoji: string
+  /** 身份主题色（头像描边 / 名字色）。 */
+  color: string
+  /** 开场白 / 口头禅。 */
+  tagline: string
+  /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
+  model: string
+  /** 工具白名单（内置 / MCP 名）；空数组 = 全内置（只收窄可见性，不放宽闸门）。 */
+  tools: string[]
   /** 正文 = 追加进主智能体系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -155,6 +200,11 @@ export interface PersonaUpsertInput {
   id?: string
   name: string
   description?: string
+  emoji?: string
+  color?: string
+  tagline?: string
+  model?: string
+  tools?: string[]
   prompt?: string
   enabled?: boolean
 }
@@ -347,7 +397,7 @@ export type ChatStreamEvent =
       depth?: number
       agent?: string
     }
-  | { type: 'ask_user'; key: string; question: string; options: AskOption[] }
+  | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   | {
       type: 'permission_request'
       key: string
@@ -518,9 +568,16 @@ const api = {
     /** 删除某会话 */
     deleteSession: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:delete-session', sessionId, workspaceRoot),
+    /** 落定角色名片终态（接受/拒绝）：持久化 proposals 边车，防重开退回 pending / 重复建角色。 */
+    resolveProposal: (
+      sessionId: string,
+      toolUseId: string,
+      status: 'accepted' | 'rejected'
+    ): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('chat:resolve-proposal', sessionId, toolUseId, status),
     respondPermission: (payload: PermissionResponse): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:permission-response', payload),
-    /** 回应 ask_user 询问（选中项标签或自由输入） */
+    /** 回应 ask_user 询问（每题的选中项标签或自由输入；answers 为 null 表示取消） */
     respondAsk: (payload: AskResponse): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:ask-response', payload),
     /** 订阅 chat:event，返回取消订阅函数 */

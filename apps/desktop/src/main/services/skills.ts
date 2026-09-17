@@ -101,8 +101,47 @@ const BUILTIN_CREATE_SKILL: SkillRecord = {
   source: 'builtin'
 }
 
+/**
+ * 内置元技能 `create-agent` 的正文：指导模型引导用户「用对话创建角色（Agent/性格身份）」。
+ * 关键约束——**必须调 `propose_agent` 工具生成名片**，且该工具只提议、不落盘；用户点「接受」后才真正建角色。
+ */
+const CREATE_AGENT_INSTRUCTIONS = `你正在帮助用户创建一个新的**角色（Agent / 性格身份）**。角色是一个带专属系统提示词的对话身份——它决定助手的性格、语气、专长与行为准则；创建并启用后，用户可在角色列表里选它发起对话。
+
+请按以下步骤引导用户：
+
+1. **弄清用途**：先问清这个角色是干什么的——面向什么任务/领域、期望怎样的性格与语气、有哪些该做/不该做的准则。
+2. **拟定要素**（逐项与用户确认，不要臆造）：
+   - \`name\`：角色显示名（如「代码审查员」「产品经理小美」）。
+   - \`description\`：一句话专长/定位，会显示在名片与角色资料上。
+   - \`emoji\`：一个代表该角色的 emoji 头像（如 🧑‍💻、📐、🎨）。
+   - \`color\`：主题色（十六进制，如 \`#4f8cff\`），用于名片与头像强调色。
+   - \`prompt\`：**系统提示词**——角色的核心。用 Markdown 写清性格、语气、专长、行为准则；这决定角色「是谁、怎么说话、怎么做事」。
+   - ⚠️ **不要设置 model**：你无法可靠得知可用的模型 id，留空即可（角色跟随默认模型，用户可在编辑器里自己选）。
+3. **复述草案**：把整理好的要素向用户复述一遍，请其确认或修改。
+4. **生成名片**：用户确认后，**调用 \`propose_agent\` 工具**（参数：name、description、emoji、color、prompt）。
+   - ⚠️ 该工具**只是生成一张「角色名片」供用户确认，并不会真正创建角色**；不要用 \`create_skill\`/\`write_file\` 等去创建角色。
+5. **告知结果**：调用后**不要声称角色已创建**。应告诉用户：「角色名片已生成，请点开名片查看——你还能在里面微调，满意后点『接受』即可加入角色列表。」
+
+保持简洁友好，一次问清关键信息即可，不要连环追问。`
+
+/** 内置、不可删、恒启用的「对话创建角色」元技能。随 listSkills() 自动进系统提示词与 /create-agent。 */
+const BUILTIN_CREATE_AGENT: SkillRecord = {
+  id: 'create-agent',
+  name: 'create-agent',
+  description: '引导用户用对话创建一个新角色：厘清用途、拟定要素、确认后调 propose_agent 生成名片供确认。',
+  trigger: '输入 /create-agent，或表达「帮我做/创建一个角色/性格/身份」时触发。',
+  allowedTools: ['propose_agent'],
+  instructions: CREATE_AGENT_INSTRUCTIONS,
+  enabled: true,
+  source: 'builtin'
+}
+
+/** 内置元技能按 id 索引（generalize：不同保留 id 返回各自的内置常量，勿一律返回 create-skill）。 */
+const BUILTIN_SKILLS: SkillRecord[] = [BUILTIN_CREATE_SKILL, BUILTIN_CREATE_AGENT]
+const BUILTIN_BY_ID = new Map<string, SkillRecord>(BUILTIN_SKILLS.map((s) => [s.id, s]))
+
 /** 保留 id：不可被磁盘技能占用（防同名目录影子），upsert/import 生成 id 时亦回避。 */
-const RESERVED_IDS = new Set<string>(['create-skill'])
+const RESERVED_IDS = new Set<string>(BUILTIN_BY_ID.keys())
 
 // 导入限额（防 zip 炸弹）：总解压体积 / 文件数 / 单文件体积上限。
 const IMPORT_MAX_TOTAL_BYTES = 20 * 1024 * 1024
@@ -194,12 +233,13 @@ export function listSkills(): SkillRecord[] {
     }
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
-  // 内置置顶：随本列表自动流经 systemPrompt 注入 / skill 工具 / /create-skill 加载。
-  return [BUILTIN_CREATE_SKILL, ...out]
+  // 内置置顶：随本列表自动流经 systemPrompt 注入 / skill 工具 / /create-skill、/create-agent 加载。
+  return [...BUILTIN_SKILLS, ...out]
 }
 
 export function getSkill(id: string): SkillRecord | null {
-  if (RESERVED_IDS.has(id)) return BUILTIN_CREATE_SKILL
+  const builtin = BUILTIN_BY_ID.get(id)
+  if (builtin) return builtin
   if (!isSafeId(id)) return null
   try {
     const raw = readFileSync(skillFile(id), 'utf8')
@@ -228,8 +268,11 @@ function composeSkillMd(input: {
 
 /** 新建或覆盖一个技能，返回最终记录。 */
 export function upsertSkill(input: SkillUpsertInput): SkillRecord {
-  // 内置身份不可被覆盖：命中保留 id 直接返回内置常量。
-  if (input.id && RESERVED_IDS.has(input.id)) return BUILTIN_CREATE_SKILL
+  // 内置身份不可被覆盖：命中保留 id 直接返回对应内置常量。
+  if (input.id) {
+    const builtin = BUILTIN_BY_ID.get(input.id)
+    if (builtin) return builtin
+  }
   const name = (input.name || '').trim() || '未命名技能'
   let id = input.id && isSafeId(input.id) ? input.id : ''
   const isNew = !id

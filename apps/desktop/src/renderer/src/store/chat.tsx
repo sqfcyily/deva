@@ -35,6 +35,13 @@ export interface AskOption {
   description?: string
 }
 
+/** ask_user 单个问题：题干 + 候选项 + 是否多选（与 preload/主进程对齐）。 */
+export interface AskQuestion {
+  question: string
+  options: AskOption[]
+  multi: boolean
+}
+
 /** 折叠 Task 卡内的子工具项（子智能体内部的一次工具调用，收纳进卡内不占主流）。 */
 export interface SubagentChild {
   id: string
@@ -44,10 +51,31 @@ export interface SubagentChild {
   summary?: string
 }
 
+/** 角色名片草稿（与 preload/主进程 AgentDraft 对齐）：propose_agent 参数归一化后的形状。 */
+export interface AgentDraft {
+  name: string
+  desc: string
+  emoji: string
+  color: string
+  model: string
+  prompt: string
+}
+
 export type ChatBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: ToolStatus; summary?: string }
+  | {
+      /**
+       * 角色名片：propose_agent 的惰性提议。点名片打开预填的 PersonaEditor（接受/拒绝/关闭）。
+       * status=pending 可点确认；accepted/rejected 为终态、不可再点。终态经 chat:resolve-proposal 持久化。
+       */
+      kind: 'agentcard'
+      /** propose_agent 工具调用 id（= 终态边车键）。 */
+      id: string
+      draft: AgentDraft
+      status: 'pending' | 'accepted' | 'rejected'
+    }
   | {
       /**
        * 子智能体折叠 Task 卡：run_subagent 调用的「壳」。默认仅显示结论摘要（summary），
@@ -83,10 +111,9 @@ export type ChatBlock =
   | {
       kind: 'ask'
       key: string
-      question: string
-      options: AskOption[]
-      /** 已答复的最终答案（选中项标签或自由输入）；未答为 undefined，此时展示可交互问答卡。 */
-      answer?: string
+      questions: AskQuestion[]
+      /** 已答复的各题答案（answers[i] 对应 questions[i]）；未答为 undefined，此时展示可交互问答卡。 */
+      answers?: string[]
     }
   | { kind: 'error'; message: string }
   /**
@@ -111,6 +138,12 @@ export interface SessionMeta {
   title: string
   createdAt: number
   updatedAt: number
+  /** 绑定的 persona id（对话优先外壳：驱动列表头像/主题色）。旧壳会话缺省。 */
+  personaId?: string
+  /** 聚焦工作区绝对路径；null = 全机通用助手（无聚焦）。 */
+  focusRoot?: string | null
+  /** 本对话模型引用 `"providerId:modelId"`；空串/缺省 = 跟随全局默认。见 chat store 的 bindings.model。 */
+  model?: string
 }
 
 /** send 接受的附件（路径给主进程读取，名称/类型用于本地乐观气泡）。 */
@@ -145,6 +178,7 @@ type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
   | { kind: 'notice'; code: 'compacted' }
+  | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
 type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: AttachKind }[] }
   | { role: 'assistant'; blocks: DisplayBlock[] }
@@ -163,7 +197,7 @@ type StreamEvent =
       depth?: number
       agent?: string
     }
-  | { type: 'ask_user'; key: string; question: string; options: AskOption[] }
+  | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   | {
       type: 'permission_request'
       key: string
@@ -198,12 +232,30 @@ interface ChatContextValue {
   sessionStates: Record<string, SessionLiveState>
   send: (text: string, attachments?: SendAttachment[]) => Promise<void>
   stop: () => void
-  newSession: () => void
+  /**
+   * 新建空会话；对话优先外壳可传 personaId 绑定身份、focusRoot 预设聚焦、model 快照角色偏好模型
+   * （旧壳零参调用行为不变）。model 在此刻定格（快照固定）：日后改角色偏好模型不影响本对话。
+   */
+  newSession: (personaId?: string, focusRoot?: string | null, model?: string) => void
   selectSession: (id: string) => void
   deleteSession: (id: string) => void
+  /** 当前对话的绑定（覆盖层优先于已落库真值）：驱动头像 / 工作区 chip / 模型选择器。 */
+  currentBinding: { personaId?: string; focusRoot: string | null; model?: string }
+  /** 挂载（path）/ 卸载（null）当前对话的聚焦工作区；path 须已受信（经 fs.openFolder/openPath）。 */
+  mountFocus: (path: string | null) => void
+  /**
+   * 设置**当前对话**的模型引用 `"providerId:modelId"`（只改当前对话，不动全局默认）；空串 = 回落全局默认。
+   * 覆盖层即时置位（驱动选择器显示），随下一次 send 落库到会话属性。见 bindings.model / SessionMeta.model。
+   */
+  setSessionModel: (modelRef: string) => void
   respondPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
-  /** 回应 ask_user 询问（选中项标签或自由输入），并把该问答卡就地收敛为已答态。 */
-  respondAsk: (key: string, answer: string) => void
+  /** 回应 ask_user 询问（每题的选中项标签或自由输入），并把该问答卡就地收敛为已答态。 */
+  respondAsk: (key: string, answers: string[]) => void
+  /**
+   * 落定角色名片终态（接受/拒绝）：就地把名片状态收敛为终态并持久化（防重开退回 pending / 重复建角色）。
+   * 「接受」建角色的写入（personas:upsert）由编辑器直接发起，本方法只管名片状态与终态落库。
+   */
+  resolveProposal: (toolId: string, status: 'accepted' | 'rejected') => void
   /** 当前项目的权限模式（授权姿态）。 */
   permMode: PermMode
   /** 切换当前项目的权限模式（即时持久化到 ~/.deva/permissions.json）。 */
@@ -235,6 +287,9 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
     const blocks: ChatBlock[] = dm.blocks.map((b) => {
       if (b.kind === 'text') return { kind: 'text', text: b.text }
       if (b.kind === 'notice') return { kind: 'notice', code: b.code }
+      // 历史回填：角色名片按持久化终态复原（pending/accepted/rejected）。
+      if (b.kind === 'agentcard')
+        return { kind: 'agentcard', id: b.id, draft: b.draft, status: b.status }
       const status: ToolStatus = b.status === 'error' ? 'error' : 'ok'
       // 历史回填：run_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children 为空、仅存结论）。
       if (b.name === 'run_subagent') {
@@ -268,6 +323,20 @@ function openSubagentIndex(blocks: ChatBlock[]): number {
   return -1
 }
 
+/** 归一化 propose_agent 原始参数为角色草稿（实时路径；与主进程 normalizeAgentDraft 对齐）。 */
+function normalizeAgentDraft(input: unknown): AgentDraft {
+  const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+  return {
+    name: str(a.name).trim(),
+    desc: str(a.description).trim(),
+    emoji: str(a.emoji).trim() || '🤖',
+    color: str(a.color).trim() || '#4f8cff',
+    model: '',
+    prompt: str(a.prompt)
+  }
+}
+
 /** 把一个流事件并入助手消息的块序列（纯函数，返回新数组）。 */
 function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
   const next = blocks.slice()
@@ -295,6 +364,16 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
         }
         // 兜底：无开着的卡（异常）→ 退化为普通工具卡，避免事件丢失。
         next.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, status: 'running' })
+        return next
+      }
+      // propose_agent（depth 0）→ 铸一张角色名片（惰性提议，待用户确认）。
+      if (ev.name === 'propose_agent') {
+        next.push({
+          kind: 'agentcard',
+          id: ev.id,
+          draft: normalizeAgentDraft(ev.args),
+          status: 'pending'
+        })
         return next
       }
       // run_subagent 的壳调用（depth 0）→ 开一张折叠 Task 卡。
@@ -362,7 +441,7 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       })
       return next
     case 'ask_user':
-      next.push({ kind: 'ask', key: ev.key, question: ev.question, options: ev.options })
+      next.push({ kind: 'ask', key: ev.key, questions: ev.questions })
       return next
     case 'error':
       next.push({ kind: 'error', message: ev.message })
@@ -476,7 +555,7 @@ function hasAttention(messages: ChatMessage[]): boolean {
   const last = messages[messages.length - 1]
   if (!last || last.role !== 'assistant') return false
   return last.blocks.some(
-    (b) => (b.kind === 'permission' && !b.resolved) || (b.kind === 'ask' && b.answer === undefined)
+    (b) => (b.kind === 'permission' && !b.resolved) || (b.kind === 'ask' && b.answers === undefined)
   )
 }
 
@@ -489,6 +568,12 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   const [currentSessionId, setCurrentSessionId] = useState<string>('')
   // 各会话活动态（键=sessionId）。ref 供事件回调 / 命令同步读写（不受渲染闭包过期影响），state 驱动渲染。
   const [runtimes, setRuntimes] = useState<Map<string, SessionRuntime>>(() => new Map())
+  // 会话绑定覆盖层（对话优先外壳）：persona / 聚焦工作区，在会话**首发落库前**只存渲染态，首发时随
+  // chat:send 一并绑定；已落库会话的 mount/unmount 也先写此层，随下次 chat:send 更新到主进程。
+  // 与 SessionMeta（已落库真值）叠加读出 currentBinding，覆盖层优先（承载尚未落库/刚变更的值）。
+  const [bindings, setBindings] = useState<
+    Map<string, { personaId?: string; focusRoot?: string | null; model?: string }>
+  >(() => new Map())
   const [permMode, setPermModeState] = useState<PermMode>('ask')
   // 每秒自增以触发重渲染，刷新当前所视会话「已用秒数」（不绑定变量，仅需其副作用）。
   const [, setTick] = useState(0)
@@ -496,11 +581,24 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   const runtimesRef = useRef(runtimes)
   const sessionIdRef = useRef<string>('')
   const projectPathRef = useRef<string | null>(null)
+  const bindingsRef = useRef(bindings)
 
   const setCurrent = (id: string): void => {
     sessionIdRef.current = id
     setCurrentSessionId(id)
   }
+
+  // 绑定覆盖层唯一写入口：读 ref → 合并 patch → 换新 Map 提交（ref 与 state 同步，事件回调可同步读最新值）。
+  const setBinding = useCallback(
+    (sid: string, patch: { personaId?: string; focusRoot?: string | null; model?: string }): void => {
+      const cur = bindingsRef.current.get(sid) ?? {}
+      const map = new Map(bindingsRef.current)
+      map.set(sid, { ...cur, ...patch })
+      bindingsRef.current = map
+      setBindings(map)
+    },
+    []
+  )
 
   // 会话活动态的唯一写入口：读 ref → 产出新态 → 引用不变则短路（不触发重渲染）→ 否则换新 Map 提交。
   // ref 与 state 同步更新，保证事件回调里的后续读取拿到最新值。
@@ -546,9 +644,21 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
   // 起一个全新的空会话：只切换当前会话（新 id 无活动态 → 视图自然空），不落盘、不进左侧。
   // 会话在用户首次发送时由主进程惰性建档，随后 refreshSessions 才让它出现在左侧。
-  const startFresh = useCallback((): void => {
-    setCurrent(genId('sess'))
-  }, [])
+  // 对话优先外壳可传 personaId（绑定身份）/ focusRoot（聚焦工作区）/ model（**快照**角色偏好模型）→ 存进
+  // 覆盖层，首发时随 chat:send 绑定/落库。model 在此刻定格：日后改角色偏好模型不影响本对话（快照固定）。
+  const startFresh = useCallback(
+    (personaId?: string, focusRoot?: string | null, model?: string): void => {
+      const id = genId('sess')
+      if (personaId !== undefined || focusRoot !== undefined || model !== undefined) {
+        const map = new Map(bindingsRef.current)
+        map.set(id, { personaId, focusRoot, model })
+        bindingsRef.current = map
+        setBindings(map)
+      }
+      setCurrent(id)
+    },
+    []
+  )
 
   // 切项目：重载会话清单 + 载入最近一条到其活动态（无则起新会话）。
   // 已有活动态（如后台正在流式的会话）不重载，避免冲掉实时累积的内容。
@@ -659,6 +769,22 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     return out
   }, [runtimes])
 
+  // 当前对话的绑定读出（覆盖层优先于已落库 SessionMeta）：驱动对话优先外壳的头像 / 工作区 chip。
+  // 覆盖层承载「尚未落库」（新会话首发前）或「刚 mount/unmount」的值；落库真值来自 listSessions。
+  const currentBinding = useMemo<{ personaId?: string; focusRoot: string | null; model?: string }>(
+    () => {
+      const meta = sessions.find((s) => s.id === currentSessionId)
+      const ov = bindings.get(currentSessionId)
+      const personaId = ov?.personaId ?? meta?.personaId
+      const focusRoot =
+        ov && ov.focusRoot !== undefined ? ov.focusRoot : (meta?.focusRoot ?? null)
+      // model：覆盖层优先（尚未落库的快照/刚切换）；否则落库真值。均缺省 = undefined（跟随全局默认）。
+      const model = ov && ov.model !== undefined ? ov.model : meta?.model
+      return { personaId, focusRoot: focusRoot ?? null, model }
+    },
+    [currentSessionId, sessions, bindings]
+  )
+
   const value = useMemo<ChatContextValue>(() => {
     const send = async (text: string, attachments?: SendAttachment[]): Promise<void> => {
       const sid = sessionIdRef.current
@@ -752,6 +878,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         startedAt: Date.now(),
         reconnecting: null
       }))
+      // 绑定覆盖层：首发时把 persona / 聚焦工作区带上（主进程 ensureSession：personaId 一次性绑定、
+      // focusRoot 可挂/卸更新）。旧壳无覆盖层 → 二者 undefined → 主进程走兼容分支，逐字节不变。
+      const binding = bindingsRef.current.get(sid)
       try {
         const { turnId } = await window.deva.chat.send({
           sessionId: sid,
@@ -763,7 +892,13 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
             model: model.model.id
           },
           workspaceRoot: projectPathRef.current,
-          attachments: atts.length ? atts.map((a) => a.path) : undefined
+          attachments: atts.length ? atts.map((a) => a.path) : undefined,
+          personaId: binding?.personaId,
+          focusRoot: binding?.focusRoot,
+          // 本对话模型（快照固定/只改当前对话）：新建快照的角色偏好、或聊天中切换的值，随首发/每次发送落库。
+          // 缺省（undefined）= 不改会话已存值；上面的 model（activeModel 构建的 ChatModelConfig）恒作主进程
+          // resolveModelRef 的 fallback（全局默认）——故 modelRef 空/删除都安全回落。
+          modelRef: binding?.model
         })
         patchRuntime(sid, (r) => ({ ...r, turnId }))
         // 主进程发送时已惰性建档并落盘：立即刷新左侧，让新会话即时出现并高亮
@@ -785,8 +920,21 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     // 新建 / 切换 / 删除随时可用——即使别的会话正在流式（这正是多对话并行的关键）。
-    const newSession = (): void => {
-      startFresh()
+    // 对话优先外壳可传 personaId 绑定身份、focusRoot 预设聚焦、model 快照角色偏好模型；旧壳零参调用行为不变。
+    const newSession = (personaId?: string, focusRoot?: string | null, model?: string): void => {
+      startFresh(personaId, focusRoot, model)
+    }
+
+    // 挂载 / 卸载当前对话的聚焦工作区：只更新覆盖层（path 应已由调用方经 fs.openFolder/openPath 受信），
+    // 下次 chat:send 时 ensureSession 据此更新 focusRoot（null = 卸载回全机通用助手）。
+    const mountFocus = (path: string | null): void => {
+      setBinding(sessionIdRef.current, { focusRoot: path })
+    }
+
+    // 设置当前对话模型（只改当前对话）：只更新覆盖层（承载尚未落库的选择），下次 chat:send 时随 modelRef
+    // 落库到会话属性。空串 = 显式回落全局默认。不触碰全局 activeModel（那是无偏好对话的兜底默认）。
+    const setSessionModel = (modelRef: string): void => {
+      setBinding(sessionIdRef.current, { model: modelRef })
     }
 
     const selectSession = (id: string): void => {
@@ -809,6 +957,13 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       void (async () => {
         await window.deva.chat.deleteSession(id, projectPathRef.current)
         dropRuntime(id)
+        // 一并清掉该会话的绑定覆盖层（若有），避免残留。
+        if (bindingsRef.current.has(id)) {
+          const map = new Map(bindingsRef.current)
+          map.delete(id)
+          bindingsRef.current = map
+          setBindings(map)
+        }
         const path = projectPathRef.current
         const list = await window.deva.chat.listSessions(path)
         if (projectPathRef.current !== path) return
@@ -862,11 +1017,21 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })
     }
 
-    const respondAsk = (key: string, answer: string): void => {
-      void window.deva.chat.respondAsk({ key, answer })
+    const respondAsk = (key: string, answers: string[]): void => {
+      void window.deva.chat.respondAsk({ key, answers })
       patchMessages(sessionIdRef.current, (blocks) =>
-        blocks.map((b) => (b.kind === 'ask' && b.key === key ? { ...b, answer } : b))
+        blocks.map((b) => (b.kind === 'ask' && b.key === key ? { ...b, answers } : b))
       )
+    }
+
+    const resolveProposal = (toolId: string, status: 'accepted' | 'rejected'): void => {
+      const sid = sessionIdRef.current
+      // 就地把名片收敛为终态（名片属当前所视会话）。
+      patchMessages(sid, (blocks) =>
+        blocks.map((b) => (b.kind === 'agentcard' && b.id === toolId ? { ...b, status } : b))
+      )
+      // 持久化终态边车：重开不退回 pending，接受态不会被再次接受成重复角色。
+      void window.deva.chat.resolveProposal(sid, toolId, status)
     }
 
     const setPermMode = (mode: PermMode): void => {
@@ -886,8 +1051,12 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       newSession,
       selectSession,
       deleteSession,
+      currentBinding,
+      mountFocus,
+      setSessionModel,
       respondPermission,
       respondAsk,
+      resolveProposal,
       permMode,
       setPermMode
     }
@@ -898,10 +1067,12 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     streaming,
     streamStatus,
     sessionStates,
+    currentBinding,
     permMode,
     activeModel,
     t,
     startFresh,
+    setBinding,
     refreshSessions,
     patchRuntime,
     patchMessages,

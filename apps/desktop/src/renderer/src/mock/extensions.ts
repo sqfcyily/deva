@@ -91,11 +91,24 @@ export interface SubAgent {
   enabled: boolean
 }
 
-/** Agent 提示词（Persona）：一段追加进主智能体系统提示词的自定义指令（性格 / 语气 / 风格 / 偏好）。 */
+/**
+ * Agent 提示词（Persona）：对话优先外壳里的**完整身份**——name/emoji/主题色/专长/开场白/
+ * 偏好模型/工具白名单/提示词。旧壳仅用 name+prompt（叠加注入），新增字段可选、缺省安全。
+ */
 export interface Persona {
   id: string
   name: string
   desc: string
+  /** 头像 emoji（对话优先外壳；旧壳忽略）。 */
+  emoji: string
+  /** 身份主题色（头像描边 / 名字色）。 */
+  color: string
+  /** 开场白 / 口头禅。 */
+  tagline: string
+  /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
+  model: string
+  /** 工具白名单（内置 / MCP 名）；空数组 = 全内置（只收窄可见性，不放宽闸门）。 */
+  tools: string[]
   /** 提示词正文（追加进主智能体系统提示词）。 */
   prompt: string
   scope: ExtScope

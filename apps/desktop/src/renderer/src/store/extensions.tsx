@@ -51,6 +51,11 @@ interface ExtensionsContextValue {
   update: (kind: ExtKind, id: string, patch: ExtPatch) => void
   remove: (kind: ExtKind, id: string) => void
   add: (kind: ExtKind) => void
+  /**
+   * Persona 直存：整对象 round-trip 到 personas:upsert（→ composePersonaMd）后按 id 增量替换本地列表，
+   * 返回落库映射后的 Persona（供角色编辑器「保存即建/改」的确定性路径，避免多次 update 拆分写）。
+   */
+  upsertPersona: (input: PersonaUpsertInput) => Promise<Persona | undefined>
   /** 技能：上传文件（.zip 技能包或单个 SKILL.md）导入并自动启用；失败弹出本地化提示。 */
   importSkill: () => void
   /** MCP：连接（或重连）一个服务（状态经 onStatus 广播回流）。 */
@@ -114,6 +119,11 @@ function personaRecToPersona(rec: PersonaRecord): Persona {
     id: rec.id,
     name: rec.name,
     desc: rec.description,
+    emoji: rec.emoji,
+    color: rec.color,
+    tagline: rec.tagline,
+    model: rec.model,
+    tools: rec.tools,
     prompt: rec.prompt,
     scope: 'global',
     source: 'custom',
@@ -127,6 +137,11 @@ function personaToInput(p: Persona): PersonaUpsertInput {
     id: p.id,
     name: p.name,
     description: p.desc,
+    emoji: p.emoji,
+    color: p.color,
+    tagline: p.tagline,
+    model: p.model,
+    tools: p.tools,
     prompt: p.prompt,
     enabled: p.enabled
   }
@@ -392,8 +407,13 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
     const addPersona = (): void => {
       void (async () => {
         const rec = await window.deva?.personas?.upsert({
-          name: '新提示词',
+          name: '新角色',
           description: '',
+          emoji: '🤖',
+          color: '#7c7cf0',
+          tagline: '',
+          model: '',
+          tools: [],
           prompt: '',
           enabled: true
         })
@@ -402,6 +422,15 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         setPersonas((list) => [...list, p])
         setSelected({ kind: 'persona', id: p.id })
       })()
+    }
+
+    // 整对象直存：新建（无 id / 未见过的 id → 追加）或改写（已存在 → 替换），返回落库后的 Persona。
+    const upsertPersona = async (input: PersonaUpsertInput): Promise<Persona | undefined> => {
+      const rec = await window.deva?.personas?.upsert(input)
+      if (!rec) return undefined
+      const p = personaRecToPersona(rec)
+      setPersonas((list) => (list.some((x) => x.id === p.id) ? list.map((x) => (x.id === p.id ? p : x)) : [...list, p]))
+      return p
     }
 
     return {
@@ -472,6 +501,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         if (kind === 'persona') return addPersona()
         return addSubagent()
       },
+      upsertPersona,
       importSkill,
       mcpConnect: (id) => void window.deva?.mcp?.connect(id).catch(() => {}),
       mcpDisconnect: (id) => void window.deva?.mcp?.disconnect(id).catch(() => {}),

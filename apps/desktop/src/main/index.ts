@@ -8,7 +8,7 @@ import { registerProviderIpc } from './services/provider'
 import { registerChatIpc } from './services/chat'
 import { registerSkillsIpc } from './services/skills'
 import { registerAgentsIpc } from './services/agents'
-import { registerPersonasIpc } from './services/personas'
+import { ensureSeededPersonas, registerPersonasIpc } from './services/personas'
 import {
   autoConnectEnabledServers,
   disconnectAllServers,
@@ -113,6 +113,8 @@ app.whenReady().then(() => {
   registerAgentsIpc()
 
   // Agent 提示词（Personas，全局 ~/.deva/personas/*.md；已启用者追加进主智能体系统提示词，启用态入 config.json）
+  // 首启种子：确保 1 个「通用」persona 兜底（对话优先外壳默认身份）；幂等 + 防删除后复活（守卫位入 config）。
+  ensureSeededPersonas()
   registerPersonasIpc()
 
   // MCP 服务（全局 ~/.deva/mcp.json；主进程内起真实客户端，工具命名空间化后并入 Agent 工具表，默认 ask 过闸）

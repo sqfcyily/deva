@@ -140,29 +140,45 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'ask_user',
     description:
-      '向用户提出一个单选问题并等待其选择——仅在需求有歧义、存在多个可行方案需用户抉择、或缺少无法合理默认的关键信息时使用。' +
-      '能给出合理默认就直接做，不要为琐碎选择打断用户，也不要一次问多个问题。' +
-      '用户可从你给的候选项里选，也可自行输入答案；工具会返回用户的最终选择/输入，你据此继续。' +
+      '向用户提出一个或多个问题并等待其作答——仅在需求有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时使用。' +
+      '能给出合理默认就直接做，不要为琐碎选择打断用户。' +
+      '可一次问多个相关问题，用户会在同一张卡片里一次性回答全部（避免来回多轮打断）。' +
+      '每个问题可给候选项（单选或多选，由 multiSelect 决定），界面总会额外为每个问题提供「自己输入」项，无需你列出；工具会返回用户对每个问题的最终选择/输入，你据此继续。' +
       '注意：这是「征求决策/澄清」，与「征求授权」不同——写入/执行的授权永远走工具自动弹出的授权按钮，切勿用本工具去问「是否允许」。',
     inputSchema: {
       type: 'object',
       properties: {
-        question: { type: 'string', description: '要问用户的问题（简洁、单一）。' },
-        options: {
+        questions: {
           type: 'array',
           description:
-            '候选项（竖排单选，按序展示）。每项一个简短标签，可选补充说明。可省略/留空表示纯自由作答；界面总会额外提供「自己输入」项，无需你列出。',
+            '要问用户的问题列表（按序竖排展示）。通常一个；仅当多个问题彼此相关、适合一次性作答时才给多个，别硬凑。',
           items: {
             type: 'object',
             properties: {
-              label: { type: 'string', description: '选项标签（简短）。' },
-              description: { type: 'string', description: '该选项的补充说明（可选）。' }
+              question: { type: 'string', description: '问题文本（简洁、单一）。' },
+              multiSelect: {
+                type: 'boolean',
+                description: '该问题是否允许多选（默认 false=单选）。选「可勾选的多个特性/项」时设为 true。'
+              },
+              options: {
+                type: 'array',
+                description:
+                  '候选项（按序展示）。每项一个简短标签，可选补充说明。可省略/留空表示该问题纯自由作答；界面总会额外提供「自己输入」项，无需你列出。',
+                items: {
+                  type: 'object',
+                  properties: {
+                    label: { type: 'string', description: '选项标签（简短）。' },
+                    description: { type: 'string', description: '该选项的补充说明（可选）。' }
+                  },
+                  required: ['label']
+                }
+              }
             },
-            required: ['label']
+            required: ['question']
           }
         }
       },
-      required: ['question']
+      required: ['questions']
     }
   },
   {
@@ -196,6 +212,35 @@ export const toolSpecs: ToolSpec[] = [
       },
       required: ['name', 'instructions']
     }
+  },
+  {
+    name: 'propose_agent',
+    description:
+      '当用户想「用对话创建一个角色（Agent/性格身份）」时，据已厘清的需求生成一张**角色名片**供用户确认。' +
+      '这只是**提议**：本工具不写入任何东西、不创建角色，只把你生成的参数以名片形式呈现给用户；' +
+      '用户点名片、在编辑器里点「接受」后才真正建角色。' +
+      '因此调用后**切勿声称角色已创建**，应告诉用户「名片已生成，请查收并确认」。' +
+      '不要设置 model（你无法可靠得知 providerId:modelId），留给用户在编辑器里选。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '角色名（显示名，如「代码审查员」「产品经理小美」）。' },
+        description: {
+          type: 'string',
+          description: '一句话专长/定位说明，会显示在名片与角色资料上。'
+        },
+        emoji: { type: 'string', description: '代表该角色的单个 emoji 头像（如 🧑‍💻、📐、🎨）。' },
+        color: {
+          type: 'string',
+          description: '主题色，十六进制（如 #4f8cff）；用于名片与头像的强调色。'
+        },
+        prompt: {
+          type: 'string',
+          description: '角色的系统提示词：性格、语气、专长、行为准则等，用 Markdown 编写。这是角色的核心。'
+        }
+      },
+      required: ['name', 'prompt']
+    }
   }
 ]
 
@@ -219,7 +264,9 @@ const READ_TOOLS = new Set([
   'web_fetch',
   'ask_user',
   'skill',
-  'run_subagent'
+  'run_subagent',
+  // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「接受」（走渲染层 personas:upsert）。
+  'propose_agent'
 ])
 
 /** 已连接 MCP 服务注册的命名空间化工具名（serverId__toolName）。连接时注册、断开时反注册。 */
@@ -952,6 +999,18 @@ export async function executeTool(
       return {
         content: `已创建并启用技能「${rec.name}」(id: ${rec.id})，用户可用 /${rec.name} 触发。`,
         summary: '已创建技能'
+      }
+    }
+
+    if (name === 'propose_agent') {
+      // 惰性工具：**不写任何东西**。草稿参数经 tool_call 事件的 args 到渲染层铸成名片，
+      // 用户点「接受」后才走渲染层 personas:upsert 真正建角色（零提权）。
+      const proposedName = typeof a.name === 'string' ? a.name.trim() : ''
+      if (!proposedName)
+        return { content: '缺少角色 name（角色显示名）', summary: '参数无效', isError: true }
+      return {
+        content: '已生成角色名片，等待用户在名片中查看并确认；请勿重复调用，也不要声称角色已创建。',
+        summary: '已生成角色名片'
       }
     }
 

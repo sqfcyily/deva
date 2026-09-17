@@ -19,7 +19,7 @@ import {
 } from './tools'
 import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
 import { enabledAgentSummaries, getEnabledAgentByName, type AgentRecord } from './agents'
-import { enabledPersonas } from './personas'
+import { enabledPersonas, getPersona } from './personas'
 import { resolveModelRef } from './model-resolve'
 import { dispatchMcpTool, getMcpToolSpecs } from './mcp'
 import {
@@ -72,6 +72,22 @@ interface ChatSendRequest {
   workspaceRoot: string | null
   /** 用户经原生选择框挑选的附件绝对路径（正文由主进程读取，base64 不经渲染层）。 */
   attachments?: string[]
+  /**
+   * 对话优先外壳：本对话绑定的 persona id（首发落库时绑定，一对话一身份）。
+   * 缺省 = 旧 AppShell 路径（叠加式 enabledPersonas，无单身份注入）。
+   */
+  personaId?: string
+  /**
+   * 本对话的聚焦工作区绝对路径；null/缺省 = 全机通用助手（无聚焦）。
+   * 与 workspaceRoot（分桶键）解耦：新壳恒传 workspaceRoot=null 落 no-project 桶，聚焦范围由此承载。
+   */
+  focusRoot?: string | null
+  /**
+   * 本对话的模型引用 `"providerId:modelId"`；缺省 = 不改（沿用会话已存值）；空串 = 显式回落全局默认。
+   * **快照固定 / 只改当前对话**：新建对话由渲染层带上角色偏好快照；聊天中切换模型即随本字段更新（仅本
+   * 对话）。runTurn 经 resolveModelRef(session.model, model) 解析，删除的模型自动回落 model（全局默认）。
+   */
+  modelRef?: string
 }
 
 /** 手动 /compact 请求：无用户文本、无后续模型轮，只压缩历史并回发结果事件。 */
@@ -81,12 +97,38 @@ interface ChatCompactRequest {
   workspaceRoot: string | null
 }
 
+/** 角色名片草稿：propose_agent 原始参数归一化后的形状（编辑器/名片消费）。 */
+export interface AgentDraft {
+  name: string
+  desc: string
+  emoji: string
+  color: string
+  model: string
+  prompt: string
+}
+
+/** 归一化 propose_agent 的原始参数为角色草稿：description→desc、补空 model、缺省 emoji/color。 */
+function normalizeAgentDraft(input: unknown): AgentDraft {
+  const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+  return {
+    name: str(a.name).trim(),
+    desc: str(a.description).trim(),
+    emoji: str(a.emoji).trim() || '🤖',
+    color: str(a.color).trim() || '#4f8cff',
+    model: '',
+    prompt: str(a.prompt)
+  }
+}
+
 /** 重建历史用的展示消息（主进程从 provider Message[] 归约，去掉 base64 负载）。 */
 type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
   /** 压缩摘要气泡：重开会话时把带标记的摘要 user 消息还原成「已压缩」提示 + 摘要正文。 */
   | { kind: 'notice'; code: 'compacted' }
+  /** 角色名片：propose_agent 的提议。status 终态（accepted/rejected）由 StoredSession.proposals 边车持久化。 */
+  | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
 
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
@@ -97,7 +139,10 @@ export type DisplayMessage =
  * 工具结果回灌消息不单独成气泡，而是回填上一条 assistant 的工具卡状态；
  * 附件仅重建为「名称 + 类型」的贴片（不回传 base64）。思考块为易逝态，不重建。
  */
-function toDisplayMessages(messages: Message[]): DisplayMessage[] {
+function toDisplayMessages(
+  messages: Message[],
+  proposals: Record<string, 'accepted' | 'rejected'> = {}
+): DisplayMessage[] {
   const out: DisplayMessage[] = []
   let lastAssistant: Extract<DisplayMessage, { role: 'assistant' }> | null = null
 
@@ -108,8 +153,17 @@ function toDisplayMessages(messages: Message[]): DisplayMessage[] {
       const blocks: DisplayBlock[] = []
       for (const p of parts) {
         if (p.type === 'text' && p.text) blocks.push({ kind: 'text', text: p.text })
-        else if (p.type === 'tool_use')
-          blocks.push({ kind: 'tool', id: p.id, name: p.name, args: p.input, status: 'ok' })
+        else if (p.type === 'tool_use') {
+          // propose_agent 铸成角色名片（惰性提议）；其余工具照常铸工具卡。
+          if (p.name === 'propose_agent')
+            blocks.push({
+              kind: 'agentcard',
+              id: p.id,
+              draft: normalizeAgentDraft(p.input),
+              status: proposals[p.id] ?? 'pending'
+            })
+          else blocks.push({ kind: 'tool', id: p.id, name: p.name, args: p.input, status: 'ok' })
+        }
       }
       const msg: Extract<DisplayMessage, { role: 'assistant' }> = { role: 'assistant', blocks }
       out.push(msg)
@@ -177,16 +231,85 @@ interface PermissionResponse {
   remember: boolean
 }
 
-/** ask_user 的候选项（竖排单选；description 为可选补充说明）。 */
+/** ask_user 的候选项（description 为可选补充说明）。 */
 interface AskOption {
   label: string
   description?: string
 }
 
+/** ask_user 的单个问题：题干 + 候选项 + 是否多选。 */
+interface AskQuestion {
+  question: string
+  options: AskOption[]
+  /** true=多选（可勾多项）；false=单选。 */
+  multi: boolean
+}
+
 interface AskResponse {
   key: string
-  /** 用户最终答复文本（选中项标签或自由输入）；null 表示取消/中止。 */
-  answer: string | null
+  /** 用户对每个问题的答复（answers[i] 对应 questions[i]，选中项或自由输入）；null 表示取消/中止。 */
+  answers: string[] | null
+}
+
+/**
+ * 把模型给的「选项」值健壮地归一成 AskOption[]。刻意宽容：不同模型对候选项的写法五花八门，
+ * 若只认「对象且 label 为字符串」会把纯字符串数组 / 别名键（value/title/text/name）全部静默丢掉，
+ * 表现为「有问题却无选项、只剩自由输入」。这里逐项归一，尽量不丢用户本可点选的项。
+ */
+function normalizeOptions(raw: unknown): AskOption[] {
+  if (!Array.isArray(raw)) return []
+  const out: AskOption[] = []
+  for (const item of raw) {
+    if (typeof item === 'string') {
+      const label = item.trim()
+      if (label) out.push({ label })
+      continue
+    }
+    if (item && typeof item === 'object') {
+      const o = item as Record<string, unknown>
+      const labelKey = ['label', 'value', 'title', 'text', 'name'].find(
+        (k) => typeof o[k] === 'string' && (o[k] as string).trim()
+      )
+      if (!labelKey) continue
+      const label = (o[labelKey] as string).trim()
+      const description =
+        typeof o.description === 'string' && o.description.trim() ? o.description : undefined
+      out.push({ label, description })
+    }
+  }
+  return out
+}
+
+/**
+ * 把 ask_user 工具入参健壮地解析成 AskQuestion[]。优先读多问格式 `questions`；
+ * 若缺失/为空但存在顶层 `question`（旧式或跑偏调用），防御性收编成单元素；
+ * 仍为空则兜底为一条通用问题——绝不向渲染层抛空卡。
+ */
+function parseAskQuestions(args: unknown): AskQuestion[] {
+  const a = (args ?? {}) as { questions?: unknown; question?: unknown; options?: unknown }
+  const out: AskQuestion[] = []
+  if (Array.isArray(a.questions)) {
+    for (const item of a.questions) {
+      if (!item || typeof item !== 'object') continue
+      const q = item as Record<string, unknown>
+      const question = typeof q.question === 'string' && q.question.trim() ? q.question : ''
+      const options = normalizeOptions(q.options)
+      // 无题干但有选项时兜底题干，避免整条问题因题干缺失被丢；题干与选项都空的项才跳过。
+      if (!question && options.length === 0) continue
+      out.push({
+        question: question || '请选择：',
+        options,
+        multi: Boolean(q.multiSelect)
+      })
+    }
+  }
+  // 防御回退：模型仍按旧式单问格式调用（顶层 question/options）。
+  if (out.length === 0 && typeof a.question === 'string' && a.question.trim()) {
+    out.push({ question: a.question, options: normalizeOptions(a.options), multi: false })
+  }
+  // 最终兜底：绝不发空问答卡。
+  if (out.length === 0) out.push({ question: '请选择：', options: [], multi: false })
+  return out
 }
 
 /** 发往渲染层的富事件（比 provider 的 StreamEvent 多了工具执行/权限阶段）。 */
@@ -205,8 +328,8 @@ export type ChatStreamEvent =
       depth?: number
       agent?: string
     }
-  /** 征求决策/澄清：暂停循环，向用户抛出单选问题，等其选择/输入后回灌为 tool_result。 */
-  | { type: 'ask_user'; key: string; question: string; options: AskOption[] }
+  /** 征求决策/澄清：暂停循环，向用户抛出一个或多个问题，等其一次性作答后回灌为 tool_result。 */
+  | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   | {
       type: 'permission_request'
       key: string
@@ -259,8 +382,8 @@ function delay(ms: number, signal: AbortSignal): Promise<boolean> {
 
 const activeTurns = new Map<string, AbortController>()
 const pending = new Map<string, { resolve: (r: { decision: 'allow' | 'deny'; remember: boolean }) => void; turnId: string }>()
-/** 待用户答复的 ask_user 询问（键 → resolve + 所属轮次）；answer 为 null 表示取消/中止。 */
-const pendingAsk = new Map<string, { resolve: (answer: string | null) => void; turnId: string }>()
+/** 待用户答复的 ask_user 询问（键 → resolve + 所属轮次）；answers 为 null 表示取消/中止。 */
+const pendingAsk = new Map<string, { resolve: (answers: string[] | null) => void; turnId: string }>()
 
 let idCounter = 0
 function genId(prefix: string): string {
@@ -284,7 +407,7 @@ function systemPrompt(
     '关于授权：当你决定写入/修改文件时，**直接调用 write_file 工具**即可——应用会自动弹出授权界面，由用户在界面上点「允许」或「拒绝」。',
     '**切勿**在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话——用户无法用文字回复授权，只能通过应用弹出的授权按钮操作；用文字征求授权等于让操作卡死。',
     '需要动手时就调用相应工具，不要只声明打算做什么便停下等待确认。若工具调用被用户拒绝，再据此说明或改用其他不需该操作的方式。',
-    '关于决策/澄清：当需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时，调用 ask_user 工具抛出**一个**单选问题，界面会让用户选择或自行输入，其答复回灌给你后再继续。能合理默认就直接做，别为琐碎选择打断用户。注意区分：征求**决策/澄清**用 ask_user；征求**写入/执行授权**仍走前述权限按钮，切勿用 ask_user 去问「是否允许」。'
+    '关于决策/澄清：当需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时，调用 ask_user 工具抛出一个或多个问题（每题可给候选项、可单选或多选，界面还允许自行输入），用户在同一张卡片里一次性作答后回灌给你再继续。多个相关问题可一次问清、避免来回打断；但能合理默认就直接做，别为琐碎选择打断用户。注意区分：征求**决策/澄清**用 ask_user；征求**写入/执行授权**仍走前述权限按钮，切勿用 ask_user 去问「是否允许」。'
   ]
   if (skills.length) {
     // 渐进式披露：此处只列「名称 + 一句话描述」；当任务匹配时，模型再调用 skill 工具取完整指令。
@@ -362,8 +485,8 @@ function buildSubagentTool(agents: { name: string; description: string }[]): Too
  * 白名单只**收窄**可见工具；被保留的每个工具调用仍照常过同一道权限闸门（无提权）。
  */
 function buildSubagentTools(allowlist: string[]): ToolSpec[] {
-  // create_skill 亦排除：子智能体不得创建技能（它在 toolSpecs 基表里，须显式剔除）。
-  const EXCLUDED = new Set(['ask_user', 'skill', 'run_subagent', 'create_skill'])
+  // create_skill / propose_agent 亦排除：子智能体不得创建技能/角色（无名片通道；它们在 toolSpecs 基表里，须显式剔除）。
+  const EXCLUDED = new Set(['ask_user', 'skill', 'run_subagent', 'create_skill', 'propose_agent'])
   const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
   if (!allowlist || allowlist.length === 0) return builtins
   const allow = new Set(allowlist)
@@ -393,7 +516,7 @@ function buildSubagentSystem(def: AgentRecord, workspaceRoot: string | null): st
 interface AgentLoopArgs {
   turnId: string
   sessionId: string
-  /** 项目键（评估权限模式 / 记住命令前缀用）。 */
+  /** 权限模式键：按**有效根**（focusRoot ?? workspaceRoot）取持久 ask/acceptEdits/auto 模式；子轮继承父轮。 */
   key: string
   /** 对话历史（原地追加 assistant / tool_result）。 */
   history: Message[]
@@ -451,15 +574,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     return new Promise((resolve) => pending.set(key, { resolve, turnId }))
   }
 
-  /** 抛出单选问题、暂停循环等用户答复（不过权限闸门，恒放行执行）。 */
+  /** 抛出一个或多个问题、暂停循环等用户一次性作答（不过权限闸门，恒放行执行）。 */
   function askUser(
     turnId: string,
     sessionId: string,
-    question: string,
-    options: AskOption[]
-  ): Promise<string | null> {
+    questions: AskQuestion[]
+  ): Promise<string[] | null> {
     const key = genId('ask')
-    emit(turnId, sessionId, { type: 'ask_user', key, question, options })
+    emit(turnId, sessionId, { type: 'ask_user', key, questions })
     return new Promise((resolve) => pendingAsk.set(key, { resolve, turnId }))
   }
 
@@ -590,23 +712,18 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
         // ask_user 特判：不过权限闸门，暂停循环等用户抉择，答复回灌为 tool_result（子轮禁用）。
         if (allowAskUser && tc.name === 'ask_user') {
-          const a = (tc.args ?? {}) as { question?: unknown; options?: unknown }
-          const question = typeof a.question === 'string' && a.question.trim() ? a.question : '请选择：'
-          const options: AskOption[] = Array.isArray(a.options)
-            ? a.options
-                .filter((o): o is { label: string; description?: unknown } =>
-                  Boolean(o) && typeof (o as { label?: unknown }).label === 'string'
-                )
-                .map((o) => ({
-                  label: o.label,
-                  description: typeof o.description === 'string' ? o.description : undefined
-                }))
-            : []
-          const answer = await askUser(turnId, sessionId, question, options)
+          const questions = parseAskQuestions(tc.args)
+          const answers = await askUser(turnId, sessionId, questions)
           resultParts.push({
             type: 'tool_result',
             toolUseId: tc.id,
-            content: answer === null ? '用户取消了本次询问。' : `用户回答：${answer}`,
+            content:
+              answers === null
+                ? '用户取消了本次询问。'
+                : '用户回答如下：\n' +
+                  questions
+                    .map((q, i) => `${i + 1}. ${q.question} → ${answers[i] ?? '（未作答）'}`)
+                    .join('\n'),
             isError: false
           })
           continue
@@ -867,16 +984,30 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): Promise<void> {
     const controller = new AbortController()
     activeTurns.set(turnId, controller)
-    // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
-    const ctx: ToolContext = { workspaceRoot, signal: controller.signal }
     const session = ensureSession(key, sessionId)
+    // 聚焦工作区：本对话若挂载文件夹，用它作有效根（受信/在工作区内判定、终端 cwd、系统提示词聚焦、
+    // 权限模式键均据此）；未挂载 → 回落 workspaceRoot（旧壳=已打开项目；新壳=null 即全机通用助手）。
+    const effectiveRoot = session.focusRoot ?? workspaceRoot
+    // 权限模式键：按有效根取持久模式 —— 挂载不同文件夹的对话各有独立模式；旧壳 focusRoot 恒空
+    // → effectiveRoot === workspaceRoot → modeKey === key（分桶键），逐字节兼容。
+    const modeKey = projectKey(effectiveRoot)
+    // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
+    const ctx: ToolContext = { workspaceRoot: effectiveRoot, signal: controller.signal }
+
+    // 本轮实际模型（对话优先外壳·快照固定/只改当前对话）：以**本对话**存的 model 为准（新建时快照角色偏好、
+    // 聊天中切换即更新），经 resolveModelRef 解析——空/非法/模型已被删除都回落 config（chat:send 带上的全局
+    // 默认）。故：同角色的多个对话可各用不同模型，改角色偏好模型不影响已建对话，删模型自动回归默认。
+    // 提前解析，以便压缩按本轮实际模型的上下文窗口判定/摘要。
+    // 注：persona 仍需取出用于系统提示词单身份注入与工具白名单，但**不再**参与模型选择（快照已固定于会话）。
+    const persona = session.personaId ? getPersona(session.personaId) : null
+    const turnModel = resolveModelRef(session.model, config)
 
     // 自动压缩：接近上下文窗口时，先把较早历史摘要替换，再进入本轮。
     // 必须在捕获 history 之前做——compactSession 会重赋 session.messages（否则 history 成悬空旧引用）。
     // 失败 / 无需压缩都发事件供渲染层弱提示，且绝不阻断本轮（宁可这一轮不压也要照常回答）。
-    if (!controller.signal.aborted && needsCompaction(session, config.model)) {
+    if (!controller.signal.aborted && needsCompaction(session, turnModel.model)) {
       try {
-        const r = await compactSession({ session, key, model: config, signal: controller.signal })
+        const r = await compactSession({ session, model: turnModel, signal: controller.signal })
         if (r.status !== 'none')
           emit(turnId, sessionId, {
             type: 'compacted',
@@ -896,12 +1027,21 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 本轮技能快照（在轮开始时定格）：系统提示词只列 name+description（便宜的渐进式披露），
     // 有启用技能时才向模型提供 skill 工具（命中后再加载完整正文）。
     const skillSummaries = enabledSkillSummaries()
-    // 本轮 persona 快照（仅主智能体）：已启用的「Agent 提示词」追加进系统提示词；子智能体不注入。
-    const personas = enabledPersonas()
+    // 本轮 persona 快照（仅主智能体）：
+    //  · 绑定了 persona（对话优先外壳）→ 注入**该单条**身份提示词（绑定的 persona 被删则不注入，
+    //    绝不回落叠加式，避免绑定对话突然串入其它启用身份）。
+    //  · 未绑定（旧 AppShell）→ 走叠加式 enabledPersonas()，逐字节兼容旧行为。
+    // 子智能体一律不注入（有自己的系统提示词，避免串味）。
+    const personas = session.personaId
+      ? persona && persona.prompt.trim()
+        ? [{ name: persona.name, prompt: persona.prompt }]
+        : []
+      : enabledPersonas()
     const skillTool = buildSkillTool(skillSummaries)
     // 有启用子智能体时才向模型提供 run_subagent 工具（枚举已启用名）。
     const subagentTool = buildSubagentTool(enabledAgentSummaries())
     // 每轮定格：内置工具 +（有启用技能时）skill +（有启用子智能体时）run_subagent + 当前已连接 MCP 工具。
+    // 角色不再收窄工具可见性：所有角色均可按需调用全部工具（每个调用仍照常过同一道权限闸门，零提权）。
     const turnTools: ToolSpec[] = [
       ...toolSpecs,
       ...(skillTool ? [skillTool] : []),
@@ -914,11 +1054,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const { stopReason } = await runAgentLoop({
         turnId,
         sessionId,
-        key,
+        // 权限模式键 = 有效根（focusRoot ?? workspaceRoot）：挂载不同文件夹的对话各有独立
+        // 持久模式；旧壳 focusRoot 恒空 → modeKey === key，逐字节兼容。分桶落盘仍用外层 key。
+        key: modeKey,
         history,
-        system: systemPrompt(workspaceRoot, skillSummaries, personas),
+        system: systemPrompt(effectiveRoot, skillSummaries, personas),
         tools: turnTools,
-        model: config,
+        model: turnModel,
         ctx,
         controller,
         maxSteps: MAX_STEPS,
@@ -942,17 +1084,20 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       activeTurns.delete(turnId)
       // 记录本轮真实输入 token 作为下轮压缩触发依据（比字符估算准，天然覆盖图片/工具）。
       if (lastInput > 0) session.lastInputTokens = lastInput
-      // 本轮对 history 的原地改写落盘；更新时间用于左侧列表排序
+      // 本轮对 history 的原地改写落盘（一对话一文件：只重写这一条）；更新时间用于左侧列表排序
       session.updatedAt = Date.now()
-      saveProject(key)
+      saveProject(sessionId)
     }
   }
 
   // 发送用户消息 → 启动一轮（fire-and-forget），返回 turnId
   ipcMain.handle('chat:send', async (_e, payload: ChatSendRequest): Promise<{ turnId: string }> => {
-    const { sessionId, text, model, workspaceRoot, attachments } = payload
+    const { sessionId, text, model, workspaceRoot, attachments, personaId, focusRoot, modelRef } =
+      payload
     const key = projectKey(workspaceRoot)
-    const session = ensureSession(key, sessionId)
+    // 首发绑定 persona / 聚焦工作区 / 本对话模型（ensureSession：personaId 一次性绑定，focusRoot 与 model
+    // 可后续更新——model 承载「新建快照角色偏好 + 聊天中切换」，显式提供即落库，仅影响本对话）。
+    const session = ensureSession(key, sessionId, { personaId, focusRoot, model: modelRef })
     const history = session.messages
 
     // 「/技能名」显式触发：命中已启用技能 → 剥离该 token，把完整正文预置进本条消息（这一轮即生效）。
@@ -992,28 +1137,34 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 首条用户文本派生会话标题
     if (!session.title) session.title = deriveTitle(text) || deriveTitle(questionText)
     session.updatedAt = Date.now()
-    saveProject(key)
+    saveProject(sessionId)
 
     const turnId = genId('turn')
     void runTurn(key, sessionId, turnId, model, workspaceRoot)
     return { turnId }
   })
 
+  /* 说明：persona 绑定与聚焦工作区都已由 ensureSession 落在 session 上，runTurn 内直接读取 —— 见其实现。 */
+
   // 手动压缩（输入框 /compact）：立即压缩历史，只回发 compacted + done，无后续模型轮。
   ipcMain.handle(
     'chat:compact',
     async (_e, payload: ChatCompactRequest): Promise<{ turnId: string }> => {
-      const { sessionId, model, workspaceRoot } = payload
-      const key = projectKey(workspaceRoot)
+      const { sessionId, model } = payload
       const turnId = genId('turn')
       const controller = new AbortController()
       activeTurns.set(turnId, controller)
       try {
-        const session = getSession(key, sessionId)
+        const session = getSession(sessionId)
         let status: CompactStatus = 'none'
         let message: string | undefined
         if (session) {
-          const r = await compactSession({ session, key, model, signal: controller.signal })
+          // 与 runTurn 同源：按**本对话**模型（快照固定）压缩——窗口与摘要模型都用它，删除则回落 model。
+          const r = await compactSession({
+            session,
+            model: resolveModelRef(session.model, model),
+            signal: controller.signal
+          })
           status = r.status
           message = r.message
         }
@@ -1039,20 +1190,33 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     (_e, workspaceRoot: string | null): ChatSessionMeta[] => listSessions(projectKey(workspaceRoot))
   )
 
-  // 载入某会话的历史（重建展示气泡）
+  // 载入某会话的历史（重建展示气泡）。id 全局唯一 → 无需 workspaceRoot（IPC 仍传，忽略即可）。
   ipcMain.handle(
     'chat:load-session',
-    (_e, sessionId: string, workspaceRoot: string | null): DisplayMessage[] => {
-      const s = getSession(projectKey(workspaceRoot), sessionId)
-      return s ? toDisplayMessages(s.messages) : []
+    (_e, sessionId: string, _workspaceRoot: string | null): DisplayMessage[] => {
+      const s = getSession(sessionId)
+      return s ? toDisplayMessages(s.messages, s.proposals ?? {}) : []
     }
   )
 
-  // 删除某会话（含会话级授权）
+  // 持久化角色名片的终态（接受/拒绝）。名片本体随 Message[] 存活，但终态无处落，
+  // 故用 StoredSession.proposals 边车按 toolUseId 记录——重开不再退回 pending、不会重复建角色。
+  ipcMain.handle(
+    'chat:resolve-proposal',
+    (_e, sessionId: string, toolUseId: string, status: 'accepted' | 'rejected'): { ok: boolean } => {
+      const s = getSession(sessionId)
+      if (!s) return { ok: false }
+      s.proposals = { ...s.proposals, [toolUseId]: status }
+      saveProject(sessionId)
+      return { ok: true }
+    }
+  )
+
+  // 删除某会话（含会话级授权）。id 全局唯一 → 按 id 删。
   ipcMain.handle(
     'chat:delete-session',
-    (_e, sessionId: string, workspaceRoot: string | null): { ok: true } => {
-      deleteStoredSession(projectKey(workspaceRoot), sessionId)
+    (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
+      deleteStoredSession(sessionId)
       clearSession(sessionId)
       return { ok: true }
     }
@@ -1077,16 +1241,15 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     return { ok: true }
   })
 
-  // 重置会话历史与会话级授权（清空该会话正文但保留会话条目）
+  // 重置会话历史与会话级授权（清空该会话正文但保留会话条目）。id 全局唯一 → 按 id。
   ipcMain.handle(
     'chat:reset',
-    (_e, sessionId: string, workspaceRoot: string | null): { ok: true } => {
-      const key = projectKey(workspaceRoot)
-      const s = getSession(key, sessionId)
+    (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
+      const s = getSession(sessionId)
       if (s) {
         s.messages = []
         s.updatedAt = Date.now()
-        saveProject(key)
+        saveProject(sessionId)
       }
       clearSession(sessionId)
       return { ok: true }
@@ -1102,12 +1265,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     return { ok: true }
   })
 
-  // 用户对 ask_user 询问的答复（选中项标签或自由输入；null 视为取消）
+  // 用户对 ask_user 询问的答复（每题的选中项标签或自由输入；null 视为取消）
   ipcMain.handle('chat:ask-response', (_e, payload: AskResponse): { ok: boolean } => {
     const p = pendingAsk.get(payload.key)
     if (!p) return { ok: false }
     pendingAsk.delete(payload.key)
-    p.resolve(payload.answer)
+    p.resolve(payload.answers)
     return { ok: true }
   })
 }
