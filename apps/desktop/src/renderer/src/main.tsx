@@ -6,11 +6,9 @@ import { App } from './App'
 import { ThemeProvider } from './theme/ThemeContext'
 import { I18nProvider } from './i18n/i18n'
 import { DialogProvider } from './components/DialogProvider'
-import { UIProvider } from './store/ui'
 import { ModelsProvider } from './store/models'
 import { ExtensionsProvider } from './store/extensions'
 import { WorkspaceProvider } from './store/workspace'
-import { GitProvider } from './store/git'
 import { ChatProvider } from './store/chat'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -21,13 +19,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <ModelsProvider>
             <ExtensionsProvider>
               <WorkspaceProvider>
-                <GitProvider>
-                  <ChatProvider>
-                    <UIProvider>
-                      <App />
-                    </UIProvider>
-                  </ChatProvider>
-                </GitProvider>
+                <ChatProvider>
+                  <App />
+                </ChatProvider>
               </WorkspaceProvider>
             </ExtensionsProvider>
           </ModelsProvider>

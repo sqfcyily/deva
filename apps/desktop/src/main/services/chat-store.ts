@@ -59,6 +59,27 @@ export interface StoredSession {
    * 不重复建角色。pending 不入表（缺省即 pending）。见 chat.ts:chat:resolve-proposal。
    */
   proposals?: Record<string, 'accepted' | 'rejected'>
+  /**
+   * 回合终态提示（错误红框 / 截断 / 空回合）的持久化边车。
+   * 这些是**纯展示产物**：请求失败、被截断、通篇无回复等，本身不属于模型上下文，故**绝不**写进
+   * messages（不发给模型，保持上下文纯净）；但它们此前只作为易逝的流事件画在渲染层，重开对话就消失，
+   * 用户只看得到自己发的消息。此边车让它们随对话落盘、重开时按位置还原。
+   * `after` = 该提示产生时其前方的消息条数（= 插入位置）；压缩重排 messages 时随之调整/丢弃。
+   * 见 chat.ts:toDisplayMessages / recordTurnNotice、compaction.ts 的锚点调整。
+   */
+  notices?: StoredNotice[]
+}
+
+/** 回合终态提示（持久化边车项）。见 StoredSession.notices。 */
+export interface StoredNotice {
+  /** 插入位置：该提示产生时其前方的消息条数（messages.length）。 */
+  after: number
+  /** error=请求失败红框（原样展示 message）；notice=弱化提示（按 code 在渲染层翻译）。 */
+  kind: 'error' | 'notice'
+  /** kind='error' 时的错误文案。 */
+  message?: string
+  /** kind='notice' 时的提示码。 */
+  code?: 'truncated' | 'empty'
 }
 
 /** 会话元信息（左侧列表用，不含正文）。 */

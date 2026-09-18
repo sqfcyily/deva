@@ -14,6 +14,9 @@
   font-family: var(--font-sans);
   font-size: 13px;
   overflow: hidden;
+  /* 右侧主界面统一内容宽度：对话（消息流 + 输入区）与角色（资料卡）/ 快速开启 / 空态共用同一居中
+     列宽，切「消息 ↔ 角色」两个 tab 时内容不再变宽变窄。 */
+  --cf-main: 780px;
 }
 
 .cf-spacer {
@@ -117,6 +120,8 @@
 .cf-addmenu {
   position: relative;
   flex-shrink: 0;
+  /* 搜索行整体可拖拽，但「添加角色」入口需保留点击/悬停，故排除出拖拽区。 */
+  -webkit-app-region: no-drag;
 }
 .cf-addmenu__pop {
   position: absolute;
@@ -171,12 +176,66 @@
     animation: none;
   }
 }
-/* 顶部：搜索占满一行，角色 tab 再并排「添加」图标 */
+
+/* 列表行右键菜单：光标处浮出的小菜单 + 全屏透明背板（点击/右键空白关闭）；破坏项红色。 */
+.cf-ctx__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+}
+.cf-ctx {
+  position: fixed;
+  z-index: 71;
+  min-width: 148px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  animation: cf-addmenu-pop 0.14s ease;
+}
+.cf-ctx__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font-size: 13px;
+  text-align: left;
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cf-ctx__item:not(:disabled):hover {
+  background: var(--bg-hover);
+}
+.cf-ctx__item.is-danger {
+  color: var(--danger);
+}
+.cf-ctx__item.is-danger:not(:disabled):hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+/* 禁用项（如系统默认角色的删除）：明显变淡 + 禁用光标 + 关掉悬停反馈。 */
+.cf-ctx__item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-ctx {
+    animation: none;
+  }
+}
+/* 顶部：搜索占满一行，角色 tab 再并排「添加」图标。
+   整行兼作左栏的窗口拖拽把手（补上非对话界面缺失的顶部拖拽区）；其中的交互控件另置 no-drag。 */
 .cf-rail__top {
   padding: var(--space-3);
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  -webkit-app-region: drag;
 }
 .cf-search {
   flex: 1;
@@ -229,7 +288,7 @@
   align-items: baseline;
   gap: var(--space-2);
 }
-/* 上行：角色名（＋活动圆点）。主色号 + 加粗，作为主视觉。 */
+/* 上行：角色名。主色号 + 加粗，作为主视觉。 */
 .cf-thread__owner {
   display: flex;
   align-items: center;
@@ -240,13 +299,6 @@
   color: var(--fg);
   overflow: hidden;
   white-space: nowrap;
-}
-.cf-thread__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: var(--accent);
-  flex: none;
 }
 .cf-thread__time {
   margin-left: auto;
@@ -284,6 +336,18 @@
 }
 .cf-prow.is-active {
   background: var(--bg-selected);
+}
+/* 花名册手动排序：整行可拖动重排（主操作仍是点击打开资料，故静息光标不变）；拖动中淡化并转抓握光标；
+   落点行按插入边（上/下半区）画一条指示线。 */
+.cf-prow.is-dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+.cf-prow.drop-before {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+.cf-prow.drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
 }
 .cf-prow__main {
   min-width: 0;
@@ -380,6 +444,13 @@
 .cf-conv__head .cf-idbtn {
   -webkit-app-region: no-drag;
 }
+/* 无对话头的中列界面（快速开启 / 角色空态 / 资料卡）顶部拖拽把手：透明、与原生标题栏（40px）等高，
+   补齐这些界面缺失的窗口拖拽区（对话视图由 .cf-conv__head 承担）。 */
+.cf-dragbar {
+  flex: none;
+  height: 40px;
+  -webkit-app-region: drag;
+}
 .cf-idbtn {
   display: flex;
   align-items: center;
@@ -433,7 +504,7 @@
   padding: var(--space-5) 0;
 }
 .cf-msgs__inner {
-  max-width: 780px;
+  max-width: var(--cf-main);
   margin: 0 auto;
   padding: 0 var(--space-5);
   display: flex;
@@ -569,6 +640,8 @@
 }
 .cf-composer__inner {
   width: 100%;
+  max-width: var(--cf-main);
+  margin: 0 auto;
 }
 .cf-box {
   border: 1px solid var(--border-strong);
@@ -661,17 +734,23 @@
 }
 
 /* ---------------------------- 中列：角色资料卡 ---------------------------- */
+/* 与对话面板（.cf-msgs / .cf-msgs__inner）同构：滚动容器 .cf-profile 满宽，滚动条落在主区最右边缘；
+   实际内容 .cf-profile__inner 居中并限宽（var(--cf-main)），不被拉伸铺满。 */
 .cf-profile {
   flex: 1;
   min-height: 0;
   width: 100%;
-  max-width: 460px;
+  overflow-y: auto;
+}
+.cf-profile__inner {
+  width: 100%;
+  /* 角色资料卡较对话/快速开启更窄，作独立收窄的信息卡列宽（不跟随 --cf-main）。 */
+  max-width: 560px;
   margin: 0 auto;
-  padding: var(--space-6) var(--space-5);
+  padding: var(--space-6) var(--space-6);
   display: flex;
   flex-direction: column;
   align-items: center;
-  overflow-y: auto;
 }
 .cf-profile__ava {
   --sz: 76px;
@@ -798,6 +877,85 @@
   line-height: 1.8;
 }
 
+/* ---------------------------- 中列：快速开启（无任何对话时） ---------------------------- */
+/* 同 .cf-profile：滚动容器满宽（滚动条落最右），内容居中限宽垂直居中。 */
+.cf-quick {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+}
+.cf-quick__inner {
+  width: 100%;
+  max-width: var(--cf-main);
+  min-height: 100%;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.cf-quick__title {
+  font-size: 20px;
+  font-weight: 750;
+  color: var(--fg);
+}
+.cf-quick__hint {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.cf-quick__grid {
+  margin-top: var(--space-6);
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: var(--space-4);
+}
+.cf-qcard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: var(--space-4) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  cursor: pointer;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease,
+    transform 0.06s ease;
+}
+.cf-qcard:hover {
+  background: var(--bg-hover);
+  border-color: var(--p, var(--border-strong));
+}
+.cf-qcard:active {
+  transform: translateY(1px);
+}
+.cf-qcard__name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--p, var(--fg));
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.cf-qcard__desc {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  text-align: center;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* ---------------------------- 设置弹层 ---------------------------- */
 .cf-modal__backdrop {
   position: fixed;
@@ -892,30 +1050,10 @@
   overflow-y: auto;
   padding: var(--space-4) var(--space-5);
 }
-.cf-pane__head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
 .cf-pane__title {
   margin: 0;
   font-size: 15px;
   font-weight: 700;
-}
-.cf-pane__add {
-  margin-left: auto;
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-  color: var(--fg-muted);
-  font-size: 12px;
-  cursor: pointer;
-}
-.cf-pane__add:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
 }
 .cf-pane__desc {
   margin: 6px 0 var(--space-4);
@@ -1004,6 +1142,32 @@
 }
 .cf-setrow__main {
   min-width: 0;
+}
+/* 可点开编辑的行（MCP）：主区做透明按钮，铺满行宽，右侧陈列 chevron 暗示可钻取 */
+.cf-setrow__open {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cf-setrow__open .cf-setrow__name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cf-setrow__chevron {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.cf-setrow__open:hover .cf-setrow__name {
+  color: var(--accent);
 }
 .cf-setrow__name {
   display: flex;
@@ -1217,6 +1381,51 @@
   width: 72px;
   text-align: center;
   font-size: 18px;
+}
+/* Emoji 字段是选择面板的定位锚点 */
+.cf-emoji-field {
+  position: relative;
+}
+/* Emoji 选择面板：输入框聚焦时下方浮出，等宽自适应网格，点击填入输入框 */
+.cf-emoji-picker {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  width: 296px;
+  max-width: 78vw;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
+  gap: 4px;
+  max-height: 188px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+}
+.cf-emoji-picker__item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.cf-emoji-picker__item:hover {
+  background: var(--bg);
+}
+.cf-emoji-picker__item.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-tint);
 }
 .cf-input--num {
   width: 72px;

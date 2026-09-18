@@ -322,6 +322,12 @@ export async function compactSession(args: {
   const summaryMsg: Message = { role: 'user', content: `${COMPACT_MARKER}\n${header}\n\n${summary}` }
 
   session.messages = [summaryMsg, ...tail]
+  // 终态提示边车随历史重排：锚在被压缩区（after <= boundary）的一并丢弃（其上下文已成摘要，
+  // 不重建早期气泡）；锚在保留段的按新布局平移——摘要占新 0 号位，故 after -= boundary - 1。
+  if (session.notices?.length)
+    session.notices = session.notices
+      .filter((nt) => nt.after > boundary)
+      .map((nt) => ({ ...nt, after: nt.after - boundary + 1 }))
   session.lastInputTokens = undefined // 历史已缩短，旧计数失效
   session.updatedAt = Date.now()
   saveProject(session.id)

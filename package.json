@@ -1,8 +1,8 @@
 {
   "name": "deva-workspace",
-  "version": "0.0.0",
+  "version": "0.1.2",
   "private": true,
-  "description": "Deva - 面向开发者的 AI 原生开发工作台",
+  "description": "Deva - 对话优先的智能体工作台",
   "license": "MIT",
   "packageManager": "pnpm@10.8.0",
   "engines": {

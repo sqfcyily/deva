@@ -54,6 +54,18 @@ export interface ChatCompactRequest {
   workspaceRoot: string | null
 }
 
+/**
+ * 立即建档一条空对话（对话优先外壳）：与角色开启新对话时即落盘，重启仍在。
+ * 绑定信息（persona / 聚焦工作区 / 本对话模型）随之写入会话，与 chat:send 首发绑定同语义。
+ */
+export interface ChatCreateSessionRequest {
+  sessionId: string
+  workspaceRoot: string | null
+  personaId?: string
+  focusRoot?: string | null
+  modelRef?: string
+}
+
 /** 附件类型（与 services/attachments.ts 对齐）。 */
 export type AttachmentKind = 'image' | 'document' | 'text' | 'unsupported'
 
@@ -96,7 +108,8 @@ export interface AgentDraft {
 export type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
-  | { kind: 'notice'; code: 'compacted' }
+  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' }
+  | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
 
 export type DisplayMessage =
@@ -496,7 +509,10 @@ const api = {
       ipcRenderer.invoke('personas:upsert', input),
     remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('personas:remove', id),
     setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('personas:set-enabled', id, enabled)
+      ipcRenderer.invoke('personas:set-enabled', id, enabled),
+    /** 覆盖手动排序：整表按传入 id 顺序落盘（花名册拖拽 / 置顶）。 */
+    reorder: (ids: string[]): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('personas:reorder', ids)
   },
   /**
    * MCP 服务（全局 ~/.deva/mcp.json）：列出 / 读取 / 增改删 / 启停 / 连接管理 / 密钥。
@@ -556,6 +572,9 @@ const api = {
     /** 手动压缩历史（/compact）：无后续模型轮，只回发 compacted + done 事件。 */
     compact: (req: ChatCompactRequest): Promise<{ turnId: string }> =>
       ipcRenderer.invoke('chat:compact', req),
+    /** 立即建档一条空对话（对话优先外壳）：首发前即落盘，重启仍在。 */
+    createSession: (req: ChatCreateSessionRequest): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('chat:create-session', req),
     abort: (turnId: string): Promise<{ ok: true }> => ipcRenderer.invoke('chat:abort', turnId),
     reset: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:reset', sessionId, workspaceRoot),

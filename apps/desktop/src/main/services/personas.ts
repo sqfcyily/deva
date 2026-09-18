@@ -85,6 +85,24 @@ function writeEnabledMap(map: Record<string, boolean>): void {
   setConfig({ personas: { ...base, enabled: map } })
 }
 
+/**
+ * 读取 config.json 的 personas.order（手动排序的 id 列表；不存在则空）。
+ * 花名册的显示顺序由用户手动决定（拖拽 / 置顶），存 id 而非 name——id 恒定，故重命名不打乱顺序
+ * （对标 IM「联系人手动排序」，规避「按名称排序在改名后跳位」的问题）。
+ */
+function orderList(): string[] {
+  const personas = getConfig().personas
+  const order = (personas as { order?: unknown })?.order
+  if (Array.isArray(order)) return order.filter((x): x is string => typeof x === 'string')
+  return []
+}
+
+function writeOrderList(order: string[]): void {
+  const personas = getConfig().personas
+  const base = personas && typeof personas === 'object' ? (personas as Record<string, unknown>) : {}
+  setConfig({ personas: { ...base, order } })
+}
+
 /** 校验文件名安全（防 `..` / 分隔符逃逸）。 */
 function isSafeId(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(id) && id !== '.' && id !== '..'
@@ -147,7 +165,16 @@ export function listPersonas(): PersonaRecord[] {
       /* 读失败 → 跳过该文件 */
     }
   }
-  out.sort((a, b) => a.name.localeCompare(b.name))
+  // 手动排序：order 中出现的 id 按其位置在前（用户拖拽/置顶的结果）；未列出的（新角色）排在其后，
+  // 并按名称本地化排序保证确定性。order 中已不存在的陈旧 id 自然被忽略（rank 命中但无对应记录）。
+  const order = orderList()
+  const rank = new Map(order.map((id, i) => [id, i]))
+  out.sort((a, b) => {
+    const ra = rank.has(a.id) ? (rank.get(a.id) as number) : Number.MAX_SAFE_INTEGER
+    const rb = rank.has(b.id) ? (rank.get(b.id) as number) : Number.MAX_SAFE_INTEGER
+    if (ra !== rb) return ra - rb
+    return a.name.localeCompare(b.name)
+  })
   return out
 }
 
@@ -241,6 +268,26 @@ export function deletePersona(id: string): void {
     delete map[id]
     writeEnabledMap(map)
   }
+  // 一并从手动排序中剔除，避免留下陈旧 id（listPersonas 会忽略，但保持 config 整洁）。
+  const order = orderList()
+  if (order.includes(id)) writeOrderList(order.filter((x) => x !== id))
+}
+
+/**
+ * 覆盖手动排序：以传入 id 列表为准（去重、过滤非法 id）。花名册整表重排（拖拽落定 / 置顶）走此路径。
+ * 只记录顺序，不校验角色是否仍存在——陈旧项对 listPersonas 无害（见其排序注释）。
+ */
+export function reorderPersonas(ids: string[]): void {
+  if (!Array.isArray(ids)) return
+  const seen = new Set<string>()
+  const clean: string[] = []
+  for (const id of ids) {
+    if (typeof id === 'string' && isSafeId(id) && !seen.has(id)) {
+      seen.add(id)
+      clean.push(id)
+    }
+  }
+  writeOrderList(clean)
 }
 
 export function setPersonaEnabled(id: string, enabled: boolean): void {
@@ -305,6 +352,10 @@ export function registerPersonasIpc(): void {
   })
   ipcMain.handle('personas:set-enabled', (_e, id: string, enabled: boolean): { ok: true } => {
     setPersonaEnabled(id, Boolean(enabled))
+    return { ok: true }
+  })
+  ipcMain.handle('personas:reorder', (_e, ids: string[]): { ok: true } => {
+    reorderPersonas(Array.isArray(ids) ? ids : [])
     return { ok: true }
   })
 }

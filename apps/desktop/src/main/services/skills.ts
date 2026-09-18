@@ -136,8 +136,44 @@ const BUILTIN_CREATE_AGENT: SkillRecord = {
   source: 'builtin'
 }
 
+/**
+ * 内置元技能 `create-mcp` 的正文：指导模型引导用户「用对话接入一个 MCP 服务」。
+ * 关键约束——**必须调 `create_mcp` 工具落盘**（`~/.deva/mcp.json` 在敏感硬地板，写不进）；
+ * 且**密钥零明文**：模型只收集密钥字段的「名字」，真实值由用户稍后在「扩展」页加密填入。
+ */
+const CREATE_MCP_INSTRUCTIONS = `你正在帮助用户接入一个新的 **MCP 服务（Model Context Protocol server）**。MCP 服务对外暴露一组工具/资源；接入并连接后，其工具会自动出现在助手的可用工具里（照常走权限确认）。
+
+请按以下步骤引导用户：
+
+1. **弄清用途**：先问清用户想接入哪个 MCP 服务、它提供什么能力、从哪里获取（官方文档 / npm 包名 / 服务地址）。
+2. **确定传输方式**（这是关键分叉）：
+   - \`stdio\`（本地子进程，最常见）：需要 \`command\`（如 \`npx\`、\`uvx\`、\`node\`）与 \`args\`（参数清单，如 \`["-y", "@modelcontextprotocol/server-filesystem", "/some/path"]\`）。
+   - \`sse\` / \`http\`（远程服务）：需要 \`url\`（服务地址）。
+3. **收集要素**（逐项与用户确认，不要臆造包名/命令）：
+   - stdio：\`command\`、\`args\`、非敏感环境变量 \`env\`（明文键值）。
+   - sse/http：\`url\`、非敏感请求头 \`headers\`（明文键值）。
+   - **密钥（API Key / Token 等）**：⚠️ **绝不要向用户索要、也绝不要把真实密钥值写进工具参数或对话**。你只需问清「有哪些字段是密钥」，把这些**字段名**放进 \`secretEnv\`（环境变量名，如 \`GITHUB_TOKEN\`）或 \`secretHeaders\`（请求头名，如 \`Authorization\`）。工具只写占位符，真实值由用户稍后在「扩展」页加密填入。
+4. **复述草案**：把整理好的要素（传输方式、命令/地址、参数、哪些字段是密钥）向用户复述一遍，请其确认或修改。
+5. **落盘**：用户确认后，**调用 \`create_mcp\` 工具**写入。
+   - ⚠️ **严禁用 \`write_file\` 或 \`run_command\` 去写 mcp.json**——MCP 配置在受保护路径下，只有 \`create_mcp\` 工具能写入，且会照常弹出权限确认。
+6. **告知结果**：创建成功后服务会**自动启用**。若存在密钥占位字段，务必提醒用户：**去「扩展」页为该服务填写这些密钥（加密存储），否则连接会失败**；连接会在下次启动应用、或在「扩展」页手动开关该服务后建立。
+
+保持简洁友好，一次问清关键信息即可，不要连环追问。`
+
+/** 内置、不可删、恒启用的「对话接入 MCP 服务」元技能。随 listSkills() 自动进系统提示词与 /create-mcp。 */
+const BUILTIN_CREATE_MCP: SkillRecord = {
+  id: 'create-mcp',
+  name: 'create-mcp',
+  description: '引导用户用对话接入一个 MCP 服务：厘清用途与传输方式、收集要素（密钥仅收字段名）、确认后调 create_mcp 工具落盘并启用。',
+  trigger: '输入 /create-mcp，或表达「帮我接入/添加/创建一个 MCP（服务）」时触发。',
+  allowedTools: ['create_mcp'],
+  instructions: CREATE_MCP_INSTRUCTIONS,
+  enabled: true,
+  source: 'builtin'
+}
+
 /** 内置元技能按 id 索引（generalize：不同保留 id 返回各自的内置常量，勿一律返回 create-skill）。 */
-const BUILTIN_SKILLS: SkillRecord[] = [BUILTIN_CREATE_SKILL, BUILTIN_CREATE_AGENT]
+const BUILTIN_SKILLS: SkillRecord[] = [BUILTIN_CREATE_SKILL, BUILTIN_CREATE_AGENT, BUILTIN_CREATE_MCP]
 const BUILTIN_BY_ID = new Map<string, SkillRecord>(BUILTIN_SKILLS.map((s) => [s.id, s]))
 
 /** 保留 id：不可被磁盘技能占用（防同名目录影子），upsert/import 生成 id 时亦回避。 */

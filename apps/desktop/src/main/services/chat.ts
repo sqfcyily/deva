@@ -38,7 +38,8 @@ import {
   listSessions,
   projectKey,
   save as saveProject,
-  type ChatSessionMeta
+  type ChatSessionMeta,
+  type StoredNotice
 } from './chat-store'
 import { ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
 import {
@@ -97,6 +98,15 @@ interface ChatCompactRequest {
   workspaceRoot: string | null
 }
 
+/** 立即建档一条空对话（对话优先外壳：绑定信息随之落库，首发前即持久化）。见 chat:create-session。 */
+interface ChatCreateSessionRequest {
+  sessionId: string
+  workspaceRoot: string | null
+  personaId?: string
+  focusRoot?: string | null
+  modelRef?: string
+}
+
 /** 角色名片草稿：propose_agent 原始参数归一化后的形状（编辑器/名片消费）。 */
 export interface AgentDraft {
   name: string
@@ -125,8 +135,13 @@ function normalizeAgentDraft(input: unknown): AgentDraft {
 type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
-  /** 压缩摘要气泡：重开会话时把带标记的摘要 user 消息还原成「已压缩」提示 + 摘要正文。 */
-  | { kind: 'notice'; code: 'compacted' }
+  /**
+   * 弱化提示气泡：compacted=较早历史已压缩（由 messages 里的摘要标记还原）；
+   * truncated=达输出上限被截断 / empty=通篇无回复（由 StoredNotice 边车还原）。
+   */
+  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' }
+  /** 请求失败红框：由 StoredNotice 边车还原（原样展示错误文案）。 */
+  | { kind: 'error'; message: string }
   /** 角色名片：propose_agent 的提议。status 终态（accepted/rejected）由 StoredSession.proposals 边车持久化。 */
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
 
@@ -134,19 +149,47 @@ export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
   | { role: 'assistant'; blocks: DisplayBlock[] }
 
+/** StoredNotice → 展示消息（一条独立的 assistant 气泡，仅含该提示块）。 */
+function noticeToDisplay(nt: StoredNotice): DisplayMessage {
+  if (nt.kind === 'error')
+    return { role: 'assistant', blocks: [{ kind: 'error', message: nt.message ?? '请求失败。' }] }
+  return { role: 'assistant', blocks: [{ kind: 'notice', code: nt.code ?? 'empty' }] }
+}
+
 /**
  * provider Message[] → 展示消息序列（供切换/重开会话时重建气泡）。
  * 工具结果回灌消息不单独成气泡，而是回填上一条 assistant 的工具卡状态；
  * 附件仅重建为「名称 + 类型」的贴片（不回传 base64）。思考块为易逝态，不重建。
+ * `notices` 边车（错误红框 / 截断 / 空回合）按 after 位置就地插回——它们不在 messages 里
+ * （不属于模型上下文），此处还原后重开对话即可再见，而不再只剩自己发的消息。
  */
 function toDisplayMessages(
   messages: Message[],
-  proposals: Record<string, 'accepted' | 'rejected'> = {}
+  proposals: Record<string, 'accepted' | 'rejected'> = {},
+  notices: StoredNotice[] = []
 ): DisplayMessage[] {
   const out: DisplayMessage[] = []
   let lastAssistant: Extract<DisplayMessage, { role: 'assistant' }> | null = null
 
-  for (const m of messages) {
+  // after → 该位置应插入的提示（一轮通常至多一条，用数组以防同位置多条）。
+  const noticesAfter = new Map<number, StoredNotice[]>()
+  for (const nt of notices) {
+    const arr = noticesAfter.get(nt.after)
+    if (arr) arr.push(nt)
+    else noticesAfter.set(nt.after, [nt])
+  }
+  const flushNotices = (n: number): void => {
+    const arr = noticesAfter.get(n)
+    if (!arr) return
+    for (const nt of arr) {
+      out.push(noticeToDisplay(nt))
+      // 提示气泡自成一条、不含工具卡，其后紧随新用户轮——断开 tool_result 回填链，避免误填。
+      lastAssistant = null
+    }
+  }
+
+  // 处理单条消息（早退用 return 代替原 for...of 的 continue，以便每条处理完统一 flush 提示）。
+  const processOne = (m: Message): void => {
     if (m.role === 'assistant') {
       const parts: ContentPart[] =
         typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content
@@ -168,7 +211,7 @@ function toDisplayMessages(
       const msg: Extract<DisplayMessage, { role: 'assistant' }> = { role: 'assistant', blocks }
       out.push(msg)
       lastAssistant = msg
-      continue
+      return
     }
 
     // user
@@ -185,12 +228,12 @@ function toDisplayMessages(
         ]
       })
       lastAssistant = null
-      continue
+      return
     }
 
     if (typeof m.content === 'string') {
       out.push({ role: 'user', text: m.content, attachments: [] })
-      continue
+      return
     }
     const parts = m.content
     if (parts.some((p) => p.type === 'tool_result')) {
@@ -204,7 +247,7 @@ function toDisplayMessages(
           if (b) b.status = p.isError ? 'error' : 'ok'
         }
       }
-      continue
+      return
     }
 
     // 真实用户消息（可能带附件）：附件在前、提问正文在最后一个 text 块
@@ -221,6 +264,13 @@ function toDisplayMessages(
     }
     const question = textParts.length ? textParts[textParts.length - 1].text : ''
     out.push({ role: 'user', text: question, attachments: atts })
+  }
+
+  // 提示可能锚在最前（after=0，几乎不出现）、任意消息之后、或全部消息之后（after=length，最常见）。
+  flushNotices(0)
+  for (let i = 0; i < messages.length; i++) {
+    processOne(messages[i])
+    flushNotices(i + 1)
   }
   return out
 }
@@ -485,8 +535,15 @@ function buildSubagentTool(agents: { name: string; description: string }[]): Too
  * 白名单只**收窄**可见工具；被保留的每个工具调用仍照常过同一道权限闸门（无提权）。
  */
 function buildSubagentTools(allowlist: string[]): ToolSpec[] {
-  // create_skill / propose_agent 亦排除：子智能体不得创建技能/角色（无名片通道；它们在 toolSpecs 基表里，须显式剔除）。
-  const EXCLUDED = new Set(['ask_user', 'skill', 'run_subagent', 'create_skill', 'propose_agent'])
+  // create_skill / propose_agent / create_mcp 亦排除：子智能体不得创建技能/角色/MCP 服务（它们在 toolSpecs 基表里，须显式剔除）。
+  const EXCLUDED = new Set([
+    'ask_user',
+    'skill',
+    'run_subagent',
+    'create_skill',
+    'propose_agent',
+    'create_mcp'
+  ])
   const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
   if (!allowlist || allowlist.length === 0) return builtins
   const allow = new Set(allowlist)
@@ -593,7 +650,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
    */
   async function runAgentLoop(
     args: AgentLoopArgs
-  ): Promise<{ text: string; stopReason: StopReason }> {
+  ): Promise<{ text: string; stopReason: StopReason; errorMessage?: string }> {
     const {
       turnId,
       sessionId,
@@ -617,6 +674,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       depth > 0 ? { depth, agent: agentName } : undefined
     // 最近一步的助手正文；作为子智能体回传父轮的「结论」（主轮不使用返回值）。
     let finalText = ''
+    // 致命错误 / 重连耗尽时的错误文案：随返回值上交，供父轮子智能体结论回落与红框持久化。
+    let errorMessage: string | undefined
 
     for (let step = 0; step < maxSteps; step++) {
       let assistantText = ''
@@ -666,6 +725,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             if (ev.error.retryable && !controller.signal.aborted) retryableDrop = true
             else {
               fatal = true
+              errorMessage = ev.error.message
               emit(turnId, sessionId, { type: 'error', kind: ev.error.kind, message: ev.error.message })
             }
           } else if (ev.type === 'done') {
@@ -674,15 +734,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         }
 
         if (controller.signal.aborted) return { text: finalText, stopReason: 'aborted' }
-        if (fatal) return { text: finalText, stopReason: 'error' }
+        if (fatal) return { text: finalText, stopReason: 'error', errorMessage }
         if (retryableDrop) {
           if (attempt >= MAX_RECONNECT) {
+            errorMessage = `连接多次中断，已重试 ${MAX_RECONNECT} 次仍失败，已停止。`
             emit(turnId, sessionId, {
               type: 'error',
               kind: 'network',
-              message: `连接多次中断，已重试 ${MAX_RECONNECT} 次仍失败，已停止。`
+              message: errorMessage
             })
-            return { text: finalText, stopReason: 'error' }
+            return { text: finalText, stopReason: 'error', errorMessage }
           }
           emit(turnId, sessionId, { type: 'reconnecting', attempt: attempt + 1, max: MAX_RECONNECT })
           const resumed = await delay(Math.min(1000 * 2 ** attempt, 8000), controller.signal)
@@ -800,8 +861,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
                 skillSummaries: [],
                 agentName: def.name
               })
-              conclusion = sub.text.trim() || '（子智能体未产生文本结论。）'
               isErr = sub.stopReason === 'error'
+              conclusion =
+                sub.text.trim() ||
+                (isErr && sub.errorMessage
+                  ? `子智能体「${def.name}」执行失败：${sub.errorMessage}`
+                  : '（子智能体未产生文本结论。）')
             } catch (e) {
               conclusion = `子智能体「${def.name}」执行出错：${(e as Error)?.message ?? String(e)}`
               isErr = true
@@ -1021,8 +1086,38 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
 
     const history = session.messages
+    // 本轮起点（压缩之后捕获——compactSession 已重赋 messages）：用于判定本轮是否产出可见回复。
+    const turnStart = history.length
     // 本轮真实输入 token（用于压缩触发判定）：runAgentLoop 每收到一次 usage 即回调，取最后一次。
     let lastInput = 0
+
+    // 本轮是否产出「可见回复」：本轮新增的任一 assistant 消息含非空正文或工具调用即算。
+    // 与渲染层 hasVisibleAnswer 同义——决定自然结束却空回合时是否补「空回合」提示。
+    const turnProducedVisible = (): boolean => {
+      for (let i = turnStart; i < history.length; i++) {
+        const m = history[i]
+        if (m.role !== 'assistant') continue
+        const parts: ContentPart[] =
+          typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content
+        for (const p of parts) {
+          if (p.type === 'text' && p.text.trim() !== '') return true
+          if (p.type === 'tool_use') return true
+        }
+      }
+      return false
+    }
+
+    // 终态提示持久化（错误红框 / 截断 / 空回合）→ session.notices 边车，重开对话即可重建。
+    // 镜像渲染层的 error 事件 + appendTerminalNotice：error 只记红框（不再叠空回合提示），
+    // max_tokens 记截断，自然结束却无可见回复记空回合，aborted（用户主动停止）不记。
+    const recordTurnNotice = (stopReason: StopReason, errorMessage?: string): void => {
+      const after = history.length
+      const notices = (session.notices ??= [])
+      if (stopReason === 'error') notices.push({ after, kind: 'error', message: errorMessage })
+      else if (stopReason === 'max_tokens') notices.push({ after, kind: 'notice', code: 'truncated' })
+      else if ((stopReason === 'end_turn' || stopReason === 'stop') && !turnProducedVisible())
+        notices.push({ after, kind: 'notice', code: 'empty' })
+    }
 
     // 本轮技能快照（在轮开始时定格）：系统提示词只列 name+description（便宜的渐进式披露），
     // 有启用技能时才向模型提供 skill 工具（命中后再加载完整正文）。
@@ -1051,7 +1146,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
     try {
       // 主轮 = depth 0：可问询、可派生子智能体、由本封装发终态 done（嵌套调用不发 done）。
-      const { stopReason } = await runAgentLoop({
+      const { stopReason, errorMessage } = await runAgentLoop({
         turnId,
         sessionId,
         // 权限模式键 = 有效根（focusRoot ?? workspaceRoot）：挂载不同文件夹的对话各有独立
@@ -1073,13 +1168,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         }
       })
       emit(turnId, sessionId, { type: 'done', stopReason })
+      // 终态提示持久化（须在 finally 落盘前执行）：错误红框 / 截断 / 空回合入 notices 边车。
+      recordTurnNotice(stopReason, errorMessage)
     } catch (e) {
-      emit(turnId, sessionId, {
-        type: 'error',
-        kind: 'unknown',
-        message: (e as Error)?.message ?? String(e)
-      })
+      const message = (e as Error)?.message ?? String(e)
+      emit(turnId, sessionId, { type: 'error', kind: 'unknown', message })
       emit(turnId, sessionId, { type: 'done', stopReason: 'error' })
+      recordTurnNotice('error', message)
     } finally {
       activeTurns.delete(turnId)
       // 记录本轮真实输入 token 作为下轮压缩触发依据（比字符估算准，天然覆盖图片/工具）。
@@ -1184,6 +1279,20 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
   )
 
+  // 立即建档一条空对话（对话优先外壳：与角色开启新对话时即落盘，重启仍在）。
+  // 与 chat:send 的惰性建档同源（ensureSession + saveProject），差别只在「首发前就落盘」——
+  // 让空对话作为真实持久化会话进入左侧列表、跨重启存活。旧 AppShell 不调用此接口，仍走惰性路径。
+  ipcMain.handle(
+    'chat:create-session',
+    (_e, payload: ChatCreateSessionRequest): { ok: true } => {
+      const { sessionId, workspaceRoot, personaId, focusRoot, modelRef } = payload
+      const key = projectKey(workspaceRoot)
+      ensureSession(key, sessionId, { personaId, focusRoot, model: modelRef })
+      saveProject(sessionId)
+      return { ok: true }
+    }
+  )
+
   // 左侧会话列表（按项目）
   ipcMain.handle(
     'chat:list-sessions',
@@ -1195,7 +1304,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     'chat:load-session',
     (_e, sessionId: string, _workspaceRoot: string | null): DisplayMessage[] => {
       const s = getSession(sessionId)
-      return s ? toDisplayMessages(s.messages, s.proposals ?? {}) : []
+      return s ? toDisplayMessages(s.messages, s.proposals ?? {}, s.notices ?? []) : []
     }
   )
 
@@ -1248,6 +1357,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const s = getSession(sessionId)
       if (s) {
         s.messages = []
+        // 终态提示边车随正文一并清空——否则重置后残留的红框/提示会锚在空历史上。
+        s.notices = []
         s.updatedAt = Date.now()
         saveProject(sessionId)
       }

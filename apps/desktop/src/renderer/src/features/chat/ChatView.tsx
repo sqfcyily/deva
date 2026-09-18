@@ -15,6 +15,7 @@ import {
   FileSearch,
   Globe,
   SquareTerminal,
+  Plug,
   Wrench,
   ShieldAlert,
   ShieldCheck,
@@ -83,7 +84,9 @@ const TOOL_META: Record<string, { icon: React.ReactNode; key: string }> = {
   write_file: { icon: <FilePen size={14} />, key: 'chat.tool.writeFile' },
   edit_file: { icon: <Replace size={14} />, key: 'chat.tool.editFile' },
   run_command: { icon: <SquareTerminal size={14} />, key: 'chat.tool.runCommand' },
-  ask_user: { icon: <MessageCircleQuestion size={14} />, key: 'chat.tool.askUser' }
+  ask_user: { icon: <MessageCircleQuestion size={14} />, key: 'chat.tool.askUser' },
+  create_skill: { icon: <Sparkles size={14} />, key: 'chat.tool.createSkill' },
+  create_mcp: { icon: <Plug size={14} />, key: 'chat.tool.createMcp' }
 }
 
 /** 权限模式元信息（图标 + i18n 键）；顺序即菜单顺序。 */
@@ -826,8 +829,9 @@ function draftToAnswer(d: AskDraft): string {
 }
 
 /**
- * 问答卡（征求决策/澄清）：支持一次问多个问题、每题单选或多选、每题都可自行输入，用户选好后统一提交。
- * 全部问题都作答后「提交」才可用；作答后就地收敛为已答态，逐题回述答案。
+ * 问答卡（征求决策/澄清）：每题单选或多选、每题都可自行输入，用户选好后统一提交。
+ * 多问题时改为「分步向导」——每次只显示一题、可前后切换（类 Claude Code），避免一次性铺开过长；
+ * 单问题保持一次性展示。全部问题都作答后「提交」才可用；作答后收敛为已答态，逐题回述答案。
  */
 function AskCard({
   block,
@@ -839,9 +843,19 @@ function AskCard({
   const { t } = useI18n()
   const { questions } = block
   const multiQ = questions.length > 1
+  const last = questions.length - 1
   const answered = block.answers !== undefined
   const [drafts, setDrafts] = useState<AskDraft[]>(() =>
     questions.map(() => ({ picks: [], custom: '' }))
+  )
+  // 当前步（仅多问题向导使用）；单选自动前进用定时器，卸载时清理避免卸载后 setState。
+  const [step, setStep] = useState(0)
+  const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (advanceTimer.current) clearTimeout(advanceTimer.current)
+    },
+    []
   )
 
   const patchDraft = (qi: number, patch: Partial<AskDraft>): void => {
@@ -867,11 +881,90 @@ function AskCard({
     drafts[qi].picks.length > 0 || drafts[qi].custom.trim().length > 0
   const allDone = questions.every((_, qi) => isDone(qi))
 
+  const clearTimer = (): void => {
+    if (advanceTimer.current) {
+      clearTimeout(advanceTimer.current)
+      advanceTimer.current = null
+    }
+  }
+  const goStep = (i: number): void => {
+    clearTimer()
+    setStep(Math.max(0, Math.min(last, i)))
+  }
+
+  // 选项点击：单选且本次为「选中」（非取消）且非末题 → 短延时自动前进（让用户看清选中态再切）。
+  const onOptionClick = (qi: number, label: string): void => {
+    const q = questions[qi]
+    const willSelect = q.multi || !(drafts[qi].picks[0] === label && drafts[qi].picks.length === 1)
+    togglePick(qi, label)
+    if (multiQ && !q.multi && willSelect && qi < last) {
+      clearTimer()
+      advanceTimer.current = setTimeout(() => {
+        advanceTimer.current = null
+        setStep((s) => Math.min(last, s + 1))
+      }, 180)
+    }
+  }
+
   const submit = (): void => {
     if (answered || !allDone) return
+    clearTimer()
     onAsk(
       block.key,
       questions.map((_, qi) => draftToAnswer(drafts[qi]))
+    )
+  }
+
+  // 单题作答区（选项 + 自由输入）：单题模式与向导模式共用。
+  const renderBody = (qi: number): React.JSX.Element => {
+    const q = questions[qi]
+    return (
+      <>
+        {q.options.length > 0 && (
+          <div className="ask__options">
+            {q.options.map((o, i) => {
+              const on = drafts[qi].picks.includes(o.label)
+              const Icon = q.multi ? (on ? CheckSquare : Square) : on ? CheckCircle2 : Circle
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  className={`ask__option${on ? ' is-on' : ''}`}
+                  onClick={() => onOptionClick(qi, o.label)}
+                >
+                  <Icon size={15} className="ask__option-mark" />
+                  <span className="ask__option-body">
+                    <span className="ask__option-label">{o.label}</span>
+                    {o.description && <span className="ask__option-desc">{o.description}</span>}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+        <div className="ask__custom">
+          <Pencil size={13} className="ask__custom-icon" />
+          <input
+            className="ask__custom-input"
+            value={drafts[qi].custom}
+            placeholder={t('chat.ask.customPlaceholder')}
+            onChange={(e) => patchDraft(qi, { custom: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
+              // 向导非末题：回车前进（须本题已答）；单题或末题：回车提交（须全答）。
+              if (multiQ && qi < last) {
+                if (isDone(qi)) {
+                  e.preventDefault()
+                  goStep(qi + 1)
+                }
+              } else if (allDone) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+          />
+        </div>
+      </>
     )
   }
 
@@ -882,83 +975,81 @@ function AskCard({
           <MessageCircleQuestion size={15} />
         </span>
         {t('chat.ask.title')}
+        {!answered && multiQ && (
+          <span className="ask__progress">
+            {step + 1} / {questions.length}
+          </span>
+        )}
       </div>
 
-      {questions.map((q, qi) => (
-        <div className="ask__q" key={qi}>
-          <div className="ask__question">
-            {multiQ && <span className="ask__q-num">{qi + 1}.</span>}
-            {q.question}
-          </div>
-
-          {answered ? (
+      {answered ? (
+        // 已答：逐题回述（紧凑，一行一答）。
+        questions.map((q, qi) => (
+          <div className="ask__q" key={qi}>
+            <div className="ask__question">
+              {multiQ && <span className="ask__q-num">{qi + 1}.</span>}
+              {q.question}
+            </div>
             <div className="ask__resolved">
               <CheckCircle2 size={13} />
               <span>{block.answers?.[qi] || t('chat.ask.noAnswer')}</span>
             </div>
-          ) : (
-            <>
-              {q.options.length > 0 && (
-                <div className="ask__options">
-                  {q.options.map((o, i) => {
-                    const on = drafts[qi].picks.includes(o.label)
-                    const Icon = q.multi
-                      ? on
-                        ? CheckSquare
-                        : Square
-                      : on
-                        ? CheckCircle2
-                        : Circle
-                    return (
-                      <button
-                        key={i}
-                        type="button"
-                        className={`ask__option${on ? ' is-on' : ''}`}
-                        onClick={() => togglePick(qi, o.label)}
-                      >
-                        <Icon size={15} className="ask__option-mark" />
-                        <span className="ask__option-body">
-                          <span className="ask__option-label">{o.label}</span>
-                          {o.description && (
-                            <span className="ask__option-desc">{o.description}</span>
-                          )}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
-              <div className="ask__custom">
-                <Pencil size={13} className="ask__custom-icon" />
-                <input
-                  className="ask__custom-input"
-                  value={drafts[qi].custom}
-                  placeholder={t('chat.ask.customPlaceholder')}
-                  onChange={(e) => patchDraft(qi, { custom: e.target.value })}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.nativeEvent.isComposing && allDone) {
-                      e.preventDefault()
-                      submit()
-                    }
-                  }}
-                />
-              </div>
-            </>
-          )}
-        </div>
-      ))}
-
-      {!answered && (
-        <div className="ask__actions">
-          <button
-            type="button"
-            className="btn btn--primary btn--sm"
-            onClick={submit}
-            disabled={!allDone}
-          >
-            {t('chat.ask.submit')}
-          </button>
-        </div>
+          </div>
+        ))
+      ) : multiQ ? (
+        // 多题未答：分步向导（上方进度圆点切换题目 + 单题 + 固定「提交」，全答后才可用）。
+        <>
+          <div className="ask__steps">
+            {questions.map((_, i) => (
+              <button
+                key={i}
+                type="button"
+                className={`ask__step-dot${i === step ? ' is-current' : ''}${
+                  isDone(i) ? ' is-done' : ''
+                }`}
+                onClick={() => goStep(i)}
+                aria-label={`${i + 1}`}
+              >
+                {isDone(i) && i !== step ? <Check size={12} /> : i + 1}
+              </button>
+            ))}
+          </div>
+          <div className="ask__q">
+            <div className="ask__question">
+              <span className="ask__q-num">{step + 1}.</span>
+              {questions[step].question}
+            </div>
+            {renderBody(step)}
+          </div>
+          <div className="ask__actions">
+            <button
+              type="button"
+              className="btn btn--primary btn--sm"
+              onClick={submit}
+              disabled={!allDone}
+            >
+              {t('chat.ask.submit')}
+            </button>
+          </div>
+        </>
+      ) : (
+        // 单题未答：一次性展示（无步骤 / 无导航），与改造前一致。
+        <>
+          <div className="ask__q">
+            <div className="ask__question">{questions[0].question}</div>
+            {renderBody(0)}
+          </div>
+          <div className="ask__actions">
+            <button
+              type="button"
+              className="btn btn--primary btn--sm"
+              onClick={submit}
+              disabled={!allDone}
+            >
+              {t('chat.ask.submit')}
+            </button>
+          </div>
+        </>
       )}
     </div>
   )

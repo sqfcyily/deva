@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'path'
 import { assertInside, isSensitivePath } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
 import { upsertSkill } from './skills'
+import { upsertServer, type McpValue } from './mcp-config'
 import type { ToolSpec } from '../providers/types'
 
 /**
@@ -240,6 +241,59 @@ export const toolSpecs: ToolSpec[] = [
         }
       },
       required: ['name', 'prompt']
+    }
+  },
+  {
+    name: 'create_mcp',
+    description:
+      '创建并启用一个新的 **MCP 服务**（Model Context Protocol server），写入用户的全局 MCP 配置（~/.deva/mcp.json）。' +
+      '仅在用户明确想接入某个 MCP 服务、且你已收集好要素并向用户复述确认后调用。' +
+      '这是写入受保护配置的唯一途径——**严禁**用 write_file / run_command 去写 mcp.json（那些工具无法写入该目录）。' +
+      '**密钥零明文**：绝不把 API Key / Token 等真实密钥值写进本工具参数或对话；只在 secretEnv / secretHeaders 里列出这些字段的**名字**，' +
+      '工具会写入占位符，真实值由用户稍后在「扩展」页加密填入。创建后服务自动启用，连接在下次启动或手动开关后建立。属敏感操作，需用户授权。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'MCP 服务显示名（如「GitHub」「文件系统」）。' },
+        description: { type: 'string', description: '一句话说明该服务提供什么能力（可选）。' },
+        transport: {
+          type: 'string',
+          enum: ['stdio', 'sse', 'http'],
+          description:
+            '传输方式：stdio=本地子进程（需 command/args）；sse / http=远程服务（需 url）。默认 stdio。'
+        },
+        command: { type: 'string', description: 'stdio：启动命令（如 npx、uvx、node）。' },
+        args: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'stdio：命令参数清单（如 ["-y", "@modelcontextprotocol/server-filesystem", "/path"]）。'
+        },
+        env: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'stdio：非敏感环境变量，键值均为明文字符串（如 {"NODE_ENV": "production"}）。密钥请勿放这里。'
+        },
+        secretEnv: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'stdio：**密钥类**环境变量的名字清单（如 ["GITHUB_TOKEN"]）。工具只写占位符，真实值由用户后填；切勿在此放真实值。'
+        },
+        url: { type: 'string', description: 'sse / http：服务地址（如 https://example.com/mcp）。' },
+        headers: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description: 'sse / http：非敏感请求头，键值均为明文字符串。密钥请勿放这里。'
+        },
+        secretHeaders: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'sse / http：**密钥类**请求头的名字清单（如 ["Authorization"]）。工具只写占位符，真实值由用户后填。'
+        }
+      },
+      required: ['name', 'transport']
     }
   }
 ]
@@ -1011,6 +1065,81 @@ export async function executeTool(
       return {
         content: '已生成角色名片，等待用户在名片中查看并确认；请勿重复调用，也不要声称角色已创建。',
         summary: '已生成角色名片'
+      }
+    }
+
+    if (name === 'create_mcp') {
+      const serverName = typeof a.name === 'string' ? a.name.trim() : ''
+      if (!serverName)
+        return { content: '缺少 MCP 服务 name（显示名）', summary: '参数无效', isError: true }
+      const transport: 'stdio' | 'sse' | 'http' =
+        a.transport === 'sse' || a.transport === 'http' ? a.transport : 'stdio'
+
+      // 明文 map（env / headers）：仅保留字符串键值，密钥不走这里。
+      const plainMap = (v: unknown): Record<string, string> => {
+        const out: Record<string, string> = {}
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+            const key = k.trim()
+            if (key && typeof val === 'string') out[key] = val
+          }
+        }
+        return out
+      }
+      // 密钥字段名清单：模型只给「名字」，真实值由用户后填。
+      const secretNames = (v: unknown): string[] =>
+        Array.isArray(v)
+          ? Array.from(
+              new Set(
+                v
+                  .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+                  .map((s) => s.trim())
+              )
+            )
+          : []
+      // 合成 env / headers：明文键值 + 密钥字段名 → { secretRef } 占位（占位本身非敏感）。
+      const buildMap = (plainKey: string, secretKey: string): Record<string, McpValue> => {
+        const map: Record<string, McpValue> = { ...plainMap(a[plainKey]) }
+        for (const nm of secretNames(a[secretKey])) map[nm] = { secretRef: nm }
+        return map
+      }
+
+      const input: Parameters<typeof upsertServer>[0] = {
+        name: serverName,
+        description: typeof a.description === 'string' ? a.description : '',
+        transport,
+        enabled: true
+      }
+      let secretFields: string[] = []
+      if (transport === 'stdio') {
+        const command = typeof a.command === 'string' ? a.command.trim() : ''
+        if (!command)
+          return { content: 'stdio 传输缺少 command（启动命令，如 npx）', summary: '参数无效', isError: true }
+        input.command = command
+        input.args = Array.isArray(a.args)
+          ? a.args.filter((x): x is string => typeof x === 'string')
+          : []
+        input.env = buildMap('env', 'secretEnv')
+        secretFields = secretNames(a.secretEnv)
+      } else {
+        const url = typeof a.url === 'string' ? a.url.trim() : ''
+        if (!url)
+          return { content: `${transport} 传输缺少 url（服务地址）`, summary: '参数无效', isError: true }
+        input.url = url
+        input.headers = buildMap('headers', 'secretHeaders')
+        secretFields = secretNames(a.secretHeaders)
+      }
+
+      // 直调主进程 upsertServer（渲染层写不进 ~/.deva；本工具已过权限闸）——自动启用，但不在此连接。
+      const rec = upsertServer(input)
+      const secretHint = secretFields.length
+        ? `\n⚠️ 以下字段为密钥占位、尚无真实值：${secretFields.join('、')}。请提示用户前往「扩展」页为该服务填写这些密钥（加密存储），否则连接会失败。`
+        : ''
+      return {
+        content:
+          `已创建并启用 MCP 服务「${rec.name}」(id: ${rec.id}，传输 ${rec.transport})。` +
+          `连接将在下次启动应用、或在「扩展」页手动开关该服务后建立。${secretHint}`,
+        summary: '已创建 MCP 服务'
       }
     }
 

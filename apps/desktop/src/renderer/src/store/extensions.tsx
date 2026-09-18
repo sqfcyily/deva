@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -46,6 +47,12 @@ interface ExtensionsContextValue {
   subagents: SubAgent[]
   personas: Persona[]
   selected: Selection | null
+  /**
+   * 重新从磁盘拉取全部扩展清单。Provider 仅在挂载时载入一次，而技能等可能经对话 create_skill 工具、
+   * 上传或直接改盘在别处新增 —— 进入扩展页时调用本方法即可拿到最新，无需重启。标识稳定（可安全用作
+   * effect 依赖），故不会触发刷新循环。
+   */
+  refresh: () => void
   select: (kind: ExtKind, id: string) => void
   toggle: (kind: ExtKind, id: string) => void
   update: (kind: ExtKind, id: string, patch: ExtPatch) => void
@@ -56,6 +63,11 @@ interface ExtensionsContextValue {
    * 返回落库映射后的 Persona（供角色编辑器「保存即建/改」的确定性路径，避免多次 update 拆分写）。
    */
   upsertPersona: (input: PersonaUpsertInput) => Promise<Persona | undefined>
+  /**
+   * Persona 花名册手动排序：按传入 id 顺序即时重排本地列表并落盘（拖拽落定 / 置顶）。存 id 顺序而非
+   * name，故重命名不打乱顺序（对标 IM 联系人手动排序）。
+   */
+  reorderPersonas: (ids: string[]) => void
   /** 技能：上传文件（.zip 技能包或单个 SKILL.md）导入并自动启用；失败弹出本地化提示。 */
   importSkill: () => void
   /** MCP：连接（或重连）一个服务（状态经 onStatus 广播回流）。 */
@@ -323,6 +335,28 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
     }
   }, [])
 
+  // 显式刷新：重新从磁盘拉取四类扩展清单（见接口 refresh 注释）。只用稳定的 setter / 模块级转换器 /
+  // window.deva，故 useCallback([]) 标识恒稳定，可安全作 effect 依赖而不致刷新循环。Provider 为
+  // 应用级、不会卸载，故 .then 里 setState 无卸载竞态，无需 alive 守卫。
+  const refresh = useCallback((): void => {
+    void window.deva?.skills
+      ?.list()
+      .then((l) => setSkills(l.map(recToSkill)))
+      .catch(() => {})
+    void window.deva?.mcp
+      ?.list()
+      .then((l) => setMcp(l.map(viewToMcp)))
+      .catch(() => {})
+    void window.deva?.agents
+      ?.list()
+      .then((l) => setSubagents(l.map(agentRecToSub)))
+      .catch(() => {})
+    void window.deva?.personas
+      ?.list()
+      .then((l) => setPersonas(l.map(personaRecToPersona)))
+      .catch(() => {})
+  }, [])
+
   const setterFor = (kind: ExtKind): React.Dispatch<React.SetStateAction<AnyExt[]>> => {
     if (kind === 'skill') return setSkills as React.Dispatch<React.SetStateAction<AnyExt[]>>
     if (kind === 'mcp') return setMcp as React.Dispatch<React.SetStateAction<AnyExt[]>>
@@ -433,12 +467,31 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       return p
     }
 
+    // 手动排序：乐观按传入 id 顺序重排本地列表（未列出的角色兜底追加末尾，防丢失），并落盘。
+    const reorderPersonas = (ids: string[]): void => {
+      setPersonas((list) => {
+        const byId = new Map(list.map((p) => [p.id, p]))
+        const next: Persona[] = []
+        for (const id of ids) {
+          const p = byId.get(id)
+          if (p) {
+            next.push(p)
+            byId.delete(id)
+          }
+        }
+        for (const p of byId.values()) next.push(p)
+        return next
+      })
+      void window.deva?.personas?.reorder(ids).catch(() => {})
+    }
+
     return {
       skills,
       mcp,
       subagents,
       personas,
       selected,
+      refresh,
       select: (kind, id) => setSelected({ kind, id }),
       toggle: (kind, id) => {
         // 内置技能恒启用，不可切换（纵深防御：UI 已隐藏开关）。
@@ -502,6 +555,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         return addSubagent()
       },
       upsertPersona,
+      reorderPersonas,
       importSkill,
       mcpConnect: (id) => void window.deva?.mcp?.connect(id).catch(() => {}),
       mcpDisconnect: (id) => void window.deva?.mcp?.disconnect(id).catch(() => {}),
@@ -515,7 +569,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         }
       }
     }
-  }, [skills, mcp, subagents, personas, selected, t, dialog])
+  }, [skills, mcp, subagents, personas, selected, refresh, t, dialog])
 
   return <ExtensionsContext.Provider value={value}>{children}</ExtensionsContext.Provider>
 }

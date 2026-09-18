@@ -150,6 +150,10 @@ const zhCN: MessageTree = {
     kvKey: '键',
     kvValue: '值',
     secretPlaceholder: '已配置（留空不修改）',
+    secretValuePlaceholder: '输入密钥值（加密保存）',
+    secretSaving: '保存中…',
+    secretSaved: '已保存',
+    secretConfigured: '已配置',
     markSecret: '标记为密钥（加密存储）',
     unmarkSecret: '改为明文',
     addRow: '添加一行',
@@ -233,6 +237,8 @@ const zhCN: MessageTree = {
       editFile: '编辑文件',
       runCommand: '执行命令',
       askUser: '询问用户',
+      createSkill: '创建技能',
+      createMcp: '创建 MCP 服务',
       unknown: '调用工具'
     },
     status: { running: '执行中', done: '完成', failed: '失败', denied: '已拒绝' },
@@ -406,7 +412,20 @@ const zhCN: MessageTree = {
     authTools: '可用工具',
     allTools: '全部内置工具',
     startChat: '开始对话',
+    quickStartTitle: '快速开启对话',
+    quickStartHint: '选择一个角色，点头像即可直接开始',
+    rosterEmptyTitle: '角色资料',
+    rosterEmptyHint: '从左侧选择一个角色，查看资料或发起对话',
     editPersona: '编辑角色',
+    delete: '删除',
+    deleteChat: '删除对话',
+    pinTop: '置顶',
+    deletePersona: '删除角色',
+    deleteChatConfirm: '删除后该对话的所有消息将被永久移除，无法恢复。',
+    deletePersonaConfirm: '删除后该角色不可恢复，此操作无法撤销。',
+    deletePersonaConfirmWithChats:
+      '删除后该角色不可恢复，与其关联的 {count} 个对话也将一并永久删除，此操作无法撤销。',
+    deletePersonaLocked: '系统默认角色，不可删除',
     editorNewTitle: '新建角色',
     editorEditTitle: '编辑角色',
     editorProposeTitle: '确认角色名片',
@@ -415,6 +434,7 @@ const zhCN: MessageTree = {
     close: '关闭',
     fName: '名称',
     fEmoji: 'Emoji',
+    fEmojiHint: '点击输入框从面板选择，或直接输入自定义 Emoji',
     fColor: '主题色',
     fSpecialty: '专长',
     fTagline: '开场白',
@@ -422,15 +442,15 @@ const zhCN: MessageTree = {
     fTools: '可用工具',
     fToolsHint: '不选 = 允许全部内置工具；一旦勾选，则仅限所选（只收窄可见性，不放宽安全闸门）。',
     fPrompt: '系统提示词',
-    extHint: '在此启停技能、MCP 服务、子智能体与角色（全局生效）。',
+    extHint: '在此管理技能、MCP 服务与子智能体（全局生效）；点击 MCP 服务可编辑其配置。',
     extEmpty: '暂无扩展',
     kindSkill: '技能',
     kindMcp: 'MCP',
     kindSubagent: '子智能体',
-    kindPersona: '角色',
     builtin: '内置',
     mcpConnected: '已连接',
-    mcpDisconnected: '未连接'
+    mcpDisconnected: '未连接',
+    mcpDeleteConfirm: '确定删除该 MCP 服务？此操作不可撤销。'
   }
 }
 
@@ -576,6 +596,10 @@ const en: MessageTree = {
     kvKey: 'Key',
     kvValue: 'Value',
     secretPlaceholder: 'Configured (leave blank to keep)',
+    secretValuePlaceholder: 'Enter secret value (stored encrypted)',
+    secretSaving: 'Saving…',
+    secretSaved: 'Saved',
+    secretConfigured: 'Configured',
     markSecret: 'Mark as secret (encrypted)',
     unmarkSecret: 'Store as plain text',
     addRow: 'Add row',
@@ -658,6 +682,8 @@ const en: MessageTree = {
       editFile: 'Edit file',
       runCommand: 'Run command',
       askUser: 'Ask user',
+      createSkill: 'Create skill',
+      createMcp: 'Create MCP server',
       unknown: 'Call tool'
     },
     status: { running: 'Running', done: 'Done', failed: 'Failed', denied: 'Denied' },
@@ -832,7 +858,22 @@ const en: MessageTree = {
     authTools: 'Available tools',
     allTools: 'All built-in tools',
     startChat: 'Start chat',
+    quickStartTitle: 'Start a conversation',
+    quickStartHint: 'Pick a persona — tap its avatar to begin',
+    rosterEmptyTitle: 'Persona profile',
+    rosterEmptyHint: 'Select a persona on the left to view its profile or start a chat',
     editPersona: 'Edit persona',
+    delete: 'Delete',
+    deleteChat: 'Delete conversation',
+    pinTop: 'Pin to top',
+    deletePersona: 'Delete persona',
+    deleteChatConfirm:
+      'This conversation and all its messages will be permanently removed. This cannot be undone.',
+    deletePersonaConfirm:
+      'This persona will be permanently removed and cannot be restored. This cannot be undone.',
+    deletePersonaConfirmWithChats:
+      'This persona will be permanently removed, along with its {count} associated conversation(s). This cannot be undone.',
+    deletePersonaLocked: 'Default persona — cannot be deleted',
     editorNewTitle: 'New persona',
     editorEditTitle: 'Edit persona',
     editorProposeTitle: 'Confirm agent card',
@@ -841,6 +882,7 @@ const en: MessageTree = {
     close: 'Close',
     fName: 'Name',
     fEmoji: 'Emoji',
+    fEmojiHint: 'Focus the box to pick from the panel, or type a custom emoji',
     fColor: 'Color',
     fSpecialty: 'Specialty',
     fTagline: 'Tagline',
@@ -849,15 +891,16 @@ const en: MessageTree = {
     fToolsHint:
       'None selected = all built-in tools allowed; once you pick any, only those are visible (narrows visibility only, never loosens the security gate).',
     fPrompt: 'System prompt',
-    extHint: 'Enable or disable skills, MCP servers, sub-agents, and personas (applies globally).',
+    extHint:
+      'Manage skills, MCP servers, and sub-agents (applies globally); click an MCP server to edit its configuration.',
     extEmpty: 'No extensions',
     kindSkill: 'Skill',
     kindMcp: 'MCP',
     kindSubagent: 'Sub-agent',
-    kindPersona: 'Persona',
     builtin: 'Built-in',
     mcpConnected: 'Connected',
-    mcpDisconnected: 'Not connected'
+    mcpDisconnected: 'Not connected',
+    mcpDeleteConfirm: 'Delete this MCP server? This cannot be undone.'
   }
 }
 

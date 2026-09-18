@@ -177,7 +177,8 @@ export interface SessionLiveState {
 type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
-  | { kind: 'notice'; code: 'compacted' }
+  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' }
+  | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
 type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: AttachKind }[] }
@@ -223,6 +224,11 @@ type StreamEvent =
 
 interface ChatContextValue {
   sessions: SessionMeta[]
+  /**
+   * 初始会话清单是否已从主进程载入完成。false = 尚在加载：渲染层**不可**据 `sessions` 为空判定为
+   * 「无对话」，否则启动瞬间会闪现「快速开启」空态（列表异步到达前 sessions 恒为 []）。载入完成后恒 true。
+   */
+  ready: boolean
   currentSessionId: string
   messages: ChatMessage[]
   streaming: boolean
@@ -239,8 +245,19 @@ interface ChatContextValue {
   newSession: (personaId?: string, focusRoot?: string | null, model?: string) => void
   selectSession: (id: string) => void
   deleteSession: (id: string) => void
+  /**
+   * 批量删除对话（删除角色时一并清理其名下历史）。一次性中止各自在跑回合、逐条落盘删除、清绑定
+   * 覆盖层，最后只刷新一次列表；若当前会话在其中，则切到最近一条或起新会话。空数组为无操作。
+   */
+  deleteSessions: (ids: string[]) => void
   /** 当前对话的绑定（覆盖层优先于已落库真值）：驱动头像 / 工作区 chip / 模型选择器。 */
   currentBinding: { personaId?: string; focusRoot: string | null; model?: string }
+  /**
+   * 「草稿会话」：当前会话尚未落库（不在 sessions 里）但已绑定身份（有 personaId）时合成的一条会话元信息，
+   * 供左侧列表即时呈现这条「空对话」——与角色开启新对话时立刻出现在聊天列表，内容可为空。
+   * 首发落库后它进入 sessions、本值转为 null，列表项按同 id 无缝接管。无草稿时为 null。
+   */
+  draftSession: SessionMeta | null
   /** 挂载（path）/ 卸载（null）当前对话的聚焦工作区；path 须已受信（经 fs.openFolder/openPath）。 */
   mountFocus: (path: string | null) => void
   /**
@@ -287,6 +304,8 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
     const blocks: ChatBlock[] = dm.blocks.map((b) => {
       if (b.kind === 'text') return { kind: 'text', text: b.text }
       if (b.kind === 'notice') return { kind: 'notice', code: b.code }
+      // 历史回填：请求失败红框（原样复原错误文案）。
+      if (b.kind === 'error') return { kind: 'error', message: b.message }
       // 历史回填：角色名片按持久化终态复原（pending/accepted/rejected）。
       if (b.kind === 'agentcard')
         return { kind: 'agentcard', id: b.id, draft: b.draft, status: b.status }
@@ -565,6 +584,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   const { activeProject } = useWorkspace()
 
   const [sessions, setSessions] = useState<SessionMeta[]>([])
+  // 初始会话清单是否已载入完成。首次 listSessions resolve 后置 true 并恒保持；
+  // 渲染层据此区分「加载中」与「确认无对话」，避免启动瞬间闪现空态。
+  const [ready, setReady] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState<string>('')
   // 各会话活动态（键=sessionId）。ref 供事件回调 / 命令同步读写（不受渲染闭包过期影响），state 驱动渲染。
   const [runtimes, setRuntimes] = useState<Map<string, SessionRuntime>>(() => new Map())
@@ -572,7 +594,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   // chat:send 一并绑定；已落库会话的 mount/unmount 也先写此层，随下次 chat:send 更新到主进程。
   // 与 SessionMeta（已落库真值）叠加读出 currentBinding，覆盖层优先（承载尚未落库/刚变更的值）。
   const [bindings, setBindings] = useState<
-    Map<string, { personaId?: string; focusRoot?: string | null; model?: string }>
+    Map<string, { personaId?: string; focusRoot?: string | null; model?: string; createdAt?: number }>
   >(() => new Map())
   const [permMode, setPermModeState] = useState<PermMode>('ask')
   // 每秒自增以触发重渲染，刷新当前所视会话「已用秒数」（不绑定变量，仅需其副作用）。
@@ -590,7 +612,10 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
   // 绑定覆盖层唯一写入口：读 ref → 合并 patch → 换新 Map 提交（ref 与 state 同步，事件回调可同步读最新值）。
   const setBinding = useCallback(
-    (sid: string, patch: { personaId?: string; focusRoot?: string | null; model?: string }): void => {
+    (
+      sid: string,
+      patch: { personaId?: string; focusRoot?: string | null; model?: string; createdAt?: number }
+    ): void => {
       const cur = bindingsRef.current.get(sid) ?? {}
       const map = new Map(bindingsRef.current)
       map.set(sid, { ...cur, ...patch })
@@ -642,22 +667,42 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     setSessions(list)
   }, [])
 
-  // 起一个全新的空会话：只切换当前会话（新 id 无活动态 → 视图自然空），不落盘、不进左侧。
-  // 会话在用户首次发送时由主进程惰性建档，随后 refreshSessions 才让它出现在左侧。
+  // 起一个全新的空会话：切换当前会话（新 id 无活动态 → 视图自然空）。
   // 对话优先外壳可传 personaId（绑定身份）/ focusRoot（聚焦工作区）/ model（**快照**角色偏好模型）→ 存进
-  // 覆盖层，首发时随 chat:send 绑定/落库。model 在此刻定格：日后改角色偏好模型不影响本对话（快照固定）。
+  // 覆盖层。model 在此刻定格：日后改角色偏好模型不影响本对话（快照固定）。
+  //
+  // 落盘时机分两路：
+  //  · 绑定身份（传了 personaId）—— 对话优先外壳「与角色开启新对话」：**立即** createSession 落盘 + 刷新
+  //    左侧，空对话就此成为真实持久化会话（重启仍在）；覆盖层 + draftSession 仅作落盘完成前的即时占位，
+  //    refreshSessions 后同 id 真值并入 sessions、draftSession 转 null，无缝接管。
+  //  · 零参调用（旧 AppShell 的 newSession()、启动/删空后的兜底）—— 仍走**惰性**建档：不落盘、不进左侧，
+  //    待用户首次 chat:send 时主进程再建档。故删空左侧后不会被自动重建一条空会话（右侧转「快速开启」空态）。
   const startFresh = useCallback(
     (personaId?: string, focusRoot?: string | null, model?: string): void => {
       const id = genId('sess')
       if (personaId !== undefined || focusRoot !== undefined || model !== undefined) {
         const map = new Map(bindingsRef.current)
-        map.set(id, { personaId, focusRoot, model })
+        // createdAt 定格新建时刻：驱动草稿会话在左侧列表的相对时间与排序（落盘完成前即以「空对话」呈现）。
+        map.set(id, { personaId, focusRoot, model, createdAt: Date.now() })
         bindingsRef.current = map
         setBindings(map)
       }
       setCurrent(id)
+      // 绑定身份 → 立即落盘并刷新左侧（空对话跨重启存活）。
+      if (personaId !== undefined) {
+        void (async () => {
+          await window.deva.chat.createSession({
+            sessionId: id,
+            workspaceRoot: projectPathRef.current,
+            personaId,
+            focusRoot: focusRoot ?? null,
+            modelRef: model
+          })
+          await refreshSessions()
+        })()
+      }
     },
-    []
+    [refreshSessions]
   )
 
   // 切项目：重载会话清单 + 载入最近一条到其活动态（无则起新会话）。
@@ -670,6 +715,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       const list = await window.deva.chat.listSessions(path)
       if (cancelled || projectPathRef.current !== path) return
       setSessions(list)
+      setReady(true)
       if (list.length) {
         const id = list[0].id
         setCurrent(id)
@@ -784,6 +830,27 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     },
     [currentSessionId, sessions, bindings]
   )
+
+  // 草稿会话：当前会话尚未落库（不在 sessions 里）但已绑定身份（有 personaId）→ 合成一条会话元信息，
+  // 让左侧聊天列表在首发前就显示这条「空对话」。首发后主进程惰性建档、refreshSessions 把同 id 的真值并入
+  // sessions，本值随之转 null，列表项按 id 无缝接管（草稿标题「未命名」→ 真实标题）。
+  const draftSession = useMemo<SessionMeta | null>(() => {
+    const id = currentSessionId
+    if (!id) return null
+    if (sessions.some((s) => s.id === id)) return null // 已落库，无需草稿
+    const ov = bindings.get(id)
+    if (!ov?.personaId) return null // 无绑定身份 → 不作草稿展示（如启动初未绑定的裸空会话）
+    const ts = ov.createdAt ?? Date.now()
+    return {
+      id,
+      title: '',
+      createdAt: ts,
+      updatedAt: ts,
+      personaId: ov.personaId,
+      focusRoot: ov.focusRoot ?? null,
+      model: ov.model
+    }
+  }, [currentSessionId, sessions, bindings])
 
   const value = useMemo<ChatContextValue>(() => {
     const send = async (text: string, attachments?: SendAttachment[]): Promise<void> => {
@@ -983,6 +1050,48 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })()
     }
 
+    // 批量删除（删角色时清其名下全部对话）：中止各自在跑回合 → 逐条落盘删除 → 清绑定覆盖层 →
+    // 只刷新一次列表；当前会话若在删除集内，切到最近一条或起新会话。与单条 deleteSession 同语义，
+    // 但合并刷新、避免 N 条并发各自 listSessions/切换互相打架。
+    const deleteSessions = (ids: string[]): void => {
+      if (ids.length === 0) return
+      const idSet = new Set(ids)
+      for (const id of ids) {
+        const turnId = runtimesRef.current.get(id)?.turnId
+        if (turnId) void window.deva.chat.abort(turnId)
+      }
+      void (async () => {
+        const path = projectPathRef.current
+        for (const id of ids) {
+          await window.deva.chat.deleteSession(id, path)
+          dropRuntime(id)
+        }
+        // 一并清掉这些会话的绑定覆盖层（若有）。
+        if (ids.some((id) => bindingsRef.current.has(id))) {
+          const map = new Map(bindingsRef.current)
+          for (const id of ids) map.delete(id)
+          bindingsRef.current = map
+          setBindings(map)
+        }
+        if (projectPathRef.current !== path) return
+        const list = await window.deva.chat.listSessions(path)
+        if (projectPathRef.current !== path) return
+        setSessions(list)
+        if (!idSet.has(sessionIdRef.current)) return
+        // 删的集合含当前会话：切到最近一条（载入其历史）或起新会话。
+        if (list.length) {
+          const nid = list[0].id
+          setCurrent(nid)
+          if (runtimesRef.current.has(nid)) return
+          const dms = await window.deva.chat.loadSession(nid, path)
+          if (sessionIdRef.current !== nid || runtimesRef.current.has(nid)) return
+          patchRuntime(nid, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
+        } else {
+          startFresh()
+        }
+      })()
+    }
+
     const respondPermission = (
       key: string,
       decision: 'allow' | 'deny',
@@ -1041,6 +1150,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
     return {
       sessions,
+      ready,
       currentSessionId,
       messages,
       streaming,
@@ -1051,7 +1161,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       newSession,
       selectSession,
       deleteSession,
+      deleteSessions,
       currentBinding,
+      draftSession,
       mountFocus,
       setSessionModel,
       respondPermission,
@@ -1062,12 +1174,14 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
   }, [
     sessions,
+    ready,
     currentSessionId,
     messages,
     streaming,
     streamStatus,
     sessionStates,
     currentBinding,
+    draftSession,
     permMode,
     activeModel,
     t,

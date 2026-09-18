@@ -1395,6 +1395,43 @@ textarea {
   font-weight: 700;
   margin-right: var(--space-1);
 }
+/* 分步向导：右上角进度、顶部步骤圆点、底部前后导航。 */
+.ask__progress {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg-muted);
+}
+.ask__steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.ask__step-dot {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ask__step-dot:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.ask__step-dot.is-done {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ask__step-dot.is-current {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
 .ask__options {
   display: flex;
   flex-direction: column;
@@ -1500,15 +1537,20 @@ textarea {
   color: var(--fg);
   font-weight: 500;
 }
-.btn:hover {
+.btn:not(:disabled):hover {
   background: var(--bg-hover);
+}
+/* 禁用态：明显区分（变淡 + 禁用光标 + 关掉悬停反馈），如问答卡未答完时的「提交」。 */
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .btn--primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-fg);
 }
-.btn--primary:hover {
+.btn--primary:not(:disabled):hover {
   background: var(--accent-hover);
 }
 .btn--sm {
@@ -1520,7 +1562,7 @@ textarea {
   background: transparent;
   border-color: transparent;
 }
-.btn--ghost:hover {
+.btn--ghost:not(:disabled):hover {
   background: var(--bg-hover);
 }
 .btn--danger {
@@ -1528,7 +1570,7 @@ textarea {
   border-color: var(--danger);
   color: #fff;
 }
-.btn--danger:hover {
+.btn--danger:not(:disabled):hover {
   background: var(--danger);
   filter: brightness(1.07);
 }
@@ -3712,10 +3754,22 @@ button.projmenu__item:disabled {
   gap: var(--space-2);
   max-width: 620px;
 }
+.kv-row-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
 .kv-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+.kv-row__status {
+  display: flex;
+  padding-left: calc(34% + var(--space-2));
+}
+.kv-row__status .key-status {
+  margin-left: 0;
 }
 .kv-row__key {
   flex: 0 0 34%;

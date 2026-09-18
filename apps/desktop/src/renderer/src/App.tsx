@@ -1,14 +1,11 @@
-import { AppShell } from './layout/AppShell'
 import { ChatFirstShell } from './redesign/ChatFirstShell'
 
 /**
- * 应用根组件。
+ * 应用根组件：渲染「对话优先」外壳。
  *
- * 正在预览「对话优先」新外壳原型（redesign/，纯界面无后端）。
- * 旧的 IDE 式外壳 AppShell 原封保留，把开关改成 false 即可一键还原。
+ * 旧的 IDE 式外壳（AppShell + 活动栏/侧边面板/底部终端/状态栏等）已整体下线删除，
+ * 只保留对话优先形态；相关 store（ui/git）与演示数据一并移除。
  */
-const PREVIEW_CHAT_FIRST = true
-
 export function App(): React.JSX.Element {
-  return PREVIEW_CHAT_FIRST ? <ChatFirstShell /> : <AppShell />
+  return <ChatFirstShell />
 }

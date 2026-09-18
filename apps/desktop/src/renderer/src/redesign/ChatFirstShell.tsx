@@ -1,25 +1,33 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowUpToLine,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Cog,
   FileText,
   FileCode2,
   FolderOpen,
   FolderPlus,
   Image as ImageIcon,
+  Lock,
   MessageCircle,
   Paperclip,
   Pencil,
+  Plug,
   Plus,
   ShieldCheck,
   ShieldQuestion,
   Square,
+  Trash2,
+  Unlock,
   Users,
+  X,
   Zap
 } from 'lucide-react'
 import './redesign.css'
-import type { Persona } from '../mock/extensions'
+import type { McpKV, McpServer, McpStatus, Persona } from '../mock/extensions'
 import type { PersonaUpsertInput } from '../../../preload'
 import {
   useChat,
@@ -35,6 +43,7 @@ import { useExtensions } from '../store/extensions'
 import { useModels } from '../store/models'
 import { useWorkspace } from '../store/workspace'
 import { useI18n } from '../i18n/i18n'
+import { useDialog } from '../components/DialogProvider'
 import { useTheme } from '../theme/ThemeContext'
 import { BlockView, StatusIndicator, deriveActivity } from '../features/chat/ChatView'
 import { ModelSettings } from '../features/settings/ModelSettings'
@@ -68,8 +77,37 @@ function basename(p: string): string {
   return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
 }
 
+/**
+ * 无对话头的中列界面（快速开启 / 角色空态 / 资料卡）共用的顶部拖拽把手：一条透明、与原生标题栏同高的
+ * 窗口拖拽区，补上这些界面缺失的顶部拖拽（对话视图已由 .cf-conv__head 承担）。纯装饰、无交互。
+ */
+function DragBar(): React.JSX.Element {
+  return <div className="cf-dragbar" aria-hidden="true" />
+}
+
+/**
+ * 花名册手动排序不再按名称（角色可改名 → 名称排序会跳位）：改由用户拖拽 / 置顶决定，顺序以 id 列表
+ * 持久化（对标微信等 IM 的联系人手动排序）。此纯函数把「把 dragId 放到 targetId 之前/之后」算成新的 id 序列。
+ */
+function reorderIds(
+  ids: string[],
+  dragId: string,
+  targetId: string,
+  place: 'before' | 'after'
+): string[] {
+  if (dragId === targetId) return ids
+  const without = ids.filter((id) => id !== dragId)
+  const ti = without.indexOf(targetId)
+  if (ti < 0) return ids
+  without.splice(place === 'before' ? ti : ti + 1, 0, dragId)
+  return without
+}
+
 /** 距底 ≤ 此像素即视为「贴住底部」，留缓冲避免临界抖动（与 ChatView 同值）。 */
 const BOTTOM_THRESHOLD = 64
+
+/** 系统默认角色 id（首启种子「通用」）：兼作兜底身份，且不允许删除。 */
+const DEFAULT_PERSONA_ID = 'general'
 
 /** 一次挑选返回的附件（与 preload PickedAttachment 结构一致）。 */
 interface Picked {
@@ -118,6 +156,7 @@ type EditorState =
 export function ChatFirstShell(): React.JSX.Element {
   const {
     sessions,
+    ready,
     currentSessionId,
     messages,
     streaming,
@@ -127,18 +166,26 @@ export function ChatFirstShell(): React.JSX.Element {
     stop,
     newSession,
     selectSession,
+    deleteSession,
+    deleteSessions,
     currentBinding,
+    draftSession,
     mountFocus,
     respondPermission,
     respondAsk,
     permMode,
     setPermMode
   } = useChat()
-  const { personas } = useExtensions()
-  const { t } = useI18n()
+  const { personas, remove, reorderPersonas } = useExtensions()
+  const { t, locale } = useI18n()
+  const dialog = useDialog()
 
   const [railTab, setRailTab] = useState<'chats' | 'roster'>('chats')
-  /** 非空时中列显示该角色资料卡；为空时显示当前对话。 */
+  /**
+   * 「角色」tab 当前选中的角色（右侧显示其资料卡）。仅当 railTab==='roster' 时生效——右侧内容整体由
+   * railTab 决定，故「消息」tab 与「角色」tab 各自记住自己的右侧（当前对话 / 当前角色），彼此独立、
+   * 切 tab 时右侧随之切换（见下方渲染分支）。
+   */
   const [viewPersonaId, setViewPersonaId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   /** 非空时打开角色编辑器（Part G）。 */
@@ -153,36 +200,44 @@ export function ChatFirstShell(): React.JSX.Element {
 
   /** 兜底身份：优先 general，其次首个（花名册非空时）。 */
   const defaultPersona = useMemo(
-    () => personas.find((p) => p.id === 'general') ?? personas[0],
+    () => personas.find((p) => p.id === DEFAULT_PERSONA_ID) ?? personas[0],
     [personas]
   )
   const defaultPersonaId = defaultPersona?.id
 
-  // 自动绑定「通用」：当有兜底身份、当前对话未绑定、且是空对话时，落一条绑定到默认身份的空会话。
-  // 循环安全：newSession 写入覆盖层后 currentBinding.personaId 置位 → 下次 guard 失败，不再触发。
-  // 同时**快照**该身份当时的偏好模型（空串=跟随全局默认）：日后改该身份偏好不影响本对话（快照固定）。
-  useEffect(() => {
-    if (defaultPersonaId && !currentBinding.personaId && messages.length === 0) {
-      newSession(defaultPersonaId, undefined, defaultPersona?.model)
-    }
-  }, [defaultPersonaId, defaultPersona?.model, currentBinding.personaId, messages.length, newSession])
+  // 说明（去掉了旧的「自动绑定通用」effect）：从前只要当前对话未绑定且为空，就自动落一条绑定到默认身份
+  // 的空会话——这会在「删空左侧所有对话」后立刻重建一条，导致永远无法真正清空、也进不了「快速开启」空态。
+  // 现在改为：空对话由用户显式动作（点头像 / ＋开始对话 / 通过对话添加）才创建并落盘（见 startWith）；
+  // 左侧无任何对话时，中列改渲染 QuickStart（列出全部角色，点头像直接开聊）。
 
   /** 当值身份（当前对话绑定的 persona）。 */
   const owner = personas.find((p) => p.id === currentBinding.personaId)
 
+  // 左侧列表数据源：把「草稿会话」（尚未落库的空对话）并到已落库会话之前——与角色开启新对话时，该对话
+  // 立即出现在聊天列表（内容可为空）。草稿 id 必不在 sessions 中（见 store.draftSession），无需去重；
+  // 首发落库后 draftSession 转 null、真值并入 sessions，列表项按同 id 无缝接管。
+  const railSessions = useMemo(
+    () => (draftSession ? [draftSession, ...sessions] : sessions),
+    [draftSession, sessions]
+  )
+
+  // 打开某对话 → 切到「消息」tab（右侧内容随 railTab 切换）。不清 viewPersonaId：让「角色」tab 记住
+  // 自己上次查看的角色，两个 tab 的右侧彼此独立。
   const openThread = (id: string): void => {
     selectSession(id)
-    setViewPersonaId(null)
     setRailTab('chats')
   }
-  const openProfile = (personaId: string): void => setViewPersonaId(personaId)
+  // 查看某角色资料 → 切到「角色」tab 并选中该角色（右侧随之显示其资料卡）。
+  const openProfile = (personaId: string): void => {
+    setViewPersonaId(personaId)
+    setRailTab('roster')
+  }
   /** 点角色名片 → 打开预填的编辑器（propose 态，接受才落盘）。 */
   const openProposal = (block: Extract<ChatBlock, { kind: 'agentcard' }>): void =>
     setEditor({ mode: 'propose', draft: block.draft, toolId: block.id })
   /** 与某身份发起新对话：新建空会话（首发落绑定，并快照该身份当时的偏好模型）→ 回到消息视图。 */
   const startWith = (personaId: string): void => {
     newSession(personaId, undefined, personas.find((p) => p.id === personaId)?.model)
-    setViewPersonaId(null)
     setRailTab('chats')
   }
   /**
@@ -192,11 +247,51 @@ export function ChatFirstShell(): React.JSX.Element {
    */
   const addPersonaByChat = (): void => {
     newSession(defaultPersonaId, undefined, defaultPersona?.model)
-    setViewPersonaId(null)
     setRailTab('chats')
     setComposerPrefill({ text: t('cf.addByChatPrompt'), nonce: Date.now() })
   }
   const viewPersona = viewPersonaId ? personas.find((p) => p.id === viewPersonaId) : undefined
+
+  // 右键删除（对话 / 角色）：先弹居中确认框（破坏性 → 红色确认键），确认后才走既有删除通路——
+  // 对话经 deleteSession（中止在跑回合 + 落盘删除 + 切到最近会话），角色经 remove('persona')。
+  // 标题直接写成「删除对话 xxx ？/删除角色 xxx ？」这一动作问句（比裸标题更醒目），随语言拼装。
+  const deleteThread = (id: string, title: string): void => {
+    const name = title || t('chat.untitled')
+    const heading = locale === 'en' ? `Delete conversation “${name}”?` : `删除对话 ${name} ？`
+    void (async () => {
+      const ok = await dialog.confirm({
+        title: heading,
+        message: t('cf.deleteChatConfirm'),
+        variant: 'danger',
+        confirmText: t('cf.delete')
+      })
+      if (ok) deleteSession(id)
+    })()
+  }
+  const deletePersona = (id: string, name: string): void => {
+    // 系统默认角色不可删除（UI 侧菜单项已禁用，此处再兜一道，防其他触发路径）。
+    if (id === DEFAULT_PERSONA_ID) return
+    // 该角色名下已落库的对话（草稿未落库不计），删角色时一并清除；数量用于提示影响面。
+    const relatedIds = sessions.filter((s) => s.personaId === id).map((s) => s.id)
+    const heading = locale === 'en' ? `Delete persona “${name}”?` : `删除角色 ${name} ？`
+    // 有关联对话 → 提示「同时删除 N 个对话」；无 → 用不涉及对话的简短文案。
+    const message =
+      relatedIds.length > 0
+        ? t('cf.deletePersonaConfirmWithChats').replace('{count}', String(relatedIds.length))
+        : t('cf.deletePersonaConfirm')
+    void (async () => {
+      const ok = await dialog.confirm({
+        title: heading,
+        message,
+        variant: 'danger',
+        confirmText: t('cf.delete')
+      })
+      if (!ok) return
+      // 先清对话再删角色：避免出现「角色已删、对话仍引用缺失角色」的空窗渲染。
+      if (relatedIds.length > 0) deleteSessions(relatedIds)
+      remove('persona', id)
+    })()
+  }
 
   return (
     <div className="cf-shell">
@@ -210,7 +305,7 @@ export function ChatFirstShell(): React.JSX.Element {
         />
         <Rail
           tab={railTab}
-          sessions={sessions}
+          sessions={railSessions}
           personas={personas}
           currentSessionId={currentSessionId}
           sessionStates={sessionStates}
@@ -219,15 +314,34 @@ export function ChatFirstShell(): React.JSX.Element {
           onOpenProfile={openProfile}
           onAddPersona={() => setEditor({ mode: 'create' })}
           onAddPersonaByChat={addPersonaByChat}
+          onDeleteThread={deleteThread}
+          onDeletePersona={deletePersona}
+          onReorderPersonas={reorderPersonas}
         />
-        {viewPersona ? (
-          <ProfileView
-            persona={viewPersona}
-            sessions={sessions}
-            onOpenThread={openThread}
-            onStart={() => startWith(viewPersona.id)}
-            onEdit={() => setEditor({ mode: 'edit', persona: viewPersona })}
-          />
+        {railTab === 'roster' ? (
+          // 「角色」tab：右侧显示选中角色的资料卡；未选中（或角色已删）则给出提示。
+          // 与「消息」tab 的右侧彼此独立——切 tab 即切右侧内容。
+          viewPersona ? (
+            <ProfileView
+              persona={viewPersona}
+              sessions={railSessions}
+              onOpenThread={openThread}
+              onStart={() => startWith(viewPersona.id)}
+              onEdit={() => setEditor({ mode: 'edit', persona: viewPersona })}
+            />
+          ) : (
+            <RosterEmpty />
+          )
+        ) : railSessions.length === 0 ? (
+          // 「消息」tab 且左侧无任何对话（含未落盘草稿）→ 快速开启：列出全部角色，点头像直接开聊。
+          // 但仅当会话清单**确已载入完成**（ready）才渲染空态：初始 listSessions 异步到达前 sessions 恒为
+          // []，若此时就渲染 QuickStart，存在历史对话时会先闪一下空态再跳到会话。ready 前留白即可。
+          ready ? (
+            <QuickStart personas={personas} onStart={startWith} />
+          ) : (
+            // 清单加载中：用与会话/空态相同的 cf-conv 容器留白，保持列宽与底色一致，不闪不跳。
+            <main className="cf-conv" aria-busy="true" />
+          )
         ) : (
           <Conversation
             owner={owner}
@@ -308,6 +422,11 @@ function IconRail({
   )
 }
 
+/** 列表行右键菜单：光标处（视口坐标）+ 目标（对话或角色）。 */
+type RowMenu =
+  | { x: number; y: number; kind: 'thread'; id: string; title: string }
+  | { x: number; y: number; kind: 'persona'; id: string; name: string }
+
 /* ============================ 左栏：列表列（对话 / 角色） ============================ */
 function Rail({
   tab,
@@ -319,7 +438,10 @@ function Rail({
   onOpenThread,
   onOpenProfile,
   onAddPersona,
-  onAddPersonaByChat
+  onAddPersonaByChat,
+  onDeleteThread,
+  onDeletePersona,
+  onReorderPersonas
 }: {
   tab: 'chats' | 'roster'
   sessions: SessionMeta[]
@@ -331,13 +453,40 @@ function Rail({
   onOpenProfile: (id: string) => void
   onAddPersona: () => void
   onAddPersonaByChat: () => void
+  onDeleteThread: (id: string, title: string) => void
+  onDeletePersona: (id: string, name: string) => void
+  onReorderPersonas: (ids: string[]) => void
 }): React.JSX.Element {
   const { t } = useI18n()
+  // 右键菜单态（对话/角色行共用一个，同一时刻至多一个）。
+  const [menu, setMenu] = useState<RowMenu | null>(null)
+  // 花名册拖拽态：dragId=正被拖动的角色；dropTarget=当前悬停的落点行与半区（驱动放置指示线）。
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<{ id: string; edge: 'before' | 'after' } | null>(
+    null
+  )
   // 消息列表按最近更新降序。
   const ordered = useMemo(
     () => [...sessions].sort((a, b) => b.updatedAt - a.updatedAt),
     [sessions]
   )
+
+  const clearDrag = (): void => {
+    setDragId(null)
+    setDropTarget(null)
+  }
+  // 拖拽落定：把 dragId 放到目标行的上/下半区所决定的位置，算出新 id 序列并落盘（乐观 + 持久化）。
+  const dropOnPersona = (targetId: string, edge: 'before' | 'after'): void => {
+    if (dragId && dragId !== targetId) {
+      onReorderPersonas(reorderIds(personas.map((p) => p.id), dragId, targetId, edge))
+    }
+    clearDrag()
+  }
+  // 置顶：把该角色移到花名册最前（右键菜单触发）。已在最前则为无害的同序写入。
+  const pinPersona = (id: string): void => {
+    const ids = personas.map((p) => p.id)
+    onReorderPersonas([id, ...ids.filter((x) => x !== id)])
+  }
   return (
     <aside className="cf-rail">
       {/* 顶部：搜索占满整行；角色 tab 额外并排一个「添加角色」入口（悬停/点击出二选一弹层）。 */}
@@ -359,8 +508,18 @@ function Rail({
                 session={s}
                 owner={personas.find((p) => p.id === s.personaId)}
                 state={sessionStates[s.id]}
-                active={viewPersonaId === null && s.id === currentSessionId}
+                active={s.id === currentSessionId}
                 onClick={() => onOpenThread(s.id)}
+                onContext={(e) => {
+                  e.preventDefault()
+                  setMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    kind: 'thread',
+                    id: s.id,
+                    title: s.title || ''
+                  })
+                }}
               />
             ))
           )
@@ -372,12 +531,141 @@ function Rail({
               key={p.id}
               persona={p}
               active={viewPersonaId === p.id}
+              dragging={dragId === p.id}
+              dropEdge={dropTarget?.id === p.id && dragId !== p.id ? dropTarget.edge : null}
               onClick={() => onOpenProfile(p.id)}
+              onContext={(e) => {
+                e.preventDefault()
+                setMenu({ x: e.clientX, y: e.clientY, kind: 'persona', id: p.id, name: p.name })
+              }}
+              onDragStart={() => setDragId(p.id)}
+              onDragOverRow={(edge) => {
+                if (!dragId || dragId === p.id) return
+                setDropTarget((cur) =>
+                  cur && cur.id === p.id && cur.edge === edge ? cur : { id: p.id, edge }
+                )
+              }}
+              onDropRow={(edge) => dropOnPersona(p.id, edge)}
+              onDragEnd={clearDrag}
             />
           ))
         )}
       </div>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={
+            menu.kind === 'thread'
+              ? [
+                  {
+                    label: t('cf.deleteChat'),
+                    icon: <Trash2 size={14} />,
+                    danger: true,
+                    onClick: () => onDeleteThread(menu.id, menu.title)
+                  }
+                ]
+              : [
+                  {
+                    label: t('cf.pinTop'),
+                    icon: <ArrowUpToLine size={14} />,
+                    // 已在花名册最前则禁用（灰显），避免无意义的同序写入。
+                    disabled: personas[0]?.id === menu.id,
+                    onClick: () => pinPersona(menu.id)
+                  },
+                  {
+                    label: t('cf.deletePersona'),
+                    icon: <Trash2 size={14} />,
+                    danger: true,
+                    // 系统默认角色：菜单项禁用（灰显 + 悬停说明），不可点。
+                    disabled: menu.id === DEFAULT_PERSONA_ID,
+                    title:
+                      menu.id === DEFAULT_PERSONA_ID ? t('cf.deletePersonaLocked') : undefined,
+                    onClick: () => onDeletePersona(menu.id, menu.name)
+                  }
+                ]
+          }
+        />
+      )}
     </aside>
+  )
+}
+
+/**
+ * 轻量右键菜单：定位到光标处（视口坐标），带全屏透明背板——点击 / 右键空白 / Esc 皆关闭。
+ * 挂载后测量自身尺寸并夹取回视口内，避免贴近右 / 下边缘时溢出被裁。
+ */
+function ContextMenu({
+  x,
+  y,
+  items,
+  onClose
+}: {
+  x: number
+  y: number
+  items: Array<{
+    label: string
+    icon?: React.ReactNode
+    danger?: boolean
+    /** 禁用项：灰显 + 悬停说明（title），不可点（如系统默认角色的删除项）。 */
+    disabled?: boolean
+    title?: string
+    onClick: () => void
+  }>
+  onClose: () => void
+}): React.JSX.Element {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ left: x, top: y })
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const pad = 8
+    let left = x
+    let top = y
+    if (left + r.width > window.innerWidth - pad) left = window.innerWidth - r.width - pad
+    if (top + r.height > window.innerHeight - pad) top = window.innerHeight - r.height - pad
+    setPos({ left: Math.max(pad, left), top: Math.max(pad, top) })
+  }, [x, y])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  return (
+    <>
+      <div
+        className="cf-ctx__backdrop"
+        onClick={onClose}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          onClose()
+        }}
+      />
+      <div ref={ref} className="cf-ctx" style={{ left: pos.left, top: pos.top }} role="menu">
+        {items.map((it, i) => (
+          <button
+            key={i}
+            type="button"
+            role="menuitem"
+            className={`cf-ctx__item${it.danger ? ' is-danger' : ''}`}
+            disabled={it.disabled}
+            title={it.title}
+            onClick={() => {
+              onClose()
+              it.onClick()
+            }}
+          >
+            {it.icon}
+            <span>{it.label}</span>
+          </button>
+        ))}
+      </div>
+    </>
   )
 }
 
@@ -455,27 +743,30 @@ function ThreadRow({
   owner,
   state,
   active,
-  onClick
+  onClick,
+  onContext
 }: {
   session: SessionMeta
   owner?: Persona
   state?: { streaming: boolean; attention: boolean }
   active: boolean
   onClick: () => void
+  onContext: (e: React.MouseEvent) => void
 }): React.JSX.Element {
   const { t } = useI18n()
   const rel = useRelativeTime()
   return (
-    <button className={`cf-thread${active ? ' is-active' : ''}`} onClick={onClick}>
-      {/* 对话中（streaming）→ 头像边框绕圈小点指示；待处理（attention）仍用名称前小圆点。 */}
+    <button
+      className={`cf-thread${active ? ' is-active' : ''}`}
+      onClick={onClick}
+      onContextMenu={onContext}
+    >
+      {/* 对话中（streaming）→ 头像边框绕圈小点指示。 */}
       <Avatar persona={owner} size={38} busy={state?.streaming} />
       <div className="cf-thread__main">
-        {/* 上：角色名（待处理时前置小圆点）与时间；下：首次对话标题。挂载目录不在此展示。 */}
+        {/* 上：角色名与时间；下：首次对话标题。挂载目录不在此展示。 */}
         <div className="cf-thread__top">
-          <span className="cf-thread__owner">
-            {state?.attention && <span className="cf-thread__dot" />}
-            {owner?.name ?? ''}
-          </span>
+          <span className="cf-thread__owner">{owner?.name ?? ''}</span>
           <span className="cf-thread__time">{rel(session.updatedAt)}</span>
         </div>
         <div className="cf-thread__title">{session.title || t('chat.untitled')}</div>
@@ -487,14 +778,59 @@ function ThreadRow({
 function PersonaRow({
   persona,
   active,
-  onClick
+  dragging,
+  dropEdge,
+  onClick,
+  onContext,
+  onDragStart,
+  onDragOverRow,
+  onDropRow,
+  onDragEnd
 }: {
   persona: Persona
   active: boolean
+  /** 本行正被拖动（淡化显示）。 */
+  dragging: boolean
+  /** 本行是当前落点时的插入边（上=before / 下=after），驱动放置指示线；非落点为 null。 */
+  dropEdge: 'before' | 'after' | null
   onClick: () => void
+  onContext: (e: React.MouseEvent) => void
+  onDragStart: () => void
+  /** 拖动经过本行：据指针落在上/下半区回报插入边。 */
+  onDragOverRow: (edge: 'before' | 'after') => void
+  onDropRow: (edge: 'before' | 'after') => void
+  onDragEnd: () => void
 }): React.JSX.Element {
+  // 指针在本行的上半区 → 插到本行之前；下半区 → 之后。
+  const edgeAt = (e: React.DragEvent): 'before' | 'after' => {
+    const r = e.currentTarget.getBoundingClientRect()
+    return e.clientY - r.top < r.height / 2 ? 'before' : 'after'
+  }
   return (
-    <button className={`cf-prow${active ? ' is-active' : ''}`} onClick={onClick}>
+    <button
+      className={`cf-prow${active ? ' is-active' : ''}${dragging ? ' is-dragging' : ''}${
+        dropEdge ? ` drop-${dropEdge}` : ''
+      }`}
+      draggable
+      onClick={onClick}
+      onContextMenu={onContext}
+      onDragStart={(e) => {
+        // 需要 dataTransfer 非空，拖拽才成立（内容用不到，仅占位）。
+        e.dataTransfer.effectAllowed = 'move'
+        e.dataTransfer.setData('text/plain', persona.id)
+        onDragStart()
+      }}
+      onDragOver={(e) => {
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        onDragOverRow(edgeAt(e))
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        onDropRow(edgeAt(e))
+      }}
+      onDragEnd={onDragEnd}
+    >
       <Avatar persona={persona} size={38} />
       <div className="cf-prow__main">
         {/* 花名册只展示角色名与专长；专长未填写则整行不显示。 */}
@@ -508,6 +844,76 @@ function PersonaRow({
 }
 
 /* ============================ 中列：单人对话 ============================ */
+/* ============================ 中列：快速开启（无任何对话时的空态） ============================ */
+/**
+ * 左侧对话被清空后中列的落点：列出花名册全部角色，点头像/卡片直接与该角色开启新对话
+ * （onStart → startWith：新建并落盘一条绑定该角色的空对话，随即切入消息视图）。
+ * 花名册为空时给出「先去添加角色」的提示（与角色 tab 空态一致）。
+ */
+function QuickStart({
+  personas,
+  onStart
+}: {
+  personas: Persona[]
+  onStart: (personaId: string) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  return (
+    <main className="cf-conv">
+      <DragBar />
+      <div className="cf-quick">
+        <div className="cf-quick__inner">
+          <div className="cf-quick__title">{t('cf.quickStartTitle')}</div>
+          <div className="cf-quick__hint">{t('cf.quickStartHint')}</div>
+          {personas.length === 0 ? (
+            <div className="cf-empty">{t('cf.noPersona')}</div>
+          ) : (
+            <div className="cf-quick__grid">
+              {personas.map((p) => (
+                <button
+                  key={p.id}
+                  className="cf-qcard"
+                  onClick={() => onStart(p.id)}
+                  title={p.desc || p.name}
+                  style={{ '--p': p.color } as React.CSSProperties}
+                >
+                  <Avatar persona={p} size={48} />
+                  <span
+                    className="cf-qcard__name"
+                    style={{ '--p': p.color } as React.CSSProperties}
+                  >
+                    {p.name}
+                  </span>
+                  {p.desc && <span className="cf-qcard__desc">{p.desc}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </main>
+  )
+}
+
+/**
+ * 「角色」tab 未选中任何角色时的右侧落点（与「消息」tab 的右侧彼此独立）：一句提示，引导从左侧花名册
+ * 选一个角色查看资料。复用 QuickStart 的居中容器，无新增 CSS。
+ */
+function RosterEmpty(): React.JSX.Element {
+  const { t } = useI18n()
+  return (
+    <main className="cf-conv">
+      <DragBar />
+      <div className="cf-quick">
+        <div className="cf-quick__inner">
+          <div className="cf-quick__title">{t('cf.rosterEmptyTitle')}</div>
+          <div className="cf-quick__hint">{t('cf.rosterEmptyHint')}</div>
+        </div>
+      </div>
+    </main>
+  )
+}
+
 function Conversation({
   owner,
   currentSessionId,
@@ -1122,46 +1528,52 @@ function ProfileView({
 
   return (
     <main className="cf-conv">
+      <DragBar />
       <div className="cf-profile">
-        <div className="cf-profile__ava" style={{ '--p': persona.color } as React.CSSProperties}>
-          {persona.emoji}
-        </div>
-        <div className="cf-profile__name" style={{ '--p': persona.color } as React.CSSProperties}>
-          {persona.name}
-        </div>
-        <div className="cf-profile__spec">{persona.desc}</div>
-
-        <div className="cf-profile__meta">
-          <div className="cf-profile__row">
-            <span className="cf-profile__k">{t('cf.prefModel')}</span>
-            <span className="cf-profile__v">{prefModelLabel}</span>
+        <div className="cf-profile__inner">
+          <div className="cf-profile__ava" style={{ '--p': persona.color } as React.CSSProperties}>
+            {persona.emoji}
           </div>
-        </div>
+          <div
+            className="cf-profile__name"
+            style={{ '--p': persona.color } as React.CSSProperties}
+          >
+            {persona.name}
+          </div>
+          <div className="cf-profile__spec">{persona.desc}</div>
 
-        <div className="cf-profile__actions">
-          <button className="cf-profile__new" onClick={onStart}>
-            ＋ {t('cf.startChat')}
-          </button>
-          <button className="cf-profile__edit" onClick={onEdit}>
-            {t('cf.editPersona')}
-          </button>
-        </div>
+          <div className="cf-profile__meta">
+            <div className="cf-profile__row">
+              <span className="cf-profile__k">{t('cf.prefModel')}</span>
+              <span className="cf-profile__v">{prefModelLabel}</span>
+            </div>
+          </div>
 
-        <div className="cf-profile__convs">
-          <div className="cf-profile__convs-label">{convsLabel}</div>
-          {convs.length === 0 ? (
-            <div className="cf-empty">{noConvs}</div>
-          ) : (
-            convs.map((s) => (
-              <button key={s.id} className="cf-convrow" onClick={() => onOpenThread(s.id)}>
-                <span className="cf-convrow__title">{s.title || t('chat.untitled')}</span>
-                {s.focusRoot && (
-                  <span className="cf-convrow__proj">📁 {basename(s.focusRoot)}</span>
-                )}
-                <span className="cf-convrow__time">{rel(s.updatedAt)}</span>
-              </button>
-            ))
-          )}
+          <div className="cf-profile__actions">
+            <button className="cf-profile__new" onClick={onStart}>
+              ＋ {t('cf.startChat')}
+            </button>
+            <button className="cf-profile__edit" onClick={onEdit}>
+              {t('cf.editPersona')}
+            </button>
+          </div>
+
+          <div className="cf-profile__convs">
+            <div className="cf-profile__convs-label">{convsLabel}</div>
+            {convs.length === 0 ? (
+              <div className="cf-empty">{noConvs}</div>
+            ) : (
+              convs.map((s) => (
+                <button key={s.id} className="cf-convrow" onClick={() => onOpenThread(s.id)}>
+                  <span className="cf-convrow__title">{s.title || t('chat.untitled')}</span>
+                  {s.focusRoot && (
+                    <span className="cf-convrow__proj">📁 {basename(s.focusRoot)}</span>
+                  )}
+                  <span className="cf-convrow__time">{rel(s.updatedAt)}</span>
+                </button>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </main>
@@ -1169,6 +1581,17 @@ function ProfileView({
 }
 
 /* ============================ 角色编辑器（Part G） ============================ */
+// 角色 Emoji 快捷选项：AI/机器人、人物/职业、动物、物件、自然，供一键选择；
+// 输入框仍可自由输入任意 Emoji，此处只是常用备选。
+const PERSONA_EMOJIS = [
+  '🤖', '🦾', '👾', '🧠', '✨', '⚡', '💡', '🔮',
+  '🧑‍💻', '👩‍💻', '👨‍💻', '🧑‍🔬', '🕵️', '🧙', '🦸', '🥷',
+  '👨‍🏫', '🧑‍🎨', '🧑‍🚀', '🧑‍⚖️', '🦊', '🐱', '🦉', '🐼',
+  '🦁', '🐧', '🦄', '🐙', '🐝', '🐳', '🌟', '🔥',
+  '🚀', '🎯', '🎨', '📚', '🔬', '🛠️', '🧩', '📝',
+  '🔍', '🧭', '🗺️', '💼', '📊', '🌈', '🍀', '🌸'
+]
+
 function PersonaEditor({
   initial,
   onClose
@@ -1192,6 +1615,8 @@ function PersonaEditor({
   const [model, setModel] = useState(editing?.model ?? draft?.model ?? '')
   const [prompt, setPrompt] = useState(editing?.prompt ?? draft?.prompt ?? '')
   const [saving, setSaving] = useState(false)
+  // Emoji 选择面板：仅在输入框聚焦时弹出，失焦收起。
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   // 模型下拉：所有服务商 × 其模型 → "providerId:modelId"；空 = 跟随默认。
   const modelOptions = useMemo(
@@ -1273,13 +1698,40 @@ function PersonaEditor({
           </div>
 
           <div className="cf-field cf-field--row">
-            <div className="cf-field">
+            {/* Emoji：输入框可自由输入；聚焦时下方弹出常用 Emoji 选择面板。 */}
+            <div className="cf-field cf-emoji-field">
               <label className="cf-field__label">{t('cf.fEmoji')}</label>
               <input
                 className="cf-input cf-input--emoji"
                 value={emoji}
+                title={t('cf.fEmojiHint')}
                 onChange={(e) => setEmoji(e.target.value)}
+                onFocus={() => setPickerOpen(true)}
+                onClick={() => setPickerOpen(true)}
+                onBlur={() => setPickerOpen(false)}
               />
+              {pickerOpen && (
+                <div className="cf-emoji-picker" role="listbox" aria-label={t('cf.fEmoji')}>
+                  {PERSONA_EMOJIS.map((e) => (
+                    <button
+                      key={e}
+                      type="button"
+                      role="option"
+                      aria-selected={emoji === e}
+                      className={`cf-emoji-picker__item${emoji === e ? ' is-selected' : ''}`}
+                      // onMouseDown + preventDefault：保持输入框焦点，确保本次点击不被 blur 提前打断；
+                      // 选中后主动收起面板（靠状态收起，而非失焦）。
+                      onMouseDown={(ev) => {
+                        ev.preventDefault()
+                        setEmoji(e)
+                        setPickerOpen(false)
+                      }}
+                    >
+                      {e}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="cf-field">
               <label className="cf-field__label">{t('cf.fColor')}</label>
@@ -1447,9 +1899,25 @@ function GeneralPane(): React.JSX.Element {
 
 function ExtensionsPane(): React.JSX.Element {
   const { t } = useI18n()
-  const { skills, mcp, subagents, personas, toggle } = useExtensions()
+  // 角色（persona）不在此列出：它有专属的「角色」tab 与资料卡来管理，扩展页只管技能/MCP/子智能体。
+  const { skills, mcp, subagents, toggle, refresh } = useExtensions()
+  // 进入扩展页即从磁盘重拉最新：技能可能经对话 create_skill、上传或直接改盘在别处新增，Provider 仅在
+  // 应用启动时载入一次，故此处显式刷新，避免必须重启才能看到新技能。refresh 标识稳定，不会形成刷新循环。
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  // 钻取导航：选中某个 MCP 服务 → 进入详情编辑（对齐模型设置页的主从抽屉）。技能只读、子智能体暂不在此编辑，
+  // 故只有 MCP 行可点开。MCP 的新增经对话工具 / 直接改盘 ~/.deva/mcp.json，扩展页不放新增入口。
+  const [openMcpId, setOpenMcpId] = useState<string | null>(null)
+  const openMcp = openMcpId ? mcp.find((m) => m.id === openMcpId) : undefined
+
+  if (openMcp) {
+    return <McpEditor item={openMcp} onBack={() => setOpenMcpId(null)} />
+  }
+
   type Item = {
-    kind: 'skill' | 'mcp' | 'subagent' | 'persona'
+    kind: 'skill' | 'mcp' | 'subagent'
     id: string
     name: string
     enabled: boolean
@@ -1487,15 +1955,6 @@ function ExtensionsPane(): React.JSX.Element {
         enabled: a.enabled,
         badge: t('cf.kindSubagent')
       })
-    ),
-    ...personas.map(
-      (p): Item => ({
-        kind: 'persona',
-        id: p.id,
-        name: p.name,
-        enabled: p.enabled,
-        badge: t('cf.kindPersona')
-      })
     )
   ]
   return (
@@ -1506,25 +1965,427 @@ function ExtensionsPane(): React.JSX.Element {
         <div className="cf-empty">{t('cf.extEmpty')}</div>
       ) : (
         <div className="cf-rows">
-          {items.map((x) => (
-            <div key={`${x.kind}:${x.id}`} className="cf-setrow">
-              <div className="cf-setrow__main">
-                <div className="cf-setrow__name">
-                  {x.name}
-                  <span className="cf-badge">{x.badge}</span>
-                  {x.note && <span className="cf-setrow__note">{x.note}</span>}
-                </div>
+          {items.map((x) =>
+            x.kind === 'mcp' ? (
+              // MCP 行可点开编辑：主区做按钮（点开详情），开关作兄弟节点独立触发（互不干扰）。
+              <div key={`${x.kind}:${x.id}`} className="cf-setrow">
+                <button
+                  className="cf-setrow__open"
+                  title={t('extensions.name')}
+                  onClick={() => setOpenMcpId(x.id)}
+                >
+                  <span className="cf-setrow__name">
+                    {x.name}
+                    <span className="cf-badge">{x.badge}</span>
+                    {x.note && <span className="cf-setrow__note">{x.note}</span>}
+                  </span>
+                  <ChevronRight className="cf-setrow__chevron" size={15} />
+                </button>
+                <Toggle on={x.enabled} onChange={() => toggle(x.kind, x.id)} />
               </div>
-              <Toggle
-                on={x.enabled}
-                disabled={x.locked}
-                onChange={() => toggle(x.kind, x.id)}
-              />
-            </div>
-          ))}
+            ) : (
+              <div key={`${x.kind}:${x.id}`} className="cf-setrow">
+                <div className="cf-setrow__main">
+                  <div className="cf-setrow__name">
+                    {x.name}
+                    <span className="cf-badge">{x.badge}</span>
+                    {x.note && <span className="cf-setrow__note">{x.note}</span>}
+                  </div>
+                </div>
+                <Toggle on={x.enabled} disabled={x.locked} onChange={() => toggle(x.kind, x.id)} />
+              </div>
+            )
+          )}
         </div>
       )}
     </>
+  )
+}
+
+/** 面板 / 详情共用的运行期状态字形（● 连接 / ! 错 / ○ 断）。 */
+const MCP_STATUS_GLYPH: Record<McpStatus, string> = {
+  connected: '●',
+  connecting: '●',
+  error: '!',
+  disconnected: '○'
+}
+
+/**
+ * MCP 详情编辑（对话优先外壳）：钻取式主从抽屉，形态对齐模型设置页（顶部返回 + 逐字段即时落盘）。
+ * 名称 / 传输 / 命令 / 参数 / 环境变量（或 URL / 请求头）经 update('mcp', …) round-trip 到 mcp.json；
+ * 密钥恒经 mcpSetSecret 加密另存、写后不回显（`{secretRef}` 占位符落盘，明文零留痕）。
+ */
+function McpEditor({ item, onBack }: { item: McpServer; onBack: () => void }): React.JSX.Element {
+  const { t } = useI18n()
+  const dialog = useDialog()
+  const { update, remove, toggle, mcpConnect, mcpDisconnect, mcpTest, mcpSetSecret } = useExtensions()
+  const [secretWarn, setSecretWarn] = useState(false)
+  const isStdio = item.transport === 'stdio'
+
+  // 写入密钥字段：加密不可用时亮出降级提示（空值即删除已存密钥）。
+  // 返回落盘结果，供 McpKvEditor 呈现「保存中 / 已保存」反馈。
+  const setSecret = (field: string, value: string): Promise<{ ok: boolean; available: boolean }> =>
+    mcpSetSecret(item.id, field, value).then((r) => {
+      if (value && !r.available) setSecretWarn(true)
+      return r
+    })
+
+  const onDelete = (): void => {
+    void (async () => {
+      const ok = await dialog.confirm({
+        title: item.name,
+        message: t('cf.mcpDeleteConfirm'),
+        confirmText: t('common.delete'),
+        variant: 'danger'
+      })
+      if (ok) {
+        remove('mcp', item.id)
+        onBack()
+      }
+    })()
+  }
+
+  return (
+    <section className="provider-detail" key={item.id}>
+      <button className="provider-detail__back" onClick={onBack}>
+        <ChevronLeft size={16} />
+        {t('common.back')}
+      </button>
+      <header className="provider-detail__head">
+        <span className="ext-detail__icon">
+          <Plug size={18} />
+        </span>
+        <h2 className="ext-detail__name ext-detail__name--mono">{item.name}</h2>
+        <span className="ext-detail__scope">{t('common.global')}</span>
+        <div className="provider-detail__spacer" />
+        <button className="icon-btn" title={t('extensions.remove')} onClick={onDelete}>
+          <Trash2 size={15} />
+        </button>
+        <span className="provider-detail__enable">{t('extensions.enable')}</span>
+        <Toggle on={item.enabled} onChange={() => toggle('mcp', item.id)} />
+      </header>
+
+      <div className="ext-status">
+        <span className={`ext-status__live ext-status__live--${item.status}`}>
+          {MCP_STATUS_GLYPH[item.status]} {t(`extensions.status.${item.status}`)}
+          {item.status === 'connected' && item.toolCount > 0
+            ? ` · ${item.toolCount} ${t('extensions.tools')}`
+            : ''}
+        </span>
+        <span className="ext-detail__spacer" />
+        <button className="ext-linkbtn" onClick={() => mcpTest(item.id)}>
+          {t('extensions.test')}
+        </button>
+        {item.status === 'connected' ? (
+          <button className="ext-linkbtn" onClick={() => mcpDisconnect(item.id)}>
+            {t('extensions.disconnect')}
+          </button>
+        ) : (
+          <button className="ext-linkbtn" onClick={() => mcpConnect(item.id)}>
+            {t('extensions.connect')}
+          </button>
+        )}
+      </div>
+      {item.status === 'error' && item.lastError && <div className="mcp-error">{item.lastError}</div>}
+
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.name')}</label>
+        <input
+          className="ext-input"
+          value={item.name}
+          onChange={(e) => update('mcp', item.id, { name: e.target.value })}
+        />
+      </div>
+
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.transport')}</label>
+        <select
+          className="ext-select ext-select--mono"
+          value={item.transport}
+          onChange={(e) =>
+            update('mcp', item.id, { transport: e.target.value as McpServer['transport'] })
+          }
+        >
+          <option value="stdio">stdio</option>
+          <option value="sse">sse</option>
+          <option value="http">http (streamable)</option>
+        </select>
+      </div>
+
+      {isStdio ? (
+        <>
+          <div className="ext-field">
+            <label className="ext-field__label">{t('extensions.command')}</label>
+            <input
+              className="ext-input ext-input--mono"
+              placeholder={t('extensions.commandPlaceholder')}
+              value={item.command}
+              onChange={(e) => update('mcp', item.id, { command: e.target.value })}
+            />
+          </div>
+          <McpArgsField item={item} />
+          <div className="ext-field">
+            <label className="ext-field__label">{t('extensions.env')}</label>
+            <McpKvEditor
+              serverId={item.id}
+              rows={item.env}
+              onChange={(rows) => update('mcp', item.id, { env: rows })}
+              onSetSecret={setSecret}
+            />
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="ext-field">
+            <label className="ext-field__label">{t('extensions.url')}</label>
+            <input
+              className="ext-input ext-input--mono"
+              placeholder={t('extensions.urlPlaceholder')}
+              value={item.url}
+              onChange={(e) => update('mcp', item.id, { url: e.target.value })}
+            />
+          </div>
+          <div className="ext-field">
+            <label className="ext-field__label">{t('extensions.headers')}</label>
+            <McpKvEditor
+              serverId={item.id}
+              rows={item.headers}
+              onChange={(rows) => update('mcp', item.id, { headers: rows })}
+              onSetSecret={setSecret}
+            />
+          </div>
+        </>
+      )}
+
+      {secretWarn && (
+        <p className="ext-field__note ext-field__note--warn">{t('extensions.secretUnavailable')}</p>
+      )}
+
+      <div className="ext-field">
+        <label className="ext-field__label">{t('extensions.discoveredTools')}</label>
+        {item.tools.length === 0 ? (
+          <div className="ext-tools--empty">{t('extensions.noToolsYet')}</div>
+        ) : (
+          <ul className="mcp-tools">
+            {item.tools.map((tool) => (
+              <li key={tool.name} className="mcp-tools__item">
+                <code className="mcp-tools__name">{tool.name}</code>
+                {tool.description && <span className="mcp-tools__desc">{tool.description}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/** 命令参数编辑：一行一个（本地字符串态，随服务切换 remount 自动重置）。 */
+function McpArgsField({ item }: { item: McpServer }): React.JSX.Element {
+  const { t } = useI18n()
+  const { update } = useExtensions()
+  const [text, setText] = useState(item.args.join('\n'))
+  return (
+    <div className="ext-field">
+      <label className="ext-field__label">{t('extensions.args')}</label>
+      <textarea
+        className="ext-area ext-area--mono"
+        rows={3}
+        placeholder={t('extensions.argsPlaceholder')}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          update('mcp', item.id, {
+            args: e.target.value
+              .split('\n')
+              .map((a) => a.trim())
+              .filter(Boolean)
+          })
+        }}
+      />
+    </div>
+  )
+}
+
+/**
+ * 键值对编辑（env / headers）：明文即时落盘；密钥经 onSetSecret 加密。
+ * 密钥字段对齐模型页 API-Key 交互：
+ *  - 输入后**保留**遮罩草稿在框内（不再失焦即清空 → 不会「自动消失」）；
+ *  - 防抖 ~600ms 自动保存 + 失焦 / 回车立即冲刷，落盘结果亮「保存中 / 已保存」；
+ *  - 重新打开时草稿为空，据 hasSecret 亮「已配置」并提示「留空不修改」——始终不回显明文。
+ */
+function McpKvEditor({
+  serverId,
+  rows,
+  onChange,
+  onSetSecret
+}: {
+  serverId: string
+  rows: McpKV[]
+  onChange: (rows: McpKV[]) => void
+  onSetSecret: (field: string, value: string) => Promise<{ ok: boolean; available: boolean }>
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const [drafts, setDrafts] = useState<Record<number, string>>({})
+  const [saveState, setSaveState] = useState<Record<number, 'idle' | 'saving' | 'saved'>>({})
+  const [configured, setConfigured] = useState<Record<number, boolean>>({})
+  const timersRef = useRef<Record<number, ReturnType<typeof setTimeout> | null>>({})
+
+  // 各密钥行是否已配置（布尔，不回显明文）；键集变化时重查，点亮「已配置」。
+  const secretSig = JSON.stringify(rows.map((r) => (r.secret ? r.key.trim() : '')))
+  useEffect(() => {
+    const keys = JSON.parse(secretSig) as string[]
+    let alive = true
+    void (async () => {
+      const next: Record<number, boolean> = {}
+      await Promise.all(
+        keys.map(async (key, i) => {
+          if (key) next[i] = (await window.deva?.mcp?.hasSecret?.(serverId, key)) ?? false
+        })
+      )
+      if (alive) setConfigured(next)
+    })()
+    return () => {
+      alive = false
+    }
+  }, [serverId, secretSig])
+
+  const setRow = (i: number, patch: Partial<McpKV>): void =>
+    onChange(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
+  const addRow = (): void => onChange([...rows, { key: '', value: '', secret: false }])
+  const removeRow = (i: number): void => onChange(rows.filter((_, idx) => idx !== i))
+
+  const clearTimer = (i: number): void => {
+    const tm = timersRef.current[i]
+    if (tm) {
+      clearTimeout(tm)
+      timersRef.current[i] = null
+    }
+  }
+
+  const doSaveSecret = async (i: number, key: string, value: string): Promise<void> => {
+    if (!key || !value) return
+    setSaveState((s) => ({ ...s, [i]: 'saving' }))
+    const r = await onSetSecret(key, value)
+    setSaveState((s) => ({ ...s, [i]: r.ok ? 'saved' : 'idle' }))
+    if (r.ok) setConfigured((c) => ({ ...c, [i]: true }))
+  }
+
+  // 输入变化：更新草稿并防抖自动保存（不清空草稿，遮罩值留在框内）。
+  const onSecretChange = (i: number, value: string): void => {
+    setDrafts((d) => ({ ...d, [i]: value }))
+    setSaveState((s) => ({ ...s, [i]: 'idle' }))
+    clearTimer(i)
+    const key = rows[i].key.trim()
+    if (!key || !value) return
+    timersRef.current[i] = setTimeout(() => {
+      timersRef.current[i] = null
+      void doSaveSecret(i, key, value)
+    }, 600)
+  }
+
+  // 立即冲刷在途保存（失焦 / 回车）。
+  const flushSecret = (i: number): void => {
+    clearTimer(i)
+    void doSaveSecret(i, rows[i].key.trim(), drafts[i] ?? '')
+  }
+
+  const toggleSecret = (i: number): void => {
+    const r = rows[i]
+    const key = r.key.trim()
+    if (r.secret && key) void onSetSecret(key, '') // 转明文：清除已加密的旧值
+    clearTimer(i)
+    setRow(i, { secret: !r.secret, value: '' })
+    setDrafts((d) => {
+      const n = { ...d }
+      delete n[i]
+      return n
+    })
+    setSaveState((s) => {
+      const n = { ...s }
+      delete n[i]
+      return n
+    })
+    setConfigured((c) => {
+      const n = { ...c }
+      delete n[i]
+      return n
+    })
+  }
+
+  return (
+    <div className="kv-editor">
+      {rows.map((r, i) => (
+        <div className="kv-row-wrap" key={i}>
+          <div className="kv-row">
+            <input
+              className="ext-input ext-input--mono kv-row__key"
+              placeholder={t('extensions.kvKey')}
+              value={r.key}
+              onChange={(e) => setRow(i, { key: e.target.value })}
+            />
+            {r.secret ? (
+              <input
+                className="ext-input ext-input--mono kv-row__val"
+                type="password"
+                placeholder={
+                  configured[i]
+                    ? t('extensions.secretPlaceholder')
+                    : t('extensions.secretValuePlaceholder')
+                }
+                value={drafts[i] ?? ''}
+                onChange={(e) => onSecretChange(i, e.target.value)}
+                onBlur={() => flushSecret(i)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') flushSecret(i)
+                }}
+              />
+            ) : (
+              <input
+                className="ext-input ext-input--mono kv-row__val"
+                placeholder={t('extensions.kvValue')}
+                value={r.value}
+                onChange={(e) => setRow(i, { value: e.target.value })}
+              />
+            )}
+            <button
+              className={`icon-btn icon-btn--sm kv-row__lock${r.secret ? ' is-on' : ''}`}
+              title={r.secret ? t('extensions.unmarkSecret') : t('extensions.markSecret')}
+              onClick={() => toggleSecret(i)}
+            >
+              {r.secret ? <Lock size={13} /> : <Unlock size={13} />}
+            </button>
+            <button
+              className="icon-btn icon-btn--sm"
+              title={t('extensions.removeRow')}
+              onClick={() => removeRow(i)}
+            >
+              <X size={13} />
+            </button>
+          </div>
+          {r.secret && (saveState[i] === 'saving' || saveState[i] === 'saved' || configured[i]) && (
+            <div className="kv-row__status">
+              {saveState[i] === 'saving' ? (
+                <span className="key-status">{t('extensions.secretSaving')}</span>
+              ) : saveState[i] === 'saved' ? (
+                <span className="key-status">
+                  <ShieldCheck size={12} />
+                  {t('extensions.secretSaved')}
+                </span>
+              ) : (
+                <span className="key-status">
+                  <ShieldCheck size={12} />
+                  {t('extensions.secretConfigured')}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+      <button className="btn btn--ghost btn--sm kv-add" onClick={addRow}>
+        <Plus size={13} /> {t('extensions.addRow')}
+      </button>
+    </div>
   )
 }
 
