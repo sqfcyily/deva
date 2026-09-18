@@ -143,6 +143,13 @@ export function ChatFirstShell(): React.JSX.Element {
   const [settingsOpen, setSettingsOpen] = useState(false)
   /** 非空时打开角色编辑器（Part G）。 */
   const [editor, setEditor] = useState<EditorState | null>(null)
+  /**
+   * 输入框预填（一次性、不自动发送）：用于「通过对话添加角色」——把引导语放进输入框交由用户
+   * 自己审阅/修改后发送，而非替他发出。nonce 使相同文本也能重复触发；Composer 消费后回调置空。
+   */
+  const [composerPrefill, setComposerPrefill] = useState<{ text: string; nonce: number } | null>(
+    null
+  )
 
   /** 兜底身份：优先 general，其次首个（花名册非空时）。 */
   const defaultPersona = useMemo(
@@ -179,15 +186,15 @@ export function ChatFirstShell(): React.JSX.Element {
     setRailTab('chats')
   }
   /**
-   * 「通过对话添加角色」：新建一个绑定兜底身份（通常「通用」）的空对话，自动发一句引导语，
-   * 让 Agent 立即开始一步步引导用户澄清需求、最后调 propose_agent 铸名片供确认（不写盘，接受才落盘）。
-   * newSession 同步置位 sessionIdRef，故随后的 send 必打到这条新会话。
+   * 「通过对话添加角色」：新建一个绑定兜底身份（通常「通用」）的空对话，把引导语**预填进输入框**，
+   * 交由用户自己发送（不自动发出）——用户可先审阅/修改，确认后再发起；Agent 收到后一步步引导澄清
+   * 需求、最后调 propose_agent 铸名片供确认（不写盘，接受才落盘）。
    */
   const addPersonaByChat = (): void => {
     newSession(defaultPersonaId, undefined, defaultPersona?.model)
     setViewPersonaId(null)
     setRailTab('chats')
-    void send(t('cf.addByChatPrompt'))
+    setComposerPrefill({ text: t('cf.addByChatPrompt'), nonce: Date.now() })
   }
   const viewPersona = viewPersonaId ? personas.find((p) => p.id === viewPersonaId) : undefined
 
@@ -238,6 +245,8 @@ export function ChatFirstShell(): React.JSX.Element {
             onAsk={respondAsk}
             onPermMode={setPermMode}
             onOpenProposal={openProposal}
+            prefill={composerPrefill}
+            onPrefillConsumed={() => setComposerPrefill(null)}
           />
         )}
       </div>
@@ -456,15 +465,15 @@ function ThreadRow({
 }): React.JSX.Element {
   const { t } = useI18n()
   const rel = useRelativeTime()
-  const alert = Boolean(state?.attention || state?.streaming)
   return (
     <button className={`cf-thread${active ? ' is-active' : ''}`} onClick={onClick}>
-      <Avatar persona={owner} size={38} />
+      {/* 对话中（streaming）→ 头像边框绕圈小点指示；待处理（attention）仍用名称前小圆点。 */}
+      <Avatar persona={owner} size={38} busy={state?.streaming} />
       <div className="cf-thread__main">
-        {/* 上：角色名（＋活动圆点）与时间；下：首次对话标题。挂载目录不在此展示。 */}
+        {/* 上：角色名（待处理时前置小圆点）与时间；下：首次对话标题。挂载目录不在此展示。 */}
         <div className="cf-thread__top">
           <span className="cf-thread__owner">
-            {alert && <span className="cf-thread__dot" />}
+            {state?.attention && <span className="cf-thread__dot" />}
             {owner?.name ?? ''}
           </span>
           <span className="cf-thread__time">{rel(session.updatedAt)}</span>
@@ -514,7 +523,9 @@ function Conversation({
   onPermission,
   onAsk,
   onPermMode,
-  onOpenProposal
+  onOpenProposal,
+  prefill,
+  onPrefillConsumed
 }: {
   owner?: Persona
   currentSessionId: string
@@ -531,6 +542,10 @@ function Conversation({
   onAsk: (key: string, answers: string[]) => void
   onPermMode: (mode: PermMode) => void
   onOpenProposal: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
+  /** 输入框预填（一次性、不发送）；null 表示无待预填。 */
+  prefill: { text: string; nonce: number } | null
+  /** Composer 消费预填后回调，父层据此置空，避免重挂载时复活旧预填。 */
+  onPrefillConsumed: () => void
 }): React.JSX.Element {
   const { t } = useI18n()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -640,6 +655,8 @@ function Conversation({
         onPermMode={onPermMode}
         showJump={!atBottom && messages.length > 0}
         onJump={jumpToLatest}
+        prefill={prefill}
+        onPrefillConsumed={onPrefillConsumed}
       />
     </main>
   )
@@ -722,7 +739,9 @@ function Composer({
   onStop,
   onPermMode,
   showJump,
-  onJump
+  onJump,
+  prefill,
+  onPrefillConsumed
 }: {
   owner?: Persona
   streaming: boolean
@@ -734,11 +753,31 @@ function Composer({
   onPermMode: (mode: PermMode) => void
   showJump: boolean
   onJump: () => void
+  prefill: { text: string; nonce: number } | null
+  onPrefillConsumed: () => void
 }): React.JSX.Element {
   const { t, locale } = useI18n()
   const [input, setInput] = useState('')
   const [pending, setPending] = useState<Picked[]>([])
   const taRef = useRef<HTMLTextAreaElement>(null)
+
+  // 预填（不发送）：把父层注入的文本写进输入框，聚焦并将光标移到末尾，交由用户自己发送。
+  // nonce 变化触发一次；消费后立即回调置空（父层 prefill→null），guard 防重入与重挂载复活。
+  useEffect(() => {
+    if (!prefill) return
+    setInput(prefill.text)
+    onPrefillConsumed()
+    requestAnimationFrame(() => {
+      const el = taRef.current
+      if (!el) return
+      el.focus()
+      el.style.height = 'auto'
+      el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+      const end = el.value.length
+      el.setSelectionRange(end, end)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill?.nonce])
 
   const name = owner?.name ?? t('cf.assistant')
   const placeholder = locale === 'en' ? `Message ${name}…` : `跟 ${name} 说点什么…`
@@ -1557,11 +1596,14 @@ function Toggle({
 function Avatar({
   persona,
   user,
-  size
+  size,
+  busy
 }: {
   persona?: Persona
   user?: boolean
   size?: number
+  /** 忙碌（对话生成中）：在头像边框上叠加一枚绕圈旋转的白色小点，作就地「思考/生成中」指示。 */
+  busy?: boolean
 }): React.JSX.Element | null {
   const style = {
     ...(size ? { '--sz': `${size}px` } : {}),
@@ -1573,15 +1615,26 @@ function Avatar({
         我
       </div>
     )
+  const cls = `cf-ava${busy ? ' is-busy' : ''}`
+  const orbit = busy ? (
+    <span className="cf-ava__spin" aria-hidden="true">
+      <i className="cf-ava__dot" />
+    </span>
+  ) : null
   if (!persona)
-    return <div className="cf-ava" style={style} />
+    return (
+      <div className={cls} style={style}>
+        {orbit}
+      </div>
+    )
   return (
     <div
-      className="cf-ava"
+      className={cls}
       style={style}
       title={`${persona.name} · ${persona.desc}${persona.model ? ` · ${persona.model}` : ''}`}
     >
       {persona.emoji}
+      {orbit}
     </div>
   )
 }

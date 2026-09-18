@@ -305,6 +305,9 @@
 /* 头像 */
 .cf-ava {
   --sz: 28px;
+  /* 头像描边线宽；绕圈小点直径复用它，保证「点」与「框线」大小一致。 */
+  --ring: 2px;
+  position: relative;
   width: var(--sz);
   height: var(--sz);
   border-radius: var(--radius-full);
@@ -312,7 +315,7 @@
   place-items: center;
   font-size: calc(var(--sz) * 0.52);
   background: var(--bg-inset);
-  box-shadow: inset 0 0 0 2px var(--p, var(--border-strong));
+  box-shadow: inset 0 0 0 var(--ring) var(--p, var(--border-strong));
   flex: none;
   user-select: none;
 }
@@ -322,6 +325,39 @@
   box-shadow: none;
   font-size: 12px;
   font-weight: 700;
+}
+
+/* 忙碌（对话生成中）：一枚白色小点绕头像边框圆匀速旋转，作就地「思考/生成中」指示。
+   旋转层与头像同框（inset:0），故其中心即头像中心；小点置于顶端边框线上，整层旋转即带它绕圈。 */
+.cf-ava__spin {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-full);
+  pointer-events: none;
+  animation: cf-orbit 1.1s linear infinite;
+}
+.cf-ava__dot {
+  position: absolute;
+  /* 固定直径 4px；圆心对齐描边中线（--ring/2）riding 在框线上。 */
+  top: calc(var(--ring) / 2 - 2px);
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  margin-left: -2px;
+  border-radius: var(--radius-full);
+  background: #fff;
+  /* 小点骑在身份色描边上，白对彩本就有对比；再加一圈同色微辉光。 */
+  box-shadow: 0 0 3px color-mix(in srgb, var(--p, var(--accent)) 65%, transparent);
+}
+@keyframes cf-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-ava__spin {
+    animation: none;
+  }
 }
 
 /* ---------------------------- 中列：单人对话 ---------------------------- */
