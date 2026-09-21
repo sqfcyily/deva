@@ -20,7 +20,7 @@ electronDownload:
 win:
   target:
     - nsis
-  # icon: build/icon.ico   # TODO: 补充应用图标后启用
+  icon: build/icon.ico
 
 nsis:
   oneClick: false

@@ -2047,9 +2047,8 @@ textarea {
   }
 }
 
-/* 模型/权限下拉共用的浮层外观：圆角卡片 + 细描边 + 柔和投影 + 入场动画。 */
-.model-pick__menu,
-.perm-pick__menu {
+/* 模型下拉的浮层外观：圆角卡片 + 细描边 + 柔和投影 + 入场动画。 */
+.model-pick__menu {
   position: absolute;
   bottom: calc(100% + 8px);
   z-index: 50;
@@ -2147,92 +2146,9 @@ textarea {
   text-align: center;
 }
 
-/* ---------- Chat：权限模式下拉 ---------- */
-.perm-pick {
-  position: relative;
-}
-/* 「全自动」权限有风险：用弱红底 + 红字提示，替代旧的硬红边框。 */
-.chip.is-auto {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-}
-.chip.is-auto:hover,
-.chip.is-auto.is-open {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 16%, transparent);
-}
-.perm-pick__menu {
-  left: 0;
-  transform-origin: bottom left;
-  min-width: 280px;
-}
-.perm-pick__title {
-  padding: 6px 8px 4px;
-  font-size: 10.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--fg-subtle);
-}
-.perm-pick__item {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  width: 100%;
-  padding: 8px;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--fg);
-  background: transparent;
-  text-align: left;
-  transition: background 0.1s ease;
-}
-.perm-pick__item:hover {
-  background: var(--bg-hover);
-}
-.perm-pick__item.is-active {
-  background: var(--accent-tint);
-}
-.perm-pick__icon {
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  flex-shrink: 0;
-  color: var(--fg-muted);
-}
-.perm-pick__item.is-active .perm-pick__icon {
-  color: var(--accent);
-}
-.perm-pick__text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-.perm-pick__name {
-  font-weight: 500;
-  font-size: 12.5px;
-}
-.perm-pick__item.is-active .perm-pick__name {
-  color: var(--accent);
-}
-.perm-pick__desc {
-  font-size: 11px;
-  color: var(--fg-subtle);
-  line-height: 1.35;
-}
-.perm-pick__check {
-  flex-shrink: 0;
-  margin-top: 1px;
-  color: var(--accent);
-}
 /* 尊重系统「减少动态效果」：关闭浮层入场动画。 */
 @media (prefers-reduced-motion: reduce) {
-  .model-pick__menu,
-  .perm-pick__menu {
+  .model-pick__menu {
     animation: none;
   }
 }
@@ -4274,4 +4190,199 @@ button.projmenu__item:disabled {
 .editor__tab-close:hover {
   opacity: 1;
   background: var(--bg-hover);
+}
+
+/* ---------- 定时任务确认名片（autotaskcard） ---------- */
+/* pending：可编辑授权信封（accent 描边，仿 .ask 但更长的表单）。 */
+.autotaskcard {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
+  padding: var(--space-3);
+  margin-top: var(--space-2);
+}
+.autotaskcard__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+}
+.autotaskcard__head-icon {
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+}
+.autotaskcard__hint {
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: var(--space-1) 0 var(--space-3);
+}
+.autotaskcard__field {
+  display: block;
+  margin-top: var(--space-3);
+}
+.autotaskcard__field:first-of-type {
+  margin-top: 0;
+}
+.autotaskcard__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 6px;
+}
+.autotaskcard__input,
+.autotaskcard__textarea {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.autotaskcard__textarea {
+  resize: vertical;
+}
+.autotaskcard__input--num {
+  width: 90px;
+}
+.autotaskcard__input--mono {
+  font-family: var(--font-mono);
+}
+.autotaskcard__input:focus,
+.autotaskcard__textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.autotaskcard__input + .autotaskcard__input,
+.autotaskcard select.autotaskcard__input {
+  margin-top: var(--space-2);
+}
+/* 分段切换（类型 / once·recurring）。 */
+.autotaskcard__seg {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base, var(--bg-elevated));
+}
+.autotaskcard__seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px var(--space-3);
+  border-radius: calc(var(--radius-sm) - 2px);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.autotaskcard__seg-btn:hover {
+  color: var(--fg);
+}
+.autotaskcard__seg-btn.is-on {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.autotaskcard__row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.autotaskcard__row .autotaskcard__input {
+  margin-top: 0;
+  width: auto;
+  flex: 0 0 auto;
+}
+.autotaskcard__row-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+/* 日程实时预览条。 */
+.autotaskcard__preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-2);
+  padding: 6px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: 12px;
+  min-height: 28px;
+}
+.autotaskcard__preview.is-invalid {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning);
+}
+.autotaskcard__preview-dim {
+  color: var(--fg-subtle);
+}
+.autotaskcard__err {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-3);
+  padding: 6px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 12px;
+}
+.autotaskcard__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+/* created / dismissed：紧凑终态行（编辑器已卸载）。 */
+.autotaskcard--created,
+.autotaskcard--dismissed {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.autotaskcard--dismissed {
+  border-color: var(--border);
+  background: var(--bg-elevated);
+  color: var(--fg-muted);
+}
+.autotaskcard__icon {
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.autotaskcard--dismissed .autotaskcard__icon {
+  color: var(--fg-subtle);
+}
+.autotaskcard__done-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.autotaskcard__done-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  font-size: 13px;
+}
+.autotaskcard__done-sub {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.autotaskcard__done-text {
+  font-size: 13px;
 }

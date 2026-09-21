@@ -10,6 +10,7 @@ import { ModelsProvider } from './store/models'
 import { ExtensionsProvider } from './store/extensions'
 import { WorkspaceProvider } from './store/workspace'
 import { ChatProvider } from './store/chat'
+import { TasksProvider } from './store/tasks'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -20,7 +21,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <ExtensionsProvider>
               <WorkspaceProvider>
                 <ChatProvider>
-                  <App />
+                  <TasksProvider>
+                    <App />
+                  </TasksProvider>
                 </ChatProvider>
               </WorkspaceProvider>
             </ExtensionsProvider>

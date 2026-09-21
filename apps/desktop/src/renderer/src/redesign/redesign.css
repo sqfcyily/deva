@@ -1768,6 +1768,7 @@
 .cf-list::-webkit-scrollbar,
 .cf-msgs::-webkit-scrollbar,
 .cf-profile::-webkit-scrollbar,
+.cf-tasks::-webkit-scrollbar,
 .cf-editor::-webkit-scrollbar,
 .cf-pane::-webkit-scrollbar {
   width: 10px;
@@ -1775,10 +1776,309 @@
 .cf-list::-webkit-scrollbar-thumb,
 .cf-msgs::-webkit-scrollbar-thumb,
 .cf-profile::-webkit-scrollbar-thumb,
+.cf-tasks::-webkit-scrollbar-thumb,
 .cf-editor::-webkit-scrollbar-thumb,
 .cf-pane::-webkit-scrollbar-thumb {
   background: var(--scrollbar);
   border-radius: var(--radius-full);
   border: 3px solid transparent;
   background-clip: padding-box;
+}
+
+/* ---------------------------- 对话行「⏰ 定时」徽标（任务独占会话） ---------------------------- */
+.cf-thread__badge {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--accent);
+}
+
+/* ---------------------------- 定时任务标签页（左列表 + 右详情） ---------------------------- */
+/* 左列表分组：组标题（复用 .cf-tasks__grouphd）+ 组内任务行；组间留白。 */
+.cf-trailgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--space-3);
+}
+.cf-tasks__grouphd {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-subtle);
+  padding: var(--space-2) var(--space-3) 4px;
+}
+.cf-tasks__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* 左列表任务行（与角色行 .cf-prow 同构：图标 | 标题/日程） */
+.cf-trow {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: inherit;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.cf-trow:hover {
+  background: var(--bg-hover);
+}
+.cf-trow.is-active {
+  background: var(--bg-selected);
+}
+.cf-trow__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+}
+.cf-trow__icon.is-active {
+  color: var(--accent);
+}
+.cf-trow__icon.is-error {
+  color: var(--danger);
+}
+.cf-trow__icon.is-completed {
+  color: var(--success, #2e7d32);
+}
+.cf-trow__main {
+  min-width: 0;
+}
+.cf-trow__title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-trow__sched {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 1px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+.cf-trow__sched > svg {
+  flex: none;
+}
+.cf-trow__schedtext {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 右详情面：复用 .cf-profile 滚动容器 + .cf-profile__inner 居中限宽（叠加 .cf-tdetail 微调）。 */
+.cf-tdetail {
+  gap: 0;
+}
+.cf-tdetail__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+}
+.cf-tdetail__icon.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.cf-tdetail__icon.is-error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.cf-tdetail__icon.is-completed {
+  color: var(--success, #2e7d32);
+  background: color-mix(in srgb, var(--success, #2e7d32) 12%, transparent);
+}
+.cf-tdetail .cf-profile__name {
+  margin-top: var(--space-3);
+  text-align: center;
+}
+.cf-tdetail__tags {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 6px;
+}
+.cf-tdetail__status {
+  padding: 1px 9px;
+  height: 19px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+}
+.cf-tdetail__status.is-active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+.cf-tdetail__status.is-error {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+.cf-tdetail__status.is-completed {
+  background: color-mix(in srgb, var(--success, #2e7d32) 16%, transparent);
+  color: var(--success, #2e7d32);
+}
+/* 详情信息卡：拉开与标签的间距；键列略加宽以容英文键名，值可含内联图标并自动换行。 */
+.cf-tdetail .cf-profile__meta {
+  margin-top: var(--space-5);
+}
+.cf-tdetail .cf-profile__k {
+  width: 88px;
+}
+.cf-tdetail .cf-profile__v {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+.cf-tdetail .cf-profile__v > svg {
+  flex: none;
+  color: var(--fg-muted);
+}
+/* 通用运行状态徽标（右详情「上次」值 + 运行历史行共用）。 */
+.cf-runbadge {
+  padding: 0 6px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+}
+.cf-runbadge.is-ok {
+  background: color-mix(in srgb, var(--success, #2e7d32) 16%, transparent);
+  color: var(--success, #2e7d32);
+}
+.cf-runbadge.is-error {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
+}
+.cf-runbadge.is-skipped {
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
+}
+
+/* 详情分节（任务指令 / 运行历史）：复用 .cf-profile__convs-label 作小标题。 */
+.cf-tdetail__section {
+  width: 100%;
+  margin-top: var(--space-5);
+}
+.cf-tdetail__prompt {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 操作按钮行（对齐 .cf-profile__actions，但可容纳 4 个动作、自动换行）。 */
+.cf-tdetail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  width: 100%;
+  margin-top: var(--space-4);
+}
+.cf-tdetail__act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.cf-tdetail__act:hover {
+  background: var(--bg-hover);
+}
+.cf-tdetail__act--primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.cf-tdetail__act--primary:hover {
+  background: var(--accent-hover);
+}
+.cf-tdetail__act--danger {
+  margin-left: auto;
+  color: var(--danger);
+}
+.cf-tdetail__act--danger:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+/* 运行历史行：时间 | 状态徽标 | 摘要/错误。 */
+.cf-trun {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px var(--space-3);
+  border-radius: var(--radius);
+}
+.cf-trun:hover {
+  background: var(--bg-hover);
+}
+.cf-trun__time {
+  flex: none;
+  font-size: 12px;
+  color: var(--fg);
+}
+.cf-trun__msg {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

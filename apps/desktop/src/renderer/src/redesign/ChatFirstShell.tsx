@@ -1,11 +1,14 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlarmClock,
   ArrowUpToLine,
   Brain,
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Cog,
   Copy,
   FileText,
@@ -18,35 +21,36 @@ import {
   Lock,
   MessageCircle,
   Paperclip,
+  Pause,
   Pencil,
+  Play,
   Plug,
   Plus,
   Puzzle,
+  RotateCcw,
   Search,
   ShieldCheck,
-  ShieldQuestion,
   Square,
   Trash2,
   Unlock,
   Users,
-  X,
-  Zap
+  X
 } from 'lucide-react'
 import './redesign.css'
 import type { McpKV, McpServer, McpStatus, Persona } from '../mock/extensions'
-import type { PersonaUpsertInput } from '../../../preload'
+import type { PersonaUpsertInput, TaskRecord, TaskSchedule, TaskStatus } from '../../../preload'
 import {
   useChat,
   type AgentDraft,
   type AttachKind,
   type ChatBlock,
   type ChatMessage,
-  type PermMode,
   type SendAttachment,
   type SessionMeta
 } from '../store/chat'
 import { useExtensions } from '../store/extensions'
 import { useModels } from '../store/models'
+import { useTasks } from '../store/tasks'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 import {
@@ -156,13 +160,6 @@ function useRelativeTime(): (ts: number) => string {
   }
 }
 
-/** 权限模式选项（复用 ChatView 同款：逐次询问 / 接受编辑 / 全自动，图标一致）。 */
-const PERM_MODES: Array<{ mode: PermMode; icon: React.ReactNode }> = [
-  { mode: 'ask', icon: <ShieldQuestion size={13} /> },
-  { mode: 'acceptEdits', icon: <ShieldCheck size={13} /> },
-  { mode: 'auto', icon: <Zap size={13} /> }
-]
-
 /**
  * 角色编辑器打开态：新建 / 编辑（带原对象）/ 确认名片（propose：预填 LLM 草稿，接受才落盘）。
  * propose 态的 draft 取自不可变的名片块 → 关闭重开即回到 LLM 原始草稿（丢弃改动，兼作「重置」）。
@@ -191,23 +188,25 @@ export function ChatFirstShell(): React.JSX.Element {
     currentBinding,
     draftSession,
     mountFocus,
-    respondPermission,
     respondAsk,
-    respondPlan,
-    permMode,
-    setPermMode
+    respondPlan
   } = useChat()
   const { personas, remove, reorderPersonas } = useExtensions()
   const { t, locale } = useI18n()
   const dialog = useDialog()
 
-  const [railTab, setRailTab] = useState<'chats' | 'roster'>('chats')
+  const [railTab, setRailTab] = useState<'chats' | 'roster' | 'tasks'>('chats')
   /**
    * 「角色」tab 当前选中的角色（右侧显示其资料卡）。仅当 railTab==='roster' 时生效——右侧内容整体由
    * railTab 决定，故「消息」tab 与「角色」tab 各自记住自己的右侧（当前对话 / 当前角色），彼此独立、
    * 切 tab 时右侧随之切换（见下方渲染分支）。
    */
   const [viewPersonaId, setViewPersonaId] = useState<string | null>(null)
+  /**
+   * 「定时任务」tab 的外部导航意图：对话里点已创建任务名片「查看任务」时置为目标任务 id，切到 tasks tab
+   * 后由 TasksPane 消费（直选该任务详情）并回清为 null——使之后手动进本 tab 仍复位到未选中空态。
+   */
+  const [tasksTarget, setTasksTarget] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   /** 非空时打开角色编辑器（Part G）。 */
   const [editor, setEditor] = useState<EditorState | null>(null)
@@ -256,6 +255,38 @@ export function ChatFirstShell(): React.JSX.Element {
   /** 点角色名片 → 打开预填的编辑器（propose 态，接受才落盘）。 */
   const openProposal = (block: Extract<ChatBlock, { kind: 'agentcard' }>): void =>
     setEditor({ mode: 'propose', draft: block.draft, toolId: block.id })
+  /**
+   * 点已创建定时任务名片「查看任务」→ 切到「定时任务」tab 并直选该任务详情。
+   * 不再打开其独占会话：会话要等任务首次触发才由 runScheduledTurn 建，创建后立即打开必为空；
+   * 查看任务详情（日程 / 授权 / 运行历史）才是此刻有意义的落点。
+   */
+  const openAutotask = (taskId: string): void => {
+    setTasksTarget(taskId)
+    setRailTab('tasks')
+  }
+  /**
+   * 定时任务标签页里点某任务「打开会话」→ 选中其独占会话并切回消息视图。
+   * 用记录上的权威 sessionId（= `task-` + 记录 id，创建时已铸），不再自行拼装。
+   */
+  const openTaskSession = (task: TaskRecord): void => {
+    selectSession(task.sessionId)
+    setRailTab('chats')
+  }
+
+  // 主进程导航意图（tasks:navigate）：通知点击带 `{sessionId}` → 打开该任务独占会话并回消息视图；
+  // 托盘「定时任务概览」带 `{pane:'tasks'}` → 切到 Tasks 标签。窗口从托盘唤起时随即落到目标视图。
+  useEffect(() => {
+    const off = window.deva?.tasks?.onNavigate?.((payload) => {
+      if (payload?.sessionId) {
+        selectSession(payload.sessionId)
+        setRailTab('chats')
+      } else if (payload?.pane === 'tasks') {
+        setRailTab('tasks')
+      }
+    })
+    return () => off?.()
+  }, [selectSession])
+
   /** 与某身份发起新对话：新建空会话（首发落绑定，并快照该身份当时的偏好模型）→ 回到消息视图。 */
   const startWith = (personaId: string): void => {
     newSession(personaId, undefined, personas.find((p) => p.id === personaId)?.model)
@@ -342,59 +373,69 @@ export function ChatFirstShell(): React.JSX.Element {
           onTab={setRailTab}
           onOpenSettings={() => setSettingsOpen(true)}
         />
-        <Rail
-          tab={railTab}
-          sessions={railSessions}
-          personas={personas}
-          currentSessionId={currentSessionId}
-          sessionStates={sessionStates}
-          viewPersonaId={viewPersonaId}
-          onOpenThread={openThread}
-          onOpenProfile={openProfile}
-          onAddPersona={() => setEditor({ mode: 'create' })}
-          onAddPersonaByChat={addPersonaByChat}
-          onDeleteThread={deleteThread}
-          onDeletePersona={deletePersona}
-          onReorderPersonas={reorderPersonas}
-        />
-        {railTab === 'roster' ? (
-          // 「角色」tab：右侧显示选中角色的资料卡；未选中（或角色已删）则给出提示。
-          // 与「消息」tab 的右侧彼此独立——切 tab 即切右侧内容。
-          viewPersona ? (
-            <ProfileView
-              persona={viewPersona}
-              sessions={railSessions}
-              onOpenThread={openThread}
-              onStart={() => startWith(viewPersona.id)}
-              onEdit={() => setEditor({ mode: 'edit', persona: viewPersona })}
-            />
-          ) : (
-            <RosterEmpty />
-          )
-        ) : railSessions.length === 0 ? (
-          <QuickStart personas={personas} onStart={startWith} />
-        ) : (
-          <Conversation
-            owner={owner}
-            currentSessionId={currentSessionId}
-            messages={messages}
-            streaming={streaming}
-            streamStatus={streamStatus}
-            focusRoot={currentBinding.focusRoot}
-            permMode={permMode}
-            onOpenProfile={openProfile}
-            onSend={send}
-            onStop={stop}
-            onMount={mountFocus}
-            onPermission={respondPermission}
-            onAsk={respondAsk}
-            onPlan={respondPlan}
-            onPermMode={setPermMode}
-            onOpenProposal={openProposal}
-            onDeleteTurns={deleteTurnsWithConfirm}
-            prefill={composerPrefill}
-            onPrefillConsumed={() => setComposerPrefill(null)}
+        {railTab === 'tasks' ? (
+          // 「定时任务」tab：占满列表列 + 右侧内容的整块空间，作独立管理面（列表 + 每行操作）。
+          // 与「消息 / 角色」正交——不渲染 Rail 列表列，故 Rail 的 tab 只会拿到 'chats' | 'roster'。
+          <TasksPane
+            onOpenTask={openTaskSession}
+            target={tasksTarget}
+            onTargetConsumed={() => setTasksTarget(null)}
           />
+        ) : (
+          <>
+            <Rail
+              tab={railTab}
+              sessions={railSessions}
+              personas={personas}
+              currentSessionId={currentSessionId}
+              sessionStates={sessionStates}
+              viewPersonaId={viewPersonaId}
+              onOpenThread={openThread}
+              onOpenProfile={openProfile}
+              onAddPersona={() => setEditor({ mode: 'create' })}
+              onAddPersonaByChat={addPersonaByChat}
+              onDeleteThread={deleteThread}
+              onDeletePersona={deletePersona}
+              onReorderPersonas={reorderPersonas}
+            />
+            {railTab === 'roster' ? (
+              // 「角色」tab：右侧显示选中角色的资料卡；未选中（或角色已删）则给出提示。
+              // 与「消息」tab 的右侧彼此独立——切 tab 即切右侧内容。
+              viewPersona ? (
+                <ProfileView
+                  persona={viewPersona}
+                  sessions={railSessions}
+                  onOpenThread={openThread}
+                  onStart={() => startWith(viewPersona.id)}
+                  onEdit={() => setEditor({ mode: 'edit', persona: viewPersona })}
+                />
+              ) : (
+                <RosterEmpty />
+              )
+            ) : railSessions.length === 0 ? (
+              <QuickStart personas={personas} onStart={startWith} />
+            ) : (
+              <Conversation
+                owner={owner}
+                currentSessionId={currentSessionId}
+                messages={messages}
+                streaming={streaming}
+                streamStatus={streamStatus}
+                focusRoot={currentBinding.focusRoot}
+                onOpenProfile={openProfile}
+                onSend={send}
+                onStop={stop}
+                onMount={mountFocus}
+                onAsk={respondAsk}
+                onPlan={respondPlan}
+                onOpenProposal={openProposal}
+                onOpenAutotask={openAutotask}
+                onDeleteTurns={deleteTurnsWithConfirm}
+                prefill={composerPrefill}
+                onPrefillConsumed={() => setComposerPrefill(null)}
+              />
+            )}
+          </>
         )}
       </div>
 
@@ -414,8 +455,8 @@ function IconRail({
   onTab,
   onOpenSettings
 }: {
-  tab: 'chats' | 'roster'
-  onTab: (t: 'chats' | 'roster') => void
+  tab: 'chats' | 'roster' | 'tasks'
+  onTab: (t: 'chats' | 'roster' | 'tasks') => void
   onOpenSettings: () => void
 }): React.JSX.Element {
   const { t } = useI18n()
@@ -441,6 +482,15 @@ function IconRail({
         onClick={() => onTab('roster')}
       >
         <Users size={20} />
+      </button>
+      <button
+        className={`cf-navbtn${tab === 'tasks' ? ' is-active' : ''}`}
+        title={t('cf.tabTasks')}
+        aria-label={t('cf.tabTasks')}
+        aria-current={tab === 'tasks'}
+        onClick={() => onTab('tasks')}
+      >
+        <AlarmClock size={20} />
       </button>
       <div className="cf-spacer" />
       <button
@@ -835,6 +885,9 @@ function ThreadRow({
 }): React.JSX.Element {
   const { t } = useI18n()
   const rel = useRelativeTime()
+  // 任务独占会话（sessionId = `task-…`）：行上打一枚静态「⏰ 定时」徽标以区别普通对话。
+  // 「有新运行未读」的动态红点复用既有 attention 通道（state.attention），不新造信号。
+  const isTask = session.id.startsWith('task-')
   return (
     <button
       className={`cf-thread${active ? ' is-active' : ''}`}
@@ -847,6 +900,11 @@ function ThreadRow({
         {/* 上：角色名与时间；下：首次对话标题。挂载目录不在此展示。 */}
         <div className="cf-thread__top">
           <span className="cf-thread__owner">{owner?.name ?? ''}</span>
+          {isTask && (
+            <span className="cf-thread__badge" title={t('cf.tabTasks')}>
+              <AlarmClock size={11} />
+            </span>
+          )}
           <span className="cf-thread__time">{rel(session.updatedAt)}</span>
         </div>
         <div className="cf-thread__title">{session.title || t('chat.untitled')}</div>
@@ -994,6 +1052,500 @@ function RosterEmpty(): React.JSX.Element {
   )
 }
 
+/* ============================ 定时任务标签页 ============================ */
+
+/** 分组展示顺序：进行中 → 已暂停 → 出错 → 已完成。 */
+const TASK_GROUP_ORDER: TaskStatus[] = ['active', 'paused', 'error', 'completed']
+const TASK_GROUP_KEY: Record<TaskStatus, string> = {
+  active: 'tasks.groupActive',
+  paused: 'tasks.groupPaused',
+  error: 'tasks.groupError',
+  completed: 'tasks.groupCompleted'
+}
+
+/** 绝对本地时间（简短）：用于「下次触发 / 上次运行」展示，跟随界面语言。 */
+function fmtAbs(ts: number, locale: 'zh-CN' | 'en'): string {
+  try {
+    return new Date(ts).toLocaleString(locale === 'en' ? 'en-US' : 'zh-CN', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return new Date(ts).toISOString()
+  }
+}
+
+/**
+ * 定时任务标签页——「左列表 + 右详情」双栏（对齐角色页）：TasksPane 作容器，持有当前选中任务的
+ * 本地态 viewTaskId；左侧 TasksRail 按状态分组列出任务（名称 + 人读日程），右侧 TaskDetail 展示选中
+ * 任务的完整信息与操作，未选中则给出空态。真值来自 useTasks（订阅 tasks:changed），所有变更委托主进程
+ * IPC；本面只读列表 + 触发命令，绝不在此创建任务（创建只能经对话确认名片）。
+ */
+function TasksPane({
+  onOpenTask,
+  target,
+  onTargetConsumed
+}: {
+  onOpenTask: (task: TaskRecord) => void
+  /** 外部导航意图（对话里「查看任务」）：非空则挂载即选中该任务；消费后经 onTargetConsumed 回清。 */
+  target: string | null
+  onTargetConsumed: () => void
+}): React.JSX.Element {
+  const { t, locale } = useI18n()
+  const { tasks, setStatus, runNow, remove } = useTasks()
+  const { providers } = useModels()
+  const { personas } = useExtensions()
+  const dialog = useDialog()
+
+  // 当前选中的任务（右侧显示其详情）。态存于本组件——切走再回本 tab 复位到未选中空态。
+  // 初值取外部 target：从对话「查看任务」切入时本组件恰新挂载，直接落在目标任务详情。
+  const [viewTaskId, setViewTaskId] = useState<string | null>(target)
+  // target 变化（再次从对话点「查看任务」而本组件未卸载时）→ 改选目标并回清父层意图。
+  useEffect(() => {
+    if (target) {
+      setViewTaskId(target)
+      onTargetConsumed()
+    }
+    // 仅以 target 为触发源：消费后父层置 null，不因 onTargetConsumed 引用变动而重跑。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target])
+
+  // 按状态分组，组内按下次触发升序（无下次的排后），再按创建时间降序。左列表据此分段。
+  const groups = useMemo(() => {
+    const g: Record<TaskStatus, TaskRecord[]> = {
+      active: [],
+      paused: [],
+      completed: [],
+      error: []
+    }
+    for (const task of tasks) g[task.status].push(task)
+    const byNext = (a: TaskRecord, b: TaskRecord): number => {
+      const an = a.nextRunAt ?? Number.POSITIVE_INFINITY
+      const bn = b.nextRunAt ?? Number.POSITIVE_INFINITY
+      if (an !== bn) return an - bn
+      return b.createdAt - a.createdAt
+    }
+    ;(Object.keys(g) as TaskStatus[]).forEach((k) => g[k].sort(byNext))
+    return g
+  }, [tasks])
+
+  // 选中任务从列表实时派生（引用被删/刷新即自动兜底为 null → 右侧回落空态，无需手动清选中）。
+  const viewTask = useMemo(
+    () => tasks.find((x) => x.id === viewTaskId) ?? null,
+    [tasks, viewTaskId]
+  )
+
+  // 人格名（引用已删则回落默认标签）。
+  const personaName = (id: string | null): string => {
+    if (!id) return t('tasks.personaDefault')
+    return personas.find((p) => p.id === id)?.name ?? t('tasks.personaDefault')
+  }
+  // 模型完整名（服务商 · 模型）；空 / 已删则回落默认标签。
+  const modelLabel = (ref: string | null): string => {
+    if (!ref) return t('tasks.modelDefault')
+    const idx = ref.indexOf(':')
+    if (idx > 0) {
+      const p = providers.find((x) => x.id === ref.slice(0, idx))
+      const m = p?.models.find((x) => x.id === ref.slice(idx + 1))
+      if (p && m) return `${p.name} · ${m.name}`
+    }
+    return ref
+  }
+
+  const doRunNow = (task: TaskRecord): void => {
+    void (async () => {
+      const res = await runNow(task.id)
+      if (!res.ok) {
+        await dialog.confirm({
+          title: t('tasks.runNowFailed'),
+          message: res.reason || '',
+          confirmText: t('common.close')
+        })
+      }
+    })()
+  }
+  const doDelete = (task: TaskRecord): void => {
+    const name = task.title || t('chat.untitled')
+    const heading = locale === 'en' ? `Delete task “${name}”?` : `删除定时任务 ${name} ？`
+    void (async () => {
+      const ok = await dialog.confirm({
+        title: heading,
+        message: t('tasks.deleteConfirm'),
+        variant: 'danger',
+        confirmText: t('cf.delete')
+      })
+      // 删除后不必手动清 viewTaskId：viewTask 由 tasks 派生，记录消失即回落空态。
+      if (ok) await remove(task.id)
+    })()
+  }
+
+  return (
+    <>
+      <TasksRail
+        groups={groups}
+        viewTaskId={viewTask?.id ?? null}
+        onSelect={setViewTaskId}
+        onDelete={doDelete}
+      />
+      {viewTask ? (
+        <TaskDetail
+          task={viewTask}
+          personaName={personaName(viewTask.auth.personaId)}
+          modelLabel={modelLabel(viewTask.auth.modelRef)}
+          onOpen={() => onOpenTask(viewTask)}
+          onSetStatus={(s) => void setStatus(viewTask.id, s)}
+          onRunNow={() => doRunNow(viewTask)}
+          onDelete={() => doDelete(viewTask)}
+        />
+      ) : (
+        <TasksEmpty hasTasks={tasks.length > 0} />
+      )}
+    </>
+  )
+}
+
+/**
+ * 日程人读摘要：按 schedule 签名 + 语言向主进程 schedule.ts 求权威描述，抽成 hook 供左列表行与
+ * 右详情共用。无效日程回落提示文案，请求失败回落空串（由调用方兜底显示 cron/at 原串）。
+ *
+ * 传 allowPast=true：这里展示的都是**已创建任务**（已完成的一次性任务其墙钟必然已过），
+ * 一次性时间过去但日程合法时仍取人读摘要，绝不把「已执行完毕」误标为「日程无效」。
+ */
+function useSchedulePreview(schedule: TaskSchedule): string {
+  const { t, locale } = useI18n()
+  const [desc, setDesc] = useState('')
+  const sig = `${schedule.kind}|${schedule.at ?? ''}|${schedule.cron ?? ''}|${schedule.tz}`
+  useEffect(() => {
+    let alive = true
+    void window.deva.tasks
+      .preview(schedule, locale, true)
+      .then((res) => {
+        if (!alive) return
+        setDesc(res.ok ? res.description : t('tasks.previewInvalid'))
+      })
+      .catch(() => {
+        if (alive) setDesc('')
+      })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig, locale])
+  return desc
+}
+
+/**
+ * 左列表列（对齐角色花名册 .cf-rail）：顶部搜索（按标题过滤），下方按状态分组列出任务行。
+ * tasks tab 下由本列 + 右详情共同占据列表列与右侧内容整块。
+ */
+function TasksRail({
+  groups,
+  viewTaskId,
+  onSelect,
+  onDelete
+}: {
+  groups: Record<TaskStatus, TaskRecord[]>
+  viewTaskId: string | null
+  onSelect: (id: string) => void
+  /** 右键菜单「删除」委托（含破坏性确认，实现于 TasksPane.doDelete）。 */
+  onDelete: (task: TaskRecord) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const [query, setQuery] = useState('')
+  // 右键菜单（对齐花名册/会话行）：定位光标处，携选中任务；点删除走 onDelete 的破坏性确认。
+  const [menu, setMenu] = useState<{ x: number; y: number; task: TaskRecord } | null>(null)
+  const q = query.trim().toLowerCase()
+  // 按标题过滤后的分组（空词返回全部）；同时算总数以区分「全空」与「搜索无结果」。
+  const shown = useMemo(() => {
+    const out = {} as Record<TaskStatus, TaskRecord[]>
+    let total = 0
+    ;(Object.keys(groups) as TaskStatus[]).forEach((k) => {
+      const list = q ? groups[k].filter((x) => (x.title || '').toLowerCase().includes(q)) : groups[k]
+      out[k] = list
+      total += list.length
+    })
+    return { out, total }
+  }, [groups, q])
+  const allEmpty = (Object.keys(groups) as TaskStatus[]).every((k) => groups[k].length === 0)
+
+  return (
+    <aside className="cf-rail">
+      <div className="cf-rail__top">
+        <div className="cf-search">
+          <Search className="cf-search__icon" size={14} />
+          <input
+            className="cf-search__input"
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t('tasks.searchPlaceholder')}
+            aria-label={t('tasks.searchPlaceholder')}
+          />
+          {query && (
+            <button
+              className="cf-search__clear"
+              title={t('common.close')}
+              aria-label={t('common.close')}
+              onClick={() => setQuery('')}
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="cf-list">
+        {allEmpty ? (
+          <div className="cf-empty">{t('tasks.paneEmpty')}</div>
+        ) : shown.total === 0 ? (
+          <div className="cf-empty">{t('cf.searchNoResults')}</div>
+        ) : (
+          TASK_GROUP_ORDER.filter((k) => shown.out[k].length > 0).map((k) => (
+            <section key={k} className="cf-trailgroup">
+              <div className="cf-tasks__grouphd">
+                {t(TASK_GROUP_KEY[k])}
+                <span className="cf-tasks__count">{shown.out[k].length}</span>
+              </div>
+              {shown.out[k].map((task) => (
+                <TaskRailRow
+                  key={task.id}
+                  task={task}
+                  active={viewTaskId === task.id}
+                  onClick={() => onSelect(task.id)}
+                  onContext={(e) => {
+                    e.preventDefault()
+                    setMenu({ x: e.clientX, y: e.clientY, task })
+                  }}
+                />
+              ))}
+            </section>
+          ))
+        )}
+      </div>
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={[
+            {
+              label: t('tasks.actDelete'),
+              icon: <Trash2 size={14} />,
+              danger: true,
+              onClick: () => onDelete(menu.task)
+            }
+          ]}
+        />
+      )}
+    </aside>
+  )
+}
+
+/** 左列表单个任务行（对齐 .cf-prow）：类型图标（按状态着色）| 标题 / 人读日程。 */
+function TaskRailRow({
+  task,
+  active,
+  onClick,
+  onContext
+}: {
+  task: TaskRecord
+  active: boolean
+  onClick: () => void
+  /** 右键唤起删除菜单（阻默认系统菜单，定位到光标）。 */
+  onContext: (e: React.MouseEvent) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const desc = useSchedulePreview(task.schedule)
+  return (
+    <button
+      className={`cf-trow${active ? ' is-active' : ''}`}
+      onClick={onClick}
+      onContextMenu={onContext}
+    >
+      <span className={`cf-trow__icon is-${task.status}`} title={t('tasks.cardTitle')}>
+        <CalendarClock size={16} />
+      </span>
+      <div className="cf-trow__main">
+        <div className="cf-trow__title">{task.title || t('chat.untitled')}</div>
+        <div className="cf-trow__sched">
+          <Clock size={11} />
+          <span className="cf-trow__schedtext">
+            {desc || task.schedule.cron || task.schedule.at || ''}
+          </span>
+        </div>
+      </div>
+    </button>
+  )
+}
+
+/**
+ * 右详情面（对齐角色资料卡 .cf-profile）：展示选中任务的类型/状态、日程与运行信息、任务指令、
+ * 运行历史，以及操作（打开会话·暂停/恢复·立即运行·删除）。日程人读摘要经 useSchedulePreview 权威求值。
+ */
+function TaskDetail({
+  task,
+  personaName,
+  modelLabel,
+  onOpen,
+  onSetStatus,
+  onRunNow,
+  onDelete
+}: {
+  task: TaskRecord
+  personaName: string
+  modelLabel: string
+  onOpen: () => void
+  onSetStatus: (status: TaskStatus) => void
+  onRunNow: () => void
+  onDelete: () => void
+}): React.JSX.Element {
+  const { t, locale } = useI18n()
+  const rel = useRelativeTime()
+  const desc = useSchedulePreview(task.schedule)
+
+  const lastRun = task.runs.length > 0 ? task.runs[task.runs.length - 1] : undefined
+  const lastKey =
+    lastRun?.status === 'ok'
+      ? 'tasks.runOk'
+      : lastRun?.status === 'skipped'
+        ? 'tasks.runSkipped'
+        : 'tasks.runError'
+  const runKey = (s: 'ok' | 'error' | 'skipped'): string =>
+    s === 'ok' ? 'tasks.runOk' : s === 'skipped' ? 'tasks.runSkipped' : 'tasks.runError'
+  // 运行历史按时间降序（最近在上）。
+  const history = useMemo(() => [...task.runs].reverse(), [task.runs])
+
+  return (
+    <main className="cf-conv">
+      <DragBar />
+      <div className="cf-profile">
+        <div className="cf-profile__inner cf-tdetail">
+          <div className={`cf-tdetail__icon is-${task.status}`}>
+            <CalendarClock size={30} />
+          </div>
+          <div className="cf-profile__name">{task.title || t('chat.untitled')}</div>
+          <div className="cf-tdetail__tags">
+            <span className={`cf-tdetail__status is-${task.status}`}>
+              {t(TASK_GROUP_KEY[task.status])}
+            </span>
+          </div>
+
+          <div className="cf-profile__meta">
+            <div className="cf-profile__row">
+              <span className="cf-profile__k">{t('tasks.fSchedule')}</span>
+              <span className="cf-profile__v">
+                {desc || task.schedule.cron || task.schedule.at || ''}
+              </span>
+            </div>
+            {task.status === 'active' && (
+              <div className="cf-profile__row">
+                <span className="cf-profile__k">{t('tasks.previewNext')}</span>
+                <span className="cf-profile__v">
+                  {task.nextRunAt ? fmtAbs(task.nextRunAt, locale) : t('tasks.nextNever')}
+                </span>
+              </div>
+            )}
+            <div className="cf-profile__row">
+              <span className="cf-profile__k">{t('tasks.lastRun')}</span>
+              <span className="cf-profile__v">
+                {task.lastRunAt ? (
+                  <>
+                    {rel(task.lastRunAt)}
+                    <span
+                      className={`cf-runbadge is-${lastRun?.status ?? 'error'}`}
+                      title={lastRun?.error || undefined}
+                    >
+                      {t(lastKey)}
+                    </span>
+                  </>
+                ) : (
+                  t('tasks.lastNever')
+                )}
+              </span>
+            </div>
+            <div className="cf-profile__row">
+              <span className="cf-profile__k">{t('tasks.fPersona')}</span>
+              <span className="cf-profile__v">{personaName}</span>
+            </div>
+            <div className="cf-profile__row">
+              <span className="cf-profile__k">{t('tasks.fModel')}</span>
+              <span className="cf-profile__v">{modelLabel}</span>
+            </div>
+          </div>
+
+          <div className="cf-tdetail__section">
+            <div className="cf-profile__convs-label">{t('tasks.fPrompt')}</div>
+            <div className="cf-tdetail__prompt">{task.prompt}</div>
+          </div>
+
+          <div className="cf-tdetail__actions">
+            <button className="cf-tdetail__act cf-tdetail__act--primary" onClick={onOpen}>
+              <MessageCircle size={15} /> {t('tasks.actOpen')}
+            </button>
+            {task.status === 'active' ? (
+              <button className="cf-tdetail__act" onClick={() => onSetStatus('paused')}>
+                <Pause size={15} /> {t('tasks.actPause')}
+              </button>
+            ) : task.status === 'completed' ? null : (
+              // completed 为一次性任务已触发的终态（nextRunAt=null），置回 active 不产生任何后续触发，
+              // 故不给「恢复」按钮；仅 paused / error 可恢复调度。
+              <button className="cf-tdetail__act" onClick={() => onSetStatus('active')}>
+                <RotateCcw size={15} /> {t('tasks.actResume')}
+              </button>
+            )}
+            <button className="cf-tdetail__act" onClick={onRunNow}>
+              <Play size={15} /> {t('tasks.actRunNow')}
+            </button>
+            <button className="cf-tdetail__act cf-tdetail__act--danger" onClick={onDelete}>
+              <Trash2 size={15} /> {t('tasks.actDelete')}
+            </button>
+          </div>
+
+          <div className="cf-tdetail__section">
+            <div className="cf-profile__convs-label">{t('tasks.runHistory')}</div>
+            {history.length === 0 ? (
+              <div className="cf-empty">{t('tasks.historyEmpty')}</div>
+            ) : (
+              history.map((run, i) => (
+                <div key={i} className="cf-trun">
+                  <span className="cf-trun__time">{fmtAbs(run.firedAt, locale)}</span>
+                  <span className={`cf-runbadge is-${run.status}`} title={run.error || undefined}>
+                    {t(runKey(run.status))}
+                  </span>
+                  {(run.summary || run.error) && (
+                    <span className="cf-trun__msg">{run.summary || run.error}</span>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    </main>
+  )
+}
+
+/** tasks tab 右侧空态（未选中任务时）：对齐角色页 RosterEmpty。 */
+function TasksEmpty({ hasTasks }: { hasTasks: boolean }): React.JSX.Element {
+  const { t } = useI18n()
+  return (
+    <main className="cf-conv">
+      <DragBar />
+      <div className="cf-quick">
+        <div className="cf-quick__inner">
+          <div className="cf-quick__title">{t('tasks.paneTitle')}</div>
+          <div className="cf-quick__hint">
+            {hasTasks ? t('tasks.detailEmpty') : t('tasks.paneHint')}
+          </div>
+        </div>
+      </div>
+    </main>
+  )
+}
+
 /**
  * 把展示消息按「轮」分组为连续区间（to 独占）。turn>=0 为可删的对话轮（0 基，每遇一条 user 消息 +1）；
  * turn=-1 为首条 user 之前的前言（压缩摘要 / 历史提示气泡等，不可删）。turn 值与主进程 turnRanges 同源
@@ -1018,16 +1570,14 @@ function Conversation({
   streaming,
   streamStatus,
   focusRoot,
-  permMode,
   onOpenProfile,
   onSend,
   onStop,
   onMount,
-  onPermission,
   onAsk,
   onPlan,
-  onPermMode,
   onOpenProposal,
+  onOpenAutotask,
   onDeleteTurns,
   prefill,
   onPrefillConsumed
@@ -1038,16 +1588,15 @@ function Conversation({
   streaming: boolean
   streamStatus: { elapsedSec: number; reconnecting: { attempt: number; max: number } | null }
   focusRoot: string | null
-  permMode: PermMode
   onOpenProfile: (id: string) => void
   onSend: (text: string, attachments?: SendAttachment[]) => Promise<void>
   onStop: () => void
   onMount: (path: string | null) => void
-  onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
   onAsk: (key: string, answers: string[]) => void
   onPlan: (key: string, decision: 'approve' | 'keep') => void
-  onPermMode: (mode: PermMode) => void
   onOpenProposal: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
+  /** created 态定时任务名片「打开任务会话」。 */
+  onOpenAutotask: (taskId: string) => void
   /** 按「轮」删除选中轮次（含破坏性确认）；返回是否已删（true=退出选择态并清空选择）。 */
   onDeleteTurns: (turnIndices: number[]) => Promise<boolean>
   /** 输入框预填（一次性、不发送）；null 表示无待预填。 */
@@ -1185,10 +1734,10 @@ function Conversation({
       owner={owner}
       active={!selecting && streaming && i === messages.length - 1}
       dataTurn={turn}
-      onPermission={onPermission}
       onAsk={onAsk}
       onPlan={onPlan}
       onOpenProposal={onOpenProposal}
+      onOpenAutotask={onOpenAutotask}
     />
   )
 
@@ -1312,12 +1861,10 @@ function Conversation({
         <Composer
           owner={owner}
           streaming={streaming}
-          permMode={permMode}
           focusRoot={focusRoot}
           onMount={onMount}
           onSend={handleSend}
           onStop={onStop}
-          onPermMode={onPermMode}
           showJump={!atBottom && messages.length > 0}
           onJump={jumpToLatest}
           prefill={prefill}
@@ -1334,20 +1881,20 @@ function ConvMessage({
   owner,
   active,
   dataTurn,
-  onPermission,
   onAsk,
   onPlan,
-  onOpenProposal
+  onOpenProposal,
+  onOpenAutotask
 }: {
   msg: ChatMessage
   owner?: Persona
   active: boolean
   /** 该消息所属的对话轮下标（0 基）；标注在根节点上，供右键菜单定位「删除此轮」。前言/未知为 undefined。 */
   dataTurn?: number
-  onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
   onAsk: (key: string, answers: string[]) => void
   onPlan: (key: string, decision: 'approve' | 'keep') => void
   onOpenProposal: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
+  onOpenAutotask: (taskId: string) => void
 }): React.JSX.Element {
   const { t } = useI18n()
   if (msg.role === 'user') {
@@ -1389,10 +1936,10 @@ function ConvMessage({
               key={i}
               block={b}
               thinkingDone={!(active && i === msg.blocks.length - 1)}
-              onPermission={onPermission}
               onAsk={onAsk}
               onPlan={onPlan}
               onOpenProposal={onOpenProposal}
+              onOpenAutotask={onOpenAutotask}
             />
           ))}
         </div>
@@ -1404,12 +1951,10 @@ function ConvMessage({
 function Composer({
   owner,
   streaming,
-  permMode,
   focusRoot,
   onMount,
   onSend,
   onStop,
-  onPermMode,
   showJump,
   onJump,
   prefill,
@@ -1417,12 +1962,10 @@ function Composer({
 }: {
   owner?: Persona
   streaming: boolean
-  permMode: PermMode
   focusRoot: string | null
   onMount: (path: string | null) => void
   onSend: (text: string, attachments?: SendAttachment[]) => Promise<void>
   onStop: () => void
-  onPermMode: (mode: PermMode) => void
   showJump: boolean
   onJump: () => void
   prefill: { text: string; nonce: number } | null
@@ -1574,7 +2117,6 @@ function Composer({
                 </>
               )}
             </button>
-            <PermPicker permMode={permMode} onPermMode={onPermMode} />
             <ModelPicker />
             {/* 流式输出时发送键变「停止」（点击中断本会话当前回合）：只放图标，按钮宽度不变、两态不跳动。 */}
             {streaming ? (
@@ -1595,63 +2137,6 @@ function Composer({
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-/**
- * 权限模式选择器（按项目/按当前受信根即时持久化）。复用 ChatView 同款 app.css 类
- * （perm-pick / chip / model-pick__backdrop / perm-pick__menu），零新增 CSS、视觉与旧壳一致。
- * 菜单向上弹出（.perm-pick__menu 的 bottom:calc(100%+8px)），锚在输入区工具条恰好在屏内。
- */
-function PermPicker({
-  permMode,
-  onPermMode
-}: {
-  permMode: PermMode
-  onPermMode: (mode: PermMode) => void
-}): React.JSX.Element {
-  const { t } = useI18n()
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="perm-pick">
-      <button
-        className={`chip${permMode === 'auto' ? ' is-auto' : ''}${open ? ' is-open' : ''}`}
-        type="button"
-        title={t('chat.perm.menuTitle')}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {PERM_MODES.find((p) => p.mode === permMode)?.icon}
-        <span className="chip__label">{t(`chat.perm.mode.${permMode}`)}</span>
-        <ChevronDown size={13} className="chip__caret" />
-      </button>
-      {open && (
-        <>
-          <div className="model-pick__backdrop" onClick={() => setOpen(false)} />
-          <div className="perm-pick__menu" role="menu">
-            <div className="perm-pick__title">{t('chat.perm.menuTitle')}</div>
-            {PERM_MODES.map(({ mode, icon }) => (
-              <button
-                key={mode}
-                role="menuitemradio"
-                aria-checked={mode === permMode}
-                className={`perm-pick__item${mode === permMode ? ' is-active' : ''}`}
-                onClick={() => {
-                  onPermMode(mode)
-                  setOpen(false)
-                }}
-              >
-                <span className="perm-pick__icon">{icon}</span>
-                <span className="perm-pick__text">
-                  <span className="perm-pick__name">{t(`chat.perm.mode.${mode}`)}</span>
-                  <span className="perm-pick__desc">{t(`chat.perm.mode.${mode}Desc`)}</span>
-                </span>
-                {mode === permMode && <Check size={15} className="perm-pick__check" />}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
     </div>
   )
 }
@@ -2236,6 +2721,17 @@ function Settings({ onClose }: { onClose: () => void }): React.JSX.Element {
 function GeneralPane(): React.JSX.Element {
   const { t, locale, setLocale } = useI18n()
   const { mode, setMode } = useTheme()
+  // 关窗驻留托盘：仅 Windows 呈现（macOS/Linux 关窗语义不同，主进程亦仅 win32 默认驻留）。
+  const isWin = window.deva?.platform === 'win32'
+  const [closeToTray, setCloseToTray] = useState<boolean>(() => {
+    const v = window.deva?.config?.getSync?.().closeToTray
+    return typeof v === 'boolean' ? v : true // win32 默认驻留（与主进程 close 判定一致）
+  })
+  const toggleTray = (): void => {
+    const next = !closeToTray
+    setCloseToTray(next)
+    void window.deva?.config?.set?.({ closeToTray: next })
+  }
   return (
     <>
       <h2 className="cf-pane__title">{t('settings.general')}</h2>
@@ -2266,6 +2762,15 @@ function GeneralPane(): React.JSX.Element {
             ]}
           />
         </div>
+        {isWin && (
+          <div className="cf-set__row">
+            <div className="cf-set__label">
+              {t('settings.closeToTray')}
+              <span className="cf-set__hint">{t('settings.closeToTrayDesc')}</span>
+            </div>
+            <Toggle on={closeToTray} onChange={toggleTray} />
+          </div>
+        )}
       </div>
     </>
   )

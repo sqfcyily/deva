@@ -2,13 +2,6 @@ import { ipcMain, type BrowserWindow } from 'electron'
 import { streamChat } from '../providers'
 import type { ContentPart, Message, StopReason, ToolSpec } from '../providers/types'
 import {
-  evaluate,
-  evaluateEdit,
-  rememberSession,
-  rememberSessionExec,
-  clearSession
-} from './permissions'
-import {
   executeTool,
   isMcpTool,
   writeTargetPath,
@@ -18,16 +11,19 @@ import {
   type ToolContext,
   type ToolResult
 } from './tools'
+import { isDangerousCommand } from './exec-policy'
 import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
 import { enabledAgentSummaries, getEnabledAgentByName, type AgentRecord } from './agents'
 import { enabledPersonas, getPersona } from './personas'
-import { resolveModelRef } from './model-resolve'
+import { resolveDefaultModel, resolveModelRef, resolveModelRefOrNull } from './model-resolve'
+import { sealedDecision } from './sealed'
+import { createTask, type CreateTaskResult } from './tasks'
+import type { TaskCreateInput, TaskRecord } from './tasks-types'
 import { dispatchMcpTool, getMcpToolSpecs } from './mcp'
 import {
   isInsideRoot,
   isProtectedPath,
   isSensitivePath,
-  isWithinDir,
   trustRoot,
   untrustRoot
 } from './fs-guard'
@@ -37,7 +33,6 @@ import {
   getSession,
   deleteSession as deleteStoredSession,
   listSessions,
-  projectKey,
   save as saveProject,
   type ChatSessionMeta,
   type StoredNotice,
@@ -82,7 +77,8 @@ interface ChatSendRequest {
   personaId?: string
   /**
    * 本对话的聚焦工作区绝对路径；null/缺省 = 全机通用助手（无聚焦）。
-   * 与 workspaceRoot（分桶键）解耦：新壳恒传 workspaceRoot=null 落 no-project 桶，聚焦范围由此承载。
+   * 「挂载目录」是纯粹的对话属性：决定聚焦工作区、终端 cwd、权限作用域键，与「对话存哪里/列不列」无关
+   * （对话已无分桶概念）。
    */
   focusRoot?: string | null
   /**
@@ -132,6 +128,57 @@ function normalizeAgentDraft(input: unknown): AgentDraft {
   }
 }
 
+/**
+ * 定时任务确认名片草稿：create_task 原始参数归一化后的形状（名片/编辑器消费）。
+ * schedule 扁平化为恒有 at/cron/tz 字符串（不适用者为空串），便于编辑器双向绑定；tz 空 = 创建时按本地时区补。
+ * 授权信封（personaId/modelRef）不由模型提议——由用户在名片里议定，此草稿只承载模型的建议部分。
+ */
+export interface AutotaskDraft {
+  title: string
+  prompt: string
+  schedule: { kind: 'once' | 'recurring'; at: string; cron: string; tz: string }
+}
+
+/**
+ * chat:resolve-autotask 的返回：create 成功带已建任务 id；dismiss 成功；失败带稳定错误码（渲染层本地化）。
+ * 错误码含 createTask 的全部码 + 编排层的 no-session / no-input。
+ */
+export type ResolveAutotaskResult =
+  | { ok: true; status: 'created'; taskId: string }
+  | { ok: true; status: 'dismissed' }
+  | {
+      ok: false
+      error:
+        | 'invalid-input'
+        | 'invalid-tz'
+        | 'invalid-cron'
+        | 'invalid-once'
+        | 'expired'
+        | 'no-session'
+        | 'no-input'
+    }
+
+/** 归一化 create_task 的原始参数为定时任务草稿。日程校验/时区补全留待创建时（createTask + 渲染层）。 */
+function normalizeAutotaskDraft(input: unknown): AutotaskDraft {
+  const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+  const sched = (a.schedule && typeof a.schedule === 'object' ? a.schedule : {}) as Record<
+    string,
+    unknown
+  >
+  const schedKind = sched.kind === 'once' ? 'once' : 'recurring'
+  return {
+    title: str(a.title).trim(),
+    prompt: str(a.prompt),
+    schedule: {
+      kind: schedKind,
+      at: str(sched.at).trim(),
+      cron: str(sched.cron).trim(),
+      tz: str(sched.tz).trim()
+    }
+  }
+}
+
 /** 重建历史用的展示消息（主进程从 provider Message[] 归约，去掉 base64 负载）。 */
 type DisplayBlock =
   | { kind: 'text'; text: string }
@@ -145,6 +192,17 @@ type DisplayBlock =
   | { kind: 'error'; message: string }
   /** 角色名片：propose_agent 的提议。status 终态（accepted/rejected）由 StoredSession.proposals 边车持久化。 */
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
+  /**
+   * 定时任务确认名片：create_task 的提议。status 终态（created/dismissed）由 StoredSession.autotasks 边车持久化，
+   * taskId 记已创建任务 id（供名片「打开该任务会话」跳转）。pending = 待用户在名片里议定授权后创建。
+   */
+  | {
+      kind: 'autotaskcard'
+      id: string
+      draft: AutotaskDraft
+      status: 'pending' | 'created' | 'dismissed'
+      taskId?: string
+    }
   /**
    * ask_user 询问：重建为问答卡。问题从 tool_use 入参重解析，答案由 StoredSession.asks 边车还原。
    * answers 有值（含空数组）= 已答/已取消（渲染为「已答态·逐题回述」，不可交互）；
@@ -181,7 +239,8 @@ function toDisplayMessages(
   notices: StoredNotice[] = [],
   asks: Record<string, { answers: string[] | null }> = {},
   summaries: Record<string, string> = {},
-  plans: Record<string, { decision: 'approve' | 'keep' | null }> = {}
+  plans: Record<string, { decision: 'approve' | 'keep' | null }> = {},
+  autotasks: Record<string, { status: 'created' | 'dismissed'; taskId?: string }> = {}
 ): DisplayMessage[] {
   const out: DisplayMessage[] = []
   let lastAssistant: Extract<DisplayMessage, { role: 'assistant' }> | null = null
@@ -228,6 +287,14 @@ function toDisplayMessages(
               id: p.id,
               draft: normalizeAgentDraft(p.input),
               status: proposals[p.id] ?? 'pending'
+            })
+          else if (p.name === 'create_task')
+            blocks.push({
+              kind: 'autotaskcard',
+              id: p.id,
+              draft: normalizeAutotaskDraft(p.input),
+              status: autotasks[p.id]?.status ?? 'pending',
+              taskId: autotasks[p.id]?.taskId
             })
           else if (p.name === 'ask_user')
             blocks.push({
@@ -379,6 +446,7 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
     s.asks = {}
     s.summaries = {}
     s.plans = {}
+    s.autotasks = {}
     s.updatedAt = Date.now()
     return
   }
@@ -414,13 +482,9 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
   s.asks = prune(s.asks)
   s.summaries = prune(s.summaries)
   s.plans = prune(s.plans)
+  // autotasks 边车随名片 tool_use 存活；删除对话轮不删已创建的定时任务本体（任务独立生命周期，经「定时任务」页管理）。
+  s.autotasks = prune(s.autotasks)
   s.updatedAt = Date.now()
-}
-
-interface PermissionResponse {
-  key: string
-  decision: 'allow' | 'deny'
-  remember: boolean
 }
 
 /** ask_user 的候选项（description 为可选补充说明）。 */
@@ -588,21 +652,6 @@ export type ChatStreamEvent =
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   /** 计划审阅：exit_plan 提交计划，暂停循环等用户批准（approve=批准后按计划执行 / keep=继续完善 / 取消）。 */
   | { type: 'plan_review'; key: string; plan: string }
-  | {
-      type: 'permission_request'
-      key: string
-      toolName: string
-      args: unknown
-      /** 「项目外访问」授权：被访问目标的完整绝对路径（供权限卡显式展示越界路径）。 */
-      outsideRoot?: string
-      /** 「项目外访问」授权：点「信任目录」将加入受信根的目录。 */
-      trustDir?: string
-      /** Tier-2 保护目录（.git/.claude/.vscode）写入：即便 auto/acceptEdits 也逐次授权，仅「仅此次/拒绝」。 */
-      protectedWrite?: boolean
-      /** depth>0 + agent：该权限请求来自某子智能体（权限卡照常浮出，可附子智能体标签）。 */
-      depth?: number
-      agent?: string
-    }
   | { type: 'usage'; input: number; output: number }
   /** 连接中断、正在自动重连（transient；attempt/max 供 UI 显示进度）。 */
   | { type: 'reconnecting'; attempt: number; max: number }
@@ -639,7 +688,6 @@ function delay(ms: number, signal: AbortSignal): Promise<boolean> {
 }
 
 const activeTurns = new Map<string, AbortController>()
-const pending = new Map<string, { resolve: (r: { decision: 'allow' | 'deny'; remember: boolean }) => void; turnId: string }>()
 /** 待用户答复的 ask_user 询问（键 → resolve + 所属轮次）；answers 为 null 表示取消/中止。 */
 const pendingAsk = new Map<string, { resolve: (answers: string[] | null) => void; turnId: string }>()
 /** 待用户批准的 exit_plan 计划审阅（键 → resolve + 所属轮次）；null 表示取消/中止。 */
@@ -652,6 +700,28 @@ let idCounter = 0
 function genId(prefix: string): string {
   idCounter = (idCounter + 1) % 1_000_000
   return `${prefix}_${Date.now().toString(36)}_${idCounter.toString(36)}`
+}
+
+/** 定时任务密封执行一次的结果（返回给 scheduler 以构造运行记录）。 */
+export interface ScheduledTurnResult {
+  stopReason: StopReason
+  /** 末轮可见文本（供 scheduler 派生运行摘要）。 */
+  text: string
+  /** 失败原因（stopReason==='error' 时）。 */
+  errorMessage?: string
+}
+
+/**
+ * 定时任务密封执行器（模块级桥接）。runScheduledTurn 是 registerChatIpc 内的闭包（捕获 emit /
+ * activeTurns / runAgentLoop 等），而 scheduler.ts 在别处 import——用此模块级引用桥接：
+ * registerChatIpc 一运行即挂上，scheduler 经 runScheduledTask 跨模块直调。未就绪即抛错，
+ * 由 scheduler 捕获记一次错误运行（绝不崩）。
+ */
+let scheduledRunner: ((task: TaskRecord) => Promise<ScheduledTurnResult>) | null = null
+export function runScheduledTask(task: TaskRecord): Promise<ScheduledTurnResult> {
+  if (!scheduledRunner)
+    return Promise.reject(new Error('chat runtime 尚未就绪（registerChatIpc 未运行）'))
+  return scheduledRunner(task)
 }
 
 /**
@@ -693,6 +763,38 @@ function systemPrompt(
     lines.push(
       '───────── 角色设定 ─────────',
       '以下是本次对话的角色设定（身份、性格、语气、行文风格、偏好）。在不违反上述规范的前提下，请在本次对话中始终以该角色的身份与风格回应：',
+      ...personas.map((p) => `【${p.name}】\n${p.prompt.trim()}`)
+    )
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 密封无头执行（定时任务）的系统提示词：与 systemPrompt 同构，但**去掉一切「等用户」的指引**。
+ * 定时任务在无人在场时自动触发，绝不能停下来等确认——故不提 ask_user / exit_plan / 授权按钮，
+ * 改为明确告知：只用当前已授权的工具，基于合理默认自主完成，受限处在结论中说明，不要反问、不要等待。
+ */
+function sealedSystemPrompt(
+  workspaceRoot: string | null,
+  personas: { name: string; prompt: string }[] = []
+): string {
+  const loc = workspaceRoot
+    ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
+    : '本任务无固定工作目录；如需读写文件请使用**绝对路径**。'
+  const lines = [
+    personas.length
+      ? '你运行在 Deva 桌面应用中，正在**自动执行一个用户预先设定的定时任务**（无人实时在场）。以下是你必须始终遵守的规范；你的身份、性格与行文风格由后文的「角色设定」决定。'
+      : '你是 Deva，运行在用户桌面上的 AI 助手，正在**自动执行一个用户预先设定的定时任务**（无人实时在场）。以下是你必须始终遵守的规范。',
+    `【环境】${loc}`,
+    '【任务】按本次指令收集/整理信息或执行操作，给出条理清晰的结果；如需外部信息可使用 web_fetch 等工具。若是提醒类指令，直接给出清晰简洁的提醒正文（用户会通过系统通知看到）。',
+    '【自动执行】本次为无人值守的自动执行：你**无法**向用户提问、征求授权或提交计划审阅（ask_user / exit_plan 均不可用，调用它们不会有人回应）。请基于合理默认自主完成任务，一次性给出最终结果，不要反问、不要停下等待确认。',
+    '【工具与权限】读写文件、执行命令、调用已启用的技能与 MCP 工具默认均可使用，无需授权。唯有凭据/系统等敏感目录（Tier-1）、受保护目录（.git/.claude/.vscode）与危险命令会被安全策略拒绝——若某次调用被拒，请改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。',
+    '【产出】用简洁、结构清晰的简体中文（除非角色设定另有风格）直接给出最终结果，作为本次任务的成果记录在对话中。'
+  ]
+  if (personas.length) {
+    lines.push(
+      '───────── 角色设定 ─────────',
+      '以下是本任务的角色设定（身份、性格、语气、行文风格、偏好）。在不违反上述规范的前提下，请以该角色的身份与风格给出结果：',
       ...personas.map((p) => `【${p.name}】\n${p.prompt.trim()}`)
     )
   }
@@ -756,14 +858,16 @@ function buildSubagentTool(agents: { name: string; description: string }[]): Too
  * 白名单只**收窄**可见工具；被保留的每个工具调用仍照常过同一道权限闸门（无提权）。
  */
 function buildSubagentTools(allowlist: string[]): ToolSpec[] {
-  // create_skill / propose_agent / create_mcp 亦排除：子智能体不得创建技能/角色/MCP 服务（它们在 toolSpecs 基表里，须显式剔除）。
+  // create_skill / propose_agent / create_mcp / create_task 亦排除：子智能体不得创建技能/角色/MCP 服务/定时任务
+  //（它们在 toolSpecs 基表里，须显式剔除）。
   const EXCLUDED = new Set([
     'ask_user',
     'skill',
     'run_subagent',
     'create_skill',
     'propose_agent',
-    'create_mcp'
+    'create_mcp',
+    'create_task'
   ])
   const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
   if (!allowlist || allowlist.length === 0) return builtins
@@ -771,6 +875,30 @@ function buildSubagentTools(allowlist: string[]): ToolSpec[] {
   const pickedBuiltins = builtins.filter((t) => allow.has(t.name))
   const pickedMcp = getMcpToolSpecs().filter((t) => allow.has(t.name))
   return [...pickedBuiltins, ...pickedMcp]
+}
+
+/**
+ * 密封无头执行（定时任务）的可见工具表：**除交互/创建类外全量放开**（与交互对话同策略）。
+ * - 内置工具剔除交互/创建类（ask_user 无人应答；run_subagent 无法在无人值守下监管；
+ *   create_skill/propose_agent/create_mcp/create_task 不得在自动执行中创建持久实体；
+ *   exit_plan 无用户可批准计划）后**全部保留**（read/write/exec 均在），不再有白名单收窄。
+ * - **追加**已启用技能的 `skill` 工具（技能加载 headless-安全，用户明确要求「包含 skill」）与
+ *   **全部已连接 MCP 工具**（用户明确要求「包含 mcp」）。
+ * - 每个保留的调用仍由 sealedDecision 的安全地板（Tier-1/Tier-2/危险命令）兜底。
+ */
+function buildSealedTools(skills: { name: string; description: string }[]): ToolSpec[] {
+  const EXCLUDED = new Set([
+    'ask_user',
+    'run_subagent',
+    'create_skill',
+    'propose_agent',
+    'create_mcp',
+    'create_task',
+    'exit_plan'
+  ])
+  const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
+  const skillTool = buildSkillTool(skills)
+  return [...builtins, ...(skillTool ? [skillTool] : []), ...getMcpToolSpecs()]
 }
 
 /** 子智能体系统提示词：固定的隔离/约束说明 + 该子智能体自身的职责正文（prompt）。 */
@@ -794,8 +922,6 @@ function buildSubagentSystem(def: AgentRecord, workspaceRoot: string | null): st
 interface AgentLoopArgs {
   turnId: string
   sessionId: string
-  /** 权限模式键：按**有效根**（focusRoot ?? workspaceRoot）取持久 ask/acceptEdits/auto 模式；子轮继承父轮。 */
-  key: string
   /** 对话历史（原地追加 assistant / tool_result）。 */
   history: Message[]
   /** 系统提示词（本轮定格，逐步复用同一字符串）。 */
@@ -812,6 +938,12 @@ interface AgentLoopArgs {
   maxSteps: number
   /** 递归深度：0=主轮，1=子智能体（限制再派生；Phase 4 用）。 */
   depth: number
+  /**
+   * 是否交互式执行。true=常规对话（走权限闸门，可弹确认 / ask_user / exit_plan）；
+   * false=定时任务密封无头执行（改走 sealedDecision 纯策略，全程零弹窗、绝不挂起）。
+   * 既有调用方一律传 true；仅 runScheduledTurn 传 false。
+   */
+  interactive: boolean
   /** 是否允许 ask_user 单选问询（主轮 true；子轮 false）。 */
   allowAskUser: boolean
   /** 是否允许派生子智能体（主轮 true；子轮 false，杜绝子派生子；Phase 4 用）。 */
@@ -842,29 +974,6 @@ interface AgentLoopArgs {
 export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   function emit(turnId: string, sessionId: string, event: ChatStreamEvent): void {
     getWindow()?.webContents.send('chat:event', { turnId, sessionId, event })
-  }
-
-  function requestPermission(
-    turnId: string,
-    sessionId: string,
-    toolName: string,
-    args: unknown,
-    outside?: { outsideRoot: string; trustDir: string },
-    meta?: { depth: number; agent?: string },
-    opts?: { protectedWrite?: boolean }
-  ): Promise<{ decision: 'allow' | 'deny'; remember: boolean }> {
-    const key = genId('perm')
-    emit(turnId, sessionId, {
-      type: 'permission_request',
-      key,
-      toolName,
-      args,
-      outsideRoot: outside?.outsideRoot,
-      trustDir: outside?.trustDir,
-      protectedWrite: opts?.protectedWrite,
-      ...(meta ?? {})
-    })
-    return new Promise((resolve) => pending.set(key, { resolve, turnId }))
   }
 
   /** 抛出一个或多个问题、暂停循环等用户一次性作答（不过权限闸门，恒放行执行）。 */
@@ -904,7 +1013,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const {
       turnId,
       sessionId,
-      key,
       history,
       system,
       tools,
@@ -913,6 +1021,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       controller,
       maxSteps,
       depth,
+      interactive,
       allowAskUser,
       allowSubagents,
       skillSummaries,
@@ -1025,12 +1134,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // exit_plan 特判：模型提交计划、暂停循环等用户批准。不过权限闸门、**不授予任何能力**——
         // 批准仅让循环继续（工具集本就完整），此后每个真实工具调用仍照常过同一道权限闸门。
         if (tc.name === 'exit_plan') {
-          if (depth > 0) {
-            // 子智能体不参与计划审阅（exit_plan 未提供给它，此为幻觉调用兜底）：指导性 no-op。
+          if (depth > 0 || !interactive) {
+            // 子智能体 / 密封无头执行不参与计划审阅（无用户在场可批准；此为幻觉调用兜底）：指导性 no-op。
             resultParts.push({
               type: 'tool_result',
               toolUseId: tc.id,
-              content: '子智能体无需 exit_plan；请直接完成分配的任务。',
+              content: interactive
+                ? '子智能体无需 exit_plan；请直接完成分配的任务。'
+                : '定时任务在自动执行中，无需也无法进行计划审阅；请直接完成本次任务。',
               isError: true
             })
             continue
@@ -1149,7 +1260,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               const sub = await runAgentLoop({
                 turnId,
                 sessionId,
-                key,
                 // 隔离历史：只带本次任务描述，不继承父对话（避免上下文串味与预算膨胀）。
                 history: [{ role: 'user', content: prompt }],
                 system: buildSubagentSystem(def, ctx.workspaceRoot),
@@ -1160,6 +1270,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
                 controller,
                 maxSteps: 15,
                 depth: depth + 1,
+                // 子智能体仍在用户在场时运行，其每次工具调用照常过交互权限闸门。
+                interactive: true,
                 allowAskUser: false,
                 allowSubagents: false,
                 skillSummaries: [],
@@ -1198,93 +1310,72 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           continue
         }
 
-        // 权限闸门（按工具类别分流）：
-        //  · edit（write_file/edit_file）：先算目标绝对路径，四档判定——
-        //      Tier-1 硬底拒绝 / Tier-2 保护目录逐次授权 / 项目外越界卡 / 项目内按模式判定。
-        //  · read/exec/mcp：无路径越界概念（read 可及任意「非敏感」目录，Tier-1 在工具内兜底）。
+        // 权限闸门（纯同步策略，零弹框）：所有工具默认放行，唯有三类不可协商的安全地板**静默拒绝**
+        // （不弹窗、不挂起，回灌清晰 tool_result 让模型改道）——
+        //  · edit：Tier-1 敏感目录（凭据/系统/~/.deva）拒绝、Tier-2 保护目录（.git/.claude/.vscode）拒绝；
+        //          其余目标（含工作区外）一律放行，越界写入仅此次临时受信、finally 撤销。
+        //  · exec：危险命令（rm -rf 等）拒绝；其余放行。
+        //  · read / mcp：一律放行（read 的 Tier-1 仍由 tools 内 resolveReadPath 兜底拒绝）。
+        // 交互轮与密封轮统一到这套策略；密封轮另经 sealedDecision（同源地板 + 排除交互/创建类工具）。
         const cat = toolCategory(tc.name)
 
         let allowed: boolean
         let policyDenied = false
         // 「仅此次」授权临时精确放行的路径：执行后必须撤销，避免长期扩大受信面。
         let oneShotPath: string | null = null
-        let denyContent = '用户拒绝了该操作。'
+        let denyContent = '该操作被安全策略拒绝。'
 
-        if (cat === 'edit') {
+        if (!interactive) {
+          // 密封无头执行（定时任务）：绝不弹窗、绝不挂起——改走纯策略 sealedDecision（含同源安全地板）。
+          const verdict = sealedDecision(tc.name, tc.args, ctx.workspaceRoot)
+          allowed = verdict.allowed
+          if (!allowed) {
+            policyDenied = true
+            denyContent = verdict.denyContent
+          } else if (verdict.trustPath) {
+            // 密封写入根未经「打开文件夹」登记进 fs-guard，放行的写入须临时精确放行使工具内 assertInside 通过；
+            // 执行后在既有 finally 撤销（oneShotPath），不长期扩大受信面。
+            trustRoot(verdict.trustPath)
+            oneShotPath = verdict.trustPath
+          }
+        } else if (cat === 'edit') {
           const target = writeTargetPath(tc.name, tc.args, ctx.workspaceRoot)
           const abs = target?.abs ?? null
           if (abs && isSensitivePath(abs)) {
-            // Tier-1 硬底：凭据/系统目录（含本应用 ~/.deva 密钥库），即便授权也一律拒绝，不弹窗。
+            // Tier-1 硬底：凭据/系统目录（含本应用 ~/.deva 密钥库），一律静默拒绝。
             allowed = false
             policyDenied = true
             denyContent = `该路径受安全策略保护（凭据/系统目录），拒绝写入：${abs}。请勿重试。`
           } else if (abs && isProtectedPath(abs)) {
-            // Tier-2 保护目录（.git/.claude/.vscode）：写入即便 auto/acceptEdits 也必须逐次授权，
-            // 且刻意不记住——保护目录永远逐次询问。授权后一次性精确放行该文件（含项目外的 .git），
-            // 使执行时的受信校验通过；执行后在 finally 撤销。
-            const r = await requestPermission(
-              turnId,
-              sessionId,
-              tc.name,
-              tc.args,
-              undefined,
-              evMeta,
-              { protectedWrite: true }
-            )
-            allowed = r.decision === 'allow'
-            if (allowed) {
+            // Tier-2 硬底：受保护目录（.git/.claude/.vscode），一律静默拒绝。
+            allowed = false
+            policyDenied = true
+            denyContent = `该路径位于受保护目录（.git/.claude/.vscode），拒绝写入：${abs}。请勿重试。`
+          } else {
+            // 其余目标一律放行（含工作区外）。越界写入仅此次临时精确受信，finally 撤销。
+            allowed = true
+            if (abs && !isInsideRoot(abs)) {
               trustRoot(abs)
               oneShotPath = abs
             }
-          } else if (abs && !isInsideRoot(abs)) {
-            // 项目外写入：走越界卡（仅此次 / 信任目录）。auto 亦不例外——不做「写任意目录」后门。
-            const r = await requestPermission(
-              turnId,
-              sessionId,
-              tc.name,
-              tc.args,
-              { outsideRoot: abs, trustDir: target!.dir },
-              evMeta
-            )
-            allowed = r.decision === 'allow'
-            if (allowed) {
-              // 本会话始终允许 → 加会话根（父目录，覆盖子树）；仅此次 → 临时精确放行该目标。
-              if (r.remember) trustRoot(target!.dir)
-              else {
-                trustRoot(abs)
-                oneShotPath = abs
-              }
-            }
-          } else {
-            // 项目内写入（或缺 path，交执行处报参数错）：acceptEdits 仅放行「当前活动工作区」，
-            // auto 放行所有受信根；否则弹窗（记住则本会话始终允许该工具）。
-            const inWorkspace = abs ? isWithinDir(abs, ctx.workspaceRoot) : true
-            const decision = evaluateEdit(sessionId, key, tc.name, inWorkspace)
-            allowed = decision === 'allow'
-            if (decision === 'ask') {
-              const r = await requestPermission(turnId, sessionId, tc.name, tc.args, undefined, evMeta)
-              allowed = r.decision === 'allow'
-              if (allowed && r.remember) rememberSession(sessionId, tc.name)
-            }
           }
-        } else {
-          // read / exec / mcp：常规三态判定——read 恒放行；exec 危险命令 deny、auto/记住的前缀放行；
-          // mcp 默认 ask、可按会话记住。allow 直接执行；ask 弹权限窗；deny 为策略层硬拒（不弹窗）。
-          const decision = evaluate(sessionId, key, tc.name, tc.args)
-          allowed = decision === 'allow'
-          policyDenied = decision === 'deny'
-          if (policyDenied)
+        } else if (cat === 'exec') {
+          // 危险命令（rm -rf 等）静默拒绝；其余一律放行。
+          const command =
+            tc.args && typeof (tc.args as { command?: unknown }).command === 'string'
+              ? (tc.args as { command: string }).command
+              : ''
+          if (isDangerousCommand(command)) {
+            allowed = false
+            policyDenied = true
             denyContent =
               '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。'
-          if (decision === 'ask') {
-            const r = await requestPermission(turnId, sessionId, tc.name, tc.args, undefined, evMeta)
-            allowed = r.decision === 'allow'
-            if (allowed && r.remember) {
-              // exec 记「命令前缀」（如 git status），其余工具记工具名。
-              if (cat === 'exec') rememberSessionExec(sessionId, tc.args)
-              else rememberSession(sessionId, tc.name)
-            }
+          } else {
+            allowed = true
           }
+        } else {
+          // read + mcp：一律放行（read 的 Tier-1 仍由 tools 内 resolveReadPath 兜底拒绝）。
+          allowed = true
         }
 
         if (!allowed) {
@@ -1350,7 +1441,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
    * 由本封装发终态 `done`（嵌套子轮不发 done），并在 finally 落盘。
    */
   async function runTurn(
-    key: string,
     sessionId: string,
     turnId: string,
     config: ChatModelConfig,
@@ -1358,13 +1448,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): Promise<void> {
     const controller = new AbortController()
     activeTurns.set(turnId, controller)
-    const session = ensureSession(key, sessionId)
+    const session = ensureSession(sessionId)
     // 聚焦工作区：本对话若挂载文件夹，用它作有效根（受信/在工作区内判定、终端 cwd、系统提示词聚焦、
-    // 权限模式键均据此）；未挂载 → 回落 workspaceRoot（旧壳=已打开项目；新壳=null 即全机通用助手）。
+    // 权限模式键均据此）；未挂载 → 回落 workspaceRoot（对话优先外壳恒 null，即全机通用助手）。
     const effectiveRoot = session.focusRoot ?? workspaceRoot
-    // 权限模式键：按有效根取持久模式 —— 挂载不同文件夹的对话各有独立模式；旧壳 focusRoot 恒空
-    // → effectiveRoot === workspaceRoot → modeKey === key（分桶键），逐字节兼容。
-    const modeKey = projectKey(effectiveRoot)
     // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
     const ctx: ToolContext = { workspaceRoot: effectiveRoot, signal: controller.signal }
 
@@ -1460,9 +1547,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const { stopReason, errorMessage } = await runAgentLoop({
         turnId,
         sessionId,
-        // 权限模式键 = 有效根（focusRoot ?? workspaceRoot）：挂载不同文件夹的对话各有独立
-        // 持久模式；旧壳 focusRoot 恒空 → modeKey === key，逐字节兼容。分桶落盘仍用外层 key。
-        key: modeKey,
         history,
         system: systemPrompt(effectiveRoot, skillSummaries, personas),
         tools: turnTools,
@@ -1471,6 +1555,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         controller,
         maxSteps: MAX_STEPS,
         depth: 0,
+        interactive: true,
         allowAskUser: true,
         allowSubagents: true,
         skillSummaries,
@@ -1509,6 +1594,112 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
   }
 
+  /**
+   * 定时任务密封无头执行一次（runTurn 的姊妹，供 scheduler 直调）：
+   *  · 载入/新建任务独占会话；无固定工作目录（effectiveRoot=null，写入请用绝对路径）；
+   *  · 追加一条合成 user 消息（任务 prompt），首次触发派生标题；
+   *  · 模型 = 信封模型（严格解析）→ 回落全局默认；两者皆无则记错误不发起（绝不崩）；
+   *  · runAgentLoop 以 interactive:false 密封执行——全程零弹窗、绝不挂起（sealedDecision 纯策略把关）；
+   *  · emit() 对隐藏/关闭窗口 null-safe（照常落盘，渲染层下次打开经 chat-store 追平）；
+   *  · finally 落盘会话。返回 {stopReason,text,errorMessage} 供 scheduler 构造运行记录。
+   */
+  async function runScheduledTurn(task: TaskRecord): Promise<ScheduledTurnResult> {
+    const turnId = genId('turn')
+    const controller = new AbortController()
+    activeTurns.set(turnId, controller)
+    const auth = task.auth
+    const sessionId = task.sessionId
+    // 密封任务无固定工作目录：相对路径回落进程 cwd，文件操作应用绝对路径。写入除硬底线外一律放行。
+    const effectiveRoot: string | null = null
+    const session = ensureSession(sessionId, {
+      personaId: auth.personaId ?? undefined,
+      model: auth.modelRef ?? undefined
+    })
+    // 首次触发派生标题（沿用任务标题；缺失则从 prompt 派生）。
+    if (!session.title) session.title = task.title || deriveTitle(task.prompt)
+
+    // 模型选择：先严格解析信封模型，失败再回落全局默认；两者皆无 → 记错误运行，不发起、不污染对话。
+    const turnModel = resolveModelRefOrNull(auth.modelRef) ?? resolveDefaultModel()
+    if (!turnModel) {
+      activeTurns.delete(turnId)
+      return {
+        stopReason: 'error',
+        text: '',
+        errorMessage: '未配置可用的默认模型，无法执行定时任务（请在设置中选定默认模型）。'
+      }
+    }
+
+    const ctx: ToolContext = { workspaceRoot: effectiveRoot, signal: controller.signal }
+    const persona = auth.personaId ? getPersona(auth.personaId) : null
+    const personas =
+      persona && persona.prompt.trim() ? [{ name: persona.name, prompt: persona.prompt }] : []
+
+    // 追加本次触发的合成 user 消息（任务指令正文）——每次触发 = 该会话新增一轮。
+    const history = session.messages
+    history.push({ role: 'user', content: task.prompt })
+
+    // 自动压缩：任务多次触发累积于同一会话，接近窗口即先摘要替换早期历史（失败/无需都不阻断本轮）。
+    if (!controller.signal.aborted && needsCompaction(session, turnModel.model)) {
+      try {
+        const r = await compactSession({ session, model: turnModel, signal: controller.signal })
+        if (r.status !== 'none')
+          emit(turnId, sessionId, {
+            type: 'compacted',
+            scope: 'auto',
+            status: r.status,
+            message: r.message
+          })
+      } catch {
+        /* 压缩自身抛错：忽略，历史未动，本轮照常 */
+      }
+    }
+
+    // 密封工具集：除交互/创建类外全量放开（read/write/exec + 已启用技能 skill + 全部已连接 MCP）；
+    // 每次调用仍由 sealedDecision 的安全地板（Tier-1/Tier-2/危险命令）兜底。
+    const skillSummaries = enabledSkillSummaries()
+    const sealedTools = buildSealedTools(skillSummaries)
+
+    let lastInput = 0
+    let result: ScheduledTurnResult = { stopReason: 'end_turn', text: '' }
+    try {
+      const { text, stopReason, errorMessage } = await runAgentLoop({
+        turnId,
+        sessionId,
+        history,
+        system: sealedSystemPrompt(effectiveRoot, personas),
+        tools: sealedTools,
+        model: turnModel,
+        ctx,
+        controller,
+        maxSteps: 15,
+        depth: 0,
+        // ★ 密封无头执行：绝不弹窗 / 不 ask_user / 不 exit_plan / 不派生子智能体。
+        interactive: false,
+        allowAskUser: false,
+        allowSubagents: false,
+        skillSummaries,
+        onUsage: (n) => {
+          if (n > 0) lastInput = n
+        }
+      })
+      emit(turnId, sessionId, { type: 'done', stopReason })
+      result = { stopReason, text, errorMessage }
+    } catch (e) {
+      const message = (e as Error)?.message ?? String(e)
+      emit(turnId, sessionId, { type: 'error', kind: 'unknown', message })
+      emit(turnId, sessionId, { type: 'done', stopReason: 'error' })
+      result = { stopReason: 'error', text: '', errorMessage: message }
+    } finally {
+      activeTurns.delete(turnId)
+      if (lastInput > 0) session.lastInputTokens = lastInput
+      session.updatedAt = Date.now()
+      saveProject(sessionId)
+    }
+    return result
+  }
+  // 挂上模块级桥接，供 scheduler.ts 经 runScheduledTask 跨模块直调（registerChatIpc 运行即就绪）。
+  scheduledRunner = runScheduledTurn
+
   // 发送用户消息 → 启动一轮（fire-and-forget），返回 turnId
   ipcMain.handle('chat:send', async (_e, payload: ChatSendRequest): Promise<{ turnId: string }> => {
     const {
@@ -1521,10 +1712,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       focusRoot,
       modelRef
     } = payload
-    const key = projectKey(workspaceRoot)
     // 首发绑定 persona / 聚焦工作区 / 本对话模型（ensureSession：personaId 一次性绑定，focusRoot 与 model
     // 可后续更新——model 承载「新建快照角色偏好 + 聊天中切换」，显式提供即落库，仅影响本对话）。
-    const session = ensureSession(key, sessionId, { personaId, focusRoot, model: modelRef })
+    const session = ensureSession(sessionId, { personaId, focusRoot, model: modelRef })
     const history = session.messages
 
     // 「/技能名」显式触发：命中已启用技能 → 剥离该 token，把完整正文预置进本条消息（这一轮即生效）。
@@ -1567,7 +1757,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     saveProject(sessionId)
 
     const turnId = genId('turn')
-    void runTurn(key, sessionId, turnId, model, workspaceRoot)
+    void runTurn(sessionId, turnId, model, workspaceRoot)
     return { turnId }
   })
 
@@ -1617,18 +1807,17 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle(
     'chat:create-session',
     (_e, payload: ChatCreateSessionRequest): { ok: true } => {
-      const { sessionId, workspaceRoot, personaId, focusRoot, modelRef } = payload
-      const key = projectKey(workspaceRoot)
-      ensureSession(key, sessionId, { personaId, focusRoot, model: modelRef })
+      const { sessionId, personaId, focusRoot, modelRef } = payload
+      ensureSession(sessionId, { personaId, focusRoot, model: modelRef })
       saveProject(sessionId)
       return { ok: true }
     }
   )
 
-  // 左侧会话列表（按项目）
+  // 左侧会话列表：一次列全部（对话无项目/分桶概念）。IPC 仍收 workspaceRoot 以兼容渲染层调用签名，忽略即可。
   ipcMain.handle(
     'chat:list-sessions',
-    (_e, workspaceRoot: string | null): ChatSessionMeta[] => listSessions(projectKey(workspaceRoot))
+    (_e, _workspaceRoot: string | null): ChatSessionMeta[] => listSessions()
   )
 
   // 载入某会话的历史（重建展示气泡）。id 全局唯一 → 无需 workspaceRoot（IPC 仍传，忽略即可）。
@@ -1643,7 +1832,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             s.notices ?? [],
             s.asks ?? {},
             s.summaries ?? {},
-            s.plans ?? {}
+            s.plans ?? {},
+            s.autotasks ?? {}
           )
         : []
     }
@@ -1662,25 +1852,56 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
   )
 
+  // 定时任务确认名片的决议——**唯一的授权时刻**（对标 chat:resolve-proposal，但兼建任务本体）。
+  // create：即在此刻用用户在名片里议定的完整信封调 createTask（创建=授权，此后触发零交互）；成功才落 autotasks
+  //         边车 {created, taskId} 并存会话；失败不落边车（名片留待用户修正后重试）。
+  // dismiss：记 {dismissed}，名片转紧凑「已忽略」态，不建任何任务。
+  // 幂等：同名片重复 create 直接回已建任务（防双提交造双任务）。任务本体持久化于主进程 tasks.json（渲染层写不进）。
+  ipcMain.handle(
+    'chat:resolve-autotask',
+    (
+      _e,
+      sessionId: string,
+      toolUseId: string,
+      action: 'create' | 'dismiss',
+      taskInput?: TaskCreateInput
+    ): ResolveAutotaskResult => {
+      const s = getSession(sessionId)
+      if (!s) return { ok: false, error: 'no-session' }
+
+      // 幂等：已创建过则回既有 taskId，绝不重复建任务。
+      const prior = s.autotasks?.[toolUseId]
+      if (prior?.status === 'created' && prior.taskId)
+        return { ok: true, status: 'created', taskId: prior.taskId }
+
+      if (action === 'dismiss') {
+        s.autotasks = { ...s.autotasks, [toolUseId]: { status: 'dismissed' } }
+        saveProject(sessionId)
+        return { ok: true, status: 'dismissed' }
+      }
+
+      // action === 'create'
+      if (!taskInput || typeof taskInput !== 'object') return { ok: false, error: 'no-input' }
+      const res: CreateTaskResult = createTask(taskInput)
+      if (!res.ok) return { ok: false, error: res.error }
+      s.autotasks = { ...s.autotasks, [toolUseId]: { status: 'created', taskId: res.task.id } }
+      saveProject(sessionId)
+      return { ok: true, status: 'created', taskId: res.task.id }
+    }
+  )
+
   // 删除某会话（含会话级授权）。id 全局唯一 → 按 id 删。
   ipcMain.handle(
     'chat:delete-session',
     (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
       deleteStoredSession(sessionId)
-      clearSession(sessionId)
       return { ok: true }
     }
   )
 
-  // 中止某一轮：取消流并把该轮的待决权限一律按拒绝解开
+  // 中止某一轮：取消流并把该轮的待决问答/计划审阅一律按取消解开
   ipcMain.handle('chat:abort', (_e, turnId: string): { ok: true } => {
     activeTurns.get(turnId)?.abort()
-    for (const [key, p] of pending) {
-      if (p.turnId === turnId) {
-        pending.delete(key)
-        p.resolve({ decision: 'deny', remember: false })
-      }
-    }
     // 待决问答按「取消」解开（回灌为「用户取消了本次询问」）。
     for (const [key, p] of pendingAsk) {
       if (p.turnId === turnId) {
@@ -1710,7 +1931,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         s.updatedAt = Date.now()
         saveProject(sessionId)
       }
-      clearSession(sessionId)
       return { ok: true }
     }
   )
@@ -1736,20 +1956,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         s.notices ?? [],
         s.asks ?? {},
         s.summaries ?? {},
-        s.plans ?? {}
+        s.plans ?? {},
+        s.autotasks ?? {}
       )
     }
   )
 
   // 用户对权限请求的答复
-  ipcMain.handle('chat:permission-response', (_e, payload: PermissionResponse): { ok: boolean } => {
-    const p = pending.get(payload.key)
-    if (!p) return { ok: false }
-    pending.delete(payload.key)
-    p.resolve({ decision: payload.decision, remember: payload.remember })
-    return { ok: true }
-  })
-
   // 用户对 ask_user 询问的答复（每题的选中项标签或自由输入；null 视为取消）
   ipcMain.handle('chat:ask-response', (_e, payload: AskResponse): { ok: boolean } => {
     const p = pendingAsk.get(payload.key)

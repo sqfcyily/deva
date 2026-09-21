@@ -261,21 +261,9 @@ const zhCN: MessageTree = {
       responding: '生成回答中',
       usingTool: '正在调用工具',
       subagent: '子智能体运行中',
-      awaitingPermission: '等待你的授权（点上方卡片按钮）',
       awaitingAnswer: '等待你的选择（在上方问答卡选择或输入）',
       awaitingPlan: '等待你批准计划（在上方计划卡选择）',
       reconnecting: '连接中断，正在重连'
-    },
-    permission: {
-      title: '需要授权',
-      allow: '允许',
-      allowAlways: '本会话始终允许',
-      deny: '拒绝',
-      outside: '此路径在当前项目目录之外',
-      outsideAllowOnce: '仅此次允许',
-      outsideTrustDir: '本会话信任该目录',
-      protected: '受保护的版本控制/编辑器配置目录（.git/.claude/.vscode），写入需授权',
-      allowOnce: '仅此次允许'
     },
     ask: {
       title: '请你决定',
@@ -297,19 +285,7 @@ const zhCN: MessageTree = {
       approved: '已批准',
       kept: '继续完善'
     },
-    md: { copy: '复制', copied: '已复制' },
-    perm: {
-      label: '权限',
-      menuTitle: '权限模式',
-      mode: {
-        ask: '逐次询问',
-        askDesc: '每次写入/执行前都请求授权',
-        acceptEdits: '接受编辑',
-        acceptEditsDesc: '自动允许项目内文件写入，执行类仍会询问',
-        auto: '全自动',
-        autoDesc: '自动允许所有操作（含执行），请谨慎使用'
-      }
-    }
+    md: { copy: '复制', copied: '已复制' }
   },
   settings: {
     title: '设置',
@@ -321,6 +297,8 @@ const zhCN: MessageTree = {
     themeDesc: '默认跟随系统，也可手动指定',
     language: '语言',
     general: '通用',
+    closeToTray: '关闭窗口时驻留托盘',
+    closeToTrayDesc: '关窗后应用留在系统托盘，定时任务照常在后台触发；从托盘「退出」才真正关闭',
     models: '模型',
     about: '关于',
     version: '版本'
@@ -400,6 +378,81 @@ const zhCN: MessageTree = {
     copy: '复制',
     back: '返回'
   },
+  // 定时任务 / 自动任务（确认名片 + 管理页）。执行零交互，一切授权在创建名片一次性议定。
+  tasks: {
+    cardTitle: '定时任务',
+    cardHint: '核对并授权后创建。任务将按日程自动执行，执行过程中不再打扰你——请在此确认它能用哪些能力。',
+    fTitle: '标题',
+    fTitlePlaceholder: '留空则自动取指令开头',
+    fPrompt: '任务指令',
+    fPromptPlaceholder: '例如：汇总今天的科技热点新闻，列成要点',
+    fSchedule: '日程',
+    schedOnce: '一次性',
+    schedRecurring: '周期',
+    fOnceAt: '触发时间',
+    recurDaily: '每天',
+    recurWeekly: '每周',
+    recurHourly: '每小时',
+    recurEveryN: '每 N 分钟',
+    recurCustom: '自定义 cron',
+    fMinute: '第几分钟',
+    fEveryN: '间隔（分钟）',
+    weekday: {
+      sun: '周日',
+      mon: '周一',
+      tue: '周二',
+      wed: '周三',
+      thu: '周四',
+      fri: '周五',
+      sat: '周六'
+    },
+    previewNext: '下次',
+    previewNever: '无（不会再触发）',
+    previewInvalid: '日程无效，请检查填写',
+    fPersona: '人格',
+    personaDefault: '跟随当前对话',
+    fModel: '模型',
+    modelDefault: '全局默认',
+    dismiss: '忽略',
+    confirm: '创建任务',
+    created: '已创建定时任务',
+    createdOpen: '查看任务',
+    dismissed: '已忽略此定时任务',
+    errInvalidInput: '信息不完整，请检查填写',
+    errInvalidTz: '时区无效',
+    errInvalidCron: 'cron 表达式无效',
+    errInvalidOnce: '一次性触发时间无效',
+    errExpired: '触发时间已过，请改到将来',
+    errNoSession: '找不到对应会话',
+    errNoInput: '任务指令不能为空',
+    errGeneric: '创建失败，请重试',
+    // 管理面（定时任务标签页）
+    paneTitle: '定时任务',
+    paneHint: '这些任务按日程自动执行，执行过程中不会打扰你。',
+    paneEmpty: '还没有定时任务。在对话里说「每天…」「…点提醒我…」，我会拟一个待你确认。',
+    groupActive: '进行中',
+    groupPaused: '已暂停',
+    groupCompleted: '已完成',
+    groupError: '出错',
+    lastRun: '上次',
+    lastNever: '尚未运行',
+    runOk: '成功',
+    runError: '失败',
+    runSkipped: '已跳过',
+    nextNever: '不再触发',
+    actPause: '暂停',
+    actResume: '恢复',
+    actRunNow: '立即运行',
+    actOpen: '打开会话',
+    actDelete: '删除',
+    runNowFailed: '无法立即运行',
+    deleteConfirm: '删除后其运行历史一并清除；独占会话仍保留在对话列表，可另行删除。',
+    // 管理页（左列表 + 右详情）
+    searchPlaceholder: '搜索任务',
+    detailEmpty: '从左侧选择一个任务，查看详情或调整。',
+    runHistory: '运行历史',
+    historyEmpty: '尚无运行记录'
+  },
   // 对话优先外壳（chat-first）专用文案。t 只收 key、不插值——含名字/计数/相对时间的动态串在 JS 组。
   cf: {
     brandTag: '对话优先',
@@ -410,6 +463,7 @@ const zhCN: MessageTree = {
     searchNoResults: '未找到匹配项',
     tabChats: '消息',
     tabRoster: '角色',
+    tabTasks: '定时任务',
     noPersona: '还没有角色，点下方「添加角色」创建一个',
     addPersona: '添加角色',
     addManual: '手动添加',
@@ -751,21 +805,9 @@ const en: MessageTree = {
       responding: 'Responding',
       usingTool: 'Using tool',
       subagent: 'Running subagent',
-      awaitingPermission: 'Waiting for your permission (use the buttons above)',
       awaitingAnswer: 'Waiting for your choice (pick or type in the card above)',
       awaitingPlan: 'Waiting for you to approve the plan (choose in the card above)',
       reconnecting: 'Connection lost, reconnecting'
-    },
-    permission: {
-      title: 'Permission required',
-      allow: 'Allow',
-      allowAlways: 'Always allow this session',
-      deny: 'Deny',
-      outside: 'This path is outside the current project',
-      outsideAllowOnce: 'Allow once',
-      outsideTrustDir: 'Trust this folder (session)',
-      protected: 'Protected VCS/editor config folder (.git/.claude/.vscode); write requires approval',
-      allowOnce: 'Allow once'
     },
     ask: {
       title: 'Your call',
@@ -787,19 +829,7 @@ const en: MessageTree = {
       approved: 'Approved',
       kept: 'Kept planning'
     },
-    md: { copy: 'Copy', copied: 'Copied' },
-    perm: {
-      label: 'Permissions',
-      menuTitle: 'Permission mode',
-      mode: {
-        ask: 'Ask each time',
-        askDesc: 'Ask before every write or command',
-        acceptEdits: 'Accept edits',
-        acceptEditsDesc: 'Auto-allow file writes in the project; still ask to run commands',
-        auto: 'Auto',
-        autoDesc: 'Auto-allow everything, including commands — use with care'
-      }
-    }
+    md: { copy: 'Copy', copied: 'Copied' }
   },
   settings: {
     title: 'Settings',
@@ -811,6 +841,9 @@ const en: MessageTree = {
     themeDesc: 'Follows the system by default; can be set manually',
     language: 'Language',
     general: 'General',
+    closeToTray: 'Keep in tray when window closes',
+    closeToTrayDesc:
+      'On close the app stays in the system tray and scheduled tasks keep firing in the background; only “Quit” from the tray exits',
     models: 'Models',
     about: 'About',
     version: 'Version'
@@ -890,6 +923,84 @@ const en: MessageTree = {
     copy: 'Copy',
     back: 'Back'
   },
+  // Scheduled / automated tasks (confirm card + manager). Execution is zero-interaction; all authority is settled in the create card.
+  tasks: {
+    cardTitle: 'Scheduled task',
+    cardHint:
+      'Review and authorize, then create. The task runs on its schedule without interrupting you — confirm here which capabilities it may use.',
+    fTitle: 'Title',
+    fTitlePlaceholder: 'Leave blank to derive from the prompt',
+    fPrompt: 'Task prompt',
+    fPromptPlaceholder: 'e.g. Summarize today’s top tech news as bullet points',
+    fSchedule: 'Schedule',
+    schedOnce: 'One-time',
+    schedRecurring: 'Recurring',
+    fOnceAt: 'Fire at',
+    recurDaily: 'Daily',
+    recurWeekly: 'Weekly',
+    recurHourly: 'Hourly',
+    recurEveryN: 'Every N minutes',
+    recurCustom: 'Custom cron',
+    fMinute: 'At minute',
+    fEveryN: 'Interval (minutes)',
+    weekday: {
+      sun: 'Sun',
+      mon: 'Mon',
+      tue: 'Tue',
+      wed: 'Wed',
+      thu: 'Thu',
+      fri: 'Fri',
+      sat: 'Sat'
+    },
+    previewNext: 'Next',
+    previewNever: 'None (will not fire again)',
+    previewInvalid: 'Invalid schedule — please check the fields',
+    fPersona: 'Persona',
+    personaDefault: 'Follow current chat',
+    fModel: 'Model',
+    modelDefault: 'Global default',
+    dismiss: 'Dismiss',
+    confirm: 'Create task',
+    created: 'Scheduled task created',
+    createdOpen: 'View task',
+    dismissed: 'Scheduled task dismissed',
+    errInvalidInput: 'Incomplete information — please check the fields',
+    errInvalidTz: 'Invalid time zone',
+    errInvalidCron: 'Invalid cron expression',
+    errInvalidOnce: 'Invalid one-time fire time',
+    errExpired: 'Fire time is in the past — pick a future time',
+    errNoSession: 'Matching chat not found',
+    errNoInput: 'Task prompt cannot be empty',
+    errGeneric: 'Failed to create — please retry',
+    // Management pane (Tasks tab)
+    paneTitle: 'Tasks',
+    paneHint: 'These tasks run automatically on schedule and never interrupt you while running.',
+    paneEmpty:
+      'No tasks yet. In a chat, say “every day…” or “remind me at…”, and I’ll draft one for you to approve.',
+    groupActive: 'Active',
+    groupPaused: 'Paused',
+    groupCompleted: 'Completed',
+    groupError: 'Error',
+    lastRun: 'Last',
+    lastNever: 'Not run yet',
+    runOk: 'OK',
+    runError: 'Failed',
+    runSkipped: 'Skipped',
+    nextNever: 'No further runs',
+    actPause: 'Pause',
+    actResume: 'Resume',
+    actRunNow: 'Run now',
+    actOpen: 'Open chat',
+    actDelete: 'Delete',
+    runNowFailed: 'Cannot run right now',
+    deleteConfirm:
+      'Its run history will also be removed. The dedicated conversation stays in your chat list and can be deleted separately.',
+    // Management page (list + detail)
+    searchPlaceholder: 'Search tasks',
+    detailEmpty: 'Select a task on the left to view its details or adjust it.',
+    runHistory: 'Run history',
+    historyEmpty: 'No runs yet'
+  },
   // Chat-first shell strings. t takes a key only; dynamic strings (names/counts/relative time) are composed in JS.
   cf: {
     brandTag: 'Chat-first',
@@ -900,6 +1011,7 @@ const en: MessageTree = {
     searchNoResults: 'No matches',
     tabChats: 'Chats',
     tabRoster: 'Roster',
+    tabTasks: 'Tasks',
     noPersona: 'No personas yet — click “Add persona” below to create one',
     addPersona: 'Add persona',
     addManual: 'Add manually',

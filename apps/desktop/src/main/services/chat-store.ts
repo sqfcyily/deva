@@ -15,8 +15,10 @@ import type { Message } from '../providers/types'
  * 进程；渲染层仅按需拉取会话清单 / 重建展示。明文 JSON，可手改 / 备份（对标 config.json）；
  * 根目录随 DEVA_HOME 覆盖 —— 便携安装 / 想整体挪到别的盘（如 D:）时设置该环境变量即可。
  *
- * `bucket`（= 旧「项目键」projectKey）作为元信息随对话存留：新壳恒 `no-project`（聚焦目录由 focusRoot
- * 单独承载），旧 AppShell 仍按项目分桶 —— listSessions 据此过滤，两种外壳共用同一份存储，无需迁移。
+ * **无「项目 / 分桶」概念**：对话优先外壳是唯一页面（旧 IDE 式 AppShell 已删），对话不再按项目归桶。
+ * 每条对话独立成文件、直接落盘，`listSessions` 一次列全部（按 updatedAt 倒序），左侧列表就是全部对话。
+ * 「挂载目录」纯粹是**对话属性** `focusRoot`（可挂/卸，决定聚焦工作区、终端 cwd、权限模式键），与「对话
+ * 存在哪里 / 列不列出」彻底无关。历史文件里可能残留 `bucket` 字段（旧实现遗留），读时忽略、写时不再产生。
  */
 
 export interface StoredSession {
@@ -38,7 +40,7 @@ export interface StoredSession {
   personaId?: string
   /**
    * 该对话的聚焦工作区绝对路径；null/缺省 = 全机通用助手（无聚焦）。
-   * 与分桶（bucket）解耦：新壳对话统一落 no-project 桶，聚焦范围由此字段单独承载。
+   * 纯对话属性：决定聚焦范围/终端 cwd/权限作用域键，与「对话存哪里/列不列」无关（对话已无分桶概念）。
    */
   focusRoot?: string | null
   /**
@@ -48,11 +50,6 @@ export interface StoredSession {
    * 日后改角色偏好模型不影响已建对话。偏好模型被删除时，runTurn 经 resolveModelRef 回落全局默认。
    */
   model?: string
-  /**
-   * 归属桶（= projectKey）：左侧列表过滤用。新壳恒 'no-project'；旧壳为项目路径的稳定键。
-   * 落库后不再变（对话归属固定）。
-   */
-  bucket?: string
   /**
    * 角色名片（propose_agent 提议）的终态边车，按 toolUseId 记录 accepted/rejected。
    * 名片本体随 Message[] 天然存活，但其接受/拒绝终态无处落——此边车确保重开不退回 pending、
@@ -84,6 +81,11 @@ export interface StoredSession {
    */
   summaries?: Record<string, string>
   /**
+   * @deprecated 已废弃的「项目分桶键」（旧 IDE 式外壳遗留）。对话优先外壳无项目概念、`listSessions` 列全部，
+   * 故此字段不再读写；仅为兼容历史 JSON 保留可选声明（读时忽略、新存不产生）。见文件头注释。
+   */
+  bucket?: string
+  /**
    * 计划模式（plan mode）exit_plan 的决定态边车，按 toolUseId 记录用户对该计划的决定。
    * 计划正文可从 tool_use 入参（input.plan）重解析还原，故此边车**只需记决定态**（同 proposals）：
    * 'approve'=已批准（该回合已退出计划模式转执行）/'keep'=用户选择继续完善/null=中止未决。
@@ -91,6 +93,14 @@ export interface StoredSession {
    * 见 chat.ts:toDisplayMessages / runTurn 的 onPlanDecided。
    */
   plans?: Record<string, { decision: 'approve' | 'keep' | null }>
+  /**
+   * 定时任务确认名片（create_task 提议）的终态边车，按 toolUseId 记录用户对该名片的决定。
+   * 名片本体随 Message[] 天然存活（tool_use 入参含 title/kind/prompt/schedule），但其「已创建 / 已忽略」
+   * 终态无处落——此边车确保重开不退回 pending、不重复建任务。`taskId` 记已创建任务的 id（供名片显示
+   * 「打开该任务会话」跳转）。pending 不入表（缺省即 pending）。按 toolUseId 记录，压缩重排 messages
+   * 时无需调整（同 proposals）。见 chat.ts:chat:resolve-autotask。
+   */
+  autotasks?: Record<string, { status: 'created' | 'dismissed'; taskId?: string }>
 }
 
 /** 回合终态提示（持久化边车项）。见 StoredSession.notices。 */
@@ -115,10 +125,13 @@ export interface ChatSessionMeta {
   focusRoot?: string | null
   /** 本对话的模型引用 `"providerId:modelId"`；空串/缺省 = 跟随全局默认。见 StoredSession.model。 */
   model?: string
-  bucket?: string
 }
 
-/** 工作区绝对路径 → 稳定的文件名安全键；未打开项目归入 no-project 桶。 */
+/**
+ * 工作区绝对路径 → 稳定的文件名安全键。**不再用于对话分桶**（对话已无项目概念）；
+ * 现仅供权限系统按目录区分权限模式（permissions.ts）、以及 runTurn 的权限作用域键（modeKey）。
+ * null（未挂载目录）统一映射到固定键，代表「全机通用助手」这一权限作用域。
+ */
 export function projectKey(workspaceRoot: string | null): string {
   if (!workspaceRoot) return 'no-project'
   const norm = workspaceRoot.replace(/[\\/]+$/, '').toLowerCase()
@@ -164,8 +177,7 @@ function metaOf(s: StoredSession): ChatSessionMeta {
     updatedAt: s.updatedAt,
     personaId: s.personaId,
     focusRoot: s.focusRoot ?? null,
-    model: s.model,
-    bucket: s.bucket
+    model: s.model
   }
 }
 
@@ -245,30 +257,26 @@ export function save(id: string): void {
   persistIndex()
 }
 
-/** 会话清单（按 bucket 过滤：新壳 'no-project'、旧壳项目键）；null/undefined = 全部。 */
-export function listSessions(bucket?: string | null): ChatSessionMeta[] {
-  const all = [...ensureIndex().values()]
-  const filtered = bucket == null ? all : all.filter((m) => (m.bucket ?? 'no-project') === bucket)
-  return filtered
+/** 全部会话清单（无分桶——对话优先外壳一次列全部，按 updatedAt 倒序）。 */
+export function listSessions(): ChatSessionMeta[] {
+  return [...ensureIndex().values()]
     .map((m) => ({ ...m, focusRoot: m.focusRoot ?? null }))
     .sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
-/** 取某对话全量（id 全局唯一，无需 bucket）。 */
+/** 取某对话全量（id 全局唯一）。 */
 export function getSession(id: string): StoredSession | undefined {
   return loadSessionFile(id)
 }
 
 /**
- * 取会话；不存在则新建（仅入内存缓存 + 索引，尚未落盘，待 save）。
- * `bucket`：新建时归属桶（listSessions 过滤用）；已存在会话仅当当前为空才补，不改归属。
+ * 取会话；不存在则新建（仅入内存缓存 + 索引，尚未落盘，待 save）。对话无分桶概念，故无归属参数。
  * `opts.personaId`/`opts.focusRoot`：首发绑定——新建时写入；已存在会话仅当当前为 undefined 才补 persona
  * （**绝不覆盖**已绑定值），focusRoot 可由 mountFocus 后续更新（显式提供即应用，含 null 卸载）。
  * `opts.model`：本对话模型引用（快照固定）——新建时写入角色偏好快照；已存在会话显式提供即应用（聊天中
  * 切换模型，与 focusRoot 同为「可变·显式即覆盖」；空串=显式回落全局默认）。见 StoredSession.model。
  */
 export function ensureSession(
-  bucket: string,
   id: string,
   opts?: { personaId?: string; focusRoot?: string | null; model?: string }
 ): StoredSession {
@@ -283,8 +291,7 @@ export function ensureSession(
       messages: [],
       personaId: opts?.personaId,
       focusRoot: opts?.focusRoot ?? null,
-      model: opts?.model,
-      bucket
+      model: opts?.model
     }
     sessionCache.set(id, s)
     ensureIndex().set(id, metaOf(s))
@@ -295,8 +302,6 @@ export function ensureSession(
     if (opts && opts.focusRoot !== undefined) s.focusRoot = opts.focusRoot
     // model：可变（聊天中切换），显式提供即应用（空串=回落默认）；未提供（undefined）则不动。
     if (opts && opts.model !== undefined) s.model = opts.model
-    // bucket：归属固定，仅当历史遗留为空时补齐。
-    if (!s.bucket) s.bucket = bucket
   }
   return s
 }

@@ -30,28 +30,25 @@ interface StoredProvider {
 }
 
 /**
- * 把模型引用 `"providerId:modelId"` 解析为完整 ChatModelConfig。
- * - ref 为空 / 非法 / 找不到对应服务商或模型 → 返回 fallback（父轮模型，即「跟随主对话」）。
- * - providerId 可能自身含冒号？不会（服务商 id 由本应用生成，无冒号）；按首个冒号切分即可。
+ * 严格解析 `"providerId:modelId"` → ResolvedModel；任何失败（空 / 非法 / 找不到 / 读配置异常）返回 null。
+ * 供 resolveModelRef（有 fallback）与 resolveDefaultModel（无 fallback）共享的底座，永不抛错。
+ * providerId 由本应用生成、无冒号，按首个冒号切分即可。
  */
-export function resolveModelRef(
-  ref: string | null | undefined,
-  fallback: ResolvedModel
-): ResolvedModel {
-  if (!ref || typeof ref !== 'string') return fallback
+function resolveRefStrict(ref: string | null | undefined): ResolvedModel | null {
+  if (!ref || typeof ref !== 'string') return null
   const idx = ref.indexOf(':')
-  if (idx <= 0) return fallback
+  if (idx <= 0) return null
   const pid = ref.slice(0, idx).trim()
   const mid = ref.slice(idx + 1).trim()
-  if (!pid || !mid) return fallback
+  if (!pid || !mid) return null
   try {
     const models = (getConfig().models ?? {}) as { providers?: unknown }
     const providers = Array.isArray(models.providers) ? (models.providers as StoredProvider[]) : []
     const provider = providers.find((p) => p && p.id === pid)
-    if (!provider) return fallback
+    if (!provider) return null
     const list = Array.isArray(provider.models) ? (provider.models as StoredModelDef[]) : []
     const model = list.find((m) => m && m.id === mid)
-    if (!model || typeof model.id !== 'string') return fallback
+    if (!model || typeof model.id !== 'string') return null
     const adapter =
       provider.adapter === 'openai'
         ? 'openai'
@@ -61,6 +58,41 @@ export function resolveModelRef(
     const baseURL = typeof provider.apiHost === 'string' ? provider.apiHost : ''
     return { adapter, providerId: pid, baseURL, model: model.id }
   } catch {
-    return fallback
+    return null
+  }
+}
+
+/**
+ * 把模型引用 `"providerId:modelId"` 解析为完整 ChatModelConfig。
+ * - ref 为空 / 非法 / 找不到对应服务商或模型 → 返回 fallback（父轮模型，即「跟随主对话」）。
+ */
+export function resolveModelRef(
+  ref: string | null | undefined,
+  fallback: ResolvedModel
+): ResolvedModel {
+  return resolveRefStrict(ref) ?? fallback
+}
+
+/**
+ * 严格解析模型引用（无 fallback）：命中返回 ResolvedModel，空/非法/悬空返回 null。
+ * 供定时任务密封执行「先试信封模型、失败再回落全局默认」的两段式选择：
+ * `resolveModelRefOrNull(auth.modelRef) ?? resolveDefaultModel()`。
+ */
+export function resolveModelRefOrNull(ref: string | null | undefined): ResolvedModel | null {
+  return resolveRefStrict(ref)
+}
+
+/**
+ * 解析全局默认模型（`config.models.activeModelId`，即用户最近一次在对话输入框选定的模型）。
+ * 供无父轮可回落的场景使用——典型是定时任务密封执行（task.auth.modelRef 为空时的回落）。
+ * 无配置 / 悬空引用 → 返回 null（调度器据此记「未配置默认模型」错误，绝不崩溃）。
+ */
+export function resolveDefaultModel(): ResolvedModel | null {
+  try {
+    const models = (getConfig().models ?? {}) as { activeModelId?: unknown }
+    const active = typeof models.activeModelId === 'string' ? models.activeModelId : null
+    return resolveRefStrict(active)
+  } catch {
+    return null
   }
 }

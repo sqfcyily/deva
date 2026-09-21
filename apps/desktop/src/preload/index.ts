@@ -103,6 +103,13 @@ export interface AgentDraft {
   prompt: string
 }
 
+/** 定时任务确认名片草稿（与 services/chat.ts 的 AutotaskDraft 对齐）。 */
+export interface AutotaskDraft {
+  title: string
+  prompt: string
+  schedule: { kind: 'once' | 'recurring'; at: string; cron: string; tz: string }
+}
+
 /** 重建历史用的展示块 / 消息（与 services/chat.ts 的 DisplayMessage 对齐）。 */
 export type DisplayBlock =
   | { kind: 'text'; text: string }
@@ -110,6 +117,17 @@ export type DisplayBlock =
   | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
+  /**
+   * 定时任务确认名片（重建）：草稿从 create_task 入参归一化，status/taskId 由主进程 autotasks 边车还原。
+   * pending = 待用户议定授权后创建；created = 已创建（taskId 指向独占会话）；dismissed = 已忽略。
+   */
+  | {
+      kind: 'autotaskcard'
+      id: string
+      draft: AutotaskDraft
+      status: 'pending' | 'created' | 'dismissed'
+      taskId?: string
+    }
   /**
    * ask_user 询问卡（重建）：问题从 tool_use 入参重解析，答案由主进程 asks 边车还原。
    * answers 有值（含空数组）= 已答/已取消（渲染为已答态，逐题回述，不可交互）；
@@ -125,12 +143,6 @@ export type DisplayBlock =
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
   | { role: 'assistant'; blocks: DisplayBlock[] }
-
-export interface PermissionResponse {
-  key: string
-  decision: 'allow' | 'deny'
-  remember: boolean
-}
 
 /** ask_user 候选项（与 services/chat.ts 对齐）。 */
 export interface AskOption {
@@ -285,8 +297,78 @@ export interface McpServerView extends McpServerConfig {
   tools: { name: string; fqName: string; description: string }[]
 }
 
-/** 每项目权限模式（与 services/permissions.ts 对齐）。 */
-export type PermMode = 'ask' | 'acceptEdits' | 'auto'
+/** 定时任务类型（与 services/tasks-types.ts 对齐，按既定模式在 preload 内复述）。 */
+export type TaskStatus = 'active' | 'paused' | 'completed' | 'error'
+export interface TaskSchedule {
+  kind: 'once' | 'recurring'
+  at?: string
+  cron?: string
+  tz: string
+}
+export interface TaskAuthorization {
+  personaId: string | null
+  modelRef: string | null
+}
+export interface TaskRun {
+  firedAt: number
+  finishedAt?: number
+  status: 'ok' | 'error' | 'skipped'
+  summary?: string
+  error?: string
+}
+export interface TaskRecord {
+  id: string
+  title: string
+  prompt: string
+  schedule: TaskSchedule
+  auth: TaskAuthorization
+  sessionId: string
+  status: TaskStatus
+  createdAt: number
+  updatedAt: number
+  lastRunAt: number | null
+  nextRunAt: number | null
+  consecutiveErrors: number
+  runs: TaskRun[]
+}
+export interface TaskCreateInput {
+  title: string
+  prompt: string
+  schedule: TaskSchedule
+  auth: TaskAuthorization
+}
+export interface TaskUpdateInput {
+  id: string
+  title?: string
+  prompt?: string
+  schedule?: TaskSchedule
+  auth?: Partial<TaskAuthorization>
+}
+/** 创建结果：成功带记录，失败带稳定错误码（渲染层据此本地化）。 */
+export type CreateTaskResult =
+  | { ok: true; task: TaskRecord }
+  | { ok: false; error: 'invalid-input' | 'invalid-tz' | 'invalid-cron' | 'invalid-once' | 'expired' }
+
+/** 日程预览结果（确认名片实时校验，与 services/tasks.ts 的 PreviewScheduleResult 对齐）。 */
+export type PreviewScheduleResult =
+  | { ok: true; description: string; nextRunAt: number | null }
+  | { ok: false; error: 'invalid-input' | 'invalid-tz' | 'invalid-cron' | 'invalid-once' }
+
+/** 确认名片决议结果（chat:resolve-autotask，与 services/chat.ts 的 ResolveAutotaskResult 对齐）。 */
+export type ResolveAutotaskResult =
+  | { ok: true; status: 'created'; taskId: string }
+  | { ok: true; status: 'dismissed' }
+  | {
+      ok: false
+      error:
+        | 'invalid-input'
+        | 'invalid-tz'
+        | 'invalid-cron'
+        | 'invalid-once'
+        | 'expired'
+        | 'no-session'
+        | 'no-input'
+    }
 
 /** 终端「线缆类型」（与 services/terminal.ts 对齐，按既定模式在 preload 内复述）。 */
 export interface TerminalCreateOptions {
@@ -431,21 +513,6 @@ export type ChatStreamEvent =
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   /** 计划审阅：exit_plan 提交计划，暂停等待用户批准（approve/keep）。 */
   | { type: 'plan_review'; key: string; plan: string }
-  | {
-      type: 'permission_request'
-      key: string
-      toolName: string
-      args: unknown
-      /** 「项目外访问」授权：被访问目标的完整绝对路径。 */
-      outsideRoot?: string
-      /** 「项目外访问」授权：点「信任目录」将加入受信根的目录。 */
-      trustDir?: string
-      /** Tier-2 保护目录（.git/.claude/.vscode）写入：逐次授权，仅「仅此次/拒绝」。 */
-      protectedWrite?: boolean
-      /** depth>0 + agent：该权限请求来自某子智能体（权限卡照常浮出，可附子智能体标签）。 */
-      depth?: number
-      agent?: string
-    }
   | { type: 'usage'; input: number; output: number }
   | { type: 'reconnecting'; attempt: number; max: number }
   | { type: 'stream_reset' }
@@ -624,8 +691,18 @@ const api = {
       status: 'accepted' | 'rejected'
     ): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:resolve-proposal', sessionId, toolUseId, status),
-    respondPermission: (payload: PermissionResponse): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('chat:permission-response', payload),
+    /**
+     * 落定定时任务确认名片——**唯一的授权时刻**：
+     * create（带完整信封 taskInput）即在主进程建任务本体 + 独占会话，成功回 taskId；dismiss 记忽略。
+     * 创建后触发零交互，故一切授权须在此 taskInput 里议定完毕。
+     */
+    resolveAutotask: (
+      sessionId: string,
+      toolUseId: string,
+      action: 'create' | 'dismiss',
+      taskInput?: TaskCreateInput
+    ): Promise<ResolveAutotaskResult> =>
+      ipcRenderer.invoke('chat:resolve-autotask', sessionId, toolUseId, action, taskInput),
     /** 回应 ask_user 询问（每题的选中项标签或自由输入；answers 为 null 表示取消） */
     respondAsk: (payload: AskResponse): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:ask-response', payload),
@@ -638,13 +715,6 @@ const api = {
       ipcRenderer.on('chat:event', listener)
       return () => ipcRenderer.removeListener('chat:event', listener)
     }
-  },
-  /** 权限模式（按项目，存于 ~/.deva/permissions.json）：读/写当前项目的授权姿态。 */
-  perm: {
-    getMode: (workspaceRoot: string | null): Promise<PermMode> =>
-      ipcRenderer.invoke('perm:get-mode', workspaceRoot),
-    setMode: (workspaceRoot: string | null, mode: PermMode): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('perm:set-mode', workspaceRoot, mode)
   },
   /** 集成终端：列出已装 shell、建 PTY、写输入、改尺寸、销毁；订阅数据/退出事件。 */
   terminal: {
@@ -717,6 +787,51 @@ const api = {
       locale: GitGenLocale
     ): Promise<GitGenerateResult> =>
       ipcRenderer.invoke('git:generate-commit-message', dir, model, locale)
+  },
+  /**
+   * 定时任务 / 自动任务（全局 ~/.deva/tasks.json）：列出 / 读取 / 创建 / 更新 / 删除 / 启停 / 立即运行。
+   * 创建时批准、执行时零交互——授权信封在任务创建时议定，触发执行不再弹任何确认。
+   */
+  tasks: {
+    list: (): Promise<TaskRecord[]> => ipcRenderer.invoke('tasks:list'),
+    get: (id: string): Promise<TaskRecord | null> => ipcRenderer.invoke('tasks:get', id),
+    create: (input: TaskCreateInput): Promise<CreateTaskResult> =>
+      ipcRenderer.invoke('tasks:create', input),
+    update: (input: TaskUpdateInput): Promise<TaskRecord | null> =>
+      ipcRenderer.invoke('tasks:update', input),
+    remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('tasks:delete', id),
+    setStatus: (id: string, status: TaskStatus): Promise<TaskRecord | null> =>
+      ipcRenderer.invoke('tasks:set-status', id, status),
+    /** 立即运行（委托调度器串行队列；调度器未就绪则 ok:false）。 */
+    runNow: (id: string): Promise<{ ok: boolean; reason?: string }> =>
+      ipcRenderer.invoke('tasks:run-now', id),
+    /**
+     * 校验日程并返回人读摘要 + 下次触发（确认名片实时预览，只读不建任务）。
+     * `allowPast`：任务列表/详情展示已创建任务时传 true——一次性时间虽已过但日程合法则回落人读摘要，
+     * 不把「已完成」误标为「日程无效」（名片编辑态省略，默认严格：过期即报错）。
+     */
+    preview: (
+      schedule: TaskSchedule,
+      locale: 'zh-CN' | 'en',
+      allowPast?: boolean
+    ): Promise<PreviewScheduleResult> =>
+      ipcRenderer.invoke('tasks:preview', schedule, locale, allowPast === true),
+    /** 订阅 tasks:changed 全量广播，返回取消订阅函数（仿 mcp.onStatus）。 */
+    onChanged: (cb: (tasks: TaskRecord[]) => void): (() => void) => {
+      const listener = (_e: unknown, tasks: TaskRecord[]): void => cb(tasks)
+      ipcRenderer.on('tasks:changed', listener)
+      return () => ipcRenderer.removeListener('tasks:changed', listener)
+    },
+    /**
+     * 订阅 tasks:navigate 导航意图，返回取消订阅函数。
+     * 主进程发起：通知点击带 `{sessionId}`（打开该任务独占会话）；托盘「定时任务概览」带 `{pane:'tasks'}`（切到 Tasks 标签）。
+     */
+    onNavigate: (cb: (payload: { sessionId?: string; pane?: 'tasks' }) => void): (() => void) => {
+      const listener = (_e: unknown, payload: { sessionId?: string; pane?: 'tasks' }): void =>
+        cb(payload)
+      ipcRenderer.on('tasks:navigate', listener)
+      return () => ipcRenderer.removeListener('tasks:navigate', listener)
+    }
   },
   /**
    * 系统剪贴板纯文本读写（走主进程原生 clipboard）。

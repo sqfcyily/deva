@@ -252,6 +252,60 @@ export const toolSpecs: ToolSpec[] = [
     }
   },
   {
+    name: 'create_task',
+    description:
+      '当用户想「创建一个自动执行的定时任务」时（周期定时或一次性，如「每天10点发我今天的热点新闻」「下午5点提醒我开会」），' +
+      '据已厘清的需求生成一张**定时任务确认名片**供用户确认。' +
+      '这只是**提议**：本工具不写入任何东西、不创建任务，只把你生成的参数以名片形式呈现给用户；' +
+      '用户在名片里核对日程与授权、点「创建」后才真正建任务。' +
+      '因此调用后**切勿声称任务已创建**，应告诉用户「确认名片已生成，请核对后点创建」。' +
+      '**关键**：任务触发时会自动执行、期间不会再向用户确认。触发时所有工具默认可用（除凭据/系统等' +
+      '硬底线目录与危险命令外），无需你或用户挑选工具；名片里只需核对日程，并可选运行身份（人格）与模型。' +
+      '你只负责把日程和意图表达清楚。不要设置 model（你无法可靠得知 providerId:modelId）。' +
+      'schedule.tz 若不确定可省略，由系统按用户本地时区填充。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: '任务的简短标题（如「每日热点新闻」「开会提醒」），显示在名片与定时任务列表里。'
+        },
+        prompt: {
+          type: 'string',
+          description:
+            '触发时发给模型执行的指令正文。写成一条清晰、自足的指令（触发时无上下文、无用户在场），如「汇总今天的科技热点新闻，列出5条并附一句点评」。'
+        },
+        schedule: {
+          type: 'object',
+          description: '触发日程：一次性（once）或周期（recurring）。',
+          properties: {
+            kind: {
+              type: 'string',
+              enum: ['once', 'recurring'],
+              description: 'once=一次性触发；recurring=周期触发。'
+            },
+            at: {
+              type: 'string',
+              description:
+                "once：本地墙钟时间 ISO（无时区偏移），如 \"2026-09-21T17:00\"。必须是未来时刻。"
+            },
+            cron: {
+              type: 'string',
+              description:
+                'recurring：5 段 cron 表达式（分 时 日 月 周），如 "0 10 * * *"=每天10:00、"*/30 * * * *"=每30分钟、"0 9 * * 1"=每周一09:00。'
+            },
+            tz: {
+              type: 'string',
+              description: 'IANA 时区名（如 "Asia/Shanghai"）；不确定则省略，由系统按用户本地时区填充。'
+            }
+          },
+          required: ['kind']
+        }
+      },
+      required: ['title', 'prompt', 'schedule']
+    }
+  },
+  {
     name: 'create_mcp',
     description:
       '创建并启用一个新的 **MCP 服务**（Model Context Protocol server），写入用户的全局 MCP 配置（~/.deva/mcp.json）。' +
@@ -348,6 +402,8 @@ const READ_TOOLS = new Set([
   'run_subagent',
   // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「接受」（走渲染层 personas:upsert）。
   'propose_agent',
+  // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「创建」（走渲染层 chat:resolve-autotask）。
+  'create_task',
   // exit_plan：提交计划，循环内「闸门前特判」，恒不落到 executeTool；列此仅兜底。
   'exit_plan'
 ])
@@ -1094,6 +1150,20 @@ export async function executeTool(
       return {
         content: '已生成角色名片，等待用户在名片中查看并确认；请勿重复调用，也不要声称角色已创建。',
         summary: '已生成角色名片'
+      }
+    }
+
+    if (name === 'create_task') {
+      // 惰性工具：**不写任何东西**。草稿参数经 tool_call 事件的 args 到渲染层铸成确认名片，
+      // 用户核对日程与授权、点「创建」后才走渲染层 chat:resolve-autotask 真正建任务（创建=授权时刻）。
+      const title = typeof a.title === 'string' ? a.title.trim() : ''
+      if (!title)
+        return { content: '缺少任务 title（任务标题）', summary: '参数无效', isError: true }
+      return {
+        content:
+          '已生成定时任务确认名片，等待用户核对日程与授权后点「创建」；请勿重复调用，也不要声称任务已创建。' +
+          '提醒用户：任务触发时会自动执行、期间不再确认，一切授权须在此名片里议定。',
+        summary: '已生成定时任务名片'
       }
     }
 

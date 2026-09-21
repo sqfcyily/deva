@@ -17,10 +17,6 @@ import {
   SquareTerminal,
   Plug,
   Wrench,
-  ShieldAlert,
-  ShieldCheck,
-  ShieldQuestion,
-  Zap,
   CheckCircle2,
   XCircle,
   Loader2,
@@ -43,13 +39,13 @@ import {
   type AttachKind,
   type ChatBlock,
   type ChatMessage,
-  type PermMode,
   type StreamStatus,
   type ToolStatus
 } from '../../store/chat'
 import { useModels } from '../../store/models'
 import { Markdown } from './Markdown'
 import { HumationFace } from '../../components/humation'
+import { TaskConfirmCard } from './TaskConfirmCard'
 
 /**
  * 对话主视图（DeepSeek 网页版风格）。消费 chat store 的真实数据：
@@ -92,13 +88,6 @@ const TOOL_META: Record<string, { icon: React.ReactNode; key: string }> = {
   create_mcp: { icon: <Plug size={14} />, key: 'chat.tool.createMcp' }
 }
 
-/** 权限模式元信息（图标 + i18n 键）；顺序即菜单顺序。 */
-const PERM_MODES: { mode: PermMode; icon: React.ReactNode }[] = [
-  { mode: 'ask', icon: <ShieldQuestion size={13} /> },
-  { mode: 'acceptEdits', icon: <ShieldCheck size={13} /> },
-  { mode: 'auto', icon: <Zap size={13} /> }
-]
-
 /** 工具卡上要展示的参数提示：优先 command（run_command），再 path，再 pattern（grep/glob），再 url（web_fetch）。 */
 function argHint(args: unknown): string | null {
   if (args && typeof args === 'object') {
@@ -117,13 +106,12 @@ export type Activity =
   | { kind: 'responding' }
   | { kind: 'tool'; toolName: string }
   | { kind: 'subagent'; agent: string }
-  | { kind: 'permission' }
   | { kind: 'ask' }
   | { kind: 'plan' }
 
 /**
  * 从最后一条助手消息的块序列推断"此刻在干什么"：
- * 未答复的问答卡 / 未解决的权限卡 > 运行中的工具 / 子智能体 > 末块有正文=生成回答 > 其余=思考中。
+ * 未答复的问答卡 / 未决计划 > 运行中的工具 / 子智能体 > 末块有正文=生成回答 > 其余=思考中。
  */
 export function deriveActivity(messages: ChatMessage[]): Activity {
   const last = messages[messages.length - 1]
@@ -131,7 +119,6 @@ export function deriveActivity(messages: ChatMessage[]): Activity {
   const blocks = last.blocks
   if (blocks.some((b) => b.kind === 'plan' && !b.decided)) return { kind: 'plan' }
   if (blocks.some((b) => b.kind === 'ask' && b.answers === undefined)) return { kind: 'ask' }
-  if (blocks.some((b) => b.kind === 'permission' && !b.resolved)) return { kind: 'permission' }
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i]
     if (b.kind === 'tool' && b.status === 'running') return { kind: 'tool', toolName: b.name }
@@ -152,15 +139,11 @@ export function ChatView(): React.JSX.Element {
     currentSessionId,
     send,
     stop,
-    respondPermission,
-    respondAsk,
-    permMode,
-    setPermMode
+    respondAsk
   } = useChat()
   const { activeModel, providers, setActiveModel } = useModels()
   const [input, setInput] = useState('')
   const [pickOpen, setPickOpen] = useState(false)
-  const [permOpen, setPermOpen] = useState(false)
   const [pending, setPending] = useState<Picked[]>([])
 
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -295,7 +278,6 @@ export function ChatView(): React.JSX.Element {
                 key={m.id}
                 msg={m}
                 active={streaming && i === messages.length - 1}
-                onPermission={respondPermission}
                 onAsk={respondAsk}
               />
             ))}
@@ -361,47 +343,6 @@ export function ChatView(): React.JSX.Element {
               <Paperclip size={13} />
               {t('chat.attach')}
             </button>
-
-            {/* 权限模式选择（按项目，即时持久化） */}
-            <div className="perm-pick">
-              <button
-                className={`chip${permMode === 'auto' ? ' is-auto' : ''}${permOpen ? ' is-open' : ''}`}
-                type="button"
-                title={t('chat.perm.menuTitle')}
-                onClick={() => setPermOpen((v) => !v)}
-              >
-                {PERM_MODES.find((p) => p.mode === permMode)?.icon}
-                <span className="chip__label">{t(`chat.perm.mode.${permMode}`)}</span>
-                <ChevronDown size={13} className="chip__caret" />
-              </button>
-              {permOpen && (
-                <>
-                  <div className="model-pick__backdrop" onClick={() => setPermOpen(false)} />
-                  <div className="perm-pick__menu" role="menu">
-                    <div className="perm-pick__title">{t('chat.perm.menuTitle')}</div>
-                    {PERM_MODES.map(({ mode, icon }) => (
-                      <button
-                        key={mode}
-                        role="menuitemradio"
-                        aria-checked={mode === permMode}
-                        className={`perm-pick__item${mode === permMode ? ' is-active' : ''}`}
-                        onClick={() => {
-                          setPermMode(mode)
-                          setPermOpen(false)
-                        }}
-                      >
-                        <span className="perm-pick__icon">{icon}</span>
-                        <span className="perm-pick__text">
-                          <span className="perm-pick__name">{t(`chat.perm.mode.${mode}`)}</span>
-                          <span className="perm-pick__desc">{t(`chat.perm.mode.${mode}Desc`)}</span>
-                        </span>
-                        {mode === permMode && <Check size={15} className="perm-pick__check" />}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
 
             <div className="composer__spacer" />
 
@@ -532,16 +473,6 @@ export function StatusIndicator({
     )
   }
 
-  // 等待授权：引导用户去点上方卡片按钮。
-  if (activity.kind === 'permission') {
-    return (
-      <div className="chat__status is-waiting" role="status" aria-live="polite">
-        <ShieldAlert size={14} />
-        <span>{t('chat.work.awaitingPermission')}</span>
-      </div>
-    )
-  }
-
   // 等待作答：引导用户去上方问答卡选择/输入。
   if (activity.kind === 'ask') {
     return (
@@ -573,19 +504,17 @@ export function StatusIndicator({
 /**
  * 单条消息行。用 React.memo + msg 引用比较：store 的 updateLastAssistant 只替换最后一条消息对象、
  * 其余引用不变，故流式期间只有「正在生长的那条」会重渲染/重解析，历史消息全部跳过。
- * 比较刻意忽略 onPermission/onAsk 的引用变化——两者都以 setMessages 函数式更新 + 按 key 派发，
- * 行为与创建它们的那次渲染无关，用「旧」回调也不会出错。
+ * 比较刻意忽略 onAsk 的引用变化——它以 setMessages 函数式更新 + 按 key 派发，
+ * 行为与创建它的那次渲染无关，用「旧」回调也不会出错。
  */
 const MessageRow = memo(
   function MessageRow({
     msg,
     active,
-    onPermission,
     onAsk
   }: {
     msg: ChatMessage
     active: boolean
-    onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
     onAsk: (key: string, answers: string[]) => void
   }): React.JSX.Element {
     if (msg.role === 'user') {
@@ -621,7 +550,6 @@ const MessageRow = memo(
               key={i}
               block={b}
               thinkingDone={!(active && i === msg.blocks.length - 1)}
-              onPermission={onPermission}
               onAsk={onAsk}
             />
           ))}
@@ -664,19 +592,20 @@ function ThinkingBlock({ text, done }: { text: string; done: boolean }): React.J
 export function BlockView({
   block,
   thinkingDone,
-  onPermission,
   onAsk,
   onPlan,
-  onOpenProposal
+  onOpenProposal,
+  onOpenAutotask
 }: {
   block: ChatBlock
   thinkingDone: boolean
-  onPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
   onAsk: (key: string, answers: string[]) => void
   /** 回应 exit_plan 计划审阅（批准并执行 / 继续完善）。缺省 → 计划卡只读展示（如旧壳）。 */
   onPlan?: (key: string, decision: 'approve' | 'keep') => void
   /** 点角色名片 → 打开预填的 PersonaEditor（仅对话优先外壳传入；旧壳不传 → 名片只读展示）。 */
   onOpenProposal?: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
+  /** created 态定时任务名片「打开任务会话」（仅对话优先外壳传入；旧壳不传 → 不显跳转）。 */
+  onOpenAutotask?: (taskId: string) => void
 }): React.JSX.Element | null {
   const { t } = useI18n()
 
@@ -717,89 +646,8 @@ export function BlockView({
     return <AgentCard block={block} onOpen={onOpenProposal} />
   }
 
-  if (block.kind === 'permission') {
-    const meta = TOOL_META[block.toolName] ?? { icon: <Wrench size={14} />, key: 'chat.tool.unknown' }
-    const outside = block.outsideRoot
-    const protectedWrite = Boolean(block.protectedWrite) && !outside
-    // 越界卡：主体显示被访问目标的完整绝对路径；否则回退常规参数提示。
-    const path = outside ?? argHint(block.args)
-    const cls = outside
-      ? 'permission permission--outside'
-      : protectedWrite
-        ? 'permission permission--protected'
-        : 'permission'
-    return (
-      <div className={cls}>
-        <div className="permission__head">
-          <span className="permission__head-icon">
-            <ShieldAlert size={15} />
-          </span>
-          {t('chat.permission.title')}
-          {block.agent && (
-            <span className="permission__from">
-              <Bot size={12} /> {block.agent}
-            </span>
-          )}
-        </div>
-        {outside && (
-          <div className="permission__warn">
-            <AlertTriangle size={13} />
-            <span>{t('chat.permission.outside')}</span>
-          </div>
-        )}
-        {protectedWrite && (
-          <div className="permission__warn">
-            <AlertTriangle size={13} />
-            <span>{t('chat.permission.protected')}</span>
-          </div>
-        )}
-        <div className="permission__desc">
-          {t(meta.key)}
-          {path && (
-            <>
-              ：<code>{path}</code>
-            </>
-          )}
-        </div>
-        {block.resolved ? (
-          <div className="permission__resolved">
-            {block.resolved === 'allow' ? t('chat.permission.allow') : t('chat.permission.deny')}
-          </div>
-        ) : protectedWrite ? (
-          // 保护目录写入：仅「仅此次允许 / 拒绝」，刻意不提供「本会话始终允许」（永远逐次询问）。
-          <div className="permission__actions">
-            <button
-              className="btn btn--primary btn--sm"
-              onClick={() => onPermission(block.key, 'allow', false)}
-            >
-              {t('chat.permission.allowOnce')}
-            </button>
-            <button className="btn btn--sm" onClick={() => onPermission(block.key, 'deny', false)}>
-              {t('chat.permission.deny')}
-            </button>
-          </div>
-        ) : (
-          <div className="permission__actions">
-            <button
-              className="btn btn--primary btn--sm"
-              onClick={() => onPermission(block.key, 'allow', false)}
-            >
-              {outside ? t('chat.permission.outsideAllowOnce') : t('chat.permission.allow')}
-            </button>
-            <button
-              className="btn btn--sm"
-              title={outside ? block.trustDir : undefined}
-              onClick={() => onPermission(block.key, 'allow', true)}
-            >
-              {outside ? t('chat.permission.outsideTrustDir') : t('chat.permission.allowAlways')}
-            </button>
-            <button className="btn btn--sm" onClick={() => onPermission(block.key, 'deny', false)}>
-              {t('chat.permission.deny')}
-            </button>
-          </div>
-        )}
-      </div>
-    )
+  if (block.kind === 'autotaskcard') {
+    return <TaskConfirmCard block={block} onOpen={onOpenAutotask} />
   }
 
   if (block.kind === 'ask') {

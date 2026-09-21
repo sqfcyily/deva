@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode
 } from 'react'
+import type { TaskCreateInput, ResolveAutotaskResult } from '../../../preload'
 import { useI18n } from '../i18n/i18n'
 import { useModels, findActive } from './models'
 import { useWorkspace } from './workspace'
@@ -25,9 +26,6 @@ import { useWorkspace } from './workspace'
 export type ToolStatus = 'running' | 'ok' | 'error' | 'denied'
 
 export type AttachKind = 'image' | 'document' | 'text'
-
-/** 每项目权限模式（与 preload/主进程对齐）：逐次询问 / 自动接受项目内编辑 / 全自动。 */
-export type PermMode = 'ask' | 'acceptEdits' | 'auto'
 
 /** ask_user 候选项（与 preload/主进程对齐）。 */
 export interface AskOption {
@@ -62,6 +60,17 @@ export interface AgentDraft {
   prompt: string
 }
 
+/**
+ * 定时任务确认名片草稿（与 preload/主进程 AutotaskDraft 对齐）：create_task 参数归一化后的形状。
+ * schedule 扁平化为恒有 at/cron/tz 字符串（不适用者为空串），便于编辑器双向绑定；tz 空 = 创建时按本地时区补。
+ * 授权信封（人格/模型）不在草稿里——由用户在名片编辑并授权，此草稿只承载模型的建议部分。
+ */
+export interface AutotaskDraft {
+  title: string
+  prompt: string
+  schedule: { kind: 'once' | 'recurring'; at: string; cron: string; tz: string }
+}
+
 export type ChatBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
@@ -79,6 +88,20 @@ export type ChatBlock =
     }
   | {
       /**
+       * 定时任务确认名片：create_task 的惰性提议。点名片编辑授权信封（日程/人格/模型/写入根/工具白名单/通知）
+       * 后点「创建」才真正建任务与独占会话——「创建时批准、执行时零交互」的授权时刻。
+       * status=pending 可编辑并创建/忽略；created/dismissed 为终态、只读展示。终态经 chat:resolve-autotask 持久化。
+       */
+      kind: 'autotaskcard'
+      /** create_task 工具调用 id（= 终态边车键）。 */
+      id: string
+      draft: AutotaskDraft
+      status: 'pending' | 'created' | 'dismissed'
+      /** created 态指向已建任务（其独占会话 id 与之相同）；供「打开会话」跳转。 */
+      taskId?: string
+    }
+  | {
+      /**
        * 子智能体折叠 Task 卡：run_subagent 调用的「壳」。默认仅显示结论摘要（summary），
        * 内部工具调用（depth>0 事件）收纳进 children，可展开查看；嵌套权限请求不进此卡，照常浮出。
        */
@@ -93,21 +116,6 @@ export type ChatBlock =
       /** 结论摘要（壳结果 summary，如「子智能体「X」已完成」）。 */
       summary?: string
       children: SubagentChild[]
-    }
-  | {
-      kind: 'permission'
-      key: string
-      toolName: string
-      args: unknown
-      resolved?: 'allow' | 'deny'
-      /** 「项目外访问」授权：被访问目标的完整绝对路径（权限卡显式展示越界路径）。 */
-      outsideRoot?: string
-      /** 「项目外访问」授权：点「信任目录」将信任的目录。 */
-      trustDir?: string
-      /** Tier-2 保护目录（.git/.claude/.vscode）写入：仅「仅此次/拒绝」，不提供「始终允许」。 */
-      protectedWrite?: boolean
-      /** 来自子智能体时的显示名（depth>0）；权限卡照常浮出，仅附标签。 */
-      agent?: string
     }
   | {
       kind: 'ask'
@@ -191,6 +199,13 @@ type DisplayBlock =
   | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
+  | {
+      kind: 'autotaskcard'
+      id: string
+      draft: AutotaskDraft
+      status: 'pending' | 'created' | 'dismissed'
+      taskId?: string
+    }
   | { kind: 'ask'; id: string; questions: AskQuestion[]; answers?: string[] | null }
   | { kind: 'plan'; id: string; plan: string; decision?: 'approve' | 'keep' | null }
 type DisplayMessage =
@@ -213,17 +228,6 @@ type StreamEvent =
     }
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   | { type: 'plan_review'; key: string; plan: string }
-  | {
-      type: 'permission_request'
-      key: string
-      toolName: string
-      args: unknown
-      outsideRoot?: string
-      trustDir?: string
-      protectedWrite?: boolean
-      depth?: number
-      agent?: string
-    }
   | { type: 'usage'; input: number; output: number }
   | { type: 'reconnecting'; attempt: number; max: number }
   | { type: 'stream_reset' }
@@ -281,7 +285,6 @@ interface ChatContextValue {
    * 覆盖层即时置位（驱动选择器显示），随下一次 send 落库到会话属性。见 bindings.model / SessionMeta.model。
    */
   setSessionModel: (modelRef: string) => void
-  respondPermission: (key: string, decision: 'allow' | 'deny', remember: boolean) => void
   /** 回应 ask_user 询问（每题的选中项标签或自由输入），并把该问答卡就地收敛为已答态。 */
   respondAsk: (key: string, answers: string[]) => void
   /**
@@ -294,10 +297,16 @@ interface ChatContextValue {
    * 「接受」建角色的写入（personas:upsert）由编辑器直接发起，本方法只管名片状态与终态落库。
    */
   resolveProposal: (toolId: string, status: 'accepted' | 'rejected') => void
-  /** 当前项目的权限模式（授权姿态）。 */
-  permMode: PermMode
-  /** 切换当前项目的权限模式（即时持久化到 ~/.deva/permissions.json）。 */
-  setPermMode: (mode: PermMode) => void
+  /**
+   * 落定定时任务确认名片：action='create' 携完整信封（TaskCreateInput，含日程 + 授权）创建任务与独占会话，
+   * action='dismiss' 忽略。这是「创建时批准」的授权时刻——成功即持久化终态并就地收敛名片（created 带 taskId /
+   * dismissed）；失败（日程非法 / 已过期等）不改名片状态，返回错误码供名片就地提示、用户改后重试。
+   */
+  resolveAutotask: (
+    toolId: string,
+    action: 'create' | 'dismiss',
+    taskInput?: TaskCreateInput
+  ) => Promise<ResolveAutotaskResult>
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null)
@@ -330,6 +339,9 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
       // 历史回填：角色名片按持久化终态复原（pending/accepted/rejected）。
       if (b.kind === 'agentcard')
         return { kind: 'agentcard', id: b.id, draft: b.draft, status: b.status }
+      // 历史回填：定时任务确认名片按持久化终态复原（pending/created/dismissed；created 带 taskId）。
+      if (b.kind === 'autotaskcard')
+        return { kind: 'autotaskcard', id: b.id, draft: b.draft, status: b.status, taskId: b.taskId }
       // 历史回填：ask_user 问答卡。answers=null（取消）归一为空数组作已答态（逐题回落「未作答」）；
       // string[] 原样复原为已答态；undefined（罕见的挂起态）保留可交互（其 respondAsk 对已结束的轮为无操作）。
       // key 用 toolUseId：稳定唯一，供极少数交互态复用（已答卡不使用 key）。
@@ -385,6 +397,27 @@ function normalizeAgentDraft(input: unknown): AgentDraft {
   }
 }
 
+/** 归一化 create_task 原始参数为定时任务草稿（实时路径；与主进程 normalizeAutotaskDraft 对齐）。 */
+function normalizeAutotaskDraft(input: unknown): AutotaskDraft {
+  const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+  const sched = (a.schedule && typeof a.schedule === 'object' ? a.schedule : {}) as Record<
+    string,
+    unknown
+  >
+  const schedKind = sched.kind === 'once' ? 'once' : 'recurring'
+  return {
+    title: str(a.title).trim(),
+    prompt: str(a.prompt),
+    schedule: {
+      kind: schedKind,
+      at: str(sched.at).trim(),
+      cron: str(sched.cron).trim(),
+      tz: str(sched.tz).trim()
+    }
+  }
+}
+
 /** 把一个流事件并入助手消息的块序列（纯函数，返回新数组）。 */
 function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
   const next = blocks.slice()
@@ -420,6 +453,16 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
           kind: 'agentcard',
           id: ev.id,
           draft: normalizeAgentDraft(ev.args),
+          status: 'pending'
+        })
+        return next
+      }
+      // create_task（depth 0）→ 铸一张定时任务确认名片（惰性提议，待用户议定授权后创建）。
+      if (ev.name === 'create_task') {
+        next.push({
+          kind: 'autotaskcard',
+          id: ev.id,
+          draft: normalizeAutotaskDraft(ev.args),
           status: 'pending'
         })
         return next
@@ -475,19 +518,6 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       }
       return next
     }
-    case 'permission_request':
-      // 子智能体的权限请求照常浮出为顶层权限卡（不进 Task 卡），仅附子智能体标签。
-      next.push({
-        kind: 'permission',
-        key: ev.key,
-        toolName: ev.toolName,
-        args: ev.args,
-        outsideRoot: ev.outsideRoot,
-        trustDir: ev.trustDir,
-        protectedWrite: ev.protectedWrite,
-        agent: ev.agent
-      })
-      return next
     case 'ask_user':
       next.push({ kind: 'ask', key: ev.key, questions: ev.questions })
       return next
@@ -532,14 +562,13 @@ function dropStepPartial(blocks: ChatBlock[]): ChatBlock[] {
   return blocks.slice(0, lastTool + 1)
 }
 
-/** 本轮是否已有「可见回复」：正文/工具/子卡/权限/问答/错误/提示任一即算；纯思考或全空不算。 */
+/** 本轮是否已有「可见回复」：正文/工具/子卡/问答/错误/提示任一即算；纯思考或全空不算。 */
 function hasVisibleAnswer(blocks: ChatBlock[]): boolean {
   return blocks.some(
     (b) =>
       (b.kind === 'text' && b.text.trim() !== '') ||
       b.kind === 'tool' ||
       b.kind === 'subagent' ||
-      b.kind === 'permission' ||
       b.kind === 'ask' ||
       b.kind === 'error' ||
       b.kind === 'notice'
@@ -601,13 +630,12 @@ const EMPTY_RUNTIME: SessionRuntime = Object.freeze({
 /** 当前所视会话无活动态时对外暴露的空消息数组（稳定引用，避免每次渲染新建）。 */
 const EMPTY_MESSAGES: ChatMessage[] = Object.freeze([]) as unknown as ChatMessage[]
 
-/** 该会话是否有「待用户处理」项（末条助手消息含未决权限 / 未答问答）——供后台会话角标提示。 */
+/** 该会话是否有「待用户处理」项（末条助手消息含未答问答 / 未决计划）——供后台会话角标提示。 */
 function hasAttention(messages: ChatMessage[]): boolean {
   const last = messages[messages.length - 1]
   if (!last || last.role !== 'assistant') return false
   return last.blocks.some(
     (b) =>
-      (b.kind === 'permission' && !b.resolved) ||
       (b.kind === 'ask' && b.answers === undefined) ||
       (b.kind === 'plan' && !b.decided)
   )
@@ -630,7 +658,6 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   const [bindings, setBindings] = useState<
     Map<string, { personaId?: string; focusRoot?: string | null; model?: string; createdAt?: number }>
   >(() => new Map())
-  const [permMode, setPermModeState] = useState<PermMode>('ask')
   // 每秒自增以触发重渲染，刷新当前所视会话「已用秒数」（不绑定变量，仅需其副作用）。
   const [, setTick] = useState(0)
 
@@ -766,37 +793,58 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
   }, [activeProject?.path, startFresh, patchRuntime])
 
-  // 切项目：加载该项目的权限模式（各项目可不同；未设置默认 ask）。
-  useEffect(() => {
-    const path = activeProject?.path ?? null
-    let cancelled = false
-    void (async () => {
-      const m = await window.deva.perm.getMode(path)
-      if (!cancelled && projectPathRef.current === path) setPermModeState(m)
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [activeProject?.path])
-
   // 订阅主进程流事件（挂载一次）。按 payload.sessionId 路由进对应会话的活动态——
   // 不再丢弃「非当前会话」事件：后台那轮照常累积，切回去即见其实时流。
   useEffect(() => {
-    const unsub = window.deva.chat.onEvent((payload) => {
-      const sid = payload.sessionId
-      const ev = payload.event as StreamEvent
-      if (ev.type === 'done') {
+    // 从主进程重载某会话并整份替换其 runtime 消息（后台回合完成后的权威回填）。
+    const reloadIntoRuntime = (sid: string): void => {
+      void (async () => {
+        const dms = await window.deva.chat.loadSession(sid, projectPathRef.current)
+        if (sessionIdRef.current !== sid) return // 期间切走 → 丢弃过期结果（下次打开自会重载）
         patchRuntime(sid, (r) => ({
           ...r,
           streaming: false,
           turnId: null,
           reconnecting: null,
-          // 据终止原因补「中断说明」：截断/空回合给出可见提示，正常回合原样短路。
-          messages: updateLastAssistant(r.messages, (b) => appendTerminalNotice(b, ev.stopReason))
+          messages: displayToMessages(dms as DisplayMessage[])
         }))
+      })()
+    }
+
+    const unsub = window.deva.chat.onEvent((payload) => {
+      const sid = payload.sessionId
+      const ev = payload.event as StreamEvent
+
+      // 本渲染层是否正为该会话流式一轮 = 经 send/compact 建过「用户气泡 + 空助手位」脚手架。
+      // 只有这样的会话才能把流事件正确拼进气泡。否则是**后台回合**（典型：调度器触发的定时任务在
+      // 主进程内闭环执行），本层从未建脚手架 —— 其内容以主进程 + 磁盘为唯一真源，绝不在此凑合拼装。
+      const localStreaming = runtimesRef.current.get(sid)?.streaming === true
+
+      if (ev.type === 'done') {
+        if (localStreaming) {
+          patchRuntime(sid, (r) => ({
+            ...r,
+            streaming: false,
+            turnId: null,
+            reconnecting: null,
+            // 据终止原因补「中断说明」：截断/空回合给出可见提示，正常回合原样短路。
+            messages: updateLastAssistant(r.messages, (b) => appendTerminalNotice(b, ev.stopReason))
+          }))
+        } else {
+          // 后台回合完成：主进程已落盘。绝不留下 messages:[] 的空壳 runtime 遮蔽已落盘内容
+          //（此前正是它令定时任务生成的对话「打开是空的、重启才出现」）。正在查看 → 立刻从主进程
+          // 重载回填；未查看 → 丢弃任何陈旧/空 runtime，下次 selectSession 自会从主进程重载。
+          if (sessionIdRef.current === sid) reloadIntoRuntime(sid)
+          else dropRuntime(sid)
+        }
         void refreshSessions() // 标题/排序可能已更新
         return
       }
+
+      // 后台回合的中途事件一律忽略：本层无脚手架可拼（强拼只会污染陈旧 runtime 或凭空造出空壳），
+      // 内容以主进程为准、done 时统一重载。仅本层正流式的会话才继续处理下列实时事件。
+      if (!localStreaming) return
+
       // 主进程真实信号：断流后正在自动重连（展示"连接中断，正在重连"横幅）。
       if (ev.type === 'reconnecting') {
         patchRuntime(sid, (r) => ({ ...r, reconnecting: { attempt: ev.attempt, max: ev.max } }))
@@ -816,7 +864,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })
     })
     return unsub
-  }, [refreshSessions, patchRuntime, patchMessages])
+  }, [refreshSessions, patchRuntime, patchMessages, dropRuntime])
 
   const viewed = runtimes.get(currentSessionId)
   const viewedStreaming = viewed?.streaming ?? false
@@ -1148,40 +1196,6 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       setSessions(list)
     }
 
-    const respondPermission = (
-      key: string,
-      decision: 'allow' | 'deny',
-      remember: boolean
-    ): void => {
-      void window.deva.chat.respondPermission({ key, decision, remember })
-      // 权限卡属当前所视会话（ChatView 只渲染它的卡）→ 就地收敛该会话的消息。
-      patchMessages(sessionIdRef.current, (blocks) => {
-        const next = blocks.map((b) =>
-          b.kind === 'permission' && b.key === key ? { ...b, resolved: decision } : b
-        )
-        if (decision === 'deny') {
-          for (let i = next.length - 1; i >= 0; i--) {
-            const b = next[i]
-            if (b.kind === 'tool' && b.status === 'running') {
-              next[i] = { ...b, status: 'denied', summary: undefined }
-              break
-            }
-            // 子智能体内部工具被拒：其运行中的子项在开着的 Task 卡内，就地标记 denied。
-            if (b.kind === 'subagent' && b.status === 'running') {
-              const cj = b.children.map((c) => c.status).lastIndexOf('running')
-              if (cj >= 0) {
-                const children = b.children.slice()
-                children[cj] = { ...children[cj], status: 'denied', summary: undefined }
-                next[i] = { ...b, children }
-                break
-              }
-            }
-          }
-        }
-        return next
-      })
-    }
-
     const respondAsk = (key: string, answers: string[]): void => {
       void window.deva.chat.respondAsk({ key, answers })
       patchMessages(sessionIdRef.current, (blocks) =>
@@ -1207,9 +1221,29 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       void window.deva.chat.resolveProposal(sid, toolId, status)
     }
 
-    const setPermMode = (mode: PermMode): void => {
-      setPermModeState(mode)
-      void window.deva.perm.setMode(projectPathRef.current, mode)
+    const resolveAutotask = async (
+      toolId: string,
+      action: 'create' | 'dismiss',
+      taskInput?: TaskCreateInput
+    ): Promise<ResolveAutotaskResult> => {
+      const sid = sessionIdRef.current
+      const res = await window.deva.chat.resolveAutotask(sid, toolId, action, taskInput)
+      // 仅成功才收敛终态（名片属当前所视会话）：created 带 taskId 供跳转、dismissed 只读。
+      // 失败（invalid-cron / expired 等）保持 pending，让用户在名片里改日程/授权后重试。
+      if (res.ok) {
+        patchMessages(sid, (blocks) =>
+          blocks.map((b) =>
+            b.kind === 'autotaskcard' && b.id === toolId
+              ? {
+                  ...b,
+                  status: res.status,
+                  taskId: res.status === 'created' ? res.taskId : b.taskId
+                }
+              : b
+          )
+        )
+      }
+      return res
     }
 
     return {
@@ -1230,12 +1264,10 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       draftSession,
       mountFocus,
       setSessionModel,
-      respondPermission,
       respondAsk,
       respondPlan,
       resolveProposal,
-      permMode,
-      setPermMode
+      resolveAutotask
     }
   }, [
     sessions,
@@ -1246,7 +1278,6 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     sessionStates,
     currentBinding,
     draftSession,
-    permMode,
     activeModel,
     providers,
     t,

@@ -1,0 +1,70 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode
+} from 'react'
+import type { TaskRecord, TaskStatus } from '../../../preload'
+
+/**
+ * 定时任务渲染层 store（全局，与项目无关）。
+ * 真值在主进程 services/tasks.ts；这里只镜像列表并订阅 `tasks:changed` 全量广播——
+ * 增删改启停/立即运行都委托主进程 IPC，主进程处理后广播回全量列表，本 store 据此刷新（乐观留给广播）。
+ * 独占会话由调度器首次触发时建，本 store 不碰会话——「打开任务会话」由外壳经 ChatProvider 完成。
+ */
+interface TasksContextValue {
+  tasks: TaskRecord[]
+  /** 暂停 / 恢复（active↔paused）；completed/error 亦可经此重新置 active。 */
+  setStatus: (id: string, status: TaskStatus) => Promise<void>
+  /** 立即运行一次（委托调度器串行队列；调度器未就绪返回 ok:false）。 */
+  runNow: (id: string) => Promise<{ ok: boolean; reason?: string }>
+  /** 删除任务（连同其运行历史；独占会话保留，由用户在对话列表自行删除）。 */
+  remove: (id: string) => Promise<void>
+}
+
+const TasksContext = createContext<TasksContextValue | null>(null)
+
+export function TasksProvider({ children }: { children: ReactNode }): React.JSX.Element {
+  const [tasks, setTasks] = useState<TaskRecord[]>([])
+
+  // 初始拉取 + 订阅全量广播（仿 useExtensions 对 mcp.onStatus 的处理）。
+  useEffect(() => {
+    let alive = true
+    void window.deva?.tasks
+      ?.list?.()
+      .then((list) => {
+        if (alive) setTasks(list)
+      })
+      .catch(() => {})
+    const off = window.deva?.tasks?.onChanged?.((list) => setTasks(list))
+    return () => {
+      alive = false
+      off?.()
+    }
+  }, [])
+
+  const setStatus = useCallback(async (id: string, status: TaskStatus): Promise<void> => {
+    await window.deva.tasks.setStatus(id, status)
+    // 刷新交由 tasks:changed 广播。
+  }, [])
+
+  const runNow = useCallback(
+    (id: string): Promise<{ ok: boolean; reason?: string }> => window.deva.tasks.runNow(id),
+    []
+  )
+
+  const remove = useCallback(async (id: string): Promise<void> => {
+    await window.deva.tasks.remove(id)
+  }, [])
+
+  const value: TasksContextValue = { tasks, setStatus, runNow, remove }
+  return <TasksContext.Provider value={value}>{children}</TasksContext.Provider>
+}
+
+export function useTasks(): TasksContextValue {
+  const ctx = useContext(TasksContext)
+  if (!ctx) throw new Error('useTasks 必须在 TasksProvider 内使用')
+  return ctx
+}
