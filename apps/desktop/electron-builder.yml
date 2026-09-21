@@ -1,0 +1,42 @@
+appId: dev.sqfcy.deva
+productName: Deva
+copyright: Copyright © 2026 sqfcy
+
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - out/**
+  - package.json
+
+# 让最终安装包自带运行时，用户双击安装后即可启动，无需任何环境配置
+asar: true
+
+# Electron 二进制走国内镜像，避免打包时卡在下载
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/
+
+win:
+  target:
+    - nsis
+  # icon: build/icon.ico   # TODO: 补充应用图标后启用
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Deva
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.developer-tools
+
+linux:
+  target:
+    - AppImage
+  category: Development
