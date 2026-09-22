@@ -1,7 +1,9 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   AlarmClock,
   AlertTriangle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
   ArrowUpToLine,
   Brain,
   CalendarClock,
@@ -12,10 +14,13 @@ import {
   Clock,
   Cog,
   Copy,
+  Download,
   FileText,
   FileCode2,
   FolderOpen,
   FolderPlus,
+  GitBranch,
+  GitCommitHorizontal,
   Image as ImageIcon,
   Info,
   ListChecks,
@@ -28,9 +33,11 @@ import {
   Plug,
   Plus,
   Puzzle,
+  RefreshCw,
   RotateCcw,
   Search,
   ShieldCheck,
+  Sparkles,
   Square,
   Trash2,
   Unlock,
@@ -40,6 +47,11 @@ import {
 import './redesign.css'
 import type { McpKV, McpServer, McpStatus, Persona } from '../mock/extensions'
 import type {
+  GitBranch as GitBranchEntry,
+  GitFailReason,
+  GitGenLocale,
+  GitGenModel,
+  GitStatus,
   PersonaUpsertInput,
   PreviewScheduleResult,
   TaskRecord,
@@ -63,6 +75,7 @@ import { useTasks } from '../store/tasks'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
+import { Modal } from '../components/Modal'
 import {
   AVATAR_COLORS,
   AVATAR_SLOTS,
@@ -752,12 +765,15 @@ function Rail({
 /**
  * 轻量右键菜单：定位到光标处（视口坐标），带全屏透明背板——点击 / 右键空白 / Esc 皆关闭。
  * 挂载后测量自身尺寸并夹取回视口内，避免贴近右 / 下边缘时溢出被裁。
+ * openUp 时把传入的 y 当作菜单「底边」锚点（top = y − 菜单高度），使其向上生长——
+ * 用于贴近视口底部的触发点（如挂载 chip 的 git pill），避免菜单向下遮挡输入区，行为同模型切换的 dropup。
  */
 function ContextMenu({
   x,
   y,
   items,
-  onClose
+  onClose,
+  openUp = false
 }: {
   x: number
   y: number
@@ -771,6 +787,8 @@ function ContextMenu({
     onClick: () => void
   }>
   onClose: () => void
+  /** 向上浮出：y 视作菜单底边锚点，菜单朝上生长（默认向下）。 */
+  openUp?: boolean
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ left: x, top: y })
@@ -780,11 +798,12 @@ function ContextMenu({
     const r = el.getBoundingClientRect()
     const pad = 8
     let left = x
-    let top = y
+    // openUp：y 是底边 → 顶边 = y − 高度；否则 y 即顶边。随后统一夹回视口。
+    let top = openUp ? y - r.height : y
     if (left + r.width > window.innerWidth - pad) left = window.innerWidth - r.width - pad
     if (top + r.height > window.innerHeight - pad) top = window.innerHeight - r.height - pad
     setPos({ left: Math.max(pad, left), top: Math.max(pad, top) })
-  }, [x, y])
+  }, [x, y, openUp])
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
@@ -822,6 +841,348 @@ function ContextMenu({
         ))}
       </div>
     </>
+  )
+}
+
+/* ─────────────────────────── Git 快捷面板（IDEA 式点击浮出） ───────────────────────────
+ * 挂载工作区若是 git 仓库，则在挂载 chip 里跟一枚分支 pill，点击浮出常用操作。
+ * 后端（services/git.ts + window.deva.git.*）早已齐备；此处只是薄薄一层 renderer UI。
+ * 安全：focusRoot 在 fs:open-folder 时已 trustRoot，git:status 内部 assertInside——复用既有受信根，
+ * 不新增任何越权面，也不弹权限框（与「全放行 + 静默硬底线」一致）。
+ */
+
+/** git 是否可用：全应用只探一次（缓存 Promise），避免每次挂载都 spawn 一次 --version。 */
+let gitAvailablePromise: Promise<boolean> | null = null
+function probeGitAvailable(): Promise<boolean> {
+  if (!gitAvailablePromise) {
+    gitAvailablePromise = window.deva.git
+      .available()
+      .then((r) => r.available)
+      .catch(() => false)
+  }
+  return gitAvailablePromise
+}
+
+/** GitFailReason → 本地化文案；缺 key 时回落到通用「操作失败」。 */
+function gitReasonText(t: (k: string) => string, reason?: GitFailReason): string {
+  const key = `cf.git.err.${reason || 'error'}`
+  const s = t(key)
+  return s === key ? t('cf.git.err.error') : s
+}
+
+interface GitState {
+  available: boolean
+  status: GitStatus | null
+  busy: boolean
+  refresh: () => Promise<void>
+}
+
+/**
+ * 读取某工作区的 git 状态。不轮询（status 每次 spawn git 进程，且当前无文件监听）：
+ * 只在「挂载 / 开菜单 / 每次写操作后」拉取。用 reqRef 防竞态——快速切换工作区时旧结果不覆盖新。
+ */
+function useGitStatus(root: string | null): GitState {
+  const [available, setAvailable] = useState(false)
+  const [status, setStatus] = useState<GitStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const reqRef = useRef(0)
+
+  const refresh = useCallback(async (): Promise<void> => {
+    const seq = ++reqRef.current
+    if (!root) {
+      setAvailable(false)
+      setStatus(null)
+      return
+    }
+    const ok = await probeGitAvailable()
+    if (seq !== reqRef.current) return
+    setAvailable(ok)
+    if (!ok) {
+      setStatus(null)
+      return
+    }
+    setBusy(true)
+    try {
+      const st = await window.deva.git.status(root)
+      if (seq !== reqRef.current) return
+      setStatus(st.isRepo ? st : null)
+    } catch {
+      if (seq === reqRef.current) setStatus(null)
+    } finally {
+      if (seq === reqRef.current) setBusy(false)
+    }
+  }, [root])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  return { available, status, busy, refresh }
+}
+
+/**
+ * 挂载 chip 里的分支 pill + 快捷菜单。仅当 git 可用且目标是仓库时渲染，否则返回 null（非仓库 / 没装 git 静默隐藏）。
+ * 菜单复用既有 ContextMenu（视口定位 + 越界夹回）；「切换分支」二次弹出分支列表菜单；「提交」开 CommitModal。
+ */
+function GitWidget({ root }: { root: string }): React.JSX.Element | null {
+  const { t, locale } = useI18n()
+  const toast = useToast()
+  const { activeModel, hasKey } = useModels()
+  const { available, status, busy, refresh } = useGitStatus(root)
+
+  const [menu, setMenu] = useState<{ kind: 'main' | 'branch'; x: number; y: number } | null>(null)
+  const [branches, setBranches] = useState<GitBranchEntry[]>([])
+  const [commitOpen, setCommitOpen] = useState(false)
+  const [opBusy, setOpBusy] = useState(false)
+  const pillRef = useRef<HTMLButtonElement>(null)
+
+  if (!available || !status || !status.isRepo) return null
+
+  const label = status.detached ? t('cf.git.detached') : status.branch || t('cf.git.noBranch')
+
+  // 锚点取 pill 上边缘（留 4px 间隙）；ContextMenu 以 openUp 把它当底边向上浮出，
+  // 避免菜单向下遮挡下方的输入区/角色卡（挂载 chip 贴近视口底部）。
+  const openMenuAt = (kind: 'main' | 'branch'): void => {
+    const el = pillRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    setMenu({ kind, x: r.left, y: r.top - 4 })
+  }
+
+  // 统一执行一个 git 写操作：置忙 → 调用 → 据结果 toast → 刷新状态。
+  const run = async (
+    fn: () => Promise<{ ok: boolean; reason?: GitFailReason }>,
+    okMsg: string
+  ): Promise<void> => {
+    setOpBusy(true)
+    try {
+      const r = await fn()
+      if (r.ok) toast.show({ variant: 'success', message: okMsg })
+      else toast.show({ variant: 'error', message: gitReasonText(t, r.reason) })
+    } catch {
+      toast.show({ variant: 'error', message: gitReasonText(t, 'error') })
+    } finally {
+      setOpBusy(false)
+      void refresh()
+    }
+  }
+
+  const openBranches = async (): Promise<void> => {
+    try {
+      setBranches(await window.deva.git.branches(root))
+    } catch {
+      setBranches([])
+    }
+    openMenuAt('branch')
+  }
+
+  const mainItems = [
+    { label: t('cf.git.fetch'), icon: <Download size={14} />, onClick: () => void run(() => window.deva.git.fetch(root), t('cf.git.doneFetch')) },
+    { label: t('cf.git.pull'), icon: <ArrowDownToLine size={14} />, onClick: () => void run(() => window.deva.git.pull(root), t('cf.git.donePull')) },
+    { label: t('cf.git.push'), icon: <ArrowUpFromLine size={14} />, onClick: () => void run(() => window.deva.git.push(root, status.upstream ? null : status.branch), t('cf.git.donePush')) },
+    { label: t('cf.git.switchBranch'), icon: <GitBranch size={14} />, onClick: () => void openBranches() },
+    { label: t('cf.git.commit'), icon: <GitCommitHorizontal size={14} />, onClick: () => setCommitOpen(true) },
+    { label: t('cf.git.refresh'), icon: <RefreshCw size={14} />, onClick: () => void refresh() }
+  ]
+
+  const branchItems = branches.map((b) => ({
+    label: b.name,
+    icon: b.current ? <Check size={14} /> : <span style={{ width: 14, display: 'inline-block' }} />,
+    disabled: b.current,
+    title: b.current ? t('cf.git.currentBranch') : undefined,
+    onClick: () => void run(() => window.deva.git.checkout(root, b.name), t('cf.git.doneCheckout'))
+  }))
+
+  const commitModel: GitGenModel | null =
+    activeModel && hasKey(activeModel.provider.id)
+      ? {
+          adapter: activeModel.provider.adapter,
+          providerId: activeModel.provider.id,
+          baseURL: activeModel.provider.apiHost,
+          model: activeModel.model.id
+        }
+      : null
+
+  return (
+    <>
+      <button
+        ref={pillRef}
+        type="button"
+        className={`cf-gitchip${opBusy || busy ? ' is-busy' : ''}`}
+        title={t('cf.git.menuHint')}
+        aria-label={t('cf.git.menuHint')}
+        onClick={() => openMenuAt('main')}
+        disabled={opBusy}
+      >
+        <GitBranch size={13} />
+        <span className="cf-gitchip__branch">{label}</span>
+        {(status.ahead > 0 || status.behind > 0) && (
+          <span className="cf-gitchip__ab">
+            {status.ahead > 0 && (
+              <span className="cf-gitchip__up">
+                <ArrowUpFromLine size={11} />
+                {status.ahead}
+              </span>
+            )}
+            {status.behind > 0 && (
+              <span className="cf-gitchip__down">
+                <ArrowDownToLine size={11} />
+                {status.behind}
+              </span>
+            )}
+          </span>
+        )}
+      </button>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          openUp
+          items={menu.kind === 'main' ? mainItems : branchItems}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {commitOpen && (
+        <CommitModal
+          root={root}
+          status={status}
+          locale={locale as GitGenLocale}
+          model={commitModel}
+          onClose={() => setCommitOpen(false)}
+          onDone={() => {
+            setCommitOpen(false)
+            void refresh()
+          }}
+        />
+      )}
+    </>
+  )
+}
+
+/**
+ * 轻量提交框（v1 只做「暂存全部改动 + 提交」，不含逐文件 diff/staging）：
+ * 顶部一行改动数量摘要；一个信息 textarea；「AI 生成」按当前模型走 generateCommitMessage（无模型/无密钥则灰掉）。
+ * 有冲突时禁止提交并提示先解决——避免把未合并状态提交进去。
+ */
+function CommitModal({
+  root,
+  status,
+  locale,
+  model,
+  onClose,
+  onDone
+}: {
+  root: string
+  status: GitStatus
+  locale: GitGenLocale
+  model: GitGenModel | null
+  onClose: () => void
+  onDone: () => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const toast = useToast()
+  const [msg, setMsg] = useState('')
+  const [gen, setGen] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  // 变更集：跨 staged/unstaged/conflicts 按路径去重计数。
+  const changed = useMemo(() => {
+    const set = new Set<string>()
+    for (const f of status.staged) set.add(f.path)
+    for (const f of status.unstaged) set.add(f.path)
+    for (const f of status.conflicts) set.add(f.path)
+    return set.size
+  }, [status])
+
+  const hasConflicts = status.conflicts.length > 0
+  const canCommit = Boolean(msg.trim()) && changed > 0 && !hasConflicts && !busy
+
+  const generate = async (): Promise<void> => {
+    if (!model) return
+    setGen(true)
+    try {
+      const r = await window.deva.git.generateCommitMessage(root, model, locale)
+      if (r.ok && r.text) setMsg(r.text)
+      else toast.show({ variant: 'error', message: gitReasonText(t, r.reason) })
+    } catch {
+      toast.show({ variant: 'error', message: gitReasonText(t, 'error') })
+    } finally {
+      setGen(false)
+    }
+  }
+
+  const submit = async (): Promise<void> => {
+    if (!canCommit) return
+    setBusy(true)
+    try {
+      // 先暂存全部未暂存改动（未跟踪文件已含在 status.unstaged 内），再提交。
+      const toStage = status.unstaged.map((f) => f.path)
+      if (toStage.length > 0) {
+        const sres = await window.deva.git.stage(root, toStage)
+        if (!sres.ok) {
+          toast.show({ variant: 'error', message: gitReasonText(t, sres.reason) })
+          return
+        }
+      }
+      const cres = await window.deva.git.commit(root, msg.trim())
+      if (cres.ok) {
+        toast.show({ variant: 'success', message: t('cf.git.doneCommit') })
+        onDone()
+      } else {
+        toast.show({ variant: 'error', message: gitReasonText(t, cres.reason) })
+      }
+    } catch {
+      toast.show({ variant: 'error', message: gitReasonText(t, 'error') })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const meta = hasConflicts
+    ? t('cf.git.commitConflicts')
+    : changed > 0
+      ? t('cf.git.commitCount').replace('{n}', String(changed))
+      : t('cf.git.commitNone')
+
+  return (
+    <Modal open onClose={onClose} width={460} labelledBy="cf-commit-title">
+      <h2 id="cf-commit-title" className="modal__title">
+        {t('cf.git.commitTitle')}
+      </h2>
+      <p className="cf-commit__meta">{meta}</p>
+      <textarea
+        className="input cf-commit__msg"
+        value={msg}
+        placeholder={t('cf.git.commitPlaceholder')}
+        onChange={(e) => setMsg(e.target.value)}
+        autoFocus
+      />
+      <div className="cf-commit__bar">
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={() => void generate()}
+          disabled={!model || gen || busy}
+          title={model ? t('cf.git.aiHint') : t('cf.git.aiNoModel')}
+        >
+          <Sparkles size={14} />
+          {gen ? t('cf.git.aiGenerating') : t('cf.git.aiGenerate')}
+        </button>
+        <div className="cf-commit__actions">
+          <button type="button" className="btn btn--ghost" onClick={onClose} disabled={busy}>
+            {t('cf.cancel')}
+          </button>
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={() => void submit()}
+            disabled={!canCommit}
+          >
+            {t('cf.git.commitDo')}
+          </button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -2470,6 +2831,8 @@ function Composer({
                   <FolderOpen size={15} />
                   {`${basename(focusRoot)} · ${t('cf.focusing')}`}
                 </button>
+                {/* git 仓库时浮出快捷面板；非仓库 / 没装 git 时 GitWidget 自身返回 null 静默隐藏 */}
+                <GitWidget root={focusRoot} />
                 <button
                   type="button"
                   className="cf-wschip__x"

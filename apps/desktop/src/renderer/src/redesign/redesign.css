@@ -582,6 +582,88 @@
   color: var(--danger);
 }
 
+/* ── Git 快捷 pill（挂载 chip 内、名字与 ✕ 之间；仅 git 仓库渲染） ── */
+.cf-gitchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-subtle);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cf-gitchip:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.cf-gitchip:disabled,
+.cf-gitchip.is-busy {
+  opacity: 0.6;
+  cursor: default;
+}
+.cf-gitchip__branch {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cf-gitchip__ab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 2px;
+}
+.cf-gitchip__up,
+.cf-gitchip__down {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 11px;
+  line-height: 1;
+}
+.cf-gitchip__up {
+  color: var(--success);
+}
+.cf-gitchip__down {
+  color: var(--warning);
+}
+
+/* ── 提交框（复用 Modal + .modal__title / .btn / .input） ── */
+.cf-commit__meta {
+  margin: 4px 0 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.cf-commit__msg {
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.cf-commit__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cf-commit__bar .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.cf-commit__actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* 选择态（按轮删除）：入口改由聊天区右键菜单唤起（复用 .cf-ctx），不再有头部按钮。 */
 
 /* 选择态：每一轮包成可勾选卡片（前言不入卡，原样呈现） */
