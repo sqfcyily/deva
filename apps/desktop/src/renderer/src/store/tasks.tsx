@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { TaskRecord, TaskStatus } from '../../../preload'
+import type { TaskRecord, TaskStatus, TaskUpdateInput } from '../../../preload'
 
 /**
  * 定时任务渲染层 store（全局，与项目无关）。
@@ -20,6 +20,8 @@ interface TasksContextValue {
   setStatus: (id: string, status: TaskStatus) => Promise<void>
   /** 立即运行一次（委托调度器串行队列；调度器未就绪返回 ok:false）。 */
   runNow: (id: string) => Promise<{ ok: boolean; reason?: string }>
+  /** 编辑任务（标题/指令/日程/人格/模型）；主进程校验日程并重算下次触发，广播回全量列表。 */
+  update: (input: TaskUpdateInput) => Promise<TaskRecord | null>
   /** 删除任务（连同其运行历史；独占会话保留，由用户在对话列表自行删除）。 */
   remove: (id: string) => Promise<void>
 }
@@ -55,11 +57,16 @@ export function TasksProvider({ children }: { children: ReactNode }): React.JSX.
     []
   )
 
+  const update = useCallback(
+    (input: TaskUpdateInput): Promise<TaskRecord | null> => window.deva.tasks.update(input),
+    []
+  )
+
   const remove = useCallback(async (id: string): Promise<void> => {
     await window.deva.tasks.remove(id)
   }, [])
 
-  const value: TasksContextValue = { tasks, setStatus, runNow, remove }
+  const value: TasksContextValue = { tasks, setStatus, runNow, update, remove }
   return <TasksContext.Provider value={value}>{children}</TasksContext.Provider>
 }
 

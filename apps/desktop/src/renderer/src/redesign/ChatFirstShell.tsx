@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   AlarmClock,
+  AlertTriangle,
   ArrowUpToLine,
   Brain,
   CalendarClock,
@@ -38,7 +39,15 @@ import {
 } from 'lucide-react'
 import './redesign.css'
 import type { McpKV, McpServer, McpStatus, Persona } from '../mock/extensions'
-import type { PersonaUpsertInput, TaskRecord, TaskSchedule, TaskStatus } from '../../../preload'
+import type {
+  PersonaUpsertInput,
+  PreviewScheduleResult,
+  TaskRecord,
+  TaskSchedule,
+  TaskStatus
+} from '../../../preload'
+import { buildCron, localDatetimeValue, parseRecur, type ScheduleMode } from '../features/chat/schedule'
+import { TaskModelSelect, TaskPersonaSelect } from '../features/chat/TaskPickers'
 import {
   useChat,
   type AgentDraft,
@@ -53,6 +62,7 @@ import { useModels } from '../store/models'
 import { useTasks } from '../store/tasks'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
+import { useToast } from '../components/ToastProvider'
 import {
   AVATAR_COLORS,
   AVATAR_SLOTS,
@@ -264,15 +274,6 @@ export function ChatFirstShell(): React.JSX.Element {
     setTasksTarget(taskId)
     setRailTab('tasks')
   }
-  /**
-   * 定时任务标签页里点某任务「打开会话」→ 选中其独占会话并切回消息视图。
-   * 用记录上的权威 sessionId（= `task-` + 记录 id，创建时已铸），不再自行拼装。
-   */
-  const openTaskSession = (task: TaskRecord): void => {
-    selectSession(task.sessionId)
-    setRailTab('chats')
-  }
-
   // 主进程导航意图（tasks:navigate）：通知点击带 `{sessionId}` → 打开该任务独占会话并回消息视图；
   // 托盘「定时任务概览」带 `{pane:'tasks'}` → 切到 Tasks 标签。窗口从托盘唤起时随即落到目标视图。
   useEffect(() => {
@@ -291,6 +292,15 @@ export function ChatFirstShell(): React.JSX.Element {
   const startWith = (personaId: string): void => {
     newSession(personaId, undefined, personas.find((p) => p.id === personaId)?.model)
     setRailTab('chats')
+  }
+  /**
+   * 右键菜单「新开对话」：以选中对话的**原角色**发起一条全新对话（复用 startWith → 新建空会话并
+   * 快照该角色当前偏好模型）。原角色已删（或为旧无绑定会话）时回落兜底身份，绝不无绑定裸建。
+   */
+  const newChatFromThread = (id: string): void => {
+    const source = railSessions.find((s) => s.id === id)
+    const personaId = source?.personaId ?? defaultPersonaId
+    if (personaId) startWith(personaId)
   }
   /**
    * 「通过对话添加角色」：新建一个绑定兜底身份（通常「通用」）的空对话，把引导语**预填进输入框**，
@@ -377,7 +387,6 @@ export function ChatFirstShell(): React.JSX.Element {
           // 「定时任务」tab：占满列表列 + 右侧内容的整块空间，作独立管理面（列表 + 每行操作）。
           // 与「消息 / 角色」正交——不渲染 Rail 列表列，故 Rail 的 tab 只会拿到 'chats' | 'roster'。
           <TasksPane
-            onOpenTask={openTaskSession}
             target={tasksTarget}
             onTargetConsumed={() => setTasksTarget(null)}
           />
@@ -394,6 +403,7 @@ export function ChatFirstShell(): React.JSX.Element {
               onOpenProfile={openProfile}
               onAddPersona={() => setEditor({ mode: 'create' })}
               onAddPersonaByChat={addPersonaByChat}
+              onNewChatFromThread={newChatFromThread}
               onDeleteThread={deleteThread}
               onDeletePersona={deletePersona}
               onReorderPersonas={reorderPersonas}
@@ -522,6 +532,7 @@ function Rail({
   onOpenProfile,
   onAddPersona,
   onAddPersonaByChat,
+  onNewChatFromThread,
   onDeleteThread,
   onDeletePersona,
   onReorderPersonas
@@ -536,6 +547,7 @@ function Rail({
   onOpenProfile: (id: string) => void
   onAddPersona: () => void
   onAddPersonaByChat: () => void
+  onNewChatFromThread: (id: string) => void
   onDeleteThread: (id: string, title: string) => void
   onDeletePersona: (id: string, name: string) => void
   onReorderPersonas: (ids: string[]) => void
@@ -690,6 +702,11 @@ function Rail({
           items={
             menu.kind === 'thread'
               ? [
+                  {
+                    label: t('cf.newChat'),
+                    icon: <Plus size={14} />,
+                    onClick: () => onNewChatFromThread(menu.id)
+                  },
                   {
                     label: t('cf.deleteChat'),
                     icon: <Trash2 size={14} />,
@@ -1084,24 +1101,25 @@ function fmtAbs(ts: number, locale: 'zh-CN' | 'en'): string {
  * IPC；本面只读列表 + 触发命令，绝不在此创建任务（创建只能经对话确认名片）。
  */
 function TasksPane({
-  onOpenTask,
   target,
   onTargetConsumed
 }: {
-  onOpenTask: (task: TaskRecord) => void
   /** 外部导航意图（对话里「查看任务」）：非空则挂载即选中该任务；消费后经 onTargetConsumed 回清。 */
   target: string | null
   onTargetConsumed: () => void
 }): React.JSX.Element {
   const { t, locale } = useI18n()
-  const { tasks, setStatus, runNow, remove } = useTasks()
+  const { tasks, setStatus, runNow, update, remove } = useTasks()
   const { providers } = useModels()
   const { personas } = useExtensions()
   const dialog = useDialog()
+  const toast = useToast()
 
   // 当前选中的任务（右侧显示其详情）。态存于本组件——切走再回本 tab 复位到未选中空态。
   // 初值取外部 target：从对话「查看任务」切入时本组件恰新挂载，直接落在目标任务详情。
   const [viewTaskId, setViewTaskId] = useState<string | null>(target)
+  // 正在编辑的任务 id（非空 → 弹出编辑弹窗）。存 id 而非记录：编辑期间任务经广播刷新亦从最新列表派生。
+  const [editTaskId, setEditTaskId] = useState<string | null>(null)
   // target 变化（再次从对话点「查看任务」而本组件未卸载时）→ 改选目标并回清父层意图。
   useEffect(() => {
     if (target) {
@@ -1136,6 +1154,11 @@ function TasksPane({
     () => tasks.find((x) => x.id === viewTaskId) ?? null,
     [tasks, viewTaskId]
   )
+  // 编辑目标同样从列表派生：编辑中若任务被删（广播刷新）则记录消失 → 弹窗自然关闭。
+  const editTask = useMemo(
+    () => tasks.find((x) => x.id === editTaskId) ?? null,
+    [tasks, editTaskId]
+  )
 
   // 人格名（引用已删则回落默认标签）。
   const personaName = (id: string | null): string => {
@@ -1157,7 +1180,16 @@ function TasksPane({
   const doRunNow = (task: TaskRecord): void => {
     void (async () => {
       const res = await runNow(task.id)
-      if (!res.ok) {
+      if (res.ok) {
+        // ok:true 表示已成功派发进调度器串行队列（非「已完成」）——非阻断 toast 知会「已开始运行」，
+        // 实际结果稍后落入运行历史，用户无需点确认。
+        toast.show({
+          title: t('tasks.runNowStarted'),
+          message: t('tasks.runNowStartedHint'),
+          variant: 'success'
+        })
+      } else {
+        // 失败仍走阻断式确认框（需用户知悉原因）。
         await dialog.confirm({
           title: t('tasks.runNowFailed'),
           message: res.reason || '',
@@ -1191,16 +1223,28 @@ function TasksPane({
       />
       {viewTask ? (
         <TaskDetail
+          key={viewTask.id}
           task={viewTask}
           personaName={personaName(viewTask.auth.personaId)}
           modelLabel={modelLabel(viewTask.auth.modelRef)}
-          onOpen={() => onOpenTask(viewTask)}
+          onEdit={() => setEditTaskId(viewTask.id)}
           onSetStatus={(s) => void setStatus(viewTask.id, s)}
           onRunNow={() => doRunNow(viewTask)}
           onDelete={() => doDelete(viewTask)}
         />
       ) : (
         <TasksEmpty hasTasks={tasks.length > 0} />
+      )}
+      {editTask && (
+        <TaskEditModal
+          key={editTask.id}
+          task={editTask}
+          onClose={() => setEditTaskId(null)}
+          onSave={async (input) => {
+            await update({ id: editTask.id, ...input })
+            setEditTaskId(null)
+          }}
+        />
       )}
     </>
   )
@@ -1383,13 +1427,13 @@ function TaskRailRow({
 
 /**
  * 右详情面（对齐角色资料卡 .cf-profile）：展示选中任务的类型/状态、日程与运行信息、任务指令、
- * 运行历史，以及操作（打开会话·暂停/恢复·立即运行·删除）。日程人读摘要经 useSchedulePreview 权威求值。
+ * 运行历史，以及操作（编辑·暂停/恢复·立即运行·删除）。日程人读摘要经 useSchedulePreview 权威求值。
  */
 function TaskDetail({
   task,
   personaName,
   modelLabel,
-  onOpen,
+  onEdit,
   onSetStatus,
   onRunNow,
   onDelete
@@ -1397,7 +1441,7 @@ function TaskDetail({
   task: TaskRecord
   personaName: string
   modelLabel: string
-  onOpen: () => void
+  onEdit: () => void
   onSetStatus: (status: TaskStatus) => void
   onRunNow: () => void
   onDelete: () => void
@@ -1417,6 +1461,9 @@ function TaskDetail({
     s === 'ok' ? 'tasks.runOk' : s === 'skipped' ? 'tasks.runSkipped' : 'tasks.runError'
   // 运行历史按时间降序（最近在上）。
   const history = useMemo(() => [...task.runs].reverse(), [task.runs])
+
+  // 任务指令可能很长（占位过多），做成折叠面板：标题行作开关，默认收起（不渲染指令体），点击可展开/再收起。
+  const [promptOpen, setPromptOpen] = useState(false)
 
   return (
     <main className="cf-conv">
@@ -1477,13 +1524,21 @@ function TaskDetail({
           </div>
 
           <div className="cf-tdetail__section">
-            <div className="cf-profile__convs-label">{t('tasks.fPrompt')}</div>
-            <div className="cf-tdetail__prompt">{task.prompt}</div>
+            <button
+              type="button"
+              className="cf-tdetail__prompthead"
+              onClick={() => setPromptOpen((v) => !v)}
+              aria-expanded={promptOpen}
+            >
+              <ChevronRight size={14} className={`cf-tdetail__chev${promptOpen ? ' is-open' : ''}`} />
+              <span className="cf-profile__convs-label">{t('tasks.fPrompt')}</span>
+            </button>
+            {promptOpen && <div className="cf-tdetail__prompt">{task.prompt}</div>}
           </div>
 
           <div className="cf-tdetail__actions">
-            <button className="cf-tdetail__act cf-tdetail__act--primary" onClick={onOpen}>
-              <MessageCircle size={15} /> {t('tasks.actOpen')}
+            <button className="cf-tdetail__act" onClick={onEdit}>
+              <Pencil size={15} /> {t('tasks.actEdit')}
             </button>
             {task.status === 'active' ? (
               <button className="cf-tdetail__act" onClick={() => onSetStatus('paused')}>
@@ -1525,6 +1580,298 @@ function TaskDetail({
         </div>
       </div>
     </main>
+  )
+}
+
+/**
+ * 任务编辑弹窗（复用 .cf-modal is-editor 编辑器骨架）——在既有任务上改标题/指令/日程/人格/模型。
+ * 与创建确认名片同构：日程 cron 反解/拼装走共享 ../features/chat/schedule，实时 preview 校验并给人读摘要；
+ * 落盘走 tasks.update（主进程校验日程、重算下次触发、完成/错误态改日程即重激活），成功后由 tasks:changed 刷新。
+ * 编辑保留原任务时区（只换墙钟/cron，不改 tz）。
+ */
+function TaskEditModal({
+  task,
+  onClose,
+  onSave
+}: {
+  task: TaskRecord
+  onClose: () => void
+  onSave: (input: {
+    title: string
+    prompt: string
+    schedule: TaskSchedule
+    auth: { personaId: string | null; modelRef: string | null }
+  }) => Promise<void>
+}): React.JSX.Element {
+  const { t, locale } = useI18n()
+
+  const [title, setTitle] = useState(task.title)
+  const [prompt, setPrompt] = useState(task.prompt)
+
+  // 日程编辑器初值：一次性取记录 at（缺则 now+1h 兜底，供切到「一次性」时有合理默认）；周期反解 cron。
+  const onceInit = useMemo(
+    () => task.schedule.at || localDatetimeValue(new Date(Date.now() + 3600_000)),
+    [task.schedule.at]
+  )
+  const [onceDate, setOnceDate] = useState(onceInit.slice(0, 10))
+  const [onceTime, setOnceTime] = useState(onceInit.slice(11, 16) || '10:00')
+  const initRecur = useMemo(() => parseRecur(task.schedule.cron ?? ''), [task.schedule.cron])
+  const [mode, setMode] = useState<ScheduleMode>(
+    task.schedule.kind === 'once' ? 'once' : initRecur.mode
+  )
+  const [time, setTime] = useState(initRecur.time)
+  const [dow, setDow] = useState(initRecur.dow)
+  const [hourlyMin, setHourlyMin] = useState(initRecur.min)
+  const [everyN, setEveryN] = useState(initRecur.n)
+  const [dom, setDom] = useState(initRecur.dom)
+  const [customCron, setCustomCron] = useState(initRecur.custom)
+
+  const [personaId, setPersonaId] = useState<string | null>(task.auth.personaId)
+  const [modelRef, setModelRef] = useState<string | null>(task.auth.modelRef)
+
+  const [saving, setSaving] = useState(false)
+
+  // 保留原任务时区（改日程只换墙钟/cron）；缺失兜底本地时区。
+  const tz = useMemo(
+    () => task.schedule.tz || Intl.DateTimeFormat().resolvedOptions().timeZone,
+    [task.schedule.tz]
+  )
+
+  const cron = useMemo(
+    () => (mode === 'once' ? '' : buildCron(mode, time, dow, hourlyMin, everyN, dom, customCron)),
+    [mode, time, dow, hourlyMin, everyN, dom, customCron]
+  )
+  const schedule = useMemo<TaskSchedule>(
+    () =>
+      mode === 'once'
+        ? { kind: 'once', at: `${onceDate}T${onceTime}`, tz }
+        : { kind: 'recurring', cron, tz },
+    [mode, onceDate, onceTime, cron, tz]
+  )
+
+  // 实时预览（轻防抖）：人读摘要 + 下次触发；严格校验（不 allowPast），把日程改到过去即时暴露为无效。
+  const [preview, setPreview] = useState<PreviewScheduleResult | null>(null)
+  useEffect(() => {
+    let alive = true
+    const timer = setTimeout(() => {
+      void window.deva.tasks
+        .preview(schedule, locale)
+        .then((r) => {
+          if (alive) setPreview(r)
+        })
+        .catch(() => {
+          if (alive) setPreview(null)
+        })
+    }, 200)
+    return () => {
+      alive = false
+      clearTimeout(timer)
+    }
+  }, [schedule, locale])
+
+  const weekdayKeys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+  const nextText = (ms: number | null): string =>
+    ms == null
+      ? t('tasks.previewNever')
+      : new Date(ms).toLocaleString(locale === 'zh-CN' ? 'zh-CN' : 'en-US')
+
+  const scheduleInvalid = preview != null && !preview.ok
+  const canSave = !saving && prompt.trim().length > 0 && !scheduleInvalid
+
+  const save = async (): Promise<void> => {
+    if (!canSave) return
+    setSaving(true)
+    try {
+      await onSave({
+        title: title.trim(),
+        prompt: prompt.trim(),
+        schedule,
+        auth: { personaId, modelRef }
+      })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="cf-modal__backdrop" onClick={onClose}>
+      <div
+        className="cf-modal is-editor"
+        role="dialog"
+        aria-label={t('tasks.editTitle')}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="cf-modal__head">
+          <span className="cf-modal__title">{t('tasks.editTitle')}</span>
+          <button className="cf-modal__close" title={t('common.close')} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="cf-editor">
+          <div className="cf-field">
+            <label className="cf-field__label">{t('tasks.fTitle')}</label>
+            <input
+              className="cf-input"
+              value={title}
+              placeholder={t('tasks.fTitlePlaceholder')}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </div>
+
+          <div className="cf-field">
+            <label className="cf-field__label">{t('tasks.fSchedule')}</label>
+            <div className="cf-schedrow">
+              <select
+                className="cf-select cf-schedrow__mode"
+                value={mode}
+                onChange={(e) => setMode(e.target.value as ScheduleMode)}
+              >
+                <option value="once">{t('tasks.schedOnce')}</option>
+                <option value="everyN">{t('tasks.recurEveryN')}</option>
+                <option value="hourly">{t('tasks.recurHourly')}</option>
+                <option value="daily">{t('tasks.recurDaily')}</option>
+                <option value="weekly">{t('tasks.recurWeekly')}</option>
+                <option value="monthly">{t('tasks.recurMonthly')}</option>
+                <option value="custom">{t('tasks.recurCustom')}</option>
+              </select>
+
+              {mode === 'once' && (
+                <>
+                  <input
+                    type="date"
+                    className="cf-input"
+                    value={onceDate}
+                    onChange={(e) => setOnceDate(e.target.value)}
+                  />
+                  <input
+                    type="time"
+                    className="cf-input"
+                    value={onceTime}
+                    onChange={(e) => setOnceTime(e.target.value)}
+                  />
+                </>
+              )}
+
+              {mode === 'weekly' && (
+                <select
+                  className="cf-select"
+                  value={dow}
+                  onChange={(e) => setDow(parseInt(e.target.value, 10))}
+                >
+                  {weekdayKeys.map((k, i) => (
+                    <option key={k} value={i}>
+                      {t(`tasks.weekday.${k}`)}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {mode === 'monthly' && (
+                <>
+                  <span className="cf-schedrow__label">{t('tasks.fDayOfMonth')}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={31}
+                    className="cf-input cf-schedrow__num"
+                    value={dom}
+                    onChange={(e) =>
+                      setDom(Math.max(1, Math.min(31, parseInt(e.target.value, 10) || 1)))
+                    }
+                  />
+                </>
+              )}
+
+              {(mode === 'daily' || mode === 'weekly' || mode === 'monthly') && (
+                <input
+                  type="time"
+                  className="cf-input"
+                  value={time}
+                  onChange={(e) => setTime(e.target.value)}
+                />
+              )}
+
+              {mode === 'hourly' && (
+                <>
+                  <span className="cf-schedrow__label">{t('tasks.fMinute')}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={59}
+                    className="cf-input cf-schedrow__num"
+                    value={hourlyMin}
+                    onChange={(e) => setHourlyMin(parseInt(e.target.value, 10) || 0)}
+                  />
+                </>
+              )}
+
+              {mode === 'everyN' && (
+                <>
+                  <span className="cf-schedrow__label">{t('tasks.fEveryN')}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    className="cf-input cf-schedrow__num"
+                    value={everyN}
+                    onChange={(e) => setEveryN(parseInt(e.target.value, 10) || 1)}
+                  />
+                </>
+              )}
+
+              {mode === 'custom' && (
+                <input
+                  className="cf-input"
+                  value={customCron}
+                  placeholder="0 10 * * *"
+                  onChange={(e) => setCustomCron(e.target.value)}
+                />
+              )}
+            </div>
+
+            {/* 日程预览：人读摘要 + 下次触发；无效即时提示（阻断保存）。 */}
+            <div className={`cf-schedprev${scheduleInvalid ? ' is-invalid' : ''}`}>
+              {scheduleInvalid ? (
+                <>
+                  <AlertTriangle size={13} />
+                  <span>{t('tasks.previewInvalid')}</span>
+                </>
+              ) : preview && preview.ok ? (
+                <span>
+                  {preview.description} · {t('tasks.previewNext')}：{nextText(preview.nextRunAt)}
+                </span>
+              ) : (
+                <span>…</span>
+              )}
+            </div>
+          </div>
+
+          {/* 任务指令：与对话输入框同款内嵌盒（更高、不可拖），底部工具条内嵌人格 / 模型 chip 选择器。 */}
+          <div className="cf-field">
+            <label className="cf-field__label">{t('tasks.fPrompt')}</label>
+            <div className="cf-box cf-box--task">
+              <textarea
+                value={prompt}
+                placeholder={t('tasks.fPromptPlaceholder')}
+                onChange={(e) => setPrompt(e.target.value)}
+              />
+              <div className="cf-box__bar">
+                <TaskPersonaSelect value={personaId} onChange={setPersonaId} />
+                <TaskModelSelect value={modelRef} onChange={setModelRef} />
+              </div>
+            </div>
+          </div>
+
+          <div className="cf-editor__actions">
+            <button className="cf-btn" onClick={onClose}>
+              {t('cf.cancel')}
+            </button>
+            <button className="cf-btn is-primary" disabled={!canSave} onClick={save}>
+              {t('cf.save')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -2839,7 +3186,6 @@ function ExtensionsPane(): React.JSX.Element {
   return (
     <>
       <h2 className="cf-pane__title">{t('activity.extensions')}</h2>
-      <p className="cf-pane__desc">{t('cf.extHint')}</p>
       {items.length === 0 ? (
         <div className="cf-empty">{t('cf.extEmpty')}</div>
       ) : (

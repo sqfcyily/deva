@@ -813,6 +813,17 @@
   gap: var(--space-1);
   margin-top: var(--space-2);
 }
+/* 任务表单：指令输入采用与对话输入框同款内嵌盒（.cf-box），但更高、不可拖拽
+   （.cf-box textarea 已 resize:none）、去阴影；底部工具条内嵌人格 / 模型 chip 选择器（靠右对齐）。 */
+.cf-box--task {
+  box-shadow: none;
+}
+.cf-box--task textarea {
+  min-height: 200px;
+}
+.cf-box--task .cf-box__bar {
+  justify-content: flex-end;
+}
 .cf-iconbtn {
   width: 30px;
   height: 30px;
@@ -1540,6 +1551,41 @@
 .cf-textarea:focus {
   border-color: var(--accent);
 }
+
+/* 任务编辑弹窗：日程编辑行（模式下拉 + 随模式变化的时间/星期/数字输入同行）与其下人读预览行。
+   行内控件收成 auto 宽（不再撑满整行）自然并排，窄屏可换行。 */
+.cf-schedrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.cf-schedrow .cf-input,
+.cf-schedrow .cf-select {
+  width: auto;
+}
+.cf-schedrow__mode {
+  flex: 0 0 auto;
+  min-width: 104px;
+}
+.cf-schedrow__num {
+  width: 76px;
+}
+.cf-schedrow__label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.cf-schedprev {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: var(--space-2);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.cf-schedprev.is-invalid {
+  color: var(--danger);
+}
 /* ---- 头像收成一枚可点缩略图（信息表单里）；点击切到头像编辑面板 ---- */
 .cf-avapick {
   display: inline-flex;
@@ -2012,6 +2058,39 @@
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* 指令折叠面板：小标题行作展开/收起开关（左侧披露箭头 + 复用 .cf-profile__convs-label 文本），
+   按钮外观归零、整行可点、悬停给底色；展开时才渲染指令体（.cf-tdetail__prompt）。 */
+.cf-tdetail__prompthead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  margin: 0 calc(var(--space-2) * -1);
+  width: calc(100% + var(--space-2) * 2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+.cf-tdetail__prompthead:hover {
+  background: var(--bg-hover);
+}
+.cf-tdetail__prompthead .cf-profile__convs-label {
+  margin-bottom: 0;
+}
+.cf-tdetail__chev {
+  color: var(--fg-subtle);
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+.cf-tdetail__chev.is-open {
+  transform: rotate(90deg);
+}
+.cf-tdetail__prompthead + .cf-tdetail__prompt {
+  margin-top: var(--space-2);
 }
 
 /* 操作按钮行（对齐 .cf-profile__actions，但可容纳 4 个动作、自动换行）。 */

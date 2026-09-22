@@ -30,6 +30,7 @@
   --activitybar-w: 52px;
   --statusbar-h: 26px;
   --sidepanel-w: 264px;
+  --control-h: 34px; /* 表单单行控件统一高度（input/select/date/time 一致对齐） */
 
   /* 层级 */
   --z-panel: 10;

@@ -394,9 +394,11 @@ const zhCN: MessageTree = {
     recurWeekly: '每周',
     recurHourly: '每小时',
     recurEveryN: '每 N 分钟',
+    recurMonthly: '每月',
     recurCustom: '自定义 cron',
     fMinute: '第几分钟',
     fEveryN: '间隔（分钟）',
+    fDayOfMonth: '几号',
     weekday: {
       sun: '周日',
       mon: '周一',
@@ -409,7 +411,7 @@ const zhCN: MessageTree = {
     previewNext: '下次',
     previewNever: '无（不会再触发）',
     previewInvalid: '日程无效，请检查填写',
-    fPersona: '人格',
+    fPersona: '角色',
     personaDefault: '跟随当前对话',
     fModel: '模型',
     modelDefault: '全局默认',
@@ -443,9 +445,12 @@ const zhCN: MessageTree = {
     actPause: '暂停',
     actResume: '恢复',
     actRunNow: '立即运行',
-    actOpen: '打开会话',
+    actEdit: '编辑',
     actDelete: '删除',
+    editTitle: '编辑定时任务',
     runNowFailed: '无法立即运行',
+    runNowStarted: '已开始运行',
+    runNowStartedHint: '任务已加入运行队列，完成后可在下方「运行历史」查看结果。',
     deleteConfirm: '删除后其运行历史一并清除；独占会话仍保留在对话列表，可另行删除。',
     // 管理页（左列表 + 右详情）
     searchPlaceholder: '搜索任务',
@@ -456,7 +461,7 @@ const zhCN: MessageTree = {
   // 对话优先外壳（chat-first）专用文案。t 只收 key、不插值——含名字/计数/相对时间的动态串在 JS 组。
   cf: {
     brandTag: '对话优先',
-    newChat: '新对话',
+    newChat: '新建对话',
     search: '搜索',
     searchChats: '搜索对话',
     searchRoster: '搜索角色',
@@ -540,7 +545,6 @@ const zhCN: MessageTree = {
     fTools: '可用工具',
     fToolsHint: '不选 = 允许全部内置工具；一旦勾选，则仅限所选（只收窄可见性，不放宽安全闸门）。',
     fPrompt: '系统提示词',
-    extHint: '在此管理技能、MCP 服务与子智能体（全局生效）；点击 MCP 服务可编辑其配置。',
     extEmpty: '暂无扩展',
     kindSkill: '技能',
     kindMcp: 'MCP',
@@ -940,9 +944,11 @@ const en: MessageTree = {
     recurWeekly: 'Weekly',
     recurHourly: 'Hourly',
     recurEveryN: 'Every N minutes',
+    recurMonthly: 'Monthly',
     recurCustom: 'Custom cron',
     fMinute: 'At minute',
     fEveryN: 'Interval (minutes)',
+    fDayOfMonth: 'Day',
     weekday: {
       sun: 'Sun',
       mon: 'Mon',
@@ -990,9 +996,12 @@ const en: MessageTree = {
     actPause: 'Pause',
     actResume: 'Resume',
     actRunNow: 'Run now',
-    actOpen: 'Open chat',
+    actEdit: 'Edit',
     actDelete: 'Delete',
+    editTitle: 'Edit task',
     runNowFailed: 'Cannot run right now',
+    runNowStarted: 'Run started',
+    runNowStartedHint: 'The task has been queued; check “Run history” below for the result once it finishes.',
     deleteConfirm:
       'Its run history will also be removed. The dedicated conversation stays in your chat list and can be deleted separately.',
     // Management page (list + detail)
@@ -1093,8 +1102,6 @@ const en: MessageTree = {
     fToolsHint:
       'None selected = all built-in tools allowed; once you pick any, only those are visible (narrows visibility only, never loosens the security gate).',
     fPrompt: 'System prompt',
-    extHint:
-      'Manage skills, MCP servers, and sub-agents (applies globally); click an MCP server to edit its configuration.',
     extEmpty: 'No extensions',
     kindSkill: 'Skill',
     kindMcp: 'MCP',

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarClock, Clock, Repeat, Check, Bot, Cpu, AlertTriangle } from 'lucide-react'
+import { CalendarClock, Check, AlertTriangle } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useChat, type ChatBlock } from '../../store/chat'
-import { useModels } from '../../store/models'
-import { useExtensions } from '../../store/extensions'
 import type { TaskCreateInput, TaskSchedule, PreviewScheduleResult, TaskRecord } from '../../../../preload'
+import { buildCron, localDatetimeValue, parseRecur, type ScheduleMode } from './schedule'
+import { TaskModelSelect, TaskPersonaSelect } from './TaskPickers'
 
 /**
  * 定时任务确认名片（autotaskcard）——**唯一的授权时刻**。
@@ -15,81 +15,8 @@ import type { TaskCreateInput, TaskSchedule, PreviewScheduleResult, TaskRecord }
  * 故名片不再有类型/写入根/工具白名单/通知开关。
  *
  * pending → 完整编辑表单；created/dismissed → 紧凑终态（编辑器卸载，表单态自然丢弃）。
+ * cron 反解/拼装与 datetime-local 取值抽到 ./schedule（与任务编辑弹窗共用单一真源）。
  */
-
-type RecurMode = 'daily' | 'weekly' | 'hourly' | 'everyN' | 'custom'
-
-/** "YYYY-MM-DDTHH:MM"（datetime-local 值，本地墙钟无偏移）。 */
-function localDatetimeValue(d: Date): string {
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
-}
-
-/** 反解 cron 为周期编辑器的初始预设（匹配不上则落「自定义」，原样承载 cron 文本）。 */
-function parseRecur(cron: string): {
-  mode: RecurMode
-  time: string
-  dow: number
-  min: number
-  n: number
-  custom: string
-} {
-  const trimmed = cron.trim()
-  const def = {
-    mode: 'daily' as RecurMode,
-    time: '10:00',
-    dow: 1,
-    min: 0,
-    n: 30,
-    custom: trimmed
-  }
-  const parts = trimmed.split(/\s+/)
-  if (parts.length !== 5) return { ...def, mode: trimmed ? 'custom' : 'daily' }
-  const [m, h, dom, mon, dw] = parts
-  const num = (s: string): number | null => (/^\d+$/.test(s) ? parseInt(s, 10) : null)
-  const fmt = (hh: string, mm: string): string =>
-    `${String(parseInt(hh, 10)).padStart(2, '0')}:${String(parseInt(mm, 10)).padStart(2, '0')}`
-  // 每天：分/时为数字，其余为 *
-  if (dom === '*' && mon === '*' && dw === '*' && num(m) != null && num(h) != null)
-    return { ...def, mode: 'daily', time: fmt(h, m) }
-  // 每周：分/时/星期为数字，日/月为 *
-  if (dom === '*' && mon === '*' && num(dw) != null && num(m) != null && num(h) != null)
-    return { ...def, mode: 'weekly', time: fmt(h, m), dow: num(dw) as number }
-  // 每小时：分为数字，其余为 *
-  if (h === '*' && dom === '*' && mon === '*' && dw === '*' && num(m) != null)
-    return { ...def, mode: 'hourly', min: num(m) as number }
-  // 每 N 分钟：*/n，其余为 *
-  const every = /^\*\/(\d+)$/.exec(m)
-  if (every && h === '*' && dom === '*' && mon === '*' && dw === '*')
-    return { ...def, mode: 'everyN', n: parseInt(every[1], 10) }
-  return { ...def, mode: 'custom', custom: trimmed }
-}
-
-/** 由周期编辑器状态拼出 5 段 cron。 */
-function buildCron(
-  mode: RecurMode,
-  time: string,
-  dow: number,
-  hourlyMin: number,
-  everyN: number,
-  customCron: string
-): string {
-  const [hhRaw, mmRaw] = time.split(':')
-  const h = String(parseInt(hhRaw || '0', 10) || 0)
-  const m = String(parseInt(mmRaw || '0', 10) || 0)
-  switch (mode) {
-    case 'daily':
-      return `${m} ${h} * * *`
-    case 'weekly':
-      return `${m} ${h} * * ${dow}`
-    case 'hourly':
-      return `${Math.max(0, Math.min(59, hourlyMin))} * * * *`
-    case 'everyN':
-      return `*/${Math.max(1, everyN)} * * * *`
-    default:
-      return customCron.trim()
-  }
-}
 
 /** 创建结果 / 预览错误码 → 本地化 key。 */
 function errKey(code: string): string {
@@ -199,25 +126,28 @@ function TaskEditor({
 }): React.JSX.Element {
   const { t, locale } = useI18n()
   const { resolveAutotask, currentBinding } = useChat()
-  const { providers } = useModels()
-  const { personas } = useExtensions()
 
   const { draft } = block
 
   const [title, setTitle] = useState(draft.title)
   const [prompt, setPrompt] = useState(draft.prompt)
 
-  // 日程编辑器
-  const [schedKind, setSchedKind] = useState<'once' | 'recurring'>(draft.schedule.kind)
-  const [onceAt, setOnceAt] = useState(
-    draft.schedule.at || localDatetimeValue(new Date(Date.now() + 3600_000))
+  // 日程编辑器（对齐 1.png：一次性 + 各周期合并为单个模式下拉，控件同行）
+  const onceInit = useMemo(
+    () => draft.schedule.at || localDatetimeValue(new Date(Date.now() + 3600_000)),
+    [draft.schedule.at]
   )
+  const [onceDate, setOnceDate] = useState(onceInit.slice(0, 10))
+  const [onceTime, setOnceTime] = useState(onceInit.slice(11, 16) || '10:00')
   const initRecur = useMemo(() => parseRecur(draft.schedule.cron), [draft.schedule.cron])
-  const [recurMode, setRecurMode] = useState<RecurMode>(initRecur.mode)
+  const [mode, setMode] = useState<ScheduleMode>(
+    draft.schedule.kind === 'once' ? 'once' : initRecur.mode
+  )
   const [time, setTime] = useState(initRecur.time)
   const [dow, setDow] = useState(initRecur.dow)
   const [hourlyMin, setHourlyMin] = useState(initRecur.min)
   const [everyN, setEveryN] = useState(initRecur.n)
+  const [dom, setDom] = useState(initRecur.dom)
   const [customCron, setCustomCron] = useState(initRecur.custom)
 
   // 授权信封（默认取当前对话绑定：人格 / 模型）
@@ -234,17 +164,17 @@ function TaskEditor({
   )
 
   const cron = useMemo(
-    () => buildCron(recurMode, time, dow, hourlyMin, everyN, customCron),
-    [recurMode, time, dow, hourlyMin, everyN, customCron]
+    () => (mode === 'once' ? '' : buildCron(mode, time, dow, hourlyMin, everyN, dom, customCron)),
+    [mode, time, dow, hourlyMin, everyN, dom, customCron]
   )
 
   // 送 preview / create 的日程对象（只带适用字段 + 恒有 tz）。
   const schedule = useMemo<TaskSchedule>(
     () =>
-      schedKind === 'once'
-        ? { kind: 'once', at: onceAt.trim(), tz }
+      mode === 'once'
+        ? { kind: 'once', at: `${onceDate}T${onceTime}`, tz }
         : { kind: 'recurring', cron, tz },
-    [schedKind, onceAt, cron, tz]
+    [mode, onceDate, onceTime, cron, tz]
   )
 
   // 实时预览（轻防抖）：人读摘要 + 下次触发；校验失败即时暴露（绝不留到触发时才失败）。
@@ -266,16 +196,6 @@ function TaskEditor({
       clearTimeout(timer)
     }
   }, [schedule, locale])
-
-  const enabledGroups = useMemo(
-    () =>
-      providers
-        .filter((p) => p.enabled)
-        .map((p) => ({ p, models: p.models.filter((m) => m.enabled) }))
-        .filter((g) => g.models.length > 0),
-    [providers]
-  )
-  const enabledPersonas = useMemo(() => personas.filter((p) => p.enabled), [personas])
 
   const nextText = (ms: number | null): string =>
     ms == null
@@ -334,119 +254,116 @@ function TaskEditor({
         />
       </label>
 
-      {/* 任务指令 */}
-      <label className="autotaskcard__field">
-        <span className="autotaskcard__label">{t('tasks.fPrompt')}</span>
-        <textarea
-          className="autotaskcard__textarea"
-          value={prompt}
-          rows={2}
-          placeholder={t('tasks.fPromptPlaceholder')}
-          onChange={(e) => setPrompt(e.target.value)}
-        />
-      </label>
-
       {/* 日程 */}
       <div className="autotaskcard__field">
         <span className="autotaskcard__label">{t('tasks.fSchedule')}</span>
-        <div className="autotaskcard__seg">
-          <button
-            type="button"
-            className={`autotaskcard__seg-btn${schedKind === 'once' ? ' is-on' : ''}`}
-            onClick={() => setSchedKind('once')}
+        <div className="autotaskcard__sched-row">
+          <select
+            className="autotaskcard__input autotaskcard__sched-mode"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as ScheduleMode)}
           >
-            <Clock size={13} /> {t('tasks.schedOnce')}
-          </button>
-          <button
-            type="button"
-            className={`autotaskcard__seg-btn${schedKind === 'recurring' ? ' is-on' : ''}`}
-            onClick={() => setSchedKind('recurring')}
-          >
-            <Repeat size={13} /> {t('tasks.schedRecurring')}
-          </button>
-        </div>
+            <option value="once">{t('tasks.schedOnce')}</option>
+            <option value="everyN">{t('tasks.recurEveryN')}</option>
+            <option value="hourly">{t('tasks.recurHourly')}</option>
+            <option value="daily">{t('tasks.recurDaily')}</option>
+            <option value="weekly">{t('tasks.recurWeekly')}</option>
+            <option value="monthly">{t('tasks.recurMonthly')}</option>
+            <option value="custom">{t('tasks.recurCustom')}</option>
+          </select>
 
-        {schedKind === 'once' ? (
-          <div className="autotaskcard__row">
-            <span className="autotaskcard__row-label">{t('tasks.fOnceAt')}</span>
-            <input
-              type="datetime-local"
-              className="autotaskcard__input"
-              value={onceAt}
-              onChange={(e) => setOnceAt(e.target.value)}
-            />
-          </div>
-        ) : (
-          <>
+          {mode === 'once' && (
+            <>
+              <input
+                type="date"
+                className="autotaskcard__input"
+                value={onceDate}
+                onChange={(e) => setOnceDate(e.target.value)}
+              />
+              <input
+                type="time"
+                className="autotaskcard__input"
+                value={onceTime}
+                onChange={(e) => setOnceTime(e.target.value)}
+              />
+            </>
+          )}
+
+          {mode === 'weekly' && (
             <select
               className="autotaskcard__input"
-              value={recurMode}
-              onChange={(e) => setRecurMode(e.target.value as RecurMode)}
+              value={dow}
+              onChange={(e) => setDow(parseInt(e.target.value, 10))}
             >
-              <option value="daily">{t('tasks.recurDaily')}</option>
-              <option value="weekly">{t('tasks.recurWeekly')}</option>
-              <option value="hourly">{t('tasks.recurHourly')}</option>
-              <option value="everyN">{t('tasks.recurEveryN')}</option>
-              <option value="custom">{t('tasks.recurCustom')}</option>
+              {weekdayKeys.map((k, i) => (
+                <option key={k} value={i}>
+                  {t(`tasks.weekday.${k}`)}
+                </option>
+              ))}
             </select>
-            {(recurMode === 'daily' || recurMode === 'weekly') && (
-              <div className="autotaskcard__row">
-                {recurMode === 'weekly' && (
-                  <select
-                    className="autotaskcard__input"
-                    value={dow}
-                    onChange={(e) => setDow(parseInt(e.target.value, 10))}
-                  >
-                    {weekdayKeys.map((k, i) => (
-                      <option key={k} value={i}>
-                        {t(`tasks.weekday.${k}`)}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <input
-                  type="time"
-                  className="autotaskcard__input"
-                  value={time}
-                  onChange={(e) => setTime(e.target.value)}
-                />
-              </div>
-            )}
-            {recurMode === 'hourly' && (
-              <div className="autotaskcard__row">
-                <span className="autotaskcard__row-label">{t('tasks.fMinute')}</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={59}
-                  className="autotaskcard__input autotaskcard__input--num"
-                  value={hourlyMin}
-                  onChange={(e) => setHourlyMin(parseInt(e.target.value, 10) || 0)}
-                />
-              </div>
-            )}
-            {recurMode === 'everyN' && (
-              <div className="autotaskcard__row">
-                <span className="autotaskcard__row-label">{t('tasks.fEveryN')}</span>
-                <input
-                  type="number"
-                  min={1}
-                  className="autotaskcard__input autotaskcard__input--num"
-                  value={everyN}
-                  onChange={(e) => setEveryN(parseInt(e.target.value, 10) || 1)}
-                />
-              </div>
-            )}
-            {recurMode === 'custom' && (
+          )}
+
+          {mode === 'monthly' && (
+            <>
+              <span className="autotaskcard__row-label">{t('tasks.fDayOfMonth')}</span>
               <input
-                className="autotaskcard__input autotaskcard__input--mono"
-                value={customCron}
-                placeholder="0 10 * * *"
-                onChange={(e) => setCustomCron(e.target.value)}
+                type="number"
+                min={1}
+                max={31}
+                className="autotaskcard__input autotaskcard__input--num"
+                value={dom}
+                onChange={(e) =>
+                  setDom(Math.max(1, Math.min(31, parseInt(e.target.value, 10) || 1)))
+                }
               />
-            )}
-          </>
-        )}
+            </>
+          )}
+
+          {(mode === 'daily' || mode === 'weekly' || mode === 'monthly') && (
+            <input
+              type="time"
+              className="autotaskcard__input"
+              value={time}
+              onChange={(e) => setTime(e.target.value)}
+            />
+          )}
+
+          {mode === 'hourly' && (
+            <>
+              <span className="autotaskcard__row-label">{t('tasks.fMinute')}</span>
+              <input
+                type="number"
+                min={0}
+                max={59}
+                className="autotaskcard__input autotaskcard__input--num"
+                value={hourlyMin}
+                onChange={(e) => setHourlyMin(parseInt(e.target.value, 10) || 0)}
+              />
+            </>
+          )}
+
+          {mode === 'everyN' && (
+            <>
+              <span className="autotaskcard__row-label">{t('tasks.fEveryN')}</span>
+              <input
+                type="number"
+                min={1}
+                className="autotaskcard__input autotaskcard__input--num"
+                value={everyN}
+                onChange={(e) => setEveryN(parseInt(e.target.value, 10) || 1)}
+              />
+            </>
+          )}
+
+          {mode === 'custom' && (
+            <input
+              className="autotaskcard__input autotaskcard__input--mono"
+              value={customCron}
+              placeholder="0 10 * * *"
+              onChange={(e) => setCustomCron(e.target.value)}
+            />
+          )}
+        </div>
 
         {/* 日程预览：人读摘要 + 下次触发；无效即时提示。 */}
         <div className={`autotaskcard__preview${scheduleInvalid ? ' is-invalid' : ''}`}>
@@ -465,47 +382,22 @@ function TaskEditor({
         </div>
       </div>
 
-      {/* 人格 */}
-      <label className="autotaskcard__field">
-        <span className="autotaskcard__label">
-          <Bot size={13} /> {t('tasks.fPersona')}
-        </span>
-        <select
-          className="autotaskcard__input"
-          value={personaId ?? ''}
-          onChange={(e) => setPersonaId(e.target.value || null)}
-        >
-          <option value="">{t('tasks.personaDefault')}</option>
-          {enabledPersonas.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      {/* 模型 */}
-      <label className="autotaskcard__field">
-        <span className="autotaskcard__label">
-          <Cpu size={13} /> {t('tasks.fModel')}
-        </span>
-        <select
-          className="autotaskcard__input"
-          value={modelRef ?? ''}
-          onChange={(e) => setModelRef(e.target.value || null)}
-        >
-          <option value="">{t('tasks.modelDefault')}</option>
-          {enabledGroups.map((g) => (
-            <optgroup key={g.p.id} label={g.p.name}>
-              {g.models.map((m) => (
-                <option key={m.id} value={`${g.p.id}:${m.id}`}>
-                  {m.name}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-      </label>
+      {/* 任务指令：与对话输入框同款内嵌盒（更高、不可拖），底部工具条内嵌人格 / 模型 chip 选择器。
+          用 div 而非 label 包裹——盒内含可点 chip 按钮，label 会把点击错误转派给 textarea。 */}
+      <div className="autotaskcard__field">
+        <span className="autotaskcard__label">{t('tasks.fPrompt')}</span>
+        <div className="cf-box cf-box--task">
+          <textarea
+            value={prompt}
+            placeholder={t('tasks.fPromptPlaceholder')}
+            onChange={(e) => setPrompt(e.target.value)}
+          />
+          <div className="cf-box__bar">
+            <TaskPersonaSelect value={personaId} onChange={setPersonaId} />
+            <TaskModelSelect value={modelRef} onChange={setModelRef} />
+          </div>
+        </div>
+      </div>
 
       {err && (
         <div className="autotaskcard__err">
