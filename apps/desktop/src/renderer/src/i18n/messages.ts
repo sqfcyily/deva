@@ -477,9 +477,7 @@ const zhCN: MessageTree = {
     defaultModel: '跟随默认',
     viewProfile: '查看资料',
     mountHint: '挂载一个文件夹，让当前对话聚焦其中',
-    changeHint: '点击更换聚焦的文件夹（取消则保持不变）',
     unmountHint: '卸载文件夹，回到全机通用助手',
-    focusing: '聚焦中',
     mountWorkspace: '挂载工作区',
     git: {
       menuHint: 'Git 操作',
@@ -1067,9 +1065,7 @@ const en: MessageTree = {
     defaultModel: 'Follow default',
     viewProfile: 'View profile',
     mountHint: 'Mount a folder to focus this conversation inside it',
-    changeHint: 'Click to change the focused folder (cancel keeps it unchanged)',
     unmountHint: 'Unmount the folder and return to the whole-machine assistant',
-    focusing: 'focusing',
     mountWorkspace: 'Mount workspace',
     git: {
       menuHint: 'Git actions',

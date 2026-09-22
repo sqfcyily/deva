@@ -590,7 +590,6 @@
   height: 30px;
   padding: 0 8px;
   border: none;
-  border-left: 1px solid var(--border);
   background: transparent;
   color: var(--fg-subtle);
   font-size: 12px;
@@ -662,6 +661,22 @@
 .cf-commit__actions {
   display: flex;
   gap: 8px;
+}
+
+/* git 失败 toast 正文：原样呈现命令输出（保留换行、自动折行、等宽），便于读出真实原因。
+   最多 5 行，超出部分裁掉并以 … 收尾，不出滚动条（line-clamp 依赖 -webkit-box，Chromium 原生支持）。 */
+.cf-giterr {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  margin-top: 2px;
+  overflow: hidden;
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  opacity: 0.92;
 }
 
 /* 选择态（按轮删除）：入口改由聊天区右键菜单唤起（复用 .cf-ctx），不再有头部按钮。 */

@@ -74,7 +74,7 @@ import { useModels } from '../store/models'
 import { useTasks } from '../store/tasks'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
-import { useToast } from '../components/ToastProvider'
+import { useToast, type ToastOptions } from '../components/ToastProvider'
 import { Modal } from '../components/Modal'
 import {
   AVATAR_COLORS,
@@ -870,6 +870,32 @@ function gitReasonText(t: (k: string) => string, reason?: GitFailReason): string
   return s === key ? t('cf.git.err.error') : s
 }
 
+/** DOM 侧硬上限：仅防止极端超长输出撑大节点；可见的「最多 5 行 + …」由 CSS line-clamp 负责。 */
+const GIT_ERR_DETAIL_MAX = 4000
+
+/** 归一 git 命令输出（stderr）用于展示：去 \r（进度符）、去首尾空白、超长硬截断；空则返回空串。 */
+function gitErrorDetail(message?: string): string {
+  if (!message) return ''
+  const s = message.replace(/\r/g, '').trim()
+  if (!s) return ''
+  return s.length > GIT_ERR_DETAIL_MAX ? s.slice(0, GIT_ERR_DETAIL_MAX) : s
+}
+
+/**
+ * 构造 git 失败 toast：标题=归类文案（认证失败/被拒绝…），正文=命令实际输出（截断）。
+ * 无输出时退化为仅标题一行；有输出时延长停留时间，便于阅读原因。
+ */
+function gitErrorToast(
+  t: (k: string) => string,
+  r: { reason?: GitFailReason; message?: string }
+): ToastOptions {
+  const title = gitReasonText(t, r.reason)
+  const detail = gitErrorDetail(r.message)
+  return detail
+    ? { variant: 'error', title, message: <span className="cf-giterr">{detail}</span>, duration: 8000 }
+    : { variant: 'error', message: title }
+}
+
 interface GitState {
   available: boolean
   status: GitStatus | null
@@ -951,14 +977,14 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
 
   // 统一执行一个 git 写操作：置忙 → 调用 → 据结果 toast → 刷新状态。
   const run = async (
-    fn: () => Promise<{ ok: boolean; reason?: GitFailReason }>,
+    fn: () => Promise<{ ok: boolean; reason?: GitFailReason; message?: string }>,
     okMsg: string
   ): Promise<void> => {
     setOpBusy(true)
     try {
       const r = await fn()
       if (r.ok) toast.show({ variant: 'success', message: okMsg })
-      else toast.show({ variant: 'error', message: gitReasonText(t, r.reason) })
+      else toast.show(gitErrorToast(t, r))
     } catch {
       toast.show({ variant: 'error', message: gitReasonText(t, 'error') })
     } finally {
@@ -1103,7 +1129,7 @@ function CommitModal({
     try {
       const r = await window.deva.git.generateCommitMessage(root, model, locale)
       if (r.ok && r.text) setMsg(r.text)
-      else toast.show({ variant: 'error', message: gitReasonText(t, r.reason) })
+      else toast.show(gitErrorToast(t, r))
     } catch {
       toast.show({ variant: 'error', message: gitReasonText(t, 'error') })
     } finally {
@@ -1120,7 +1146,7 @@ function CommitModal({
       if (toStage.length > 0) {
         const sres = await window.deva.git.stage(root, toStage)
         if (!sres.ok) {
-          toast.show({ variant: 'error', message: gitReasonText(t, sres.reason) })
+          toast.show(gitErrorToast(t, sres))
           return
         }
       }
@@ -1129,7 +1155,7 @@ function CommitModal({
         toast.show({ variant: 'success', message: t('cf.git.doneCommit') })
         onDone()
       } else {
-        toast.show({ variant: 'error', message: gitReasonText(t, cres.reason) })
+        toast.show(gitErrorToast(t, cres))
       }
     } catch {
       toast.show({ variant: 'error', message: gitReasonText(t, 'error') })
@@ -2825,13 +2851,11 @@ function Composer({
                 <button
                   type="button"
                   className="cf-wschip__main"
-                  title={t('cf.changeHint')}
                   onClick={pickWorkspace}
                 >
                   <FolderOpen size={15} />
-                  {`${basename(focusRoot)} · ${t('cf.focusing')}`}
+                  {`${basename(focusRoot)}`}
                 </button>
-                {/* git 仓库时浮出快捷面板；非仓库 / 没装 git 时 GitWidget 自身返回 null 静默隐藏 */}
                 <GitWidget root={focusRoot} />
                 <button
                   type="button"
