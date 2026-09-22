@@ -80,6 +80,38 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  // 编辑上下文菜单：Electron 默认不给可编辑元素任何原生右键菜单（故对话输入框无法右键粘贴）。
+  // 这里补一个最小编辑菜单——可编辑处给 剪切/复制/粘贴/全选（按 editFlags 灰显不可用项，走原生
+  // role 直接操作系统剪贴板）；非编辑但有选区时给 复制/全选。其余情形不弹菜单（保持干净）。
+  mainWindow.webContents.on('context-menu', (_e, params) => {
+    const win = mainWindow
+    if (!win) return
+    const en = getConfig().locale === 'en'
+    const L = en
+      ? { cut: 'Cut', copy: 'Copy', paste: 'Paste', selectAll: 'Select All' }
+      : { cut: '剪切', copy: '复制', paste: '粘贴', selectAll: '全选' }
+    const { isEditable, editFlags } = params
+    const hasSelection = params.selectionText.trim().length > 0
+    const template: Electron.MenuItemConstructorOptions[] = []
+    if (isEditable) {
+      template.push(
+        { role: 'cut', label: L.cut, enabled: editFlags.canCut },
+        { role: 'copy', label: L.copy, enabled: editFlags.canCopy },
+        { role: 'paste', label: L.paste, enabled: editFlags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll', label: L.selectAll }
+      )
+    } else if (hasSelection) {
+      template.push(
+        { role: 'copy', label: L.copy, enabled: editFlags.canCopy },
+        { type: 'separator' },
+        { role: 'selectAll', label: L.selectAll }
+      )
+    }
+    if (template.length === 0) return
+    Menu.buildFromTemplate(template).popup({ window: win })
+  })
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {

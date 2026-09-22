@@ -401,6 +401,7 @@ export function ChatFirstShell(): React.JSX.Element {
               viewPersonaId={viewPersonaId}
               onOpenThread={openThread}
               onOpenProfile={openProfile}
+              onStartPersona={startWith}
               onAddPersona={() => setEditor({ mode: 'create' })}
               onAddPersonaByChat={addPersonaByChat}
               onNewChatFromThread={newChatFromThread}
@@ -530,6 +531,7 @@ function Rail({
   viewPersonaId,
   onOpenThread,
   onOpenProfile,
+  onStartPersona,
   onAddPersona,
   onAddPersonaByChat,
   onNewChatFromThread,
@@ -545,6 +547,8 @@ function Rail({
   viewPersonaId: string | null
   onOpenThread: (id: string) => void
   onOpenProfile: (id: string) => void
+  /** 角色行右键「开始对话」：以该角色发起一条全新对话（复用 startWith）。 */
+  onStartPersona: (id: string) => void
   onAddPersona: () => void
   onAddPersonaByChat: () => void
   onNewChatFromThread: (id: string) => void
@@ -716,6 +720,11 @@ function Rail({
                 ]
               : [
                   {
+                    label: t('cf.startChat'),
+                    icon: <MessageCircle size={14} />,
+                    onClick: () => onStartPersona(menu.id)
+                  },
+                  {
                     label: t('cf.pinTop'),
                     icon: <ArrowUpToLine size={14} />,
                     // 已在花名册最前则禁用（灰显），避免无意义的同序写入。
@@ -873,7 +882,7 @@ function AddPersonaMenu({
         <div className="cf-addmenu__pop" role="menu">
           <button className="cf-addmenu__item" role="menuitem" onClick={() => choose(onManual)}>
             <Pencil size={15} className="cf-addmenu__icon" />
-            <span>{t('cf.addManual')}</span>
+            <span>{t('cf.addPersona')}</span>
           </button>
           <button className="cf-addmenu__item" role="menuitem" onClick={() => choose(onByChat)}>
             <MessageCircle size={15} className="cf-addmenu__icon" />
@@ -1160,10 +1169,10 @@ function TasksPane({
     [tasks, editTaskId]
   )
 
-  // 人格名（引用已删则回落默认标签）。
+  // 人格名（未指定 / 引用已删则回落中性占位——定时任务已不设「跟随当前对话」）。
   const personaName = (id: string | null): string => {
-    if (!id) return t('tasks.personaDefault')
-    return personas.find((p) => p.id === id)?.name ?? t('tasks.personaDefault')
+    if (!id) return t('tasks.personaNone')
+    return personas.find((p) => p.id === id)?.name ?? t('tasks.personaNone')
   }
   // 模型完整名（服务商 · 模型）；空 / 已删则回落默认标签。
   const modelLabel = (ref: string | null): string => {
@@ -2347,12 +2356,10 @@ function Composer({
   const canSend = Boolean(input.trim()) || supported.length > 0
   const mounted = Boolean(focusRoot)
 
-  // 挂载 / 卸载工作区（放在输入区工具条，取代原顶部头部的入口）。
-  const onWschip = (): void => {
-    if (mounted) {
-      onMount(null)
-      return
-    }
+  // 挂载 / 更换工作区（放在输入区工具条，取代原顶部头部的入口）。
+  // 无论是否已挂载，点击主体都弹出目录选择：选了才更新，取消则保持现状（已挂载时不再自动卸载）。
+  // 卸载改由已挂载态尾随的 ✕ 图标承担，避免「取消对话框＝卸载」的意外语义。
+  const pickWorkspace = (): void => {
     void (async () => {
       const r = await window.deva.fs.openFolder()
       if (r) onMount(r.path)
@@ -2444,26 +2451,46 @@ function Composer({
             onKeyDown={onKeyDown}
           />
           <div className="cf-box__bar">
-            <button className="cf-iconbtn" title={t('cf.attach')} onClick={() => void pickFiles()}>
-              📎
-            </button>
             <button
-              className={`cf-wschip${mounted ? ' is-on' : ''}`}
-              title={mounted ? t('cf.unmountHint') : t('cf.mountHint')}
-              onClick={onWschip}
+              className="cf-iconbtn"
+              title={t('cf.attach')}
+              aria-label={t('cf.attach')}
+              onClick={() => void pickFiles()}
             >
-              {mounted && focusRoot ? (
-                <>
+              <Paperclip size={16} />
+            </button>
+            {mounted && focusRoot ? (
+              <span className="cf-wschip cf-wschip--mounted is-on">
+                <button
+                  type="button"
+                  className="cf-wschip__main"
+                  title={t('cf.changeHint')}
+                  onClick={pickWorkspace}
+                >
                   <FolderOpen size={15} />
                   {`${basename(focusRoot)} · ${t('cf.focusing')}`}
-                </>
-              ) : (
-                <>
-                  <FolderPlus size={15} />
-                  {t('cf.mountWorkspace')}
-                </>
-              )}
-            </button>
+                </button>
+                <button
+                  type="button"
+                  className="cf-wschip__x"
+                  title={t('cf.unmountHint')}
+                  aria-label={t('cf.unmountHint')}
+                  onClick={() => onMount(null)}
+                >
+                  <X size={13} />
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="cf-wschip"
+                title={t('cf.mountHint')}
+                onClick={pickWorkspace}
+              >
+                <FolderPlus size={15} />
+                {t('cf.mountWorkspace')}
+              </button>
+            )}
             <ModelPicker />
             {/* 流式输出时发送键变「停止」（点击中断本会话当前回合）：只放图标，按钮宽度不变、两态不跳动。 */}
             {streaming ? (
@@ -3097,7 +3124,6 @@ function GeneralPane(): React.JSX.Element {
         <div className="cf-set__row">
           <div className="cf-set__label">
             {t('settings.theme')}
-            <span className="cf-set__hint">{t('settings.themeDesc')}</span>
           </div>
           <Segmented
             value={mode}
@@ -3113,7 +3139,6 @@ function GeneralPane(): React.JSX.Element {
           <div className="cf-set__row">
             <div className="cf-set__label">
               {t('settings.closeToTray')}
-              <span className="cf-set__hint">{t('settings.closeToTrayDesc')}</span>
             </div>
             <Toggle on={closeToTray} onChange={toggleTray} />
           </div>
@@ -3625,7 +3650,7 @@ function AboutPane(): React.JSX.Element {
         </div>
         <div className="cf-about__name">{t('app.name')}</div>
         <div className="cf-about__ver">
-          {t('settings.version')} 0.0.0
+          {t('settings.version')} 0.1.2
         </div>
         <p className="cf-about__desc">{t('app.tagline')}</p>
       </div>

@@ -10,7 +10,7 @@ export interface MessageTree {
 }
 
 const zhCN: MessageTree = {
-  app: { name: 'Deva', tagline: '面向开发者的智能体工作台' },
+  app: { name: 'Deva', tagline: '对话优先的智能体工作台' },
   activity: {
     chat: '对话',
     explorer: '资源管理器',
@@ -294,11 +294,9 @@ const zhCN: MessageTree = {
     themeLight: '浅色',
     themeDark: '深色',
     themeSystem: '跟随系统',
-    themeDesc: '默认跟随系统，也可手动指定',
     language: '语言',
     general: '通用',
     closeToTray: '关闭窗口时驻留托盘',
-    closeToTrayDesc: '关窗后应用留在系统托盘，定时任务照常在后台触发；从托盘「退出」才真正关闭',
     models: '模型',
     about: '关于',
     version: '版本'
@@ -413,6 +411,7 @@ const zhCN: MessageTree = {
     previewInvalid: '日程无效，请检查填写',
     fPersona: '角色',
     personaDefault: '跟随当前对话',
+    personaNone: '未指定角色',
     fModel: '模型',
     modelDefault: '全局默认',
     dismiss: '忽略',
@@ -471,7 +470,6 @@ const zhCN: MessageTree = {
     tabTasks: '定时任务',
     noPersona: '还没有角色，点下方「添加角色」创建一个',
     addPersona: '添加角色',
-    addManual: '手动添加',
     addByChat: '通过对话添加',
     addByChatPrompt: '我想创建一个新角色，请一步步引导我明确它的定位、性格与专长，最后用角色名片提交给我确认。',
     localUser: '本机用户',
@@ -479,6 +477,7 @@ const zhCN: MessageTree = {
     defaultModel: '跟随默认',
     viewProfile: '查看资料',
     mountHint: '挂载一个文件夹，让当前对话聚焦其中',
+    changeHint: '点击更换聚焦的文件夹（取消则保持不变）',
     unmountHint: '卸载文件夹，回到全机通用助手',
     focusing: '聚焦中',
     mountWorkspace: '挂载工作区',
@@ -842,12 +841,9 @@ const en: MessageTree = {
     themeLight: 'Light',
     themeDark: 'Dark',
     themeSystem: 'System',
-    themeDesc: 'Follows the system by default; can be set manually',
     language: 'Language',
     general: 'General',
     closeToTray: 'Keep in tray when window closes',
-    closeToTrayDesc:
-      'On close the app stays in the system tray and scheduled tasks keep firing in the background; only “Quit” from the tray exits',
     models: 'Models',
     about: 'About',
     version: 'Version'
@@ -963,6 +959,7 @@ const en: MessageTree = {
     previewInvalid: 'Invalid schedule — please check the fields',
     fPersona: 'Persona',
     personaDefault: 'Follow current chat',
+    personaNone: 'No persona',
     fModel: 'Model',
     modelDefault: 'Global default',
     dismiss: 'Dismiss',
@@ -1023,7 +1020,6 @@ const en: MessageTree = {
     tabTasks: 'Tasks',
     noPersona: 'No personas yet — click “Add persona” below to create one',
     addPersona: 'Add persona',
-    addManual: 'Add manually',
     addByChat: 'Add via chat',
     addByChatPrompt:
       'I want to create a new persona. Please guide me step by step to define its role, personality, and expertise, then submit it to me as a persona card to confirm.',
@@ -1032,6 +1028,7 @@ const en: MessageTree = {
     defaultModel: 'Follow default',
     viewProfile: 'View profile',
     mountHint: 'Mount a folder to focus this conversation inside it',
+    changeHint: 'Click to change the focused folder (cancel keeps it unchanged)',
     unmountHint: 'Unmount the folder and return to the whole-machine assistant',
     focusing: 'focusing',
     mountWorkspace: 'Mount workspace',

@@ -247,7 +247,9 @@ function parseSkill(id: string, raw: string, enabled: boolean): SkillRecord {
 /** 列出所有技能（扫描 skills 目录下每个含 SKILL.md 的子目录）。解析失败的目录跳过，绝不抛错。 */
 export function listSkills(): SkillRecord[] {
   const dir = skillsDir()
-  if (!existsSync(dir)) return []
+  // 目录尚未创建（首次运行、还没建过任何自定义技能）：内置元技能是代码合成常量、永不落盘，
+  // 不依赖磁盘目录存在，故此处仍须返回它们，否则「扩展」页首启会误显空态。
+  if (!existsSync(dir)) return [...BUILTIN_SKILLS]
   const map = enabledMap()
   const out: SkillRecord[] = []
   let entries: string[]

@@ -546,6 +546,41 @@
   background: var(--bg-hover);
   color: var(--accent);
 }
+/* 已挂载态：容器托管「换目录」主体与「卸载」✕ 两个内联按钮，各自独立 hover。 */
+.cf-wschip--mounted {
+  padding: 0;
+  gap: 0;
+  cursor: default;
+}
+.cf-wschip__main,
+.cf-wschip__x {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cf-wschip__main {
+  padding: 0 6px 0 8px;
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+.cf-wschip__main:hover {
+  background: var(--bg-hover);
+}
+.cf-wschip__x {
+  padding: 0 7px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--fg-subtle);
+}
+.cf-wschip__x:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
 
 /* 选择态（按轮删除）：入口改由聊天区右键菜单唤起（复用 .cf-ctx），不再有头部按钮。 */
 
@@ -825,6 +860,9 @@
   justify-content: flex-end;
 }
 .cf-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 30px;
   height: 30px;
   border: none;
@@ -838,8 +876,13 @@
   background: var(--bg-hover);
   color: var(--fg);
 }
-.cf-send {
+/* 模型选择器吸右：占尽左侧空白，把「模型选择器 + 发送键」一并推到工具条右端，
+   模型切换恰落在发送键之前（📎 / 工作区 chip 仍留在左侧）。仅作用于对话输入框，
+   不影响 ChatView 旧壳与任务表单的同款选择器。 */
+.cf-composer .model-pick {
   margin-left: auto;
+}
+.cf-send {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1301,6 +1344,7 @@
 .cf-rows {
   display: flex;
   flex-direction: column;
+  margin-top: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   overflow: hidden;
