@@ -576,6 +576,16 @@
   padding: 0 7px;
   border-radius: 0 var(--radius) var(--radius) 0;
   color: var(--fg-subtle);
+  /* 默认隐藏卸载 ✕，鼠标移到挂载 chip 上才浮现（避免误触、保持整洁）。
+     用 opacity 而非 display 保留占位，避免出现/消失时的宽度跳动。 */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.cf-wschip--mounted:hover .cf-wschip__x,
+.cf-wschip--mounted:focus-within .cf-wschip__x {
+  opacity: 1;
+  pointer-events: auto;
 }
 .cf-wschip__x:hover {
   background: color-mix(in srgb, var(--danger) 14%, transparent);

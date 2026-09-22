@@ -327,9 +327,17 @@ function toDisplayMessages(
             })
         }
       }
-      const msg: Extract<DisplayMessage, { role: 'assistant' }> = { role: 'assistant', blocks }
-      out.push(msg)
-      lastAssistant = msg
+      // 同一轮内、仅被 tool_result 隔开的连续 assistant 段并入上一条展示气泡（与流式「一轮一头像」对齐）：
+      // 有工具调用时，一轮在持久化历史里是多条 assistant 被 tool_result(user) 隔开，逐条成气泡会让重开后
+      // 每段各显一个头像（像输出了多次）。lastAssistant 非空即代表「自上条 assistant 起只隔了 tool_result
+      // 回灌」——真实用户轮 / 压缩摘要 / 提示气泡都会把它置空，从而使其后的 assistant 另起新气泡（新头像）。
+      if (lastAssistant) {
+        lastAssistant.blocks.push(...blocks)
+      } else {
+        const msg: Extract<DisplayMessage, { role: 'assistant' }> = { role: 'assistant', blocks }
+        out.push(msg)
+        lastAssistant = msg
+      }
       return
     }
 
@@ -352,6 +360,8 @@ function toDisplayMessages(
 
     if (typeof m.content === 'string') {
       out.push({ role: 'user', text: m.content, attachments: [] })
+      // 真实用户轮：断开 assistant 合并链，其后的 assistant 段另起新气泡（新头像）。
+      lastAssistant = null
       return
     }
     const parts = m.content
@@ -383,6 +393,8 @@ function toDisplayMessages(
     }
     const question = textParts.length ? textParts[textParts.length - 1].text : ''
     out.push({ role: 'user', text: question, attachments: atts })
+    // 真实用户轮：断开 assistant 合并链，其后的 assistant 段另起新气泡（新头像）。
+    lastAssistant = null
   }
 
   // 提示可能锚在最前（after=0，几乎不出现）、任意消息之后、或全部消息之后（after=length，最常见）。
@@ -1817,7 +1829,18 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // 左侧会话列表：一次列全部（对话无项目/分桶概念）。IPC 仍收 workspaceRoot 以兼容渲染层调用签名，忽略即可。
   ipcMain.handle(
     'chat:list-sessions',
-    (_e, _workspaceRoot: string | null): ChatSessionMeta[] => listSessions()
+    (_e, _workspaceRoot: string | null): ChatSessionMeta[] => {
+      const list = listSessions()
+      // 重开后恢复「已挂载项目」的受信根：trustRoot 是内存态、随重启清空（见 fs-guard），而 focusRoot 是
+      // 持久化的对话属性——若不在此重新登记，重启后带挂载目录的会话一渲染就调 git:status / fs:*，其首行
+      // assertInside 因根未受信而抛「拒绝访问」，表现为「git 丢失 + Error occurred in handler for 'git:status'」。
+      // 这是渲染层能拿到 focusRoot 的最早时刻（渲染任何对话 / GitWidget 前必先经此列表），在此登记即无竞态。
+      // 语义等同 IDE 重开时恢复已打开的项目文件夹；Tier-1 敏感目录仍由各工具内的硬底线独立拦截，不受影响。
+      for (const m of list) {
+        if (typeof m.focusRoot === 'string' && m.focusRoot.trim()) trustRoot(m.focusRoot)
+      }
+      return list
+    }
   )
 
   // 载入某会话的历史（重建展示气泡）。id 全局唯一 → 无需 workspaceRoot（IPC 仍传，忽略即可）。
