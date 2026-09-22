@@ -712,6 +712,32 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     [patchRuntime]
   )
 
+  // 就地收敛「任意助手消息」里的名片终态——不限末条助手消息。
+  // 缘由：create_task / propose_agent 是惰性名片，工具即刻回 tool_result、Agent 循环继续，模型常追加收尾
+  // 文本；重开后 toDisplayMessages 按真实消息边界重建，名片落在**非末条**助手消息里（其后还有 tool_result
+  // 用户消息 / 收尾文本助手消息）。此时 updateLastAssistant 只改末条 → 名片永远匹配不到、UI 不收敛（而主进程
+  // 边车已落终态），表现为「忽略无效 / 创建成功但名片仍在」。故名片决议须遍历所有助手消息。
+  // 按块引用逐一比对：仅真正含目标块的那条消息换新对象，其余保持原引用（避免整列无谓重渲染）。
+  const patchCardBlocks = useCallback(
+    (sid: string, mutate: (blocks: ChatBlock[]) => ChatBlock[]): void => {
+      patchRuntime(sid, (r) => {
+        let changed = false
+        const messages = r.messages.map((m) => {
+          if (m.role !== 'assistant') return m
+          const nextBlocks = mutate(m.blocks)
+          const same =
+            nextBlocks.length === m.blocks.length &&
+            nextBlocks.every((b, i) => b === m.blocks[i])
+          if (same) return m
+          changed = true
+          return { ...m, blocks: nextBlocks }
+        })
+        return changed ? { ...r, messages } : r
+      })
+    },
+    [patchRuntime]
+  )
+
   const dropRuntime = useCallback((sid: string): void => {
     if (!runtimesRef.current.has(sid)) return
     const map = new Map(runtimesRef.current)
@@ -1198,7 +1224,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
     const respondAsk = (key: string, answers: string[]): void => {
       void window.deva.chat.respondAsk({ key, answers })
-      patchMessages(sessionIdRef.current, (blocks) =>
+      patchCardBlocks(sessionIdRef.current, (blocks) =>
         blocks.map((b) => (b.kind === 'ask' && b.key === key ? { ...b, answers } : b))
       )
     }
@@ -1206,15 +1232,15 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     const respondPlan = (key: string, decision: 'approve' | 'keep'): void => {
       void window.deva.chat.respondPlan({ key, decision })
       // 计划卡属当前所视会话 → 就地收敛为已决态。
-      patchMessages(sessionIdRef.current, (blocks) =>
+      patchCardBlocks(sessionIdRef.current, (blocks) =>
         blocks.map((b) => (b.kind === 'plan' && b.key === key ? { ...b, decided: decision } : b))
       )
     }
 
     const resolveProposal = (toolId: string, status: 'accepted' | 'rejected'): void => {
       const sid = sessionIdRef.current
-      // 就地把名片收敛为终态（名片属当前所视会话）。
-      patchMessages(sid, (blocks) =>
+      // 就地把名片收敛为终态（名片属当前所视会话；惰性名片重开后不在末条助手消息里，故遍历全部）。
+      patchCardBlocks(sid, (blocks) =>
         blocks.map((b) => (b.kind === 'agentcard' && b.id === toolId ? { ...b, status } : b))
       )
       // 持久化终态边车：重开不退回 pending，接受态不会被再次接受成重复角色。
@@ -1231,7 +1257,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 仅成功才收敛终态（名片属当前所视会话）：created 带 taskId 供跳转、dismissed 只读。
       // 失败（invalid-cron / expired 等）保持 pending，让用户在名片里改日程/授权后重试。
       if (res.ok) {
-        patchMessages(sid, (blocks) =>
+        // 惰性名片：重开后名片落在非末条助手消息里，故遍历全部助手消息就地收敛（否则忽略/创建后名片不消失）。
+        patchCardBlocks(sid, (blocks) =>
           blocks.map((b) =>
             b.kind === 'autotaskcard' && b.id === toolId
               ? {
@@ -1286,6 +1313,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     refreshSessions,
     patchRuntime,
     patchMessages,
+    patchCardBlocks,
     dropRuntime
   ])
 

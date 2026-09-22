@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { promises as fs, type Dirent } from 'fs'
-import { dirname, isAbsolute, join, resolve } from 'path'
+import { basename, dirname, isAbsolute, join, resolve } from 'path'
 import { assertInside, isSensitivePath } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
 import { upsertSkill } from './skills'
@@ -31,13 +31,12 @@ export const toolSpecs: ToolSpec[] = [
   },
   {
     name: 'list_dir',
-    description: '列出工作区内某个目录的直接子项（目录在前）。用于探索项目结构。',
+    description: '列出工作区内某个目录的直接子项（目录在前）。用于探索项目结构。不传 path 时默认列项目根。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '目录路径，相对项目根或绝对路径。默认项目根。' }
-      },
-      required: ['path']
+        path: { type: 'string', description: '目录路径，相对项目根或绝对路径。省略则默认项目根。' }
+      }
     }
   },
   {
@@ -827,7 +826,13 @@ export async function executeTool(
       const buf = await fs.readFile(abs)
       if (looksBinary(buf))
         return { content: '（疑似二进制文件，未加载）', summary: '二进制', isError: true }
-      const lines = buf.toString('utf8').split('\n')
+      if (buf.length === 0) return { content: '（空文件）', summary: '0 行' }
+      // 行终止符统一：\r\n、孤立 \r（老式 Mac）、\n 一律视为换行，行内容不含 \r——
+      // 与 GUI 显示、grep 行号、edit_file 匹配保持一致（此前 split('\n') 会把 \r 留在行内，
+      // 显示层不可见却参与匹配，导致「所见非所匹配」）。
+      const lines = buf.toString('utf8').split(/\r\n|\r|\n/)
+      // 文件以换行结尾会在 split 后多出一个空尾元素（幽灵空行）——去掉这个由末尾终止符产生的空行。
+      if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
       const total = lines.length
       const start = Math.min(Math.max(1, toInt(a.offset) ?? 1), total)
       const lim = toInt(a.limit)
@@ -844,7 +849,8 @@ export async function executeTool(
     }
 
     if (name === 'list_dir') {
-      const abs = resolveReadPath(ctx.workspaceRoot, a.path)
+      // path 省略时回落项目根（与工具描述「默认项目根」一致）；resolveReadDir 兼顾默认与 Tier-1 拒绝。
+      const abs = resolveReadDir(ctx.workspaceRoot, a.path)
       const dirents = await fs.readdir(abs, { withFileTypes: true })
       const rows = dirents
         .filter((d) => d.isDirectory() || d.isFile())
@@ -893,10 +899,20 @@ export async function executeTool(
       } catch (e) {
         return { content: `无效的正则：${(e as Error).message}`, summary: '正则错误', isError: true }
       }
-      const dir = resolveReadDir(ctx.workspaceRoot, a.path)
+      const target = resolveReadDir(ctx.workspaceRoot, a.path)
       let globRe: RegExp | null = null
       if (typeof a.glob === 'string' && a.glob.trim()) globRe = globToRegExp(a.glob.trim())
-      const files = await collectFiles(dir)
+      // path 可为目录（递归遍历）或单个文件（直接搜该文件）——修复「path 指向文件时静默返回无匹配」。
+      // 路径不存在则明确报错，而非误导性的空结果。
+      let st: import('fs').Stats
+      try {
+        st = await fs.stat(target)
+      } catch {
+        return { content: `路径不存在：${String(a.path ?? '.')}`, summary: '路径不存在', isError: true }
+      }
+      const files = st.isFile()
+        ? [{ abs: target, rel: basename(target) }]
+        : await collectFiles(target)
       const rows: string[] = []
       let truncated = false
       outer: for (const f of files) {
@@ -908,7 +924,8 @@ export async function executeTool(
           continue
         }
         if (buf.length > MAX_READ_BYTES || looksBinary(buf)) continue
-        const lines = buf.toString('utf8').split('\n')
+        // 与 read_file 一致的行拆分：\r 不残留在行内，正则锚点 ^/$ 与显示都基于同一「干净行」。
+        const lines = buf.toString('utf8').split(/\r\n|\r|\n/)
         for (let i = 0; i < lines.length; i++) {
           if (re.test(lines[i])) {
             rows.push(`${f.rel}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
@@ -1040,10 +1057,36 @@ export async function executeTool(
       if (looksBinary(buf))
         return { content: '（疑似二进制文件，拒绝编辑）', summary: '二进制', isError: true }
       const text = buf.toString('utf8')
-      // 统计出现次数（非重叠）：唯一性是精确编辑的安全前提。
-      let count = 0
-      for (let idx = text.indexOf(oldStr); idx !== -1; idx = text.indexOf(oldStr, idx + oldStr.length))
-        count++
+      // 非重叠出现次数统计：唯一性是精确编辑的安全前提。
+      const countOcc = (hay: string, needle: string): number => {
+        let c = 0
+        for (let idx = hay.indexOf(needle); idx !== -1; idx = hay.indexOf(needle, idx + needle.length))
+          c++
+        return c
+      }
+      // 两级匹配：
+      // ① 精确匹配（逐字节）——命中即原样 split/join 替换，文件其余字节（含 CRLF）分毫不动。
+      // ② 精确落空时，退回「换行规范化」匹配：把文件与 old/new 的 \r\n、孤立 \r 统一为 \n 再比对。
+      //    这修复了「用户/模型从 read_file 的干净显示复制 old_string，在 CRLF 文件上必然匹配失败」的问题
+      //    （read_file 现返回不含 \r 的行内容，old_string 天然无 \r，而磁盘文件是 \r\n）。
+      const normEol = (s: string): string => s.replace(/\r\n|\r/g, '\n')
+      let count = countOcc(text, oldStr)
+      let workText = text
+      let workOld = oldStr
+      let workNew = newStr
+      let normalized = false
+      if (count === 0) {
+        const tN = normEol(text)
+        const oN = normEol(oldStr)
+        const cN = countOcc(tN, oN)
+        if (cN > 0) {
+          normalized = true
+          count = cN
+          workText = tN
+          workOld = oN
+          workNew = normEol(newStr)
+        }
+      }
       if (count === 0)
         return {
           content: '未找到 old_string（需与文件内容逐字符一致，含缩进/换行）',
@@ -1058,9 +1101,18 @@ export async function executeTool(
           isError: true
         }
       // split/join 逐字面量替换：绕开 String.replace 对 $ 的特殊解释。
-      await fs.writeFile(abs, text.split(oldStr).join(newStr), 'utf8')
+      let result = workText.split(workOld).join(workNew)
+      // 规范化匹配后需还原文件的主导换行风格：CRLF 主导则把 \n 复原为 \r\n（保「CRLF 文件换行保留」）。
+      // 纯 LF / 纯 CRLF 文件均可无损往返；仅极少见的混合换行文件会被统一（此路径本就是精确匹配失败的兜底）。
+      if (normalized) {
+        const crlf = (text.match(/\r\n/g) || []).length
+        const lfOnly = (text.match(/\n/g) || []).length - crlf
+        if (crlf > 0 && crlf >= lfOnly) result = result.replace(/\n/g, '\r\n')
+      }
+      await fs.writeFile(abs, result, 'utf8')
       const n = replaceAll ? count : 1
-      return { content: `已替换 ${n} 处`, summary: replaceAll ? `已替换 ${n} 处` : '已编辑' }
+      const note = normalized ? '（已按换行规范匹配）' : ''
+      return { content: `已替换 ${n} 处${note}`, summary: replaceAll ? `已替换 ${n} 处` : '已编辑' }
     }
 
     if (name === 'run_command') {
