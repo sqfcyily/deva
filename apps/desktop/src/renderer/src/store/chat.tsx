@@ -1005,7 +1005,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
           const { turnId } = await window.deva.chat.compact({
             sessionId: sid,
             model: {
-              adapter: model.provider.adapter,
+              // 对话模型（选择器已按 purpose 过滤），adapter 必属 LLM 三协议之一。
+              adapter: model.provider.adapter as 'anthropic' | 'openai' | 'responses',
               providerId: model.provider.id,
               baseURL: model.provider.apiHost,
               model: model.model.id
@@ -1067,7 +1068,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
           sessionId: sid,
           text: body,
           model: {
-            adapter: model.provider.adapter,
+            // 对话模型（选择器已按 purpose 过滤），adapter 必属 LLM 三协议之一。
+            adapter: model.provider.adapter as 'anthropic' | 'openai' | 'responses',
             providerId: model.provider.id,
             baseURL: model.provider.apiHost,
             model: model.model.id

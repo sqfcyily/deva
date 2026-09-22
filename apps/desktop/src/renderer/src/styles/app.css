@@ -3271,9 +3271,13 @@ button.projmenu__item:disabled {
   font-weight: 700;
   color: var(--fg);
 }
-/* 右上角「添加服务商」——图标按钮（对齐面板 header 右侧动作） */
-.models__add-btn {
+/* 右上角「添加模型」——图标按钮 + 浮动菜单锚点（对话/决策二选一） */
+.models__addwrap {
+  position: relative;
   margin-left: auto;
+  display: inline-flex;
+}
+.models__add-btn {
   display: grid;
   place-items: center;
   width: 28px;
@@ -3427,6 +3431,12 @@ button.projmenu__item:disabled {
   background: var(--accent-tint);
   border-color: transparent;
   color: var(--accent);
+}
+/* 决策模型标签：紫色调，区别于对话模型（中性）与官方（品牌色） */
+.tag--decision {
+  background: rgba(109, 94, 252, 0.14);
+  border-color: transparent;
+  color: #6d5efc;
 }
 
 .field {

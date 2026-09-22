@@ -1022,7 +1022,8 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
   const commitModel: GitGenModel | null =
     activeModel && hasKey(activeModel.provider.id)
       ? {
-          adapter: activeModel.provider.adapter,
+          // activeModel 恒为对话模型（选择器已按 purpose 过滤），adapter 必属 LLM 三协议之一。
+          adapter: activeModel.provider.adapter as GitGenModel['adapter'],
           providerId: activeModel.provider.id,
           baseURL: activeModel.provider.apiHost,
           model: activeModel.model.id
@@ -2918,8 +2919,9 @@ function ModelPicker(): React.JSX.Element {
   const { activeModel, providers, setActiveModel } = useModels()
   const { currentBinding, setSessionModel } = useChat()
   const [open, setOpen] = useState(false)
+  // 只列对话模型（purpose==='llm'）：决策模型（如 Jev）不生成文本，绝不可被选为对话模型。
   const groups = providers
-    .filter((p) => p.enabled)
+    .filter((p) => p.enabled && (p.purpose ?? 'llm') === 'llm')
     .map((p) => ({ p, models: p.models.filter((m) => m.enabled) }))
     .filter((g) => g.models.length > 0)
   // 本对话生效模型：解析对话覆盖层的 model 引用 `"pid:mid"`；空/非法/已删除 → 回落全局 activeModel。
@@ -3176,12 +3178,15 @@ function PersonaEditor({
     setAvatar((a) => ({ ...a, colors: { ...(a.colors ?? {}), [slot]: fromHexInput(hex) } }))
   const setBackground = (hex: string): void => setAvatar((a) => ({ ...a, background: fromHexInput(hex) }))
 
-  // 模型下拉：所有服务商 × 其模型 → "providerId:modelId"；空 = 跟随默认。
+  // 模型下拉：所有**对话**服务商 × 其模型 → "providerId:modelId"；空 = 跟随默认。
+  // 决策模型（purpose==='decision'）不参与对话生成，排除在角色偏好模型之外。
   const modelOptions = useMemo(
     () =>
-      providers.flatMap((p) =>
-        p.models.map((m) => ({ value: `${p.id}:${m.id}`, label: `${p.name} · ${m.name}` }))
-      ),
+      providers
+        .filter((p) => (p.purpose ?? 'llm') === 'llm')
+        .flatMap((p) =>
+          p.models.map((m) => ({ value: `${p.id}:${m.id}`, label: `${p.name} · ${m.name}` }))
+        ),
     [providers]
   )
 

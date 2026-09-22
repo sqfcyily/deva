@@ -6,6 +6,7 @@ import { getAppIcon } from './services/tray-icon'
 import { registerWorkspaceIpc } from './services/workspace'
 import { registerSecretsIpc } from './services/secrets'
 import { registerProviderIpc } from './services/provider'
+import { registerDecisionIpc } from './services/decision'
 import { registerChatIpc } from './services/chat'
 import { registerSkillsIpc } from './services/skills'
 import { registerAgentsIpc } from './services/agents'
@@ -219,6 +220,9 @@ if (!app.requestSingleInstanceLock()) {
 
   // 服务商探针（连通性测试 / 拉取模型清单，复用密钥解密）
   registerProviderIpc()
+
+  // 决策服务（类型化概率决策运行时；决策专属测试连接，与 LLM 协议正交，密钥不出主进程）
+  registerDecisionIpc()
 
   // 会话编排（Agent 主循环：流式 → 工具 → 权限 → 回灌）
   registerChatIpc(() => mainWindow)

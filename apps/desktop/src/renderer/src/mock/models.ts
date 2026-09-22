@@ -17,12 +17,23 @@ export interface ModelDef {
   enabled: boolean
 }
 
-export type ProviderAdapter = 'anthropic' | 'openai' | 'responses'
+// 协议适配器。前三者为对话/写作模型（LLM，走 streamChat）；'jev' 为决策模型厂商（TypeSafe·Jev），
+// 走独立的 services/decision.ts 决策运行时（Phase 2），绝不进 LLM 的 streamChat / 对话选择器。
+export type ProviderAdapter = 'anthropic' | 'openai' | 'responses' | 'jev'
+
+// 能力用途（与 official/custom 正交的一根主轴）：
+//  · 'llm'      对话/写作模型——参与对话生成、被对话与任务的模型选择器选取；
+//  · 'decision' 决策模型（如 System One / Jev）——只产出「是否该做某事」的类型化概率决策，
+//               不生成文本、不参与对话，故永不出现在对话/写作选择器里。
+// 缺省视为 'llm'（向后兼容既有 config.json 中未带该字段的服务商）。
+export type ProviderPurpose = 'llm' | 'decision'
 
 export interface Provider {
   id: string
   name: string
   kind: 'official' | 'custom'
+  /** 能力用途（缺省 = 'llm'）。决策模型与对话模型分组呈现、互不串用。 */
+  purpose?: ProviderPurpose
   /** 品牌色圆点 */
   accent: string
   /** 归一化协议适配器 */
@@ -32,6 +43,11 @@ export interface Provider {
   /** 获取密钥的文档地址 */
   docUrl?: string
   enabled: boolean
+  /**
+   * 决策模型专用：发起动作（如主动发起对话）的默认置信度阈值 [0,1]。
+   * 仅 purpose==='decision' 有意义；定时任务的决策闸门以此为默认，可按任务覆盖（Phase 3）。
+   */
+  threshold?: number
   models: ModelDef[]
 }
 
@@ -137,6 +153,22 @@ export const seedProviders: Provider[] = [
     docUrl: 'https://ollama.com/library',
     enabled: false,
     models: []
+  },
+  {
+    // 决策模型（TypeSafe · Jev / System One）：状态 + 类型化问题 → 类型化概率决策，
+    // 非 LLM、无文本流式。独立于对话/写作模型：绝不进对话选择器，运行时走 services/decision.ts（Phase 2）。
+    // apiHost / docUrl 为可编辑默认值（用户在设置页按自己的接入信息调整）。
+    id: 'typesafe',
+    name: 'TypeSafe · Jev',
+    kind: 'official',
+    purpose: 'decision',
+    accent: '#6d5efc',
+    adapter: 'jev',
+    apiHost: 'https://api.typesafe.ai',
+    docUrl: 'https://console.typesafe.ai',
+    enabled: false,
+    threshold: 0.6,
+    models: []
   }
 ]
 
@@ -145,4 +177,6 @@ export const seedProviders: Provider[] = [
  * 只带连接信息、不带模型——模型仍由用户拉取或手动添加。
  * 与列表态解耦：列表只呈现已启用或已配密钥的，其余官方藏进此下拉。
  */
-export const providerPresets: Provider[] = seedProviders.filter((p) => p.kind === 'official')
+export const providerPresets: Provider[] = seedProviders.filter(
+  (p) => p.kind === 'official' && (p.purpose ?? 'llm') === 'llm'
+)

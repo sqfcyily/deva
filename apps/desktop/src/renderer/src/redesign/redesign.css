@@ -136,6 +136,11 @@
   box-shadow: var(--shadow);
   animation: cf-addmenu-pop 0.14s ease;
 }
+/* 宽度自适应变体：贴合内容宽度（配合项 white-space:nowrap），不再固定最小宽度。 */
+.cf-addmenu__pop--fit {
+  min-width: 0;
+  width: max-content;
+}
 @keyframes cf-addmenu-pop {
   from {
     opacity: 0;
@@ -1748,6 +1753,7 @@
   background: var(--bg-inset);
   cursor: pointer;
   text-align: left;
+  border-radius: 8px;
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 .cf-avapick:hover {

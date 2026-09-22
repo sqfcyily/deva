@@ -494,6 +494,21 @@ export interface ProviderListModelsResult {
   message?: string
 }
 
+/** 决策连接测试「线缆类型」（与 services/decision.ts 对齐；adapter 仅内部值，公共面用通用名 decision）。 */
+export interface DecisionTestConfig {
+  adapter: 'jev'
+  providerId: string
+  baseURL: string
+  threshold: number
+}
+
+export interface DecisionTestResult {
+  ok: boolean
+  kind?: string
+  message: string
+  latencyMs?: number
+}
+
 /** 主进程 → 渲染层的富事件（与 services/chat.ts 的 ChatStreamEvent 对齐）。 */
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
@@ -651,6 +666,11 @@ const api = {
       ipcRenderer.invoke('provider:test', cfg),
     listModels: (cfg: ProbeConfig): Promise<ProviderListModelsResult> =>
       ipcRenderer.invoke('provider:list-models', cfg)
+  },
+  /** 决策服务：决策模型专属连通性测试（与 LLM 协议正交，密钥不出主进程）。 */
+  decision: {
+    test: (cfg: DecisionTestConfig): Promise<DecisionTestResult> =>
+      ipcRenderer.invoke('decision:test', cfg)
   },
   /** 会话：发送、中止、重置、列表/载入/删除、回应权限、订阅流式事件。 */
   chat: {

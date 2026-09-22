@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { seedProviders, type Provider, type ModelDef } from '../mock/models'
+import { seedProviders, type Provider, type ModelDef, type ProviderPurpose } from '../mock/models'
 
 /**
  * 模型配置（全局，与项目无关）。
@@ -21,14 +21,19 @@ interface ModelsContextValue {
   setActiveModel: (providerId: string, modelId: string) => void
   updateProvider: (
     id: string,
-    patch: Partial<Pick<Provider, 'name' | 'apiHost' | 'enabled' | 'adapter'>>
+    patch: Partial<Pick<Provider, 'name' | 'apiHost' | 'enabled' | 'adapter' | 'threshold'>>
   ) => void
   toggleModel: (providerId: string, modelId: string) => void
   addModel: (providerId: string, id: string) => void
   /** 批量添加模型：去重并跳过已存在，一次落盘。用于从服务端清单多选添加。 */
   addModels: (providerId: string, ids: string[]) => void
   removeModel: (providerId: string, modelId: string) => void
-  addCustomProvider: (name: string) => void
+  /**
+   * 新建自定义服务商。purpose 决定其能力轴：
+   * 'llm'（默认）= 对话模型（adapter openai，可切协议）；
+   * 'decision' = 决策模型（adapter 固定 jev，带默认触发阈值，不生成文本、不入对话选择器）。
+   */
+  addCustomProvider: (name: string, purpose?: ProviderPurpose) => void
   /**
    * 用官方预置一键套用到某个（自定义）服务商：覆盖名称/协议/地址/文档/品牌色，并替换模型清单。
    * 不改 kind（保持自定义）与 enabled（是否启用交由用户），也不动密钥。
@@ -55,7 +60,7 @@ export function findActive(providers: Provider[], activeId: string | null) {
 
 export function ModelsProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const [providers, setProviders] = useState<Provider[]>(() =>
-    seedProviders.map((p) => ({ ...p, models: p.models.map((mm) => ({ ...mm })) }))
+    seedProviders.map((p) => ({ ...p, purpose: p.purpose ?? 'llm', models: p.models.map((mm) => ({ ...mm })) }))
   )
   const [selectedProviderId, setSelectedProviderId] = useState<string>(seedProviders[0].id)
   // 不内置默认模型，也不设显式「默认」入口：新用户首次在对话输入框选择模型后即记为「最近使用」，
@@ -101,10 +106,18 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
         if (!alive) return
         const savedProviders = saved?.providers
         if (Array.isArray(savedProviders) && savedProviders.length > 0) {
-          // 已保存的为准，并追加用户尚未见过的新内置服务商（保留用户编辑 + 呈现新预置）
+          // 已保存的为准，并追加用户尚未见过的新内置服务商（保留用户编辑 + 呈现新预置，
+          // 含新引入的决策模型 typesafe——老配置无该项时自动补齐）。
           const savedIds = new Set(savedProviders.map((p) => p.id))
           const merged = [...savedProviders, ...seedProviders.filter((p) => !savedIds.has(p.id))]
-          setProviders(merged.map((p) => ({ ...p, models: p.models.map((mm) => ({ ...mm })) })))
+          // 向后兼容：既有配置里未带 purpose 的服务商一律视为对话模型（'llm'），显式落定以便持久化。
+          setProviders(
+            merged.map((p) => ({
+              ...p,
+              purpose: p.purpose ?? 'llm',
+              models: p.models.map((mm) => ({ ...mm }))
+            }))
+          )
         }
         if (saved && 'activeModelId' in saved) setActiveModelId(saved.activeModelId ?? null)
       } catch {
@@ -200,18 +213,22 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
           // 深拷贝预置模型，避免与预置目录共享引用
           models: preset.models.map((mm) => ({ ...mm }))
         })),
-      addCustomProvider: (name) => {
+      addCustomProvider: (name, purpose = 'llm') => {
         const id = `custom-${Date.now()}`
+        const isDecision = purpose === 'decision'
         setProviders((list) => [
           ...list,
           {
             id,
-            name: name || '自定义服务商',
+            name: name || (isDecision ? '自定义决策模型' : '自定义服务商'),
             kind: 'custom',
-            accent: '#8a8a94',
-            adapter: 'openai',
+            purpose,
+            accent: isDecision ? '#6d5efc' : '#8a8a94',
+            // 决策模型仅有 jev 一种协议（不生成文本，走独立决策运行时）；对话模型默认 OpenAI 兼容。
+            adapter: isDecision ? 'jev' : 'openai',
             apiHost: 'https://',
             enabled: false,
+            ...(isDecision ? { threshold: 0.6 } : {}),
             models: []
           }
         ])

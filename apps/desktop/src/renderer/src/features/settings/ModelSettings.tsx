@@ -12,12 +12,19 @@ import {
   RotateCcw,
   AlertTriangle,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  MessageSquare,
+  Zap
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useModels } from '../../store/models'
 import { useDialog } from '../../components/DialogProvider'
-import { seedProviders, providerPresets, type ProviderAdapter } from '../../mock/models'
+import {
+  seedProviders,
+  providerPresets,
+  type ProviderAdapter,
+  type ProviderPurpose
+} from '../../mock/models'
 import { Switch } from './Switch'
 
 /**
@@ -54,6 +61,8 @@ export function ModelSettings(): React.JSX.Element {
 
   // 钻取导航：'list' 浏览服务商列表，'detail' 编辑单个服务商
   const [view, setView] = useState<'list' | 'detail'>('list')
+  // 「新增」浮动菜单：选择新建对话模型 / 决策模型
+  const [addMenu, setAddMenu] = useState(false)
   const [showKey, setShowKey] = useState(false)
   const [addingModel, setAddingModel] = useState(false)
   const [newModelId, setNewModelId] = useState('')
@@ -121,10 +130,41 @@ export function ModelSettings(): React.JSX.Element {
   }, [fetchState, newModelId, selectedProvider])
 
   // 列表只呈现「在用」的服务商：已启用 / 已配密钥，以及全部自定义（用户自建，恒显以免新建后走丢）。
-  // 其余官方预置藏进编辑页的「供应商」下拉。
+  // 其余官方对话预置藏进编辑页的「供应商」下拉。决策模型无该下拉入口，故恒显（供用户配置）。
+  // 对话模型与决策模型在同一扁平列表里呈现，用途差异由每行的「标签」标示（不再分组、不再显官方/自定义）。
   const visibleProviders = providers.filter(
-    (p) => p.enabled || hasKey(p.id) || p.kind === 'custom'
+    (p) => p.enabled || hasKey(p.id) || p.kind === 'custom' || p.purpose === 'decision'
   )
+
+  const renderProviderRow = (p: (typeof providers)[number]): React.JSX.Element => {
+    const isDecision = p.purpose === 'decision'
+    return (
+      <button key={p.id} className="provider-row" onClick={() => openProvider(p.id)}>
+        <span
+          className={`provider-row__dot${p.enabled ? ' is-on' : ''}`}
+          title={p.enabled ? t('models.enabled') : t('models.disabled')}
+        />
+        <span className="provider-row__main">
+          <span className="provider-row__name">
+            <span className="provider-row__name-text">{p.name}</span>
+            {/* 标签标示用途：对话模型 / 决策模型（取代原官方/自定义标签） */}
+            <span className={`tag${isDecision ? ' tag--decision' : ''}`}>
+              {isDecision ? t('models.tagDecision') : t('models.tagLLM')}
+            </span>
+          </span>
+          <span className="provider-row__sub">
+            {isDecision
+              ? t('models.rowThreshold').replace('{n}', String(p.threshold ?? 0.6))
+              : t('models.modelCount').replace('{count}', String(p.models.length))}
+          </span>
+        </span>
+        <span className="provider-row__aside">
+          {p.enabled && !hasKey(p.id) && <AlertTriangle className="provider-row__warn" size={14} />}
+          <ChevronRight size={16} />
+        </span>
+      </button>
+    )
+  }
 
   // 编辑页「供应商」下拉：选官方预置即一键套用到当前（自定义）服务商。
   // 已有模型时先确认（避免覆盖用户既有清单）；套用后同步名称输入草稿。
@@ -180,9 +220,29 @@ export function ModelSettings(): React.JSX.Element {
     setView('detail')
   }
 
-  // 新建自定义服务商后直接进入其详情编辑（addCustomProvider 已把它设为选中项）
-  const onAddProvider = (): void => {
-    addCustomProvider(t('models.newProviderName'))
+  // 「新增」浮动菜单：悬停即开、离开略延迟收起（容忍按钮→浮层途中的空档），对齐「添加角色」入口交互。
+  const addMenuTimer = useRef<number | null>(null)
+  const cancelAddClose = (): void => {
+    if (addMenuTimer.current !== null) {
+      window.clearTimeout(addMenuTimer.current)
+      addMenuTimer.current = null
+    }
+  }
+  const scheduleAddClose = (): void => {
+    cancelAddClose()
+    addMenuTimer.current = window.setTimeout(() => setAddMenu(false), 140)
+  }
+  useEffect(() => cancelAddClose, [])
+
+  // 新建自定义服务商后直接进入其详情编辑（addCustomProvider 已把它设为选中项）。
+  // purpose 决定新建的是对话模型还是决策模型；建后收起浮动菜单。
+  const onAddProvider = (purpose: ProviderPurpose): void => {
+    cancelAddClose()
+    setAddMenu(false)
+    addCustomProvider(
+      purpose === 'decision' ? t('models.newDecisionName') : t('models.newProviderName'),
+      purpose
+    )
     setView('detail')
   }
 
@@ -214,10 +274,39 @@ export function ModelSettings(): React.JSX.Element {
     setTestState({ status: 'testing', message: '' })
     try {
       const r = await window.deva.provider.test({
-        adapter: selectedProvider.adapter,
+        // 探针仅用于对话模型；此路径下 adapter 必属 LLM 三协议（决策模型无测试按钮）。
+        adapter: selectedProvider.adapter as 'anthropic' | 'openai' | 'responses',
         providerId: selectedProvider.id,
         baseURL: selectedProvider.apiHost,
         model: testModelId
+      })
+      if (r.ok) {
+        setTestState({ status: 'ok', message: r.latencyMs != null ? `${r.latencyMs}ms` : '' })
+      } else {
+        setTestState({ status: 'fail', message: r.message })
+      }
+    } catch (e) {
+      setTestState({ status: 'fail', message: (e as Error)?.message ?? String(e) })
+    }
+  }
+
+  // 决策模型专属连通性测试：走独立运行时（decision:test），不需要模型，只判密钥+地址是否可达。
+  const runDecisionTest = async (): Promise<void> => {
+    if (!selectedProvider) return
+    const draft = keyDraft.trim()
+    if (!draft && !hasKey(selectedProvider.id)) {
+      setTestState({ status: 'fail', message: t('models.testNeedKey') })
+      return
+    }
+    if (draft) await flushKey(selectedProvider.id)
+    setTestState({ status: 'testing', message: '' })
+    try {
+      const r = await window.deva.decision.test({
+        // 此路径下 provider 必为决策模型，adapter 属决策适配器（当前仅 'jev'）。
+        adapter: selectedProvider.adapter as 'jev',
+        providerId: selectedProvider.id,
+        baseURL: selectedProvider.apiHost,
+        threshold: selectedProvider.threshold ?? 0.6
       })
       if (r.ok) {
         setTestState({ status: 'ok', message: r.latencyMs != null ? `${r.latencyMs}ms` : '' })
@@ -238,7 +327,8 @@ export function ModelSettings(): React.JSX.Element {
     setFetchState({ status: 'loading', list: [] })
     window.deva.provider
       .listModels({
-        adapter: selectedProvider.adapter,
+        // 仅对话模型可拉取清单；决策模型无「模型清单」，不会走到此处。
+        adapter: selectedProvider.adapter as 'anthropic' | 'openai' | 'responses',
         providerId: selectedProvider.id,
         baseURL: selectedProvider.apiHost
       })
@@ -338,48 +428,52 @@ export function ModelSettings(): React.JSX.Element {
         <>
           <div className="models__head">
             <h2 className="models__title">{t('models.providers')}</h2>
-            <button
-              className="models__add-btn"
-              title={t('models.addProvider')}
-              aria-label={t('models.addProvider')}
-              onClick={onAddProvider}
+            <div
+              className="models__addwrap"
+              onMouseEnter={() => {
+                cancelAddClose()
+                setAddMenu(true)
+              }}
+              onMouseLeave={scheduleAddClose}
             >
-              <Plus size={16} />
-            </button>
+              <button
+                className="models__add-btn"
+                title={t('models.addProvider')}
+                aria-label={t('models.addProvider')}
+                aria-haspopup="menu"
+                aria-expanded={addMenu}
+                onClick={() => setAddMenu(true)}
+              >
+                <Plus size={16} />
+              </button>
+              {addMenu && (
+                <div className="cf-addmenu__pop cf-addmenu__pop--fit" role="menu">
+                  <button
+                    className="cf-addmenu__item"
+                    role="menuitem"
+                    onClick={() => onAddProvider('llm')}
+                  >
+                    <MessageSquare size={15} className="cf-addmenu__icon" />
+                    <span>{t('models.addChatModel')}</span>
+                  </button>
+                  <button
+                    className="cf-addmenu__item"
+                    role="menuitem"
+                    onClick={() => onAddProvider('decision')}
+                  >
+                    <Zap size={15} className="cf-addmenu__icon" />
+                    <span>{t('models.addDecisionModel')}</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
           <div className="models__rows">
-            {visibleProviders.length === 0 && (
+            {visibleProviders.length === 0 ? (
               <div className="model-list__empty">{t('models.noProvidersYet')}</div>
+            ) : (
+              visibleProviders.map(renderProviderRow)
             )}
-            {visibleProviders.map((p) => (
-              <button
-                key={p.id}
-                className="provider-row"
-                onClick={() => openProvider(p.id)}
-              >
-                <span
-                  className={`provider-row__dot${p.enabled ? ' is-on' : ''}`}
-                  title={p.enabled ? t('models.enabled') : t('models.disabled')}
-                />
-                <span className="provider-row__main">
-                  <span className="provider-row__name">
-                    <span className="provider-row__name-text">{p.name}</span>
-                    <span className={`tag${p.kind === 'official' ? ' tag--official' : ''}`}>
-                      {p.kind === 'official' ? t('models.official') : t('models.custom')}
-                    </span>
-                  </span>
-                  <span className="provider-row__sub">
-                    {t('models.modelCount').replace('{count}', String(p.models.length))}
-                  </span>
-                </span>
-                <span className="provider-row__aside">
-                  {p.enabled && !hasKey(p.id) && (
-                    <AlertTriangle className="provider-row__warn" size={14} />
-                  )}
-                  <ChevronRight size={16} />
-                </span>
-              </button>
-            ))}
           </div>
         </>
       ) : (
@@ -422,10 +516,20 @@ export function ModelSettings(): React.JSX.Element {
             ) : (
               <h2 className="provider-detail__name">{selectedProvider.name}</h2>
             )}
-            <span className={`tag${selectedProvider.kind === 'official' ? ' tag--official' : ''}`}>
-              {selectedProvider.kind === 'official' ? t('models.official') : t('models.custom')}
+            {/* 用途标签：对话模型 / 决策模型（取代官方/自定义标签，与列表行一致） */}
+            <span
+              className={`tag${selectedProvider.purpose === 'decision' ? ' tag--decision' : ''}`}
+            >
+              {selectedProvider.purpose === 'decision'
+                ? t('models.tagDecision')
+                : t('models.tagLLM')}
             </span>
           </header>
+
+          {/* 决策模型说明：它只产出「是否该做某事」的类型化决策，不生成对话文本 */}
+          {selectedProvider.purpose === 'decision' && (
+            <p className="field__note">{t('models.decisionHint')}</p>
+          )}
 
           {/* 已启用但未配置密钥 → 提醒（本地 Ollama 之类可无钥，此处仅作提示不阻断） */}
           {selectedProvider.enabled && !hasKey(selectedProvider.id) && (
@@ -435,8 +539,9 @@ export function ModelSettings(): React.JSX.Element {
             </div>
           )}
 
-          {/* 供应商快速选择（仅自定义）：选官方预置一键套用地址/协议/模型清单 */}
-          {selectedProvider.kind === 'custom' && (
+          {/* 供应商快速选择（仅自定义对话模型）：选官方预置一键套用地址/协议/模型清单。
+              决策模型无 LLM 预置，故不显示。 */}
+          {selectedProvider.kind === 'custom' && selectedProvider.purpose !== 'decision' && (
             <div className="field">
               <label className="field__label">{t('models.selectProvider')}</label>
               <div className="field__control">
@@ -456,8 +561,8 @@ export function ModelSettings(): React.JSX.Element {
             </div>
           )}
 
-          {/* 协议（仅自定义服务商可切换） */}
-          {selectedProvider.kind === 'custom' && (
+          {/* 协议（仅自定义对话模型可切换；决策模型协议固定为 jev，不暴露选择） */}
+          {selectedProvider.kind === 'custom' && selectedProvider.purpose !== 'decision' && (
             <div className="field">
               <label className="field__label">{t('models.adapter')}</label>
               <div className="field__control">
@@ -552,20 +657,38 @@ export function ModelSettings(): React.JSX.Element {
                   <RotateCcw size={14} />
                 </button>
               )}
-              <button
-                className="btn btn--ghost"
-                disabled={testState.status === 'testing'}
-                onClick={() => void runTest()}
-              >
-                {testState.status === 'testing' ? (
-                  <>
-                    <Loader2 size={13} className="icon-spin" />
-                    {t('models.testConnTesting')}
-                  </>
-                ) : (
-                  t('models.testConn')
-                )}
-              </button>
+              {/* 连通性测试：对话模型走 provider:test（需模型），决策模型走 decision:test（独立运行时，无需模型） */}
+              {selectedProvider.purpose !== 'decision' ? (
+                <button
+                  className="btn btn--ghost"
+                  disabled={testState.status === 'testing'}
+                  onClick={() => void runTest()}
+                >
+                  {testState.status === 'testing' ? (
+                    <>
+                      <Loader2 size={13} className="icon-spin" />
+                      {t('models.testConnTesting')}
+                    </>
+                  ) : (
+                    t('models.testConn')
+                  )}
+                </button>
+              ) : (
+                <button
+                  className="btn btn--ghost"
+                  disabled={testState.status === 'testing'}
+                  onClick={() => void runDecisionTest()}
+                >
+                  {testState.status === 'testing' ? (
+                    <>
+                      <Loader2 size={13} className="icon-spin" />
+                      {t('models.testConnTesting')}
+                    </>
+                  ) : (
+                    t('models.testConn')
+                  )}
+                </button>
+              )}
             </div>
             {testState.status === 'ok' && (
               <div className="test-result test-result--ok">
@@ -583,7 +706,32 @@ export function ModelSettings(): React.JSX.Element {
             )}
           </div>
 
-          {/* 模型清单 */}
+          {/* 触发置信度阈值（仅决策模型）：发起动作的默认置信度门槛 [0,1] */}
+          {selectedProvider.purpose === 'decision' && (
+            <div className="field">
+              <label className="field__label">{t('models.threshold')}</label>
+              <div className="field__control">
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={selectedProvider.threshold ?? 0.6}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    updateProvider(selectedProvider.id, {
+                      threshold: Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.6
+                    })
+                  }}
+                />
+              </div>
+              <p className="field__note">{t('models.thresholdHint')}</p>
+            </div>
+          )}
+
+          {/* 模型清单（仅对话模型：决策模型无「模型清单」概念） */}
+          {selectedProvider.purpose !== 'decision' && (
           <div className="field">
             <div className="field__row-between">
               <label className="field__label">{t('models.modelList')}</label>
@@ -702,6 +850,7 @@ export function ModelSettings(): React.JSX.Element {
               ))}
             </div>
           </div>
+          )}
         </section>
       )}
     </div>

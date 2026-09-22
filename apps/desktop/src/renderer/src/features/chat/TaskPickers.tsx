@@ -28,10 +28,11 @@ export function TaskModelSelect({
   const { providers } = useModels()
   const [open, setOpen] = useState(false)
 
+  // 任务的写作模型只取对话模型（purpose==='llm'）；决策模型（Jev）不生成文本，排除。
   const groups = useMemo(
     () =>
       providers
-        .filter((p) => p.enabled)
+        .filter((p) => p.enabled && (p.purpose ?? 'llm') === 'llm')
         .map((p) => ({ p, models: p.models.filter((m) => m.enabled) }))
         .filter((g) => g.models.length > 0),
     [providers]
