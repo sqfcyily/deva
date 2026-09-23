@@ -11,7 +11,7 @@ import {
   type ToolContext,
   type ToolResult
 } from './tools'
-import { isDangerousCommand } from './exec-policy'
+import { isDangerousCommand, touchesSensitivePath } from './exec-policy'
 import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
 import { enabledAgentSummaries, getEnabledAgentByName, type AgentRecord } from './agents'
 import { enabledPersonas, getPersona } from './personas'
@@ -648,17 +648,30 @@ function parseAskQuestions(args: unknown): AskQuestion[] {
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  /** depth>0 + agent：本事件来自某子智能体（渲染层据此折叠进「子智能体任务」卡）。 */
-  | { type: 'tool_call'; id: string; name: string; args: unknown; depth?: number; agent?: string }
+  /**
+   * depth>0 + agent + parent：本事件来自某子智能体（渲染层据此折叠进 parent 指向的那张
+   * 「子智能体任务」卡）。parent = 派生它的那次 run_subagent 调用 id —— 多个子智能体**并行**跑时，
+   * 唯有按 id 归属才不会把彼此的嵌套事件串进同一张卡。
+   */
+  | {
+      type: 'tool_call'
+      id: string
+      name: string
+      args: unknown
+      depth?: number
+      agent?: string
+      parent?: string
+    }
   | {
       type: 'tool_result'
       id: string
       name: string
       summary: string
       isError: boolean
-      /** depth>0 + agent：来自子智能体的工具结果（折叠进 Task 卡）。 */
+      /** depth>0 + agent + parent：来自子智能体的工具结果（折叠进 parent 那张 Task 卡）。 */
       depth?: number
       agent?: string
+      parent?: string
     }
   /** 征求决策/澄清：暂停循环，向用户抛出一个或多个问题，等其一次性作答后回灌为 tool_result。 */
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
@@ -681,6 +694,12 @@ export type ChatStreamEvent =
 // agentic loop）。天然刹车 = 用户随时可中止（controller.signal，见 runAgentLoop 内的 aborted 判定）
 // + 接近上下文上限时自动压缩（compaction）。子智能体不吃此值，另有自己的安全上限（见 run_subagent）。
 const MAX_STEPS = Infinity
+/**
+ * 子智能体单次派发的工具步数上限。主轮无上限（MAX_STEPS = Infinity），子轮保留一个**很宽的**
+ * 兜底：它跑在无人值守的隔离循环里，没有 ask_user 可以打断自己，需要一道防失控的闸。
+ * 60 步对「大范围检索 / 专项分析」这类目标用途实际等同于无上限（原先的 15 步才是真正的瓶颈）。
+ */
+const SUBAGENT_MAX_STEPS = 60
 /** 单个步骤因可重试网络错误自动重连的最大次数。 */
 const MAX_RECONNECT = 3
 
@@ -759,7 +778,7 @@ function systemPrompt(
       : '你是 Deva，一个运行在用户桌面上的 AI 助手，可通过工具读取/写入文件、执行命令、加载技能等来完成用户请求。以下是你在本应用内必须始终遵守的规范。',
     `【环境】${loc}`,
     '【工具使用】先用 read_file / list_dir 了解现状再动手；write_file 会覆盖整个文件，务必先读后写、保留无关内容。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用被安全策略拒绝，回灌结果会写明原因——据此改道或如实说明受限之处，切勿反复重试同一被拒操作。',
-    '【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。唯有三类不可协商的安全底线会被静默拒绝并回灌原因——① 凭据/系统等敏感目录（~/.ssh、~/.aws、/etc、C:\\Windows 及本应用配置目录等）的读写；② 受保护目录（.git / .claude / .vscode）的写入；③ 明显危险的命令（如 rm -rf）。被拒时请改用其它方式或向用户如实说明，切勿重试。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。',
+    '【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。唯有三类不可协商的安全底线会被静默拒绝并回灌原因——① 私钥/凭据目录（~/.ssh、~/.aws、~/.gnupg）与本应用配置目录（~/.deva）的读写；② 版本库内部（.git）的写入；③ 明显危险的命令（如 rm -rf）。被拒时请改用其它方式或向用户如实说明，切勿重试。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。',
     '【决策与澄清】当需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时，调用 ask_user 抛出一个或多个问题（每题可给候选项、可单选或多选，界面另有内置「自己输入」入口），用户在同一张卡片里一次性作答后回灌给你再继续；能合理默认就直接做，别为琐碎选择打断用户。注意区分：ask_user 只用于征求决策/澄清；写入与执行本就无需授权，切勿用它去问「是否允许写入/执行」。',
     '【计划先行】遇到非平凡的实现类任务（新功能、跨多文件改动、有多个各有取舍的方案、或需求尚不明确等），先用只读工具（read_file / list_dir / glob / grep / web_fetch）充分调研理解现状，再调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件或执行命令**。用户批准后你直接按计划执行、无需再次征求授权（写入/执行照常只受上述安全底线约束）；用户若选择继续完善，请依其反馈调整后再重新提交，在收到新反馈前不要重复调用 exit_plan。琐碎、单点、只读或答疑类任务直接做，不必先出计划。'
   ]
@@ -800,7 +819,7 @@ function sealedSystemPrompt(
     `【环境】${loc}`,
     '【任务】按本次指令收集/整理信息或执行操作，给出条理清晰的结果；如需外部信息可使用 web_fetch 等工具。若是提醒类指令，直接给出清晰简洁的提醒正文（用户会通过系统通知看到）。',
     '【自动执行】本次为无人值守的自动执行：你**无法**向用户提问、征求授权或提交计划审阅（ask_user / exit_plan 均不可用，调用它们不会有人回应）。请基于合理默认自主完成任务，一次性给出最终结果，不要反问、不要停下等待确认。',
-    '【工具与权限】读写文件、执行命令、调用已启用的技能与 MCP 工具默认均可使用，无需授权。唯有凭据/系统等敏感目录（Tier-1）、受保护目录（.git/.claude/.vscode）与危险命令会被安全策略拒绝——若某次调用被拒，请改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。',
+    '【工具与权限】读写文件、执行命令、调用已启用的技能与 MCP 工具默认均可使用，无需授权。唯有私钥/凭据目录与本应用配置目录（Tier-1：~/.ssh、~/.aws、~/.gnupg、~/.deva，含以命令间接访问）、版本库内部（.git）与危险命令会被安全策略拒绝——若某次调用被拒，请改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。',
     '【产出】用简洁、结构清晰的简体中文（除非角色设定另有风格）直接给出最终结果，作为本次任务的成果记录在对话中。'
   ]
   if (personas.length) {
@@ -832,25 +851,43 @@ function buildSkillTool(skills: { name: string; description: string }[]): ToolSp
   }
 }
 
-/** 据已启用子智能体动态构建 run_subagent 工具规格（无启用项时返回 null，不向模型暴露）。 */
-function buildSubagentTool(agents: { name: string; description: string }[]): ToolSpec | null {
-  if (!agents.length) return null
+/**
+ * 构建 run_subagent 工具规格。**恒返回**（不再因「无预设子智能体」而对模型隐藏）：
+ * 子智能体按需现场派生，任务内容完全由本次调用的 `prompt` 给出；`agent` 只是可选的「预设专家」
+ * （固定提示词 / 工具白名单 / 指定模型），省略或未命中即回落内置通用子智能体（见 GENERAL_SUBAGENT）。
+ * 对标 Claude Code：预设是可选增强，不是派生的前置条件。
+ */
+function buildSubagentTool(agents: { name: string; description: string }[]): ToolSpec {
   const list = agents
     .map((a) => `${a.name}${a.description ? `（${a.description}）` : ''}`)
     .join('；')
   return {
     name: 'run_subagent',
     description:
-      '把一项相对独立、需要隔离上下文的子任务，派发给一个预设的「子智能体（Subagent）」独立完成，只返回其最终结论。' +
-      '适合大范围检索/梳理、专项分析等与主线相对独立的封闭子任务。子智能体拥有自己的系统提示词、工具集与模型，运行在隔离上下文中（看不到主对话历史），其内部每一次工具调用照常受权限约束。' +
-      `当前可用子智能体：${list}。`,
+      '把一项相对独立、需要隔离上下文的子任务，派发给一个「子智能体（Subagent）」独立完成，只返回其最终结论。' +
+      '适合大范围检索/梳理、专项分析等与主线相对独立的封闭子任务——其大量中间过程不会占用本对话的上下文预算。' +
+      '子智能体运行在隔离上下文中（看不到主对话历史），有自己的系统提示词、工具集与模型，其内部每一次工具调用照常受权限约束。' +
+      '彼此独立的多个子任务，请在**同一轮里一次性发起多个调用**——它们会真正并行执行；有先后依赖的才分轮发起。' +
+      '子智能体是一次性的：跑完即结束，无法追问、无法补充指令，因此任务描述必须一次说清。' +
+      '不要用它做你自己直接做更快的事：已经知道文件/符号/取值在哪就自己读、自己搜；单点查询、需要与用户交互、以及需要你亲自落笔改动的工作，都不要派发。' +
+      '派发之后就采信它的结论，不要再自己把同一件事重做一遍。' +
+      '它的结论默认折叠在任务卡里、用户不会主动展开——请在你的回复里转述其中要紧的部分，不要只说一句「已完成」。' +
+      (list
+        ? `可选的预设专家：${list}。省略 agent 即派生通用子智能体（具备全部内置工具）。`
+        : '当前没有预设专家，省略 agent 即可：将派生具备全部内置工具的通用子智能体。'),
     inputSchema: {
       type: 'object',
       properties: {
+        description: {
+          type: 'string',
+          description: '用 3-5 个字概括这项子任务（如「检索鉴权逻辑」），作为任务卡标题展示给用户。'
+        },
         agent: {
           type: 'string',
-          description: '要派发到的子智能体名称（须为上述可用子智能体之一）。',
-          enum: agents.map((a) => a.name)
+          description:
+            '可选。要派发到的预设专家名称；省略或未命中时派生通用子智能体。无特殊需要时省略即可。',
+          // 无预设时不给 enum：空枚举会让该属性不可满足。
+          ...(agents.length ? { enum: agents.map((a) => a.name) } : {})
         },
         prompt: {
           type: 'string',
@@ -858,14 +895,16 @@ function buildSubagentTool(agents: { name: string; description: string }[]): Too
             '交给该子智能体的完整任务描述。它看不到主对话历史，请把所需背景、目标与验收标准一次说清。'
         }
       },
-      required: ['agent', 'prompt']
+      required: ['description', 'prompt']
     }
   }
 }
 
 /**
  * 子智能体本轮可用工具集：内置工具（排除 ask_user / skill / run_subagent）为基。
- * - allowlist 为空 → 全部内置工具（不含 MCP，保守默认）。
+ * - allowlist 为空 → 全部内置工具 **+ 全部已连接 MCP 工具**（对标 Claude Code 的
+ *   general-purpose：工具集就是 `*`；通用子智能体本就为「大范围检索/专项分析」而生，
+ *   把 MCP 挡在外面只会逼主智能体自己去干那些本该外包的活）。
  * - allowlist 非空 → 仅其中命中的内置工具 + 命中的已连接 MCP 工具。
  * 白名单只**收窄**可见工具；被保留的每个工具调用仍照常过同一道权限闸门（无提权）。
  */
@@ -882,7 +921,7 @@ function buildSubagentTools(allowlist: string[]): ToolSpec[] {
     'create_task'
   ])
   const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
-  if (!allowlist || allowlist.length === 0) return builtins
+  if (!allowlist || allowlist.length === 0) return [...builtins, ...getMcpToolSpecs()]
   const allow = new Set(allowlist)
   const pickedBuiltins = builtins.filter((t) => allow.has(t.name))
   const pickedMcp = getMcpToolSpecs().filter((t) => allow.has(t.name))
@@ -913,6 +952,22 @@ function buildSealedTools(skills: { name: string; description: string }[]): Tool
   return [...builtins, ...(skillTool ? [skillTool] : []), ...getMcpToolSpecs()]
 }
 
+/**
+ * 内置通用子智能体：未指定预设、或指定的预设未命中时的回落定义。
+ * 纯代码常量——不落盘、不进 ~/.deva/agents、不出现在扩展页列表，因此**无需用户先创建任何东西**
+ * 即可派生（「按需派生」不该以「先去建一个预设」为前提）。
+ * `model: ''` = 跟随主对话（继承父轮模型）；`tools: []` = 全部内置工具（见 buildSubagentTools）。
+ */
+const GENERAL_SUBAGENT: AgentRecord = {
+  id: '',
+  name: '通用子智能体',
+  description: '按主智能体现场给定的任务描述，独立完成一项封闭子任务。',
+  model: '',
+  tools: [],
+  prompt: '',
+  enabled: true
+}
+
 /** 子智能体系统提示词：固定的隔离/约束说明 + 该子智能体自身的职责正文（prompt）。 */
 function buildSubagentSystem(def: AgentRecord, workspaceRoot: string | null): string {
   const loc = workspaceRoot
@@ -922,8 +977,9 @@ function buildSubagentSystem(def: AgentRecord, workspaceRoot: string | null): st
     `你是子智能体「${def.name}」，由主智能体派生来独立完成一项被交办的子任务。`,
     loc,
     '请只专注完成这项子任务；完成后用简洁的简体中文直接给出结论/产物，作为交回主智能体的答复，不要反问。',
+    '结论要能被主智能体直接使用：给出结论与依据，点名相关文件（**路径写绝对路径**）与必要的代码/取值片段；不要复述过程流水账。',
     '你无法向用户提问（没有 ask_user 工具），也不能再派生其它子智能体；若信息不足，基于合理默认完成，并在结论中说明所做的假设。',
-    '你的工具调用默认直接执行、无需授权；唯有凭据/系统等敏感目录、受保护目录（.git/.claude/.vscode）的写入与危险命令会被安全策略拒绝——被拒时改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。'
+    '你的工具调用默认直接执行、无需授权；唯有私钥/凭据目录与本应用配置目录（~/.ssh、~/.deva 等，含以命令间接访问）、版本库内部（.git）的写入与危险命令会被安全策略拒绝——被拒时改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。'
   ]
   const body = def.prompt.trim()
   if (body) lines.push('', '你的职责与专长如下：', body)
@@ -946,7 +1002,7 @@ interface AgentLoopArgs {
   ctx: ToolContext
   /** 取消控制器：其 signal 贯穿流式与工具执行。 */
   controller: AbortController
-  /** 单轮最大工具步数（主轮 25，子轮更小）。 */
+  /** 单轮最大工具步数（主轮 MAX_STEPS=Infinity，子轮 SUBAGENT_MAX_STEPS）。 */
   maxSteps: number
   /** 递归深度：0=主轮，1=子智能体（限制再派生；Phase 4 用）。 */
   depth: number
@@ -964,6 +1020,11 @@ interface AgentLoopArgs {
   skillSummaries: { name: string; description: string }[]
   /** 子智能体显示名（depth>0 时随事件下发，供渲染层折叠 Task 卡；主轮 undefined）。 */
   agentName?: string
+  /**
+   * 派生本子智能体的那次 run_subagent 调用 id（depth>0 时随事件下发）。
+   * 渲染层据此把嵌套事件归入**正确的那张** Task 卡——并行派发时这是唯一可靠依据。
+   */
+  parentToolId?: string
   /** 每收到一次真实 usage.input 即回调（主轮据此持久化 lastInputTokens 作压缩触发依据）。 */
   onUsage?: (input: number) => void
   /**
@@ -1037,12 +1098,107 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       allowAskUser,
       allowSubagents,
       skillSummaries,
-      agentName
+      agentName,
+      parentToolId
     } = args
-    // depth>0 时给 tool_call/tool_result 事件盖上「来自哪个子智能体」的戳，供渲染层折叠 Task 卡；
+    // depth>0 时给 tool_call/tool_result 事件盖上「来自哪个子智能体、归属哪张卡」的戳；
     // 主轮（depth 0）为 undefined，事件形状与既有完全一致（向后兼容）。
-    const evMeta: { depth: number; agent?: string } | undefined =
-      depth > 0 ? { depth, agent: agentName } : undefined
+    const evMeta: { depth: number; agent?: string; parent?: string } | undefined =
+      depth > 0 ? { depth, agent: agentName, parent: parentToolId } : undefined
+    // 子智能体运行在隔离上下文里，其正文/思考/用量/重连等**流式噪声一律不进主对话流**
+    // （对标 Claude Code：Task 卡之外看不到子智能体的过程），只有工具调用（盖了 evMeta 戳，
+    // 折叠进卡）与最终结论回到父轮。并行派发后这更是必须的——否则多个子智能体的正文会互相交织。
+    const isSub = depth > 0
+
+    /**
+     * 派发一次 run_subagent：起一个隔离上下文的子智能体（独立历史/工具/模型），只把其结论文本
+     * 交回父轮。派生本身不设闸——但子智能体的每一次嵌套工具调用仍在其 runAgentLoop 内照常过
+     * 同一道权限闸门（无后门）。递归深度上限 1：子轮 allowSubagents=false，杜绝子派生子。
+     * 任何解析/执行失败都捕获成结论文本，父轮继续，绝不整轮失败。
+     * **可并发调用**：完成即定格自己那张 Task 卡（按调用 id 归属，与完成先后无关）。
+     */
+    async function runSubagentCall(tc: {
+      id: string
+      name: string
+      args: unknown
+    }): Promise<{ conclusion: string; isErr: boolean }> {
+      const a = (tc.args ?? {}) as { agent?: unknown; prompt?: unknown }
+      const wantedAgent = typeof a.agent === 'string' ? a.agent.trim() : ''
+      const prompt = typeof a.prompt === 'string' ? a.prompt.trim() : ''
+      // 预设未指定 / 未命中 → 一律回落内置通用子智能体，**绝不因此失败**（对标 Claude Code：
+      // 未知 subagent_type 同样落到 general-purpose）。名字落空时在结论前缀一行说明，免得模型
+      // 以为自己点名的那位专家生效了。
+      const preset = wantedAgent ? getEnabledAgentByName(wantedAgent) : null
+      const def = preset ?? GENERAL_SUBAGENT
+      const missNote =
+        wantedAgent && !preset
+          ? `（未找到名为「${wantedAgent}」的已启用子智能体，已改用通用子智能体完成。当前预设：${
+              enabledAgentSummaries()
+                .map((x) => x.name)
+                .join('、') || '无'
+            }。）
+`
+          : ''
+
+      let conclusion: string
+      let isErr = false
+      if (!prompt) {
+        conclusion = `派生子智能体「${def.name}」失败：缺少任务描述（prompt）。`
+        isErr = true
+      } else {
+        try {
+          const sub = await runAgentLoop({
+            turnId,
+            sessionId,
+            // 隔离历史：只带本次任务描述，不继承父对话（避免上下文串味与预算膨胀）。
+            history: [{ role: 'user', content: prompt }],
+            system: buildSubagentSystem(def, ctx.workspaceRoot),
+            tools: buildSubagentTools(def.tools),
+            // 指定模型 → 解析；为空或不可解析 → 回落父轮模型（「跟随主对话」）。
+            model: resolveModelRef(def.model, model),
+            ctx,
+            controller,
+            maxSteps: SUBAGENT_MAX_STEPS,
+            depth: depth + 1,
+            // 子智能体仍在用户在场时运行，其每次工具调用照常过交互权限闸门。
+            interactive: true,
+            allowAskUser: false,
+            allowSubagents: false,
+            skillSummaries: [],
+            agentName: def.name,
+            // 嵌套事件据此归入**本次调用**开出的那张 Task 卡（并行时唯一可靠依据）。
+            parentToolId: tc.id
+          })
+          isErr = sub.stopReason === 'error'
+          conclusion =
+            sub.text.trim() ||
+            (isErr && sub.errorMessage
+              ? `子智能体「${def.name}」执行失败：${sub.errorMessage}`
+              : '（子智能体未产生文本结论。）')
+        } catch (e) {
+          conclusion = `子智能体「${def.name}」执行出错：${(e as Error)?.message ?? String(e)}`
+          isErr = true
+        }
+      }
+
+      if (missNote) conclusion = missNote + conclusion
+
+      const subSummary = isErr
+        ? `子智能体「${def.name}」未完成`
+        : `子智能体「${def.name}」已完成`
+      args.onToolSummary?.(tc.id, subSummary)
+      // 父轮（depth 0）事件不盖戳：run_subagent 这张卡本身即 Task 卡的「壳」，
+      // 其内部嵌套事件已在递归调用里各自盖了 depth+parent 戳并折叠进来。
+      emit(turnId, sessionId, {
+        type: 'tool_result',
+        id: tc.id,
+        name: tc.name,
+        summary: subSummary,
+        isError: isErr,
+        ...(evMeta ?? {})
+      })
+      return { conclusion, isErr }
+    }
     // 最近一步的助手正文；作为子智能体回传父轮的「结论」（主轮不使用返回值）。
     let finalText = ''
     // 致命错误 / 重连耗尽时的错误文案：随返回值上交，供父轮子智能体结论回落与红框持久化。
@@ -1074,9 +1230,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         )) {
           if (ev.type === 'text_delta') {
             assistantText += ev.text
-            emit(turnId, sessionId, { type: 'text_delta', text: ev.text })
+            if (!isSub) emit(turnId, sessionId, { type: 'text_delta', text: ev.text })
           } else if (ev.type === 'thinking_delta') {
-            emit(turnId, sessionId, { type: 'thinking_delta', text: ev.text })
+            if (!isSub) emit(turnId, sessionId, { type: 'thinking_delta', text: ev.text })
           } else if (ev.type === 'tool_call') {
             toolCalls.push({ id: ev.id, name: ev.name, args: ev.args })
             // ask_user / exit_plan 不画通用工具卡：循环走到它们时再发专用 ask_user / plan_review 事件
@@ -1090,7 +1246,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
                 ...(evMeta ?? {})
               })
           } else if (ev.type === 'usage') {
-            emit(turnId, sessionId, { type: 'usage', input: ev.input, output: ev.output })
+            // 子轮用量不代表主对话的上下文占用，不喂渲染层的上下文计量。
+            if (!isSub)
+              emit(turnId, sessionId, { type: 'usage', input: ev.input, output: ev.output })
             args.onUsage?.(ev.input)
           } else if (ev.type === 'error') {
             // 可重试且非用户中止 → 暂不上报，走自动重连；否则作为致命错误立即上报。
@@ -1098,7 +1256,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             else {
               fatal = true
               errorMessage = ev.error.message
-              emit(turnId, sessionId, { type: 'error', kind: ev.error.kind, message: ev.error.message })
+              // 子轮错误由父轮包装成 tool_result 结论回灌、并把 Task 卡定格为 error，
+              // 不在主对话流里再画一个红框。
+              if (!isSub)
+                emit(turnId, sessionId, {
+                  type: 'error',
+                  kind: ev.error.kind,
+                  message: ev.error.message
+                })
             }
           } else if (ev.type === 'done') {
             stopReason = ev.stopReason
@@ -1110,18 +1275,25 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         if (retryableDrop) {
           if (attempt >= MAX_RECONNECT) {
             errorMessage = `连接多次中断，已重试 ${MAX_RECONNECT} 次仍失败，已停止。`
-            emit(turnId, sessionId, {
-              type: 'error',
-              kind: 'network',
-              message: errorMessage
-            })
+            if (!isSub)
+              emit(turnId, sessionId, {
+                type: 'error',
+                kind: 'network',
+                message: errorMessage
+              })
             return { text: finalText, stopReason: 'error', errorMessage }
           }
-          emit(turnId, sessionId, { type: 'reconnecting', attempt: attempt + 1, max: MAX_RECONNECT })
+          if (!isSub)
+            emit(turnId, sessionId, {
+              type: 'reconnecting',
+              attempt: attempt + 1,
+              max: MAX_RECONNECT
+            })
           const resumed = await delay(Math.min(1000 * 2 ** attempt, 8000), controller.signal)
           if (!resumed) return { text: finalText, stopReason: 'aborted' }
-          // 通知渲染层丢弃本步已画出的残缺尾部，随后 continue 重发本步
-          emit(turnId, sessionId, { type: 'stream_reset' })
+          // 通知渲染层丢弃本步已画出的残缺尾部，随后 continue 重发本步。
+          // 子轮从未画出任何正文，若照发会误伤主对话里正在写的那段文本。
+          if (!isSub) emit(turnId, sessionId, { type: 'stream_reset' })
           continue reconnect
         }
         break // 本步干净结束
@@ -1137,6 +1309,15 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
       if (stopReason === 'aborted' || stopReason === 'error') return { text: finalText, stopReason }
       if (toolCalls.length === 0) return { text: finalText, stopReason }
+
+      // 并行派发子任务（对标 Claude Code：同一条消息里的多个子任务真正并发跑）：先把本步全部
+      // run_subagent 一次性启动，其余工具仍按原序串行。每个子任务在**自己完成的那一刻**定格
+      // 自己那张 Task 卡（tool_result 按调用 id 归属，与完成先后无关）；回灌给模型的结果则在
+      // 下面按原序 await，顺序稳定。
+      const subRuns = new Map<string, Promise<{ conclusion: string; isErr: boolean }>>()
+      if (allowSubagents)
+        for (const tc of toolCalls)
+          if (tc.name === 'run_subagent') subRuns.set(tc.id, runSubagentCall(tc))
 
       // 逐个执行工具（过权限闸门），结果回灌为一条 user 消息
       const resultParts: ContentPart[] = []
@@ -1245,86 +1426,23 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           continue
         }
 
-        // run_subagent 特判：在闸门前派生一个隔离的子智能体（独立历史/工具/模型），只把其结论文本
-        // 作为 tool_result 回灌父轮。派生本身不设闸——但子智能体的每一次嵌套工具调用仍在其
-        // runAgentLoop 内照常过同一道权限闸门（无后门）。递归深度上限 1：子轮 allowSubagents=false，
-        // 杜绝子派生子。任何解析/执行失败都捕获成 tool_result 文本，父轮继续，不整轮失败。
-        if (allowSubagents && tc.name === 'run_subagent') {
-          const a = (tc.args ?? {}) as { agent?: unknown; prompt?: unknown }
-          const wantedAgent = typeof a.agent === 'string' ? a.agent.trim() : ''
-          const prompt = typeof a.prompt === 'string' ? a.prompt.trim() : ''
-          const def = wantedAgent ? getEnabledAgentByName(wantedAgent) : null
-
-          let conclusion: string
-          let isErr = false
-          if (!def) {
-            conclusion = `未找到名为「${wantedAgent}」的已启用子智能体。当前可用：${
-              enabledAgentSummaries()
-                .map((x) => x.name)
-                .join('、') || '（无）'
-            }。`
-            isErr = true
-          } else if (!prompt) {
-            conclusion = `派生子智能体「${def.name}」失败：缺少任务描述（prompt）。`
-            isErr = true
-          } else {
-            try {
-              const sub = await runAgentLoop({
-                turnId,
-                sessionId,
-                // 隔离历史：只带本次任务描述，不继承父对话（避免上下文串味与预算膨胀）。
-                history: [{ role: 'user', content: prompt }],
-                system: buildSubagentSystem(def, ctx.workspaceRoot),
-                tools: buildSubagentTools(def.tools),
-                // 指定模型 → 解析；为空或不可解析 → 回落父轮模型（「跟随主对话」）。
-                model: resolveModelRef(def.model, model),
-                ctx,
-                controller,
-                maxSteps: 15,
-                depth: depth + 1,
-                // 子智能体仍在用户在场时运行，其每次工具调用照常过交互权限闸门。
-                interactive: true,
-                allowAskUser: false,
-                allowSubagents: false,
-                skillSummaries: [],
-                agentName: def.name
-              })
-              isErr = sub.stopReason === 'error'
-              conclusion =
-                sub.text.trim() ||
-                (isErr && sub.errorMessage
-                  ? `子智能体「${def.name}」执行失败：${sub.errorMessage}`
-                  : '（子智能体未产生文本结论。）')
-            } catch (e) {
-              conclusion = `子智能体「${def.name}」执行出错：${(e as Error)?.message ?? String(e)}`
-              isErr = true
-            }
-          }
-
-          // 父轮（depth 0）事件不盖戳：run_subagent 这张卡本身即 Task 卡的「壳」，
-          // 其内部的嵌套事件已在上面的递归调用里各自盖了 depth=1 戳并折叠进来。
-          const subSummary = def ? `子智能体「${def.name}」已完成` : '未找到该子智能体'
-          args.onToolSummary?.(tc.id, subSummary)
-          emit(turnId, sessionId, {
-            type: 'tool_result',
-            id: tc.id,
-            name: tc.name,
-            summary: subSummary,
-            isError: isErr,
-            ...(evMeta ?? {})
-          })
+// run_subagent：本步的全部子任务已在进入本循环前**并行启动**（见上方 subRuns）；
+        // 此处只按 toolCalls 原序等待各自结果并回灌，故模型看到的 tool_result 顺序稳定可预期。
+        const pendingSub = subRuns.get(tc.id)
+        if (pendingSub) {
+          const sub = await pendingSub
           resultParts.push({
             type: 'tool_result',
             toolUseId: tc.id,
-            content: conclusion,
-            isError: isErr
+            content: sub.conclusion,
+            isError: sub.isErr
           })
           continue
         }
 
         // 权限闸门（纯同步策略，零弹框）：所有工具默认放行，唯有三类不可协商的安全地板**静默拒绝**
         // （不弹窗、不挂起，回灌清晰 tool_result 让模型改道）——
-        //  · edit：Tier-1 敏感目录（凭据/系统/~/.deva）拒绝、Tier-2 保护目录（.git/.claude/.vscode）拒绝；
+        //  · edit：Tier-1 敏感目录（凭据/密钥与 ~/.deva）拒绝、Tier-2 版本库内部（.git）拒绝；
         //          其余目标（含工作区外）一律放行，越界写入仅此次临时受信、finally 撤销。
         //  · exec：危险命令（rm -rf 等）拒绝；其余放行。
         //  · read / mcp：一律放行（read 的 Tier-1 仍由 tools 内 resolveReadPath 兜底拒绝）。
@@ -1354,15 +1472,15 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           const target = writeTargetPath(tc.name, tc.args, ctx.workspaceRoot)
           const abs = target?.abs ?? null
           if (abs && isSensitivePath(abs)) {
-            // Tier-1 硬底：凭据/系统目录（含本应用 ~/.deva 密钥库），一律静默拒绝。
+            // Tier-1 硬底：凭据/密钥目录（含本应用 ~/.deva 密钥库），一律静默拒绝。
             allowed = false
             policyDenied = true
-            denyContent = `该路径受安全策略保护（凭据/系统目录），拒绝写入：${abs}。请勿重试。`
+            denyContent = `该路径受安全策略保护（凭据/密钥目录），拒绝写入：${abs}。请勿重试。`
           } else if (abs && isProtectedPath(abs)) {
-            // Tier-2 硬底：受保护目录（.git/.claude/.vscode），一律静默拒绝。
+            // Tier-2 硬底：版本库内部（.git），一律静默拒绝。
             allowed = false
             policyDenied = true
-            denyContent = `该路径位于受保护目录（.git/.claude/.vscode），拒绝写入：${abs}。请勿重试。`
+            denyContent = `该路径位于版本库内部（.git），拒绝写入：${abs}。请改用 git 命令操作仓库，勿直接写 .git 下的文件。`
           } else {
             // 其余目标一律放行（含工作区外）。越界写入仅此次临时精确受信，finally 撤销。
             allowed = true
@@ -1372,7 +1490,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             }
           }
         } else if (cat === 'exec') {
-          // 危险命令（rm -rf 等）静默拒绝；其余一律放行。
+          // 危险命令（rm -rf 等）与触及凭据路径的命令静默拒绝；其余一律放行。
           const command =
             tc.args && typeof (tc.args as { command?: unknown }).command === 'string'
               ? (tc.args as { command: string }).command
@@ -1382,6 +1500,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             policyDenied = true
             denyContent =
               '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。'
+          } else if (touchesSensitivePath(command)) {
+            // 文件工具的 Tier-1 硬底对 exec 无效（shell 可直接 cat 私钥），此处按命令文本兜一层。
+            // 启发式而非密封：见 exec-policy.touchesSensitivePath 的取舍说明。
+            allowed = false
+            policyDenied = true
+            denyContent =
+              '该命令涉及凭据/密钥路径（如 ~/.ssh、~/.deva），被安全策略拒绝，未执行。请勿重试或变形绕过；确有需要请让用户自行操作。'
           } else {
             allowed = true
           }
@@ -1541,16 +1666,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         : []
       : enabledPersonas()
     const skillTool = buildSkillTool(skillSummaries)
-    // 有启用子智能体时才向模型提供 run_subagent 工具（枚举已启用名）。
+    // run_subagent 恒提供：已启用的预设（若有）作为「专家」枚举进工具描述，无预设时回落通用子智能体。
     const subagentTool = buildSubagentTool(enabledAgentSummaries())
-    // 每轮定格：内置工具 + exit_plan（计划先行）+（有启用技能时）skill +（有启用子智能体时）run_subagent +
+    // 每轮定格：内置工具 + exit_plan（计划先行）+（有启用技能时）skill + run_subagent +
     // 当前已连接 MCP 工具。exit_plan 仅主轮提供（子智能体的 buildSubagentTools 不含它）。
     // 角色不再收窄工具可见性：所有角色均可按需调用全部工具（每个调用仍照常过同一道权限闸门，零提权）。
     const turnTools: ToolSpec[] = [
       ...toolSpecs,
       buildPlanTool(),
       ...(skillTool ? [skillTool] : []),
-      ...(subagentTool ? [subagentTool] : []),
+      subagentTool,
       ...getMcpToolSpecs()
     ]
 

@@ -82,22 +82,48 @@ export function isWithinDir(target: string, dir: string | null): boolean {
 }
 
 /**
- * Tier-2 受保护目录：版本控制 / 编辑器配置（.git / .claude / .vscode）。
- * 「写入/编辑」命中这里的路径，即便处于 auto / acceptEdits 模式也必须逐次授权（对标 Claude Code
- * 的 bypass-immune 路径）；「读取」不受限。以真实路径的「路径段精确匹配」判定——
- * `.gitignore`、`.github` 等不会误命中，只有恰好名为 .git/.claude/.vscode 的段才算。
+ * Tier-2 受保护目录：仅 `.git`。命中的「写入/编辑」一律静默拒绝；「读取」不受限。
+ * 以真实路径的「路径段精确匹配」判定——`.gitignore`、`.github` 不会误命中，只有恰好名为
+ * `.git` 的段才算。
+ *
+ * 为何只剩 `.git`：`.claude` / `.vscode` 已于 2026-09-23 移出——它们是工作区内的**项目配置**
+ * （CLAUDE.md、launch.json、tasks.json），让 Agent 代改是高频正当需求，且改动落在 git diff
+ * 里用户可见；它们即便被写坏也只影响 Claude Code / VS Code，不提权 Deva 自身。
+ *
+ * `.git` 则相反，放开成本高、收益近零：
+ *  · `.git/hooks/` 写入 = 任意代码执行，而 Deva 自己就在调系统 git（Phase 4）——提权的是自己；
+ *  · `.git/config` 的 core.pager / core.editor / core.fsmonitor / alias.* 同样能塞命令；
+ *  · `.git/objects`、`.git/refs` 写坏 = 仓库损坏且不可逆；
+ *  · Agent 操作 git 走 run_command 或 git IPC 即可，从不需要直接写 `.git/` 下的文件。
+ * 刻意不细分到 hooks/config：正当写需求既然为零，精细化只会引入新的判断面与出错面。
  */
-const PROTECTED_SEGMENTS = new Set(['.git', '.claude', '.vscode'])
+const PROTECTED_SEGMENTS = new Set(['.git'])
 export function isProtectedPath(target: string): boolean {
   const real = realResolve(target)
   return real.split(/[\\/]+/).some((seg) => PROTECTED_SEGMENTS.has(seg))
 }
 
 /**
- * 敏感路径硬底：凭据/密钥与系统关键目录。
- * 即便用户在「项目外访问」询问里点了允许，命中这里的路径仍一律拒绝——
- * 防止把授权流程变成读取 ~/.ssh、~/.deva（本应用密钥库）等的后门。
- * 以真实路径比较（跟随符号链接），覆盖整个子树。
+ * Tier-1 敏感路径硬底：**只剩私钥/凭据目录与本应用自身的配置库**。
+ * 命中的路径一律拒绝读写，即便用户在「项目外访问」询问里点了允许——防止把授权流程变成
+ * 读 ~/.ssh、~/.deva（本应用密钥库）的后门。以真实路径比较（跟随符号链接），覆盖整个子树。
+ *
+ * **为何不再含系统目录**（/etc、/proc、/sys、/dev、Windows 目录已于 2026-09-23 移出）：
+ * Deva 的定位是「默认开启 auto 模式的 Claude Code」，代改配置文件（nginx、hosts、systemd）
+ * 是真实且高频的需求，Claude Code 本身也不设这类硬名单。何况写系统目录本就要 root/管理员——
+ * **OS 权限才是那层真正的地板**；在它之上再叠一层，挡掉的主要是无害的「读」，却挡不住真有
+ * 风险的场景（以 root 跑时 OS 地板消失，而 exec 通道本就不查本函数）。方向是反的，故移除。
+ *
+ * 留下的两类是**同质**的——整块放开没有正当收益，不像系统目录那样良莠混杂：
+ *  · ~/.ssh、~/.aws、~/.gnupg —— 目录里全是私钥/凭据，Agent 从无正当理由读写；
+ *  · ~/.deva —— 本应用的配置与密钥库（secrets.json）。要改这里的配置应走受控接口
+ *    （create_skill / create_mcp / propose_agent / create_task 已各自开口），而非直接写文件。
+ *
+ * ⚠️ 作用范围仅限**文件工具通道**（read_file / glob / grep / write_file / edit_file）。
+ * `run_command` 的子进程不经过本函数，shell 可直接 `cat ~/.ssh/id_rsa`——exec 侧另由
+ * exec-policy.touchesSensitivePath 按命令文本兜一层启发式，但那不是密封边界（可变形绕过）。
+ * 换言之：本函数挡的是路径穿越，不等于「~/.ssh 绝不可被 Agent 访问」。要做到后者需把 exec
+ * 沙箱化（容器 / 受限用户）。别在别处依赖「Tier-1 已密封」这个并不成立的前提。
  */
 export function isSensitivePath(target: string): boolean {
   const real = realResolve(target)
@@ -107,22 +133,16 @@ export function isSensitivePath(target: string): boolean {
   return false
 }
 
-/** 敏感目录清单（按平台，真实路径，模块级缓存）。 */
+/** 敏感目录清单（真实路径，模块级缓存）。已与平台无关：系统目录不再入列，理由见 isSensitivePath。 */
 let SENSITIVE_CACHE: string[] | null = null
 function sensitiveDirs(): string[] {
   if (SENSITIVE_CACHE) return SENSITIVE_CACHE
   const home = homedir()
-  const dirs = [
+  SENSITIVE_CACHE = [
     join(home, '.ssh'),
     join(home, '.aws'),
     join(home, '.gnupg'),
-    join(home, '.deva') // 本应用的配置/密钥库，绝不可经 Agent 访问
-  ]
-  if (process.platform === 'win32') {
-    dirs.push(process.env.SystemRoot || process.env.windir || 'C:\\Windows')
-  } else {
-    dirs.push('/etc', '/proc', '/sys', '/dev')
-  }
-  SENSITIVE_CACHE = dirs.map((d) => realResolve(d))
+    join(home, '.deva') // 本应用的配置/密钥库；改配置走 create_* 等受控接口，不直接写文件
+  ].map((d) => realResolve(d))
   return SENSITIVE_CACHE
 }

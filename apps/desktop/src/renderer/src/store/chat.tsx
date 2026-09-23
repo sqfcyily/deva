@@ -108,8 +108,10 @@ export type ChatBlock =
       kind: 'subagent'
       /** run_subagent 工具调用 id（用于匹配其 depth=0 的 tool_result 壳结果）。 */
       id: string
-      /** 子智能体显示名（取自调用参数 agent）。 */
+      /** 子智能体显示名（取自调用参数 agent；省略预设时为空 → 展示为「通用子智能体」）。 */
       agent: string
+      /** 任务标题（取自调用参数 description，3-5 字）：有则作卡片主标题，比固定的子智能体名有信息量。 */
+      desc?: string
       /** 任务描述（取自调用参数 prompt，仅展开时预览）。 */
       task?: string
       status: ToolStatus
@@ -216,7 +218,15 @@ type DisplayMessage =
 type StreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  | { type: 'tool_call'; id: string; name: string; args: unknown; depth?: number; agent?: string }
+  | {
+      type: 'tool_call'
+      id: string
+      name: string
+      args: unknown
+      depth?: number
+      agent?: string
+      parent?: string
+    }
   | {
       type: 'tool_result'
       id: string
@@ -225,6 +235,7 @@ type StreamEvent =
       isError: boolean
       depth?: number
       agent?: string
+      parent?: string
     }
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   | { type: 'plan_review'; key: string; plan: string }
@@ -354,11 +365,12 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
       const status: ToolStatus = b.status === 'error' ? 'error' : 'ok'
       // 历史回填：run_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children 为空、仅存结论）。
       if (b.name === 'run_subagent') {
-        const a = (b.args ?? {}) as { agent?: unknown; prompt?: unknown }
+        const a = (b.args ?? {}) as { agent?: unknown; prompt?: unknown; description?: unknown }
         return {
           kind: 'subagent',
           id: b.id,
           agent: typeof a.agent === 'string' ? a.agent : '',
+          desc: typeof a.description === 'string' ? a.description.trim() || undefined : undefined,
           task: typeof a.prompt === 'string' ? a.prompt : undefined,
           status,
           summary: b.summary,
@@ -372,11 +384,16 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
 }
 
 /**
- * 找到「当前正在执行」的子智能体 Task 卡下标 = 最早一张仍在运行的卡。
- * 一轮里若模型连发多个 run_subagent，其壳卡在流式阶段就已全部开出（皆 running），但主进程按
- * 工具调用顺序**串行**执行；故正向扫描取第一张 running 卡，即此刻真正在跑、其嵌套事件应归入的那张。
+ * 找到某个嵌套事件（depth>0）应归入的子智能体 Task 卡下标。
+ * 优先按 parent —— 派生它的那次 run_subagent 调用 id：一轮里的多个子任务是**并行**跑的，
+ * 它们的嵌套事件交织到达，唯有按 id 精确归属才不会串卡。
+ * 缺 parent（异常/旧事件）时退回「最早一张仍在运行的卡」，仅作兜底。
  */
-function openSubagentIndex(blocks: ChatBlock[]): number {
+function subagentIndex(blocks: ChatBlock[], parent?: string): number {
+  if (parent) {
+    const i = blocks.findIndex((b) => b.kind === 'subagent' && b.id === parent)
+    if (i >= 0) return i
+  }
   for (let i = 0; i < blocks.length; i++) {
     const b = blocks[i]
     if (b.kind === 'subagent' && b.status === 'running') return i
@@ -432,9 +449,9 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       else next.push({ kind: 'thinking', text: ev.text })
       return next
     case 'tool_call': {
-      // 子智能体内部调用（depth>0）→ 收纳进当前开着的 Task 卡，不占主对话流。
+      // 子智能体内部调用（depth>0）→ 收纳进 parent 指向的那张 Task 卡，不占主对话流。
       if (ev.depth && ev.depth > 0) {
-        const si = openSubagentIndex(next)
+        const si = subagentIndex(next, ev.parent)
         if (si >= 0) {
           const card = next[si] as Extract<ChatBlock, { kind: 'subagent' }>
           next[si] = {
@@ -469,11 +486,12 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       }
       // run_subagent 的壳调用（depth 0）→ 开一张折叠 Task 卡。
       if (ev.name === 'run_subagent') {
-        const a = (ev.args ?? {}) as { agent?: unknown; prompt?: unknown }
+        const a = (ev.args ?? {}) as { agent?: unknown; prompt?: unknown; description?: unknown }
         next.push({
           kind: 'subagent',
           id: ev.id,
           agent: typeof a.agent === 'string' ? a.agent : ev.agent ?? '',
+          desc: typeof a.description === 'string' ? a.description.trim() || undefined : undefined,
           task: typeof a.prompt === 'string' ? a.prompt : undefined,
           status: 'running',
           children: []
@@ -484,9 +502,9 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       return next
     }
     case 'tool_result': {
-      // 子智能体内部结果（depth>0）→ 更新 Task 卡内对应子项状态。
+      // 子智能体内部结果（depth>0）→ 更新 parent 那张 Task 卡内对应子项状态。
       if (ev.depth && ev.depth > 0) {
-        const si = openSubagentIndex(next)
+        const si = subagentIndex(next, ev.parent)
         if (si >= 0) {
           const card = next[si] as Extract<ChatBlock, { kind: 'subagent' }>
           const j = card.children.findIndex((c) => c.id === ev.id)

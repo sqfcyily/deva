@@ -513,17 +513,26 @@ export interface DecisionTestResult {
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  /** depth>0 + agent：本事件来自某子智能体（渲染层据此折叠进「子智能体任务」卡）。 */
-  | { type: 'tool_call'; id: string; name: string; args: unknown; depth?: number; agent?: string }
+  /** depth>0 + agent + parent：来自某子智能体（折叠进 parent 那次 run_subagent 调用开出的 Task 卡）。 */
+  | {
+      type: 'tool_call'
+      id: string
+      name: string
+      args: unknown
+      depth?: number
+      agent?: string
+      parent?: string
+    }
   | {
       type: 'tool_result'
       id: string
       name: string
       summary: string
       isError: boolean
-      /** depth>0 + agent：来自子智能体的工具结果（折叠进 Task 卡）。 */
+      /** depth>0 + agent + parent：来自某子智能体的工具结果（折叠进 parent 那张 Task 卡）。 */
       depth?: number
       agent?: string
+      parent?: string
     }
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   /** 计划审阅：exit_plan 提交计划，暂停等待用户批准（approve/keep）。 */

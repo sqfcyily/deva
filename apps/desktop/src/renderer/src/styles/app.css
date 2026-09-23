@@ -1362,7 +1362,7 @@ textarea {
 .permission--outside .permission__desc code {
   word-break: break-all;
 }
-/* Tier-2 保护目录（.git/.claude/.vscode）写入：加重告警观感，路径可换行不撑破卡片。 */
+/* Tier-2 版本库内部（.git）写入：加重告警观感，路径可换行不撑破卡片。 */
 .permission--protected {
   border-color: color-mix(in srgb, var(--warning) 70%, var(--border));
   background: color-mix(in srgb, var(--warning) 12%, var(--bg-elevated));

@@ -83,7 +83,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'write_file',
     description:
-      '把内容写入文件（覆盖式，不存在则创建）。多用于新建文件；改动既有文件请优先用 edit_file。凭据/系统等敏感目录与受保护目录（.git/.claude/.vscode）会被安全策略拒绝，其余位置直接写入、无需授权。',
+      '把内容写入文件（覆盖式，不存在则创建）。多用于新建文件；改动既有文件请优先用 edit_file。凭据/密钥目录与版本库内部（.git）会被安全策略拒绝，其余位置直接写入、无需授权。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -96,7 +96,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'edit_file',
     description:
-      '对工作区内「已存在」的文件做精确替换：把 old_string 匹配到的片段替换为 new_string。默认要求 old_string 在文件中唯一出现（否则报错——请多带上下文使其唯一）；replace_all=true 时替换所有匹配。这是修改代码的首选（优于覆盖式 write_file）。无需授权，直接调用即可（敏感/受保护目录除外）。',
+      '对工作区内「已存在」的文件做精确替换：把 old_string 匹配到的片段替换为 new_string。默认要求 old_string 在文件中唯一出现（否则报错——请多带上下文使其唯一）；replace_all=true 时替换所有匹配。这是修改代码的首选（优于覆盖式 write_file）。无需授权，直接调用即可（凭据/密钥目录与版本库内部 .git 除外）。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -121,7 +121,7 @@ export const toolSpecs: ToolSpec[] = [
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
-      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。明显危险的命令（如 rm -rf）会被安全策略直接拒绝，请勿重试。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。明显危险的命令（如 rm -rf）会被安全策略直接拒绝，请勿重试。涉及凭据/密钥路径的命令（~/.ssh、~/.aws、~/.gnupg、~/.deva、id_rsa、secrets.json 等）同样会被拒绝——请勿改写形式尝试绕过，确有需要请让用户自行操作。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -259,7 +259,7 @@ export const toolSpecs: ToolSpec[] = [
       '这只是**提议**：本工具不写入任何东西、不创建任务，只把你生成的参数以名片形式呈现给用户；' +
       '用户在名片里核对日程与授权、点「创建」后才真正建任务。' +
       '因此调用后**切勿声称任务已创建**，应告诉用户「确认名片已生成，请核对后点创建」。' +
-      '**关键**：任务触发时会自动执行、期间不会再向用户确认。触发时所有工具默认可用（除凭据/系统等' +
+      '**关键**：任务触发时会自动执行、期间不会再向用户确认。触发时所有工具默认可用（除私钥/凭据等等' +
       '硬底线目录与危险命令外），无需你或用户挑选工具；名片里只需核对日程，并可选运行身份（人格）与模型。' +
       '你只负责把日程和意图表达清楚。不要设置 model（你无法可靠得知 providerId:modelId）。' +
       'schedule.tz 若不确定可省略，由系统按用户本地时区填充。',
@@ -469,13 +469,13 @@ function looksBinary(buf: Buffer): boolean {
 }
 
 /**
- * 读取类路径解析：把 path 解析为绝对路径，仅拒绝 Tier-1 敏感目录（凭据/系统）。
+ * 读取类路径解析：把 path 解析为绝对路径，仅拒绝 Tier-1 敏感目录（凭据/密钥）。
  * 刻意不校验受信根——读操作可及任意「非敏感」目录（对标 Claude Code：读不受工作区边界约束）。
  */
 function resolveReadPath(root: string | null, p: unknown): string {
   if (typeof p !== 'string' || !p.trim()) throw new Error('缺少有效的 path 参数')
   const abs = isAbsolute(p) ? resolve(p) : root ? join(root, p) : resolve(p)
-  if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/系统敏感目录（安全策略），请勿重试。')
+  if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/密钥目录（安全策略），请勿重试。')
   return abs
 }
 
@@ -492,7 +492,7 @@ function resolveWritePath(root: string | null, p: unknown): string {
 
 /**
  * 写入类工具（write_file / edit_file）的目标：目标文件绝对路径 abs 与授权目录 dir（父目录）。
- * 供权限闸门做 Tier-1 硬底 / Tier-2 保护目录(.git/.claude/.vscode) / 越界 三档分类。
+ * 供权限闸门做 Tier-1 硬底 / Tier-2 版本库内部(.git) / 越界 三档分类。
  * 路径解析规则与 resolveWritePath 完全一致（相对路径基于项目根），确保「闸门判定 → 执行」一致。
  * 非写入类或缺 path → null（read/exec/mcp 走常规闸门，无路径越界概念）。
  */
@@ -514,7 +514,7 @@ function resolveReadDir(root: string | null, p: unknown): string {
   if (typeof p === 'string' && p.trim()) return resolveReadPath(root, p)
   if (!root) throw new Error('未打开项目，且未提供 path')
   const abs = resolve(root)
-  if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/系统敏感目录（安全策略），请勿重试。')
+  if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/密钥目录（安全策略），请勿重试。')
   return abs
 }
 
@@ -589,7 +589,7 @@ async function collectFiles(root: string): Promise<{ abs: string; rel: string }[
       const childRel = rel ? `${rel}/${e.name}` : e.name
       if (e.isDirectory()) {
         if (IGNORE_DIRS.has(e.name)) continue
-        // 读遍历（glob/grep）现可作用于任意目录，遍历时绝不进入 Tier-1 凭据/系统目录。
+        // 读遍历（glob/grep）现可作用于任意目录，遍历时绝不进入 Tier-1 凭据/密钥目录。
         if (isSensitivePath(childAbs)) continue
         await walk(childAbs, childRel)
       } else if (e.isFile()) {

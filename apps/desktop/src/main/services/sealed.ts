@@ -1,5 +1,5 @@
 import { isProtectedPath, isSensitivePath } from './fs-guard'
-import { isDangerousCommand } from './exec-policy'
+import { isDangerousCommand, touchesSensitivePath } from './exec-policy'
 import { isMcpTool, toolCategory, writeTargetPath } from './tools'
 
 /**
@@ -10,9 +10,10 @@ import { isMcpTool, toolCategory, writeTargetPath } from './tools'
  *（而非整轮硬失败）。除下列硬底线与「交互/创建类」工具外，一律放行（与交互闸门同一策略）。
  *
  * 安全地板（不可协商，与交互闸门同源）：
- *  · Tier-1 敏感路径（凭据/系统/本应用 ~/.deva）——永不可读写；
- *  · Tier-2 保护目录（.git/.claude/.vscode）——密封模式无从授权 → 拒绝；
- *  · 危险命令（isDangerousCommand）——恒拒。
+ *  · Tier-1 敏感路径（凭据/密钥与本应用 ~/.deva）——文件工具通道永不可读写；
+ *  · Tier-2 版本库内部（.git）——hooks/config 可提权、对象库写坏不可逆 → 拒绝；
+ *  · 危险命令（isDangerousCommand）——恒拒；
+ *  · 触及凭据路径的命令（touchesSensitivePath）——恒拒（启发式，补 exec 绕过 Tier-1 的缺口）。
  */
 
 export interface SealedVerdict {
@@ -68,17 +69,17 @@ export function sealedDecision(toolName: string, args: unknown, root: string | n
     const target = writeTargetPath(toolName, args, root)
     const abs = target?.abs ?? null
     if (!abs) return { allowed: false, denyContent: '写入被拒绝：缺少有效的目标路径（path）。' }
-    // 安全地板 Tier-1：凭据/系统/本应用 ~/.deva，不可协商。
+    // 安全地板 Tier-1：凭据/密钥与本应用 ~/.deva，不可协商。
     if (isSensitivePath(abs))
       return {
         allowed: false,
-        denyContent: `该路径受安全策略保护（凭据/系统目录），拒绝写入：${abs}。请勿重试。`
+        denyContent: `该路径受安全策略保护（凭据/密钥目录），拒绝写入：${abs}。请勿重试。`
       }
-    // 安全地板 Tier-2：.git/.claude/.vscode——密封模式无从授权，一律拒绝。
+    // 安全地板 Tier-2：版本库内部（.git）——写入即可能是 hooks 提权或仓库损坏，一律拒绝。
     if (isProtectedPath(abs))
       return {
         allowed: false,
-        denyContent: `该路径位于受保护目录（.git/.claude/.vscode），定时任务不可自动写入：${abs}。`
+        denyContent: `该路径位于版本库内部（.git），定时任务不可自动写入：${abs}。请改用 git 命令操作仓库。`
       }
     // 其余目标一律放行；密封会话无受信根，故每次都需一次性精确受信（调用方 finally 撤销）。
     return { allowed: true, denyContent: '', trustPath: abs }
@@ -96,6 +97,13 @@ export function sealedDecision(toolName: string, args: unknown, root: string | n
         allowed: false,
         denyContent:
           '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。'
+      }
+    // 安全地板：触及凭据/密钥路径的命令恒拒（文件工具的 Tier-1 对 exec 无效，此处按命令文本兜底）。
+    if (touchesSensitivePath(command))
+      return {
+        allowed: false,
+        denyContent:
+          '该命令涉及凭据/密钥路径（如 ~/.ssh、~/.deva），被安全策略拒绝，未执行。请勿重试或变形绕过。'
       }
     return { allowed: true, denyContent: '' }
   }

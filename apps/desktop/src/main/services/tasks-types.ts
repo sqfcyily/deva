@@ -35,7 +35,7 @@ export interface TaskSchedule {
 
 /**
  * 授权信封：创建时议定「以何身份/模型运行」。工具一律可用、写入除硬底线外不设限。
- * 安全地板（Tier-1 敏感路径 / Tier-2 保护目录 / 危险命令）不可协商——sealedDecision 无条件强制。
+ * 安全地板（Tier-1 敏感路径 / Tier-2 版本库内部（.git） / 危险命令）不可协商——sealedDecision 无条件强制。
  */
 export interface TaskAuthorization {
   /** 绑定人格 id；null → 无人格（同 runTurn 无 persona 时行为）。人格被删则不注入人格提示。 */

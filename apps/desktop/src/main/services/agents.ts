@@ -18,6 +18,8 @@ import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
  * 运行期（chat.ts 同进程直接调用，无需 IPC）：
  * - `enabledAgentSummaries()`：把「已启用」子智能体的 name+description 注入 `run_subagent` 工具描述（枚举）。
  * - `getEnabledAgentByName()`：`run_subagent` 派生时按 agent 名取完整定义（model/tools/prompt）。
+ * - 预设是**可选增强**，不是派生的前提：`run_subagent` 恒向模型提供，未指定 / 未命中一律回落
+ *   chat.ts 的内置通用子智能体（GENERAL_SUBAGENT）—— 对标 Claude Code 的 general-purpose。
  *
  * 安全：`~/.deva` 在 fs-guard 的敏感硬地板内，Agent 自身文件工具读不到；子智能体配置由**主进程直读**（符合设计）。
  * 子智能体的每一次嵌套工具调用照常过权限闸门——`tools` 白名单只是**收窄**可见工具，绝不放宽闸门。
@@ -228,11 +230,6 @@ export function enabledAgentSummaries(): { name: string; description: string }[]
   return listAgents()
     .filter((a) => a.enabled)
     .map((a) => ({ name: a.name, description: a.description }))
-}
-
-/** 是否存在已启用子智能体（决定是否向模型提供 run_subagent 工具）。 */
-export function hasEnabledAgents(): boolean {
-  return listAgents().some((a) => a.enabled)
 }
 
 /**

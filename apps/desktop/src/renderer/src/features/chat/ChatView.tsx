@@ -1105,7 +1105,9 @@ function SubagentCard({
 }): React.JSX.Element {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
-  const name = block.agent || t('chat.subagent.fallback')
+  // 标题优先用模型给的任务描述（3-5 字）：比固定的子智能体名有信息量，也与 Claude Code 一致；
+  // 没给描述时退回子智能体名（未指定预设则为「通用子智能体」）。
+  const name = block.desc || block.agent || t('chat.subagent.fallback')
   const count = block.children.length
   return (
     <div className={`subagent${open ? ' is-open' : ''}`}>

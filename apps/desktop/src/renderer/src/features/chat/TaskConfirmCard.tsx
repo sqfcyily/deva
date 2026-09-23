@@ -11,7 +11,7 @@ import { TaskModelSelect, TaskPersonaSelect } from './TaskPickers'
  * 模型调 create_task 只写下建议草稿；此名片是可编辑信封（标题/指令/日程/人格/模型），
  * 用户核对并点「创建」才真正建任务与独占会话（`resolveAutotask('create', input)`）。
  * 创建后触发零交互，故授权在此一次性议定完毕（对齐「创建时批准、执行时零交互」铁律）；
- * 工具全放行（含 skill/mcp）、通知固定开启，唯凭据/系统/受保护目录与危险命令由密封策略静默拒绝——
+ * 工具全放行（含 skill/mcp）、通知固定开启，唯凭据/密钥目录与版本库内部 .git与危险命令由密封策略静默拒绝——
  * 故名片不再有类型/写入根/工具白名单/通知开关。
  *
  * pending → 完整编辑表单；created/dismissed → 紧凑终态（编辑器卸载，表单态自然丢弃）。

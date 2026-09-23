@@ -371,3 +371,36 @@ export function isDangerousCommand(command: string): boolean {
   if (DENY_PATTERNS.some((re) => re.test(command))) return true
   return splitCommand(command).some((sub) => DENY_SUB_PATTERNS.some((re) => re.test(sub)))
 }
+
+/**
+ * 凭据/密钥相关的路径段与文件名 token。
+ * 以 lookaround 卡路径段边界：`~/.ssh/config`、`$HOME/.deva/secrets.json` 命中，
+ * 而 `.devastating`、`foo.ssh`、`aws-sdk` 不误伤。整串测（不按子命令拆）——
+ * 这里找的是 token 而非命令结构，整串更保险。
+ */
+const SENSITIVE_TOKEN_PATTERNS: RegExp[] = [
+  // 凭据目录与本应用配置目录
+  /(?<![\w.-])\.(?:ssh|aws|gnupg|deva)(?![\w-])/i,
+  // SSH 密钥惯用名（含 .pub 一并挡：公钥本身无害，但读它常是摸私钥的前奏，宁可误伤）
+  /(?<![\w-])id_(?:rsa|dsa|ecdsa|ed25519)(?![\w-])/i,
+  // 本应用密钥库与 SSH 信任文件
+  /(?<![\w-])secrets\.json(?![\w-])/i,
+  /(?<![\w-])authorized_keys(?![\w-])/i,
+  /(?<![\w-])known_hosts(?![\w-])/i,
+  // AWS 凭据文件（credentials 一词在代码里太常见，必须带目录段才算）
+  /\.aws[/\\]credentials(?![\w-])/i
+]
+
+/**
+ * 命令文本是否触及凭据/密钥路径。
+ *
+ * **这是启发式，不是安全边界。** exec 通道天然能以变量拼接、编码、分段引号等方式绕过任何
+ * 文本匹配（`cat ~/.s''sh/id_rsa`、`cat $H/.ssh/*` 都能过）。它的价值在于把「顺手就读到」
+ * 变成「必须刻意构造」——挡住模型无意的访问，以及提示词注入里最常见的直白诱导。
+ * 要真正密封须把 exec 沙箱化（容器 / 受限用户），非本层职责。
+ *
+ * 取舍是宁可误伤：命中即拒，模型收到 tool_result 会自行改道；漏放的代价（私钥外泄）不可逆。
+ */
+export function touchesSensitivePath(command: string): boolean {
+  return SENSITIVE_TOKEN_PATTERNS.some((re) => re.test(command))
+}
