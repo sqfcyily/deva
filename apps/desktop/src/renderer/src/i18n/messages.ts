@@ -311,8 +311,6 @@ const zhCN: MessageTree = {
     addChatModel: '添加对话模型',
     addDecisionModel: '添加决策模型',
     newDecisionName: '自定义决策模型',
-    decisionHint:
-      '决策模型用于判断「是否该做某事」（例如是否主动发起对话），只产出类型化的概率决策，不生成对话文本，因此不会出现在对话的模型选择器里。',
     threshold: '触发置信度阈值',
     thresholdHint: '决策置信度达到该阈值才发起动作（如主动发起对话）。取值 0–1，默认 0.6。',
     enableProvider: '启用',
@@ -528,6 +526,8 @@ const zhCN: MessageTree = {
     },
     fullMachine: '全机通用助手',
     assistant: '助手',
+    msgExpand: '展开',
+    msgCollapse: '收起',
     attach: '附加文件',
     send: '发送',
     newline: '换行',
@@ -903,8 +903,6 @@ const en: MessageTree = {
     addChatModel: 'Add chat model',
     addDecisionModel: 'Add decision model',
     newDecisionName: 'Custom decision model',
-    decisionHint:
-      'A decision model judges whether something should happen (e.g. whether to proactively start a conversation). It returns typed probabilistic decisions only and never generates chat text, so it does not appear in the chat model picker.',
     threshold: 'Confidence threshold',
     thresholdHint:
       'Only act (e.g. start a conversation) when decision confidence reaches this threshold. Range 0–1, default 0.6.',
@@ -1125,6 +1123,8 @@ const en: MessageTree = {
     },
     fullMachine: 'Whole-machine assistant',
     assistant: 'Assistant',
+    msgExpand: 'Show more',
+    msgCollapse: 'Show less',
     attach: 'Attach file',
     send: 'Send',
     newline: 'newline',

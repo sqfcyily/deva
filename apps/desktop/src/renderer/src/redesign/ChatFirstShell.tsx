@@ -2619,6 +2619,64 @@ function Conversation({
   )
 }
 
+/** 用户消息文本默认最多显示的行数，超出即折叠。 */
+const USER_TEXT_LINES = 3
+
+/**
+ * 用户消息正文：默认折叠到 {@link USER_TEXT_LINES} 行，超出时给出展开/收起按钮。
+ * 折叠靠 CSS line-clamp，是否溢出则须实测——文本换行取决于主区宽度，无法静态判断。
+ * clamp 落在内层 .cf-msg__clamp（无内边距），气泡 padding 留在外层 .cf-msg__text。
+ */
+function UserText({ text }: { text: string }): React.JSX.Element {
+  const { t } = useI18n()
+  const ref = useRef<HTMLDivElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflow, setOverflow] = useState(false)
+
+  // 只在收起态测量：此时 clientHeight 是 3 行高度、scrollHeight 是全文高度，二者不等即超出。
+  // 展开态两者必然相等，故直接跳过、沿用上次判定，否则按钮会自己消失。
+  useLayoutEffect(() => {
+    if (expanded) return
+    const el = ref.current
+    if (!el) return
+    const measure = (): void => setOverflow(el.scrollHeight - el.clientHeight > 1)
+    measure()
+    // 侧栏折叠、窗口缩放都会改变换行，需要重新判定。
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [text, expanded])
+
+  return (
+    <>
+      <div className="cf-msg__text">
+        {/* 折叠盒必须无内边距：气泡的下内边距会让被截断的下一行漏出「半个字」，详见 CSS 注释。 */}
+        <div
+          ref={ref}
+          className={`cf-msg__clamp${expanded ? '' : ' is-clamped'}`}
+          style={{ '--clamp-lines': String(USER_TEXT_LINES) } as React.CSSProperties}
+        >
+          {text}
+        </div>
+      </div>
+      {overflow && (
+        <button
+          type="button"
+          className="cf-msg__more"
+          onClick={(e) => {
+            // 选择态下整轮卡片本身可点选，展开/收起不应连带勾选。
+            e.stopPropagation()
+            setExpanded((v) => !v)
+          }}
+        >
+          {t(expanded ? 'cf.msgCollapse' : 'cf.msgExpand')}
+          <ChevronDown size={12} className={expanded ? 'is-up' : undefined} />
+        </button>
+      )}
+    </>
+  )
+}
+
 /** 单条消息：IM 头像外壳 + 复用 ChatView 的 BlockView（安全渲染器不重写）。 */
 function ConvMessage({
   msg,
@@ -2656,7 +2714,7 @@ function ConvMessage({
               ))}
             </div>
           )}
-          {text && <div className="cf-msg__text">{text}</div>}
+          {text && <UserText text={text} />}
         </div>
         <Avatar user size={32} />
       </div>

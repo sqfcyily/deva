@@ -526,11 +526,6 @@ export function ModelSettings(): React.JSX.Element {
             </span>
           </header>
 
-          {/* 决策模型说明：它只产出「是否该做某事」的类型化决策，不生成对话文本 */}
-          {selectedProvider.purpose === 'decision' && (
-            <p className="field__note">{t('models.decisionHint')}</p>
-          )}
-
           {/* 已启用但未配置密钥 → 提醒（本地 Ollama 之类可无钥，此处仅作提示不阻断） */}
           {selectedProvider.enabled && !hasKey(selectedProvider.id) && (
             <div className="provider-warn">

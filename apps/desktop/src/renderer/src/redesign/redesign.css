@@ -827,6 +827,39 @@
   word-break: break-word;
 }
 
+/* 用户消息正文折叠：默认最多 3 行，超出由 .cf-msg__more 手动展开。
+   clamp 必须落在「无内边距」的内层盒子上：-webkit-line-clamp 只负责截断行并补省略号，
+   多余的行照样布局绘制、全靠 overflow 裁掉，而 overflow 裁的是 padding box——
+   气泡自带 10px 下内边距时，第 4 行会漏进内边距里显出「半个字」。 */
+.cf-msg__clamp.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--clamp-lines, 3);
+  line-clamp: var(--clamp-lines, 3);
+  overflow: hidden;
+}
+.cf-msg__more {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  width: fit-content;
+  /* 用户气泡靠右，按钮跟随右对齐 */
+  margin: 4px 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.cf-msg__more:hover {
+  color: var(--accent);
+}
+.cf-msg__more .is-up {
+  transform: rotate(180deg);
+}
+
 /* 用户消息：右侧气泡 */
 .cf-msg.is-user {
   grid-template-columns: minmax(0, 1fr) 32px;
