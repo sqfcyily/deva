@@ -4400,12 +4400,6 @@ select.autotaskcard__input {
 :root[data-theme='dark'] .autotaskcard__input[type='time']::-webkit-calendar-picker-indicator {
   filter: invert(1); /* 原生图标本是深色，暗色主题下反相以可见 */
 }
-.autotaskcard__input--num {
-  width: 90px;
-}
-.autotaskcard__input--mono {
-  font-family: var(--font-mono);
-}
 .autotaskcard__input:hover,
 .autotaskcard__textarea:hover {
   border-color: var(--fg-subtle);
@@ -4420,33 +4414,129 @@ select.autotaskcard__input {
 .autotaskcard select.autotaskcard__input {
   margin-top: var(--space-2);
 }
-.autotaskcard__row-label {
-  font-size: 12px;
-  color: var(--fg-muted);
+/* ── 日程编辑器（ScheduleEditor：创建名片 + 任务编辑弹窗共用，形态对齐 1.png）──
+   一行「模式下拉 + 随模式变化的控件（数字/分钟/第几天/日期/时间/cron）」；
+   「每周」另起一行给七枚可多选星期药丸。控件自绘一套，两处宿主观感一致。 */
+.sched {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
-/* 日程单行：模式下拉 + 日期/时间/号数等控件同一行（对齐 1.png）。 */
-.autotaskcard__sched-row {
+.sched__row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: var(--space-2);
 }
-.autotaskcard__sched-row .autotaskcard__input,
-.autotaskcard__sched-row select.autotaskcard__input {
-  margin-top: 0;
-  width: auto;
-  flex: 0 0 auto;
+.sched__ctl {
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-family: inherit; /* select 默认不继承 body 字体 */
+  font-size: 13px;
+  line-height: normal; /* 高度已固定，避免 line-height 叠加撑变形 */
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
 }
-.autotaskcard__sched-mode {
-  min-width: 92px;
+.sched__ctl:hover {
+  border-color: var(--fg-subtle);
 }
-.autotaskcard__sched-row .autotaskcard__input--num {
-  width: 76px;
+.sched__ctl:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
 }
-.autotaskcard__sched-row .autotaskcard__input--mono {
+/* 下拉：去原生外观，自绘 chevron（中性灰在明/暗主题都可读）。 */
+select.sched__ctl {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: calc(var(--space-3) + 14px);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238a8a94' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-2) center;
+  cursor: pointer;
+}
+/* 日期/时间：保留原生选择器，仅让内置图标随主题着色、可点。 */
+.sched__ctl[type='date'],
+.sched__ctl[type='time'] {
+  cursor: pointer;
+}
+.sched__ctl[type='date']::-webkit-calendar-picker-indicator,
+.sched__ctl[type='time']::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.12s ease;
+}
+.sched__ctl[type='date']:hover::-webkit-calendar-picker-indicator,
+.sched__ctl[type='time']:hover::-webkit-calendar-picker-indicator {
+  opacity: 0.9;
+}
+:root[data-theme='dark'] .sched__ctl[type='date']::-webkit-calendar-picker-indicator,
+:root[data-theme='dark'] .sched__ctl[type='time']::-webkit-calendar-picker-indicator {
+  filter: invert(1); /* 原生图标本是深色，暗色主题下反相以可见 */
+}
+.sched__mode {
+  min-width: 104px;
+}
+.sched__pick {
+  min-width: 76px;
+}
+.sched__pick--dom {
+  min-width: 116px;
+}
+.sched__num {
+  width: 128px;
+}
+.sched__date {
+  min-width: 148px;
+}
+.sched__time {
+  min-width: 118px;
+}
+.sched__cron {
   flex: 1 1 160px;
   min-width: 160px;
+  font-family: var(--font-mono);
+}
+.sched__unit {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+/* 星期药丸：多选（组件侧恒保留至少一天），选中填主色。 */
+.sched__days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sched__day {
+  min-width: 54px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+.sched__day:hover {
+  border-color: var(--fg-subtle);
+}
+.sched__day.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
 }
 /* 日程实时预览条。 */
 .autotaskcard__preview {

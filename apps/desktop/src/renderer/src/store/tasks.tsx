@@ -6,7 +6,13 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { TaskRecord, TaskStatus, TaskUpdateInput } from '../../../preload'
+import type {
+  CreateTaskResult,
+  TaskCreateInput,
+  TaskRecord,
+  TaskStatus,
+  TaskUpdateInput
+} from '../../../preload'
 
 /**
  * 定时任务渲染层 store（全局，与项目无关）。
@@ -16,6 +22,11 @@ import type { TaskRecord, TaskStatus, TaskUpdateInput } from '../../../preload'
  */
 interface TasksContextValue {
   tasks: TaskRecord[]
+  /**
+   * 手动新建任务（管理页「添加任务」表单）；主进程校验日程、算首次触发、铸独占会话，广播回全量列表。
+   * 与对话确认名片同一条落盘通路（tasks:create），故授权语义一致：创建即批准，触发时零交互。
+   */
+  create: (input: TaskCreateInput) => Promise<CreateTaskResult>
   /** 暂停 / 恢复（active↔paused）；completed/error 亦可经此重新置 active。 */
   setStatus: (id: string, status: TaskStatus) => Promise<void>
   /** 立即运行一次（委托调度器串行队列；调度器未就绪返回 ok:false）。 */
@@ -47,6 +58,12 @@ export function TasksProvider({ children }: { children: ReactNode }): React.JSX.
     }
   }, [])
 
+  // 创建：结果直接回给调用方（失败带稳定错误码供渲染层本地化）；成功后的列表刷新交由 tasks:changed 广播。
+  const create = useCallback(
+    (input: TaskCreateInput): Promise<CreateTaskResult> => window.deva.tasks.create(input),
+    []
+  )
+
   const setStatus = useCallback(async (id: string, status: TaskStatus): Promise<void> => {
     await window.deva.tasks.setStatus(id, status)
     // 刷新交由 tasks:changed 广播。
@@ -66,7 +83,7 @@ export function TasksProvider({ children }: { children: ReactNode }): React.JSX.
     await window.deva.tasks.remove(id)
   }, [])
 
-  const value: TasksContextValue = { tasks, setStatus, runNow, update, remove }
+  const value: TasksContextValue = { tasks, create, setStatus, runNow, update, remove }
   return <TasksContext.Provider value={value}>{children}</TasksContext.Provider>
 }
 

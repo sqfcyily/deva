@@ -14,11 +14,22 @@ export function localDatetimeValue(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+/** 归一星期集合：7→0（周日）、去重、升序；空集回落周一（编辑器恒保留至少一天）。 */
+export function normalizeDows(dows: number[]): number[] {
+  const set = new Set<number>()
+  for (const d of dows) {
+    if (!Number.isInteger(d) || d < 0 || d > 7) continue
+    set.add(d === 7 ? 0 : d)
+  }
+  const out = [...set].sort((a, b) => a - b)
+  return out.length ? out : [1]
+}
+
 /** 反解 cron 为周期编辑器的初始预设（匹配不上则落「自定义」，原样承载 cron 文本）。 */
 export function parseRecur(cron: string): {
   mode: RecurMode
   time: string
-  dow: number
+  dows: number[]
   min: number
   n: number
   dom: number
@@ -28,7 +39,7 @@ export function parseRecur(cron: string): {
   const def = {
     mode: 'daily' as RecurMode,
     time: '10:00',
-    dow: 1,
+    dows: [1],
     min: 0,
     n: 30,
     dom: 1,
@@ -38,14 +49,21 @@ export function parseRecur(cron: string): {
   if (parts.length !== 5) return { ...def, mode: trimmed ? 'custom' : 'daily' }
   const [m, h, dom, mon, dw] = parts
   const num = (s: string): number | null => (/^\d+$/.test(s) ? parseInt(s, 10) : null)
+  // 纯数字列表（`2` / `2,4`）才认作「每周」预设；含区间/步长的复杂写法留给自定义原样承载
+  const dowList = (s: string): number[] | null => {
+    if (!/^\d+(,\d+)*$/.test(s)) return null
+    const list = s.split(',').map((x) => parseInt(x, 10))
+    return list.every((v) => v >= 0 && v <= 7) ? normalizeDows(list) : null
+  }
   const fmt = (hh: string, mm: string): string =>
     `${String(parseInt(hh, 10)).padStart(2, '0')}:${String(parseInt(mm, 10)).padStart(2, '0')}`
   // 每天：分/时为数字，其余为 *
   if (dom === '*' && mon === '*' && dw === '*' && num(m) != null && num(h) != null)
     return { ...def, mode: 'daily', time: fmt(h, m) }
-  // 每周：分/时/星期为数字，日/月为 *
-  if (dom === '*' && mon === '*' && num(dw) != null && num(m) != null && num(h) != null)
-    return { ...def, mode: 'weekly', time: fmt(h, m), dow: num(dw) as number }
+  // 每周：分/时为数字、星期为数字列表，日/月为 *
+  const dows = dowList(dw)
+  if (dom === '*' && mon === '*' && dows && num(m) != null && num(h) != null)
+    return { ...def, mode: 'weekly', time: fmt(h, m), dows }
   // 每月：分/时/日为数字，月/星期为 *
   if (mon === '*' && dw === '*' && num(dom) != null && num(m) != null && num(h) != null)
     return { ...def, mode: 'monthly', time: fmt(h, m), dom: num(dom) as number }
@@ -63,7 +81,7 @@ export function parseRecur(cron: string): {
 export function buildCron(
   mode: RecurMode,
   time: string,
-  dow: number,
+  dows: number[],
   hourlyMin: number,
   everyN: number,
   dom: number,
@@ -76,7 +94,7 @@ export function buildCron(
     case 'daily':
       return `${m} ${h} * * *`
     case 'weekly':
-      return `${m} ${h} * * ${dow}`
+      return `${m} ${h} * * ${normalizeDows(dows).join(',')}`
     case 'monthly':
       return `${m} ${h} ${Math.max(1, Math.min(31, dom))} * *`
     case 'hourly':

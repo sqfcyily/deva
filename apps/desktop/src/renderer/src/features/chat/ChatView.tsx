@@ -88,16 +88,58 @@ const TOOL_META: Record<string, { icon: React.ReactNode; key: string }> = {
   create_mcp: { icon: <Plug size={14} />, key: 'chat.tool.createMcp' }
 }
 
-/** 工具卡上要展示的参数提示：优先 command（run_command），再 path，再 pattern（grep/glob），再 url（web_fetch）。 */
-function argHint(args: unknown): string | null {
+/**
+ * 路径展示的字符预算。780px 列宽下标题约可容 70 字符，但结果徽标宽度不定
+ * （「第 590–669/670 行」比「176 行」宽得多，实测同一条 68 字符路径会因此一行放得下、也可能折行），
+ * 故取 54 留一档余量：窄徽标下本就放得下的路径不动，宽徽标下会折行的一律先压。
+ * 窗口远窄于列宽上限时仍可能折行，届时由 .card__title 的 overflow-wrap 兜底。
+ */
+const PATH_BUDGET = 54
+
+/**
+ * 深路径压缩中段：保头保尾，中间塞省略号，令其单行放得下而不折行。
+ * 尾部固定留「父目录/文件名」——文件名是身份、父目录用于区分同名文件（一堆 index.ts）；
+ * 头部在预算内尽量多留——src/main 与 src/test 的差别全在这一段。
+ */
+function compressPath(p: string): string {
+  if (p.length <= PATH_BUDGET) return p
+  const sep = p.includes('\\') && !p.includes('/') ? '\\' : '/'
+  const segs = p.split(/[/\\]/)
+  // 少于 4 段则中间无段可省，省了反而更长
+  if (segs.length < 4) return p
+  const tail = segs.slice(-2).join(sep)
+  // 从左往右尽量多保留头部段，直到再加一段就超预算（+3 为 sep…sep 的开销）
+  let keep = 0
+  for (let i = 1; i <= segs.length - 2; i++) {
+    if (segs.slice(0, i).join(sep).length + 3 + tail.length > PATH_BUDGET) break
+    keep = i
+  }
+  // keep=1 且首段为空 → POSIX 绝对路径，join 得空串，恰好拼出前导分隔符
+  const out = `${segs.slice(0, keep).join(sep)}${keep > 0 ? sep : ''}…${sep}${tail}`
+  return out.length < p.length ? out : p
+}
+
+/**
+ * 工具卡上要展示的参数提示：优先 command（run_command），再 path，再 pattern（grep/glob），再 url（web_fetch）。
+ * full 为原值（压缩过时挂 title 供悬停查看），text 为展示值——只有 path 压缩中段，
+ * 命令的头部、正则的全文、URL 的域名与查询串同样字字关键，照旧折行不动。
+ */
+function argHint(args: unknown): { text: string; full: string } | null {
   if (args && typeof args === 'object') {
     const o = args as { command?: unknown; path?: unknown; pattern?: unknown; url?: unknown }
-    if (typeof o.command === 'string' && o.command.trim()) return o.command
-    if (typeof o.path === 'string' && o.path.trim()) return o.path
-    if (typeof o.pattern === 'string' && o.pattern.trim()) return o.pattern
-    if (typeof o.url === 'string' && o.url.trim()) return o.url
+    if (typeof o.command === 'string' && o.command.trim()) return { text: o.command, full: o.command }
+    if (typeof o.path === 'string' && o.path.trim())
+      return { text: compressPath(o.path), full: o.path }
+    if (typeof o.pattern === 'string' && o.pattern.trim())
+      return { text: o.pattern, full: o.pattern }
+    if (typeof o.url === 'string' && o.url.trim()) return { text: o.url, full: o.url }
   }
   return null
+}
+
+/** 压缩过才挂 title：未压缩时展示值即全值，重复的悬停提示只是噪声。 */
+function hintTitle(h: { text: string; full: string } | null): string | undefined {
+  return h && h.text !== h.full ? h.full : undefined
 }
 
 /** 底部指示器要表达的当前活动。（对话优先外壳复用 StatusIndicator/deriveActivity，故导出。） */
@@ -624,13 +666,13 @@ export function BlockView({
 
   if (block.kind === 'tool') {
     const meta = TOOL_META[block.name] ?? { icon: <Wrench size={14} />, key: 'chat.tool.unknown' }
-    const path = argHint(block.args)
+    const hint = argHint(block.args)
     return (
       <div className="card">
-        <div className="card__head">
+        <div className="card__head" title={hintTitle(hint)}>
           <span className="card__head-icon">{meta.icon}</span>
           <span className="card__title">
-            {t(meta.key)} {path && <code>{path}</code>}
+            {t(meta.key)} {hint && <code>{hint.text}</code>}
           </span>
           <ToolBadge status={block.status} summary={block.summary} />
         </div>
@@ -1098,10 +1140,10 @@ function SubagentCard({
                 const meta = TOOL_META[c.name] ?? { icon: <Wrench size={13} />, key: 'chat.tool.unknown' }
                 const hint = argHint(c.args)
                 return (
-                  <div key={c.id} className="subagent__step">
+                  <div key={c.id} className="subagent__step" title={hintTitle(hint)}>
                     <span className="subagent__step-icon">{meta.icon}</span>
                     <span className="subagent__step-title">
-                      {t(meta.key)} {hint && <code>{hint}</code>}
+                      {t(meta.key)} {hint && <code>{hint.text}</code>}
                     </span>
                     <ToolBadge status={c.status} summary={c.summary} />
                   </div>

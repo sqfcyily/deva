@@ -391,18 +391,17 @@ const zhCN: MessageTree = {
     fPrompt: '任务指令',
     fPromptPlaceholder: '例如：汇总今天的科技热点新闻，列成要点',
     fSchedule: '日程',
-    schedOnce: '一次性',
+    schedOnce: '不重复',
     schedRecurring: '周期',
     fOnceAt: '触发时间',
     recurDaily: '每天',
     recurWeekly: '每周',
     recurHourly: '每小时',
-    recurEveryN: '每 N 分钟',
+    recurEveryN: '间隔',
     recurMonthly: '每月',
     recurCustom: '自定义 cron',
-    fMinute: '第几分钟',
-    fEveryN: '间隔（分钟）',
-    fDayOfMonth: '几号',
+    unitMinute: '分',
+    monthDay: '每月第 {n} 天',
     weekday: {
       sun: '周日',
       mon: '周一',
@@ -436,7 +435,8 @@ const zhCN: MessageTree = {
     // 管理面（定时任务标签页）
     paneTitle: '定时任务',
     paneHint: '这些任务按日程自动执行，执行过程中不会打扰你。',
-    paneEmpty: '还没有定时任务。在对话里说「每天…」「…点提醒我…」，我会拟一个待你确认。',
+    paneEmpty:
+      '还没有定时任务。点搜索框旁的「+」手动添加，或在对话里说「每天…」「…点提醒我…」，我会拟一个待你确认。',
     groupActive: '进行中',
     groupPaused: '已暂停',
     groupCompleted: '已完成',
@@ -459,6 +459,11 @@ const zhCN: MessageTree = {
     deleteConfirm: '删除后其运行历史一并清除；独占会话仍保留在对话列表，可另行删除。',
     // 管理页（左列表 + 右详情）
     searchPlaceholder: '搜索任务',
+    // 新建入口（搜索框旁的 + 菜单，布局同「添加角色」）
+    addTask: '添加任务',
+    addByChat: '通过对话添加',
+    addByChatPrompt: '我要创建一个定时任务，每【时间间隔】执行【具体任务】',
+    createTitle: '新建定时任务',
     detailEmpty: '从左侧选择一个任务，查看详情或调整。',
     runHistory: '运行历史',
     historyEmpty: '尚无运行记录'
@@ -985,18 +990,17 @@ const en: MessageTree = {
     fPrompt: 'Task prompt',
     fPromptPlaceholder: 'e.g. Summarize today’s top tech news as bullet points',
     fSchedule: 'Schedule',
-    schedOnce: 'One-time',
+    schedOnce: 'Does not repeat',
     schedRecurring: 'Recurring',
     fOnceAt: 'Fire at',
     recurDaily: 'Daily',
     recurWeekly: 'Weekly',
     recurHourly: 'Hourly',
-    recurEveryN: 'Every N minutes',
+    recurEveryN: 'Interval',
     recurMonthly: 'Monthly',
     recurCustom: 'Custom cron',
-    fMinute: 'At minute',
-    fEveryN: 'Interval (minutes)',
-    fDayOfMonth: 'Day',
+    unitMinute: 'min',
+    monthDay: 'Day {n} of month',
     weekday: {
       sun: 'Sun',
       mon: 'Mon',
@@ -1031,7 +1035,7 @@ const en: MessageTree = {
     paneTitle: 'Tasks',
     paneHint: 'These tasks run automatically on schedule and never interrupt you while running.',
     paneEmpty:
-      'No tasks yet. In a chat, say “every day…” or “remind me at…”, and I’ll draft one for you to approve.',
+      'No tasks yet. Use the + beside the search box to add one, or in a chat say “every day…” or “remind me at…” and I’ll draft one for you to approve.',
     groupActive: 'Active',
     groupPaused: 'Paused',
     groupCompleted: 'Completed',
@@ -1055,6 +1059,12 @@ const en: MessageTree = {
       'Its run history will also be removed. The dedicated conversation stays in your chat list and can be deleted separately.',
     // Management page (list + detail)
     searchPlaceholder: 'Search tasks',
+    // Create entry (+ menu beside the search box, same layout as “Add persona”)
+    addTask: 'Add task',
+    addByChat: 'Add via chat',
+    addByChatPrompt:
+      'I want to create a scheduled task that runs [what to do] every [interval].',
+    createTitle: 'New task',
     detailEmpty: 'Select a task on the left to view its details or adjust it.',
     runHistory: 'Run history',
     historyEmpty: 'No runs yet'

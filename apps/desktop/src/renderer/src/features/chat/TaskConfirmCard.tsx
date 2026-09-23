@@ -3,7 +3,7 @@ import { CalendarClock, Check, AlertTriangle } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useChat, type ChatBlock } from '../../store/chat'
 import type { TaskCreateInput, TaskSchedule, PreviewScheduleResult, TaskRecord } from '../../../../preload'
-import { buildCron, localDatetimeValue, parseRecur, type ScheduleMode } from './schedule'
+import { ScheduleEditor } from './ScheduleEditor'
 import { TaskModelSelect, TaskPersonaSelect } from './TaskPickers'
 
 /**
@@ -15,11 +15,14 @@ import { TaskModelSelect, TaskPersonaSelect } from './TaskPickers'
  * 故名片不再有类型/写入根/工具白名单/通知开关。
  *
  * pending → 完整编辑表单；created/dismissed → 紧凑终态（编辑器卸载，表单态自然丢弃）。
- * cron 反解/拼装与 datetime-local 取值抽到 ./schedule（与任务编辑弹窗共用单一真源）。
+ * 日程一栏整块交给 ./ScheduleEditor（与任务编辑弹窗共用同一控件，cron 反解/拼装再下沉 ./schedule 单一真源）。
  */
 
-/** 创建结果 / 预览错误码 → 本地化 key。 */
-function errKey(code: string): string {
+/**
+ * 创建结果 / 预览错误码 → 本地化 key。
+ * 导出供管理页的手动新建表单共用（同一套主进程稳定错误码，文案不两处演化）。
+ */
+export function taskErrorKey(code: string): string {
   switch (code) {
     case 'invalid-tz':
       return 'tasks.errInvalidTz'
@@ -132,24 +135,6 @@ function TaskEditor({
   const [title, setTitle] = useState(draft.title)
   const [prompt, setPrompt] = useState(draft.prompt)
 
-  // 日程编辑器（对齐 1.png：一次性 + 各周期合并为单个模式下拉，控件同行）
-  const onceInit = useMemo(
-    () => draft.schedule.at || localDatetimeValue(new Date(Date.now() + 3600_000)),
-    [draft.schedule.at]
-  )
-  const [onceDate, setOnceDate] = useState(onceInit.slice(0, 10))
-  const [onceTime, setOnceTime] = useState(onceInit.slice(11, 16) || '10:00')
-  const initRecur = useMemo(() => parseRecur(draft.schedule.cron), [draft.schedule.cron])
-  const [mode, setMode] = useState<ScheduleMode>(
-    draft.schedule.kind === 'once' ? 'once' : initRecur.mode
-  )
-  const [time, setTime] = useState(initRecur.time)
-  const [dow, setDow] = useState(initRecur.dow)
-  const [hourlyMin, setHourlyMin] = useState(initRecur.min)
-  const [everyN, setEveryN] = useState(initRecur.n)
-  const [dom, setDom] = useState(initRecur.dom)
-  const [customCron, setCustomCron] = useState(initRecur.custom)
-
   // 授权信封（默认取当前对话绑定：人格 / 模型）
   const [personaId, setPersonaId] = useState<string | null>(currentBinding.personaId ?? null)
   const [modelRef, setModelRef] = useState<string | null>(currentBinding.model ?? null)
@@ -163,19 +148,8 @@ function TaskEditor({
     [draft.schedule.tz]
   )
 
-  const cron = useMemo(
-    () => (mode === 'once' ? '' : buildCron(mode, time, dow, hourlyMin, everyN, dom, customCron)),
-    [mode, time, dow, hourlyMin, everyN, dom, customCron]
-  )
-
-  // 送 preview / create 的日程对象（只带适用字段 + 恒有 tz）。
-  const schedule = useMemo<TaskSchedule>(
-    () =>
-      mode === 'once'
-        ? { kind: 'once', at: `${onceDate}T${onceTime}`, tz }
-        : { kind: 'recurring', cron, tz },
-    [mode, onceDate, onceTime, cron, tz]
-  )
+  // 送 preview / create 的日程对象：由日程编辑器（ScheduleEditor）拼好后回填，初值取草稿 + 本卡时区。
+  const [schedule, setSchedule] = useState<TaskSchedule>(() => ({ ...draft.schedule, tz }))
 
   // 实时预览（轻防抖）：人读摘要 + 下次触发；校验失败即时暴露（绝不留到触发时才失败）。
   const [preview, setPreview] = useState<PreviewScheduleResult | null>(null)
@@ -217,7 +191,7 @@ function TaskEditor({
     }
     const res = await resolveAutotask(block.id, 'create', input)
     if (!res.ok) {
-      setErr(errKey(res.error))
+      setErr(taskErrorKey(res.error))
       setBusy(false)
     }
     // 成功：store 将本块打为 created → 重渲染切至终态卡（本编辑器卸载）。
@@ -230,8 +204,6 @@ function TaskEditor({
     // 成功：store 打为 dismissed → 切终态；失败则保持可编辑（放开 busy 供重试）。
     setBusy(false)
   }
-
-  const weekdayKeys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
 
   return (
     <div className="autotaskcard autotaskcard--edit">
@@ -257,113 +229,7 @@ function TaskEditor({
       {/* 日程 */}
       <div className="autotaskcard__field">
         <span className="autotaskcard__label">{t('tasks.fSchedule')}</span>
-        <div className="autotaskcard__sched-row">
-          <select
-            className="autotaskcard__input autotaskcard__sched-mode"
-            value={mode}
-            onChange={(e) => setMode(e.target.value as ScheduleMode)}
-          >
-            <option value="once">{t('tasks.schedOnce')}</option>
-            <option value="everyN">{t('tasks.recurEveryN')}</option>
-            <option value="hourly">{t('tasks.recurHourly')}</option>
-            <option value="daily">{t('tasks.recurDaily')}</option>
-            <option value="weekly">{t('tasks.recurWeekly')}</option>
-            <option value="monthly">{t('tasks.recurMonthly')}</option>
-            <option value="custom">{t('tasks.recurCustom')}</option>
-          </select>
-
-          {mode === 'once' && (
-            <>
-              <input
-                type="date"
-                className="autotaskcard__input"
-                value={onceDate}
-                onChange={(e) => setOnceDate(e.target.value)}
-              />
-              <input
-                type="time"
-                className="autotaskcard__input"
-                value={onceTime}
-                onChange={(e) => setOnceTime(e.target.value)}
-              />
-            </>
-          )}
-
-          {mode === 'weekly' && (
-            <select
-              className="autotaskcard__input"
-              value={dow}
-              onChange={(e) => setDow(parseInt(e.target.value, 10))}
-            >
-              {weekdayKeys.map((k, i) => (
-                <option key={k} value={i}>
-                  {t(`tasks.weekday.${k}`)}
-                </option>
-              ))}
-            </select>
-          )}
-
-          {mode === 'monthly' && (
-            <>
-              <span className="autotaskcard__row-label">{t('tasks.fDayOfMonth')}</span>
-              <input
-                type="number"
-                min={1}
-                max={31}
-                className="autotaskcard__input autotaskcard__input--num"
-                value={dom}
-                onChange={(e) =>
-                  setDom(Math.max(1, Math.min(31, parseInt(e.target.value, 10) || 1)))
-                }
-              />
-            </>
-          )}
-
-          {(mode === 'daily' || mode === 'weekly' || mode === 'monthly') && (
-            <input
-              type="time"
-              className="autotaskcard__input"
-              value={time}
-              onChange={(e) => setTime(e.target.value)}
-            />
-          )}
-
-          {mode === 'hourly' && (
-            <>
-              <span className="autotaskcard__row-label">{t('tasks.fMinute')}</span>
-              <input
-                type="number"
-                min={0}
-                max={59}
-                className="autotaskcard__input autotaskcard__input--num"
-                value={hourlyMin}
-                onChange={(e) => setHourlyMin(parseInt(e.target.value, 10) || 0)}
-              />
-            </>
-          )}
-
-          {mode === 'everyN' && (
-            <>
-              <span className="autotaskcard__row-label">{t('tasks.fEveryN')}</span>
-              <input
-                type="number"
-                min={1}
-                className="autotaskcard__input autotaskcard__input--num"
-                value={everyN}
-                onChange={(e) => setEveryN(parseInt(e.target.value, 10) || 1)}
-              />
-            </>
-          )}
-
-          {mode === 'custom' && (
-            <input
-              className="autotaskcard__input autotaskcard__input--mono"
-              value={customCron}
-              placeholder="0 10 * * *"
-              onChange={(e) => setCustomCron(e.target.value)}
-            />
-          )}
-        </div>
+        <ScheduleEditor initial={draft.schedule} tz={tz} onChange={setSchedule} />
 
         {/* 日程预览：人读摘要 + 下次触发；无效即时提示。 */}
         <div className={`autotaskcard__preview${scheduleInvalid ? ' is-invalid' : ''}`}>

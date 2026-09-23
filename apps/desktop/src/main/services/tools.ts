@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
-import { promises as fs, type Dirent } from 'fs'
+import { existsSync, promises as fs, type Dirent } from 'fs'
+import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'path'
 import { assertInside, isSensitivePath } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
@@ -82,7 +83,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'write_file',
     description:
-      '把内容写入工作区内的文件（覆盖式，不存在则创建）。仅限已打开的项目目录内。多用于新建文件；改动既有文件请优先用 edit_file。属敏感操作，需用户授权。',
+      '把内容写入文件（覆盖式，不存在则创建）。多用于新建文件；改动既有文件请优先用 edit_file。凭据/系统等敏感目录与受保护目录（.git/.claude/.vscode）会被安全策略拒绝，其余位置直接写入、无需授权。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -95,7 +96,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'edit_file',
     description:
-      '对工作区内「已存在」的文件做精确替换：把 old_string 匹配到的片段替换为 new_string。默认要求 old_string 在文件中唯一出现（否则报错——请多带上下文使其唯一）；replace_all=true 时替换所有匹配。这是修改代码的首选（优于覆盖式 write_file）。属敏感操作，需用户授权。',
+      '对工作区内「已存在」的文件做精确替换：把 old_string 匹配到的片段替换为 new_string。默认要求 old_string 在文件中唯一出现（否则报错——请多带上下文使其唯一）；replace_all=true 时替换所有匹配。这是修改代码的首选（优于覆盖式 write_file）。无需授权，直接调用即可（敏感/受保护目录除外）。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -116,11 +117,11 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'run_command',
     description:
-      '在当前项目根目录下执行一条 shell 命令并返回标准输出/错误与退出码（非交互、一次性）。用于构建、测试、git、脚本等。' +
+      '执行一条 shell 命令并返回标准输出/错误与退出码（非交互、一次性）。用于构建、测试、git、脚本等。' +
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
-      '工作目录锁定为已打开的项目根（无法切到项目外；未打开项目时不可用）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。属敏感操作，需用户授权；明显危险的命令会被安全策略直接拒绝。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。明显危险的命令（如 rm -rf）会被安全策略直接拒绝，请勿重试。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -147,7 +148,7 @@ export const toolSpecs: ToolSpec[] = [
       '尽量给具体候选项而非留空让用户干打字：候选项应覆盖常见取舍。若你有倾向，把推荐项放在 options 第一个并在其 label 末尾标注「（推荐）」，界面会高亮它，用户一键即可采纳。' +
       '对「缺了也能用合理默认继续」的澄清题，把该题的 required 设为 false——用户可留空跳过，工具会回灌「未作答」，你据此用合理默认继续、勿再追问同一件事。默认 required 为 true（必答）。' +
       '工具会返回用户对每个问题的最终选择/输入，你据此继续。' +
-      '注意：这是「征求决策/澄清」，与「征求授权」不同——写入/执行的授权永远走工具自动弹出的授权按钮，切勿用本工具去问「是否允许」。',
+      '注意：这是「征求决策/澄清」——写入与执行本就无需授权，切勿用本工具去问「是否允许写入/执行」。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -195,7 +196,7 @@ export const toolSpecs: ToolSpec[] = [
       '创建并启用一个新的**技能（Skill）**，写入用户的全局技能目录（~/.deva/skills）。' +
       '仅在用户明确想创建技能、且你已收集好要素并向用户复述确认后调用。' +
       '这是写入受保护目录的唯一途径——**严禁**用 write_file / run_command 去写 SKILL.md（那些工具无法写入该目录）。' +
-      '创建后技能自动启用，用户可用 /技能名 触发。属敏感操作，需用户授权。',
+      '创建后技能自动启用，用户可用 /技能名 触发。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -311,7 +312,7 @@ export const toolSpecs: ToolSpec[] = [
       '仅在用户明确想接入某个 MCP 服务、且你已收集好要素并向用户复述确认后调用。' +
       '这是写入受保护配置的唯一途径——**严禁**用 write_file / run_command 去写 mcp.json（那些工具无法写入该目录）。' +
       '**密钥零明文**：绝不把 API Key / Token 等真实密钥值写进本工具参数或对话；只在 secretEnv / secretHeaders 里列出这些字段的**名字**，' +
-      '工具会写入占位符，真实值由用户稍后在「扩展」页加密填入。创建后服务自动启用，连接在下次启动或手动开关后建立。属敏感操作，需用户授权。',
+      '工具会写入占位符，真实值由用户稍后在「扩展」页加密填入。创建后服务自动启用，连接在下次启动或手动开关后建立。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1119,20 +1120,24 @@ export async function executeTool(
       const command = typeof a.command === 'string' ? a.command.trim() : ''
       if (!command)
         return { content: '缺少有效的 command 参数', summary: '参数无效', isError: true }
-      // cwd 硬锁项目根：无项目不 spawn；根须在受信集内（abs===root 通过）。
-      if (!ctx.workspaceRoot)
-        return {
-          content:
-            '未打开项目：无法执行命令，请先让用户打开一个项目文件夹（工作目录锁定为项目根）。',
-          summary: '未打开项目',
-          isError: true
+      // cwd：挂载了工作区 → 项目根（须在受信集内，abs===root 通过）；未挂载（对话优先外壳的「全机
+      // 通用助手」）→ 回落用户主目录，与终端面板 safeCwd 同一口径，不再因「未打开项目」整个不可用。
+      // cwd 只是相对路径基准，不是安全边界——执行的安全底线是策略层的危险命令静默拒绝（见下）。
+      let cwd = ctx.workspaceRoot
+      if (cwd) {
+        try {
+          assertInside(cwd)
+        } catch {
+          return {
+            content: '项目根不在受信目录内，拒绝执行。',
+            summary: '受信校验失败',
+            isError: true
+          }
         }
-      try {
-        assertInside(ctx.workspaceRoot)
-      } catch {
-        return { content: '项目根不在受信目录内，拒绝执行。', summary: '受信校验失败', isError: true }
       }
-      // 纵深兜底：即便调用方绕过 evaluate 或项目模式为 auto，危险命令也在此 deny。
+      // 目录不存在（项目被移走/改名）同样回落主目录，避免 spawn 直接失败。
+      if (!cwd || !existsSync(cwd)) cwd = homedir()
+      // 纵深兜底：即便调用方绕过闸门（chat.ts / sealedDecision），危险命令也在此 deny。
       if (isDangerousCommand(command))
         return {
           content: '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。',
@@ -1143,7 +1148,7 @@ export async function executeTool(
         Math.max(toInt(a.timeout) ?? EXEC_TIMEOUT_DEFAULT, 1000),
         EXEC_TIMEOUT_MAX
       )
-      const r = await execCapture(command, ctx.workspaceRoot, timeoutMs, ctx.signal)
+      const r = await execCapture(command, cwd, timeoutMs, ctx.signal)
       // 先截断输出，再追加恒显状态行（截断藏不住成败信号）。
       let body = r.out
       if (body.length > EXEC_OUTPUT_MAX)

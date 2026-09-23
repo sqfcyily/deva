@@ -84,7 +84,7 @@ const CREATE_SKILL_INSTRUCTIONS = `你正在帮助用户创建一个新的**技�
    - \`instructions\`：完整操作步骤，用 Markdown 写，这是技能的正文与核心。
 3. **复述草案**：把整理好的要素向用户复述一遍，请其确认或修改。
 4. **落盘**：用户确认后，**调用 \`create_skill\` 工具**写入（参数：name、description、trigger、allowedTools、instructions）。
-   - ⚠️ **严禁用 \`write_file\` 或 \`run_command\` 去写 SKILL.md**——技能目录在受保护路径下，只有 \`create_skill\` 工具能写入，且会照常弹出权限确认。
+   - ⚠️ **严禁用 \`write_file\` 或 \`run_command\` 去写 SKILL.md**——技能目录在受保护路径下，只有 \`create_skill\` 工具能写入。
 5. **告知结果**：创建成功后技能会**自动启用**，告诉用户可以用 \`/技能名\` 触发它，也可在「扩展」页查看。
 
 保持简洁友好，一次问清关键信息即可，不要连环追问。`
@@ -141,7 +141,7 @@ const BUILTIN_CREATE_AGENT: SkillRecord = {
  * 关键约束——**必须调 `create_mcp` 工具落盘**（`~/.deva/mcp.json` 在敏感硬地板，写不进）；
  * 且**密钥零明文**：模型只收集密钥字段的「名字」，真实值由用户稍后在「扩展」页加密填入。
  */
-const CREATE_MCP_INSTRUCTIONS = `你正在帮助用户接入一个新的 **MCP 服务（Model Context Protocol server）**。MCP 服务对外暴露一组工具/资源；接入并连接后，其工具会自动出现在助手的可用工具里（照常走权限确认）。
+const CREATE_MCP_INSTRUCTIONS = `你正在帮助用户接入一个新的 **MCP 服务（Model Context Protocol server）**。MCP 服务对外暴露一组工具/资源；接入并连接后，其工具会自动出现在助手的可用工具里。
 
 请按以下步骤引导用户：
 
@@ -155,7 +155,7 @@ const CREATE_MCP_INSTRUCTIONS = `你正在帮助用户接入一个新的 **MCP �
    - **密钥（API Key / Token 等）**：⚠️ **绝不要向用户索要、也绝不要把真实密钥值写进工具参数或对话**。你只需问清「有哪些字段是密钥」，把这些**字段名**放进 \`secretEnv\`（环境变量名，如 \`GITHUB_TOKEN\`）或 \`secretHeaders\`（请求头名，如 \`Authorization\`）。工具只写占位符，真实值由用户稍后在「扩展」页加密填入。
 4. **复述草案**：把整理好的要素（传输方式、命令/地址、参数、哪些字段是密钥）向用户复述一遍，请其确认或修改。
 5. **落盘**：用户确认后，**调用 \`create_mcp\` 工具**写入。
-   - ⚠️ **严禁用 \`write_file\` 或 \`run_command\` 去写 mcp.json**——MCP 配置在受保护路径下，只有 \`create_mcp\` 工具能写入，且会照常弹出权限确认。
+   - ⚠️ **严禁用 \`write_file\` 或 \`run_command\` 去写 mcp.json**——MCP 配置在受保护路径下，只有 \`create_mcp\` 工具能写入。
 6. **告知结果**：创建成功后服务会**自动启用**。若存在密钥占位字段，务必提醒用户：**去「扩展」页为该服务填写这些密钥（加密存储），否则连接会失败**；连接会在下次启动应用、或在「扩展」页手动开关该服务后建立。
 
 保持简洁友好，一次问清关键信息即可，不要连环追问。`
