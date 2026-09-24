@@ -284,7 +284,8 @@ const zhCN: MessageTree = {
       approve: '批准并执行',
       keep: '继续完善',
       approved: '已批准',
-      kept: '继续完善'
+      kept: '继续完善',
+      cancelled: '已取消'
     },
     mount: {
       cardTitle: '需要挂载工作区',
@@ -586,6 +587,10 @@ const zhCN: MessageTree = {
     fName: '名称',
     fAvatar: '头像',
     avaRandom: '随机',
+    avaImgUpload: '上传图片',
+    avaImgRemove: '移除图片',
+    avaImgTooBig: '图片过大，请选择 12 MB 以内的图片',
+    avaImgFailed: '图片读取失败，请换一张试试',
     avaEdit: '编辑头像',
     avaEditHint: '点击编辑头像',
     avaDone: '完成',
@@ -604,7 +609,6 @@ const zhCN: MessageTree = {
       bottom: '下装色',
       background: '背景色'
     },
-    fColor: '主题色',
     fSpecialty: '专长',
     fTagline: '开场白',
     fModel: '偏好模型',
@@ -898,7 +902,8 @@ const en: MessageTree = {
       approve: 'Approve & run',
       keep: 'Keep planning',
       approved: 'Approved',
-      kept: 'Kept planning'
+      kept: 'Kept planning',
+      cancelled: 'Cancelled'
     },
     mount: {
       cardTitle: 'Workspace needed',
@@ -1209,6 +1214,10 @@ const en: MessageTree = {
     fName: 'Name',
     fAvatar: 'Avatar',
     avaRandom: 'Randomize',
+    avaImgUpload: 'Upload image',
+    avaImgRemove: 'Remove image',
+    avaImgTooBig: 'Image too large — pick one under 12 MB',
+    avaImgFailed: 'Could not read that image — try another one',
     avaEdit: 'Edit avatar',
     avaEditHint: 'Click to edit avatar',
     avaDone: 'Done',
@@ -1227,7 +1236,6 @@ const en: MessageTree = {
       bottom: 'Bottom',
       background: 'Background'
     },
-    fColor: 'Color',
     fSpecialty: 'Specialty',
     fTagline: 'Tagline',
     fModel: 'Preferred model',

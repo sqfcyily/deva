@@ -6,7 +6,8 @@
  *
  * 数据模型：角色头像以 `AvatarSpec`（JSON）存进 persona frontmatter 的 `avatar` 字段（主进程/preload/store
  * 全程只当**不透明字符串**搬运，语义仅在此解释）。
- *  - `avatar` 为空 → 由 seed（persona.id）确定性生成，故所有既有角色零迁移即得一枚稳定头像；
+ *  - `avatar` 为空 → 由 seed（persona.id）确定性生成，故所有既有角色零迁移即得一枚稳定头像
+ *    （部件由引擎按 seed 选，配色由 `seededPalette` 按同一 seed 挑——引擎自身不随 seed 变配色）；
  *  - `avatar` 为 JSON → 用显式 selections/colors 覆盖，seed 退化为无关紧要的兜底。
  *
  * 编辑器：打开时把「seed + 已存 spec」经 `resolveSpec` 解析为**具体** selections/colors，此后一律以具体值工作、
@@ -47,14 +48,75 @@ export type AvatarSlot = (typeof AVATAR_SLOTS)[number]
 export const AVATAR_COLORS = ['hair', 'skin', 'clothes'] as const
 export type AvatarColorSlot = (typeof AVATAR_COLORS)[number]
 
-/** 随机配色取样池（发/肤/衣/背景）—— 精选而非全随机，避免生成刺眼组合。 */
+/**
+ * 随机配色取样池（发/肤/衣/背景）—— 精选而非全随机，避免生成刺眼组合。
+ *
+ * 肤色：刻意只收浅至中等的暖色调（偏亚洲肤色），不收棕/黑——这是产品口径，别照「肤色光谱要全」补回来。
+ * 背景：**整池深色，淡彩已全部移除**（产品口径，别再把浅底加回来）。基调取自参考图 2.png 那几枚头像圆底
+ *   （标 ★ 的五个是实采值），其余按色相补齐，**全部高饱和**——参考图里没有中性位，试加过一枚
+ *   石板灰 `334155` 又去掉了。L 落在 0.26~0.59：不收亮黄一类，再亮配浅肤色会糊成一片。
+ *   已知最弱的一对是黑发 `1c1c1c` 配藏青 `1f3a8a`（亮度比 1.65，约 1% 的角色撞得上），
+ *   靠 Humation 自带的黑色描边兜住轮廓。**别拿亮度比当唯一判据**：这是平涂插画、色相差本身就在分离，
+ *   蓝衣 `4f8cff` 配琥珀底 `d97706` 亮度比只有 1.01 却一眼可辨。
+ */
 const HAIR_TONES = ['1c1c1c', '3b2a1a', '6b4226', 'a55c2b', 'd8b26a', 'b0b0b0', '7c4dff', 'e6567a']
-const SKIN_TONES = ['ffe0bd', 'f1c27d', 'e0ac69', 'c68642', '8d5524', 'ffd9c0']
+const SKIN_TONES = ['ffe0bd', 'ffd9c0', 'f8dcb4', 'f1c27d', 'e8c19a', 'dcab7e']
 const CLOTHES_TONES = ['ffffff', '2d2d2d', '4f8cff', '46c26a', 'ff8c42', 'ff5d8f', '7c7cf0', 'ffd23f']
-const BG_TONES = ['F6F5F4', 'e8f0fe', 'fdeef2', 'eafbf1', 'fff4e0', 'efeaff', 'e6f7fb']
+const BG_TONES = [
+  'f5500a', // ★ 橙红
+  'd97706', // 琥珀
+  'b02a37', // 砖红
+  'd81b60', // 玫红
+  '6b21a8', // 深紫
+  '8a38f5', // ★ 紫
+  '1f3a8a', // 藏青
+  '0d8ce9', // ★ 蓝
+  '0987a0', // ★ 青
+  '0f766e', // 深青绿
+  '198e51' // ★ 绿
+]
 
 function pick<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]
+}
+
+/**
+ * 由 seed 确定性取一组配色（发/肤/衣/背景），同一 seed 恒得同一组。
+ *
+ * 为什么需要：Humation 的 seed **只决定部件、不决定配色** —— 不带 spec 生成的头像配色恒为引擎默认
+ * （发黑 / 肤白 / 衣白 / 灰底 F6F5F4），于是「对话生成的角色名片」「内置角色」「用户头像」等所有
+ * 走 seed 回落的头像清一色是同一套黑白线稿，只有部件不同。这里按 seed 哈希从精选色池里挑，
+ * 补上四项配色：既有色彩，又**保持确定性**——同一角色永远同一张脸，不会每次渲染漂移，
+ * 名片预览与点开后的编辑器也必然一致。（`randomizeSpec` 是另一路：用户点「随机」时才真随机。）
+ */
+function hashSeed(seed: string): number {
+  let h = 0x811c9dc5 // FNV-1a 32 位
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}
+
+export function seededPalette(seed: string): { colors: Record<string, string>; background: string } {
+  let s = hashSeed(seed) || 1 // xorshift32 不能从 0 起步
+  const next = (n: number): number => {
+    s ^= s << 13
+    s >>>= 0
+    s ^= s >>> 17
+    s ^= s << 5
+    s >>>= 0
+    return s % n
+  }
+  // 取值顺序即各槽位的取样次序，改动顺序会让所有既有头像换色——别随手调。
+  return {
+    colors: {
+      hair: HAIR_TONES[next(HAIR_TONES.length)],
+      skin: SKIN_TONES[next(SKIN_TONES.length)],
+      clothes: CLOTHES_TONES[next(CLOTHES_TONES.length)]
+    },
+    background: BG_TONES[next(BG_TONES.length)]
+  }
 }
 
 /** 仅保留对象里的字符串值，丢弃其余（防御外来 JSON）。 */
@@ -100,11 +162,13 @@ export function serializeAvatarSpec(spec: AvatarSpec | null | undefined): string
 
 /** 把「seed + 部分 spec」解析为完整、具体的 spec（编辑器初始化：从此只处理显式值，杜绝漂移）。 */
 export function resolveSpec(seed: string, spec?: AvatarSpec | null): Required<AvatarSpec> {
+  // seed 配色垫底、spec 显式值覆盖：与 HumationFace 的合并口径一致，故「编辑器所见＝各处所渲染」。
+  const pal = seededPalette(seed)
   const json = createAvatar(humation1, {
     seed,
     selections: spec?.selections,
-    colors: spec?.colors,
-    ...(spec?.background ? { background: spec.background } : {})
+    colors: { ...pal.colors, ...spec?.colors },
+    background: spec?.background || pal.background
   }).toJSON()
   return { selections: json.selections, colors: json.colors, background: json.background }
 }
@@ -145,6 +209,35 @@ export function isNonePart(part: PartOption): boolean {
 }
 
 /**
+ * 角色头像的**唯一渲染入口**：有自定义图（用户上传，data URI）就渲染它，否则回落 Humation 生成头像。
+ *
+ * 两条路各自铺满父容器（父容器负责圆形裁剪），故调用方无需关心走的是哪条——避免每个头像点位都写
+ * 一遍 `image ? <img> : <HumationFace>` 的三元式而漏掉某一处。
+ *
+ * 注：渲染层 CSP 不放行 `file:`，自定义头像只能以 data URI 交付（主进程 personas:get/list 派生）。
+ */
+export function PersonaFace({
+  seed,
+  spec,
+  image,
+  size,
+  title,
+  className
+}: {
+  seed: string
+  spec?: AvatarSpec | null
+  /** 自定义头像 data URI；空串 / 省略 → 走 Humation 生成头像。 */
+  image?: string
+  size?: number | string
+  title?: string
+  className?: string
+}): React.JSX.Element {
+  if (image)
+    return <img src={image} alt={title ?? ''} title={title} className={className} draggable={false} />
+  return <HumationFace seed={seed} spec={spec} size={size} title={title} className={className} />
+}
+
+/**
  * 头像人脸本体：一枚 Humation SVG。默认 size='100%' 铺满父容器（父容器负责圆形裁剪与描边环）。
  * seed 恒传（无 spec 时确定性生成）；spec 的 selections/colors 存在即覆盖 seed 选择。
  */
@@ -163,14 +256,16 @@ export function HumationFace({
 }): React.JSX.Element {
   const selections =
     spec?.selections && Object.keys(spec.selections).length ? spec.selections : undefined
-  const colors = spec?.colors && Object.keys(spec.colors).length ? spec.colors : undefined
+  // 无 spec 配色时用 seed 配色兜底（引擎默认是黑白线稿）；spec 里显式给的逐项覆盖。
+  const pal = seededPalette(seed)
+  const colors = { ...pal.colors, ...(spec?.colors ?? {}) }
   return (
     <Avatar
       assets={humation1}
       seed={seed}
       selections={selections}
       colors={colors}
-      background={spec?.background}
+      background={spec?.background || pal.background}
       size={size ?? '100%'}
       title={title}
       className={className}

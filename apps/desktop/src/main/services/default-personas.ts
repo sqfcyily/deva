@@ -23,8 +23,6 @@ export interface DefaultPersona {
   name: string
   /** 专长，一句话。 */
   description: string
-  /** 身份主题色（头像描边 / 名字色）。 */
-  color: string
   /** 开场白 / 口头禅。 */
   tagline: string
   /** 首次种入时是否启用（默认角色皆 true，作为可直接对话的身份）。 */

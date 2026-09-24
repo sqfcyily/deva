@@ -22,6 +22,7 @@ import {
   GitBranch,
   GitCommitHorizontal,
   Image as ImageIcon,
+  ImagePlus,
   Info,
   ListChecks,
   Lock,
@@ -80,7 +81,7 @@ import { Modal } from '../components/Modal'
 import {
   AVATAR_COLORS,
   AVATAR_SLOTS,
-  HumationFace,
+  PersonaFace,
   USER_AVATAR_SEED,
   isNonePart,
   parseAvatarSpec,
@@ -1363,7 +1364,7 @@ function ThreadRow({
       onClick={onClick}
       onContextMenu={onContext}
     >
-      {/* 对话中（streaming）→ 头像边框绕圈小点指示。 */}
+      {/* 对话中（streaming）→ 头像上一道扫光指示。 */}
       <Avatar persona={owner} size={38} busy={state?.streaming} />
       <div className="cf-thread__main">
         {/* 上：角色名与时间；下：首次对话标题。挂载目录不在此展示。 */}
@@ -1441,7 +1442,7 @@ function PersonaRow({
       <Avatar persona={persona} size={38} />
       <div className="cf-prow__main">
         {/* 花名册只展示角色名与专长；专长未填写则整行不显示。 */}
-        <div className="cf-prow__name" style={{ '--p': persona.color } as React.CSSProperties}>
+        <div className="cf-prow__name">
           {persona.name}
         </div>
         {persona.desc && <div className="cf-prow__spec">{persona.desc}</div>}
@@ -1482,15 +1483,9 @@ function QuickStart({
                   className="cf-qcard"
                   onClick={() => onStart(p.id)}
                   title={p.desc || p.name}
-                  style={{ '--p': p.color } as React.CSSProperties}
                 >
                   <Avatar persona={p} size={48} />
-                  <span
-                    className="cf-qcard__name"
-                    style={{ '--p': p.color } as React.CSSProperties}
-                  >
-                    {p.name}
-                  </span>
+                  <span className="cf-qcard__name">{p.name}</span>
                   {p.desc && <span className="cf-qcard__desc">{p.desc}</span>}
                 </button>
               ))}
@@ -2606,12 +2601,7 @@ function Conversation({
           title={t('cf.viewProfile')}
         >
           {/* 顶部只显示角色名称（去掉头像与描述行）；仍可点击打开资料卡。 */}
-          <div
-            className="cf-idbtn__name"
-            style={owner ? ({ '--p': owner.color } as React.CSSProperties) : undefined}
-          >
-            {owner?.name ?? ''}
-          </div>
+          <div className="cf-idbtn__name">{owner?.name ?? ''}</div>
         </button>
       </div>
 
@@ -2980,12 +2970,7 @@ function ConvMessage({
       <Avatar persona={owner} size={32} />
       <div className="cf-msg__body">
         <div className="cf-msg__head">
-          <span
-            className="cf-msg__name"
-            style={owner ? ({ '--p': owner.color } as React.CSSProperties) : undefined}
-          >
-            {owner?.name ?? t('cf.assistant')}
-          </span>
+          <span className="cf-msg__name">{owner?.name ?? t('cf.assistant')}</span>
         </div>
         <div className="msg__content">
           {msg.blocks.map((b, i) => (
@@ -3360,19 +3345,15 @@ function ProfileView({
       <DragBar />
       <div className="cf-profile">
         <div className="cf-profile__inner">
-          <div className="cf-profile__ava" style={{ '--p': persona.color } as React.CSSProperties}>
-            <HumationFace
+          <div className="cf-profile__ava">
+            <PersonaFace
               seed={persona.id}
               spec={parseAvatarSpec(persona.avatar)}
+              image={persona.avatarImage}
               title={persona.name}
             />
           </div>
-          <div
-            className="cf-profile__name"
-            style={{ '--p': persona.color } as React.CSSProperties}
-          >
-            {persona.name}
-          </div>
+          <div className="cf-profile__name">{persona.name}</div>
           <div className="cf-profile__spec">{persona.desc}</div>
 
           <div className="cf-profile__meta">
@@ -3421,6 +3402,57 @@ const toHexInput = (v: string | undefined): string => {
 }
 const fromHexInput = (v: string): string => v.replace(/^#/, '').toUpperCase()
 
+/** 自定义头像落盘边长（px）：正方缩略图，够 96px 预览的 2× 屏，又不至于把 data URI 撑大。 */
+const AVATAR_PX = 256
+/** 原图上限：只挡住误选的巨型图；归一后落盘的永远是上面那张 256² 小方图。 */
+const AVATAR_UPLOAD_MAX = 12 * 1024 * 1024
+
+/**
+ * 用户选的图 → 居中裁成正方 → 缩到 AVATAR_PX → data URI。
+ * 归一在渲染层做（canvas），主进程只管存字节，故无论原图多大 / 什么比例，落盘的都是小方图。
+ * blob: 与 data: 均在 index.html 的 img-src 白名单内；本地文件同源，canvas 不会被 taint。
+ */
+function fileToAvatarDataUri(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = (): void => {
+      URL.revokeObjectURL(url)
+      try {
+        const side = Math.min(img.naturalWidth, img.naturalHeight)
+        if (!side) return reject(new Error('empty image'))
+        const canvas = document.createElement('canvas')
+        canvas.width = AVATAR_PX
+        canvas.height = AVATAR_PX
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return reject(new Error('no 2d context'))
+        ctx.drawImage(
+          img,
+          (img.naturalWidth - side) / 2,
+          (img.naturalHeight - side) / 2,
+          side,
+          side,
+          0,
+          0,
+          AVATAR_PX,
+          AVATAR_PX
+        )
+        // 不支持 webp 时 toDataURL 会**静默回落 image/png**——主进程按 MIME 定扩展名，两种都收。
+        const uri = canvas.toDataURL('image/webp', 0.9)
+        if (!uri.startsWith('data:image/')) return reject(new Error('encode failed'))
+        resolve(uri)
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    }
+    img.onerror = (): void => {
+      URL.revokeObjectURL(url)
+      reject(new Error('decode failed'))
+    }
+    img.src = url
+  })
+}
+
 function PersonaEditor({
   initial,
   onClose
@@ -3430,7 +3462,8 @@ function PersonaEditor({
 }): React.JSX.Element {
   const { t } = useI18n()
   const { providers } = useModels()
-  const { upsertPersona } = useExtensions()
+  const toast = useToast()
+  const { upsertPersona, setPersonaAvatarImage } = useExtensions()
   const { resolveProposal } = useChat()
   const editing = initial.mode === 'edit' ? initial.persona : null
   // propose 态：预填 LLM 草稿，接受才落盘、拒绝不写；editing 恒 null → upsert 无 id → 只创建不覆盖。
@@ -3438,7 +3471,6 @@ function PersonaEditor({
   const draft = proposing?.draft
 
   const [name, setName] = useState(editing?.name ?? draft?.name ?? '')
-  const [color, setColor] = useState(editing?.color ?? draft?.color ?? '#7c7cf0')
   const [desc, setDesc] = useState(editing?.desc ?? draft?.desc ?? '')
   const [model, setModel] = useState(editing?.model ?? draft?.model ?? '')
   const [prompt, setPrompt] = useState(editing?.prompt ?? draft?.prompt ?? '')
@@ -3455,17 +3487,38 @@ function PersonaEditor({
         ? resolveSpec(avatarSeed, null)
         : randomizeSpec()
   )
+  // 自定义头像（用户上传的图，data URI）：非空即盖过上面的 spec 生成头像。编辑态取已存图，
+  // 新建 / 名片态恒空。它不进 upsertPersona 入参——落盘要等 upsert 返回 id（见 save）。
+  const [avatarImage, setAvatarImage] = useState<string>(editing?.avatarImage ?? '')
+  const fileRef = useRef<HTMLInputElement | null>(null)
+  // 选图：先在渲染层归一成 256×256 方图再交主进程，故无论用户给多大的原图，落盘都是小图。
+  const onPickImage = (e: React.ChangeEvent<HTMLInputElement>): void => {
+    const file = e.target.files?.[0]
+    e.target.value = '' // 清空，否则连选同一个文件不会再触发 change
+    if (!file) return
+    if (file.size > AVATAR_UPLOAD_MAX) {
+      toast.show({ title: t('cf.avaImgTooBig'), variant: 'error' })
+      return
+    }
+    void fileToAvatarDataUri(file)
+      .then(setAvatarImage)
+      .catch(() => toast.show({ title: t('cf.avaImgFailed'), variant: 'error' }))
+  }
   // 头像编辑面板开关：点击信息表单里的头像缩略图进入，「完成」/「取消」均返回继续编辑其余信息。
   const [avatarEditing, setAvatarEditing] = useState(false)
   // 进面板时快照当前头像：「取消」还原快照后返回（丢弃面板内改动），「完成」保留改动返回。
   // 两者都只切回表单，真正落盘仍走表单底部的保存/接受。
-  const avatarBackup = useRef<AvatarSpec | null>(null)
+  const avatarBackup = useRef<{ spec: AvatarSpec; image: string } | null>(null)
   const openAvatarPanel = (): void => {
-    avatarBackup.current = avatar
+    avatarBackup.current = { spec: avatar, image: avatarImage }
     setAvatarEditing(true)
   }
   const closeAvatarPanel = (revert: boolean): void => {
-    if (revert && avatarBackup.current) setAvatar(avatarBackup.current)
+    const back = avatarBackup.current
+    if (revert && back) {
+      setAvatar(back.spec)
+      setAvatarImage(back.image)
+    }
     avatarBackup.current = null
     setAvatarEditing(false)
   }
@@ -3517,12 +3570,16 @@ function PersonaEditor({
         description: desc.trim(),
         // 存显式头像 spec（JSON 串）：所见即所存即所渲染。
         avatar: serializeAvatarSpec(avatar),
-        color,
         model,
         prompt,
         enabled: true
       }
       const saved = await upsertPersona(input)
+      // 自定义头像另走一路：它不入 frontmatter，且**新建角色要等 upsert 返回才有 id**。
+      // 只在相对已存值真有变化时写（空串 = 清除），免得每次保存都重写一遍同一张图。
+      if (saved && avatarImage !== (editing?.avatarImage ?? '')) {
+        await setPersonaAvatarImage(saved.id, avatarImage)
+      }
       setSaving(false)
       if (saved) {
         if (proposing) resolveProposal(proposing.toolId, 'accepted')
@@ -3577,28 +3634,49 @@ function PersonaEditor({
             <div className="cf-avapanel">
               <div className="cf-avaedit">
                 <div className="cf-avaedit__side">
-                  <div
-                    className="cf-avaedit__preview"
-                    style={{ '--p': color } as React.CSSProperties}
-                  >
-                    <HumationFace seed={avatarSeed} spec={avatar} title={name || t('cf.fAvatar')} />
-                  </div>
+                  {/* 头像本体就是上传入口：悬停浮出遮层，点击直接唤起系统文件选择器。 */}
                   <button
                     type="button"
-                    className="cf-btn cf-avaedit__rand"
-                    onClick={() => setAvatar(randomizeSpec())}
+                    className="cf-avaedit__preview"
+                    aria-label={t('cf.avaImgUpload')}
+                    onClick={() => fileRef.current?.click()}
                   >
-                    {t('cf.avaRandom')}
-                  </button>
-                  <label className="cf-avaedit__theme">
-                    <span>{t('cf.fColor')}</span>
-                    <input
-                      className="cf-color"
-                      type="color"
-                      value={color}
-                      onChange={(e) => setColor(e.target.value)}
+                    <PersonaFace
+                      seed={avatarSeed}
+                      spec={avatar}
+                      image={avatarImage}
+                      title={name || t('cf.fAvatar')}
                     />
-                  </label>
+                    <span className="cf-avaedit__upload" title={t('cf.avaImgUpload')}>
+                      <ImagePlus size={20} aria-hidden="true" />
+                    </span>
+                  </button>
+                  {/* 用了自定义图时「随机」无从体现，换成「移除」让用户能退回生成头像。 */}
+                  {avatarImage ? (
+                    <button
+                      type="button"
+                      className="cf-btn cf-avaedit__rand"
+                      onClick={() => setAvatarImage('')}
+                    >
+                      {t('cf.avaImgRemove')}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="cf-btn cf-avaedit__rand"
+                      onClick={() => setAvatar(randomizeSpec())}
+                    >
+                      {t('cf.avaRandom')}
+                    </button>
+                  )}
+                  {/* 系统文件选择器由 <input type="file"> 唤起：图只在渲染层解码，不经任何 Agent 工具。 */}
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    hidden
+                    onChange={onPickImage}
+                  />
                 </div>
 
                 <div className="cf-avaedit__main">
@@ -3680,11 +3758,13 @@ function PersonaEditor({
                   title={t('cf.avaEdit')}
                   onClick={openAvatarPanel}
                 >
-                  <span
-                    className="cf-avapick__face"
-                    style={{ '--p': color } as React.CSSProperties}
-                  >
-                    <HumationFace seed={avatarSeed} spec={avatar} title={name || t('cf.fAvatar')} />
+                  <span className="cf-avapick__face">
+                    <PersonaFace
+                      seed={avatarSeed}
+                      spec={avatar}
+                      image={avatarImage}
+                      title={name || t('cf.fAvatar')}
+                    />
                   </span>
                   <span className="cf-avapick__hint">{t('cf.avaEditHint')}</span>
                 </button>
@@ -4403,9 +4483,9 @@ function Toggle({
 
 /* ============================ 通用小件 ============================ */
 // 全应用头像（角色 / 人类用户）统一走 Humation：
-//  - 角色：seed=persona.id，叠加其 avatar spec（若有）；描边环用身份色 --p。
-//  - 用户：固定 seed（USER_AVATAR_SEED），描边环用强调色（.is-user 覆盖 --p）。
-// 结构：外层 .cf-ava 不裁剪（让忙碌小点可越界绕圈），内层 .cf-ava__face 圆形裁剪 SVG，::after 画描边环。
+//  - 角色：seed=persona.id，叠加其 avatar spec（若有）。
+//  - 用户：固定 seed（USER_AVATAR_SEED）。
+// 结构：外层 .cf-ava 作定位框，内层 .cf-ava__face 圆形裁剪头像（无描边）。
 function Avatar({
   persona,
   user,
@@ -4415,24 +4495,18 @@ function Avatar({
   persona?: Persona
   user?: boolean
   size?: number
-  /** 忙碌（对话生成中）：在头像边框上叠加一枚绕圈旋转的白色小点，作就地「思考/生成中」指示。 */
+  /** 忙碌（对话生成中）：头像上叠一道自左向右扫过的高光带，作就地「思考/生成中」指示。 */
   busy?: boolean
 }): React.JSX.Element | null {
-  const style = {
-    ...(size ? { '--sz': `${size}px` } : {}),
-    ...(persona ? { '--p': persona.color } : {})
-  } as React.CSSProperties
+  const style = { ...(size ? { '--sz': `${size}px` } : {}) } as React.CSSProperties
   const cls = `cf-ava${busy ? ' is-busy' : ''}${user ? ' is-user' : ''}`
-  const orbit = busy ? (
-    <span className="cf-ava__spin" aria-hidden="true">
-      <i className="cf-ava__dot" />
-    </span>
-  ) : null
+  // 遮层必须排在 .cf-ava__face 之后：同为 inset:0 的绝对定位兄弟，靠文档顺序压在头像之上。
+  const sweep = busy ? <span className="cf-ava__sweep" aria-hidden="true" /> : null
   // 非用户、非角色（理论上罕见）：空占位圈。
   if (!user && !persona)
     return (
       <div className={cls} style={style}>
-        {orbit}
+        {sweep}
       </div>
     )
   const seed = user ? USER_AVATAR_SEED : (persona as Persona).id
@@ -4443,9 +4517,14 @@ function Avatar({
   return (
     <div className={cls} style={style} title={title}>
       <span className="cf-ava__face">
-        <HumationFace seed={seed} spec={spec} title={title} />
+        <PersonaFace
+          seed={seed}
+          spec={spec}
+          image={user ? '' : (persona as Persona).avatarImage}
+          title={title}
+        />
       </span>
-      {orbit}
+      {sweep}
     </div>
   )
 }

@@ -239,10 +239,6 @@ export const toolSpecs: ToolSpec[] = [
           type: 'string',
           description: '一句话专长/定位说明，会显示在名片与角色资料上。'
         },
-        color: {
-          type: 'string',
-          description: '主题色，十六进制（如 #4f8cff）；用于名片与头像描边的强调色。'
-        },
         prompt: {
           type: 'string',
           description: '角色的系统提示词：性格、语气、专长、行为准则等，用 Markdown 编写。这是角色的核心。'

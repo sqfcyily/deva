@@ -17,6 +17,8 @@ import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
  *   frontmatter），故重命名不触发文件搬迁，UI 的「id 稳定 / name 可编辑」模型天然成立。
  * - 启用态**不入 .md**，集中存 `config.json` 的 `personas.enabled[id]`，默认关。
  * - `<id>.md` = frontmatter（name/description）+ 正文（prompt，即要追加的提示词）。
+ * - 自定义头像图片（用户上传）另存 `personas/avatars/<id>.<ext>`，**不入 frontmatter**：有图即覆盖
+ *   生成头像，一个 id 至多一张（重传先清变体），删角色时一并删（否则 id 复用会串脸）。
  *
  * 运行期（chat.ts 同进程直接调用，无需 IPC）：
  * - `enabledPersonas()`：把「已启用」persona 的 name+prompt 注入**主智能体**系统提示词（仅主轮；
@@ -36,8 +38,15 @@ export interface PersonaRecord {
   description: string
   /** 头像 spec（Humation AvatarSpec 的 JSON 字符串；空 → 由 id 确定性生成。本层只当不透明串搬运）。 */
   avatar: string
-  /** 身份主题色（头像描边 / 名字色）。 */
-  color: string
+  /**
+   * 自定义头像图片，**只读派生字段**（data URI；空串 = 没传过图，回落 Humation 生成头像）。
+   * 真源是磁盘上的 `personas/avatars/<id>.*` 是否存在——故**不入 frontmatter**、不进 upsert 输入，
+   * 改图走独立的 set/clear IPC（见文件末）。渲染层 CSP 不许 `file:`，只能以 data URI 交付。
+   *
+   * **按需读取**：只有 IPC 出口（给渲染层显示）才填，主进程内部调用（enabledPersonas 组装系统提示词、
+   * chat.ts 取角色）恒为空串——否则每轮对话都要把所有头像读盘 + base64 一遍，纯属白做功。
+   */
+  avatarImage: string
   /** 开场白 / 口头禅。 */
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认（见 model-resolve.ts）。 */
@@ -55,7 +64,6 @@ export interface PersonaUpsertInput {
   name: string
   description?: string
   avatar?: string
-  color?: string
   tagline?: string
   model?: string
   tools?: string[]
@@ -70,6 +78,90 @@ function personasDir(): string {
 
 function personaFile(id: string): string {
   return join(personasDir(), `${id}.md`)
+}
+
+// ── 自定义头像图片（personas/avatars/<id>.<ext>）─────────────────────────────
+//
+// 「多次上传覆盖」= 一个 id 至多一张图：写入前先清掉**所有**扩展名变体，再按来图 MIME 落一个。
+// 格式不固定死 webp，是为了容错——渲染层若在某平台 webp 编码失败可回落 png/jpeg，主进程照收，
+// 读回时按扩展名还原 MIME，不会出现「存的是 png 却谎称 webp」的坏 data URI。
+
+const AVATAR_EXT_MIME: Record<string, string> = {
+  webp: 'image/webp',
+  png: 'image/png',
+  jpg: 'image/jpeg'
+}
+const AVATAR_MIME_EXT: Record<string, string> = {
+  'image/webp': 'webp',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg'
+}
+/** 解码后字节上限：渲染层已归一到 256×256（正常 <100KB），此处只兜底异常大图。 */
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024
+
+function avatarsDir(): string {
+  return join(personasDir(), 'avatars')
+}
+
+/** 该 id 现存的头像图片路径（按扩展名优先序取首个命中）；没有则空串。 */
+function avatarImagePath(id: string): string {
+  for (const ext of Object.keys(AVATAR_EXT_MIME)) {
+    const p = join(avatarsDir(), `${id}.${ext}`)
+    if (existsSync(p)) return p
+  }
+  return ''
+}
+
+/** 读成 data URI 交付渲染层（无图 / 读失败 → 空串，回落生成头像）。 */
+function readAvatarImage(id: string): string {
+  if (!isSafeId(id)) return ''
+  const p = avatarImagePath(id)
+  if (!p) return ''
+  const ext = p.slice(p.lastIndexOf('.') + 1)
+  const mime = AVATAR_EXT_MIME[ext]
+  if (!mime) return ''
+  try {
+    return `data:${mime};base64,${readFileSync(p).toString('base64')}`
+  } catch {
+    return ''
+  }
+}
+
+/** 删掉该 id 的所有头像图片变体（清除 / 覆盖前 / 删角色时调用）。 */
+function clearAvatarImage(id: string): void {
+  if (!isSafeId(id)) return
+  for (const ext of Object.keys(AVATAR_EXT_MIME)) {
+    try {
+      rmSync(join(avatarsDir(), `${id}.${ext}`), { force: true })
+    } catch {
+      /* 忽略：文件可能本就不存在 */
+    }
+  }
+}
+
+/** 写入自定义头像（data URI）。成功返回读回的 data URI；参数非法 / 写失败返回空串。 */
+function writeAvatarImage(id: string, dataUri: string): string {
+  if (!isSafeId(id) || typeof dataUri !== 'string') return ''
+  const m = /^data:([a-z]+\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(dataUri.trim())
+  if (!m) return ''
+  const ext = AVATAR_MIME_EXT[m[1].toLowerCase()]
+  if (!ext) return ''
+  let buf: Buffer
+  try {
+    buf = Buffer.from(m[2], 'base64')
+  } catch {
+    return ''
+  }
+  if (!buf.length || buf.length > AVATAR_MAX_BYTES) return ''
+  try {
+    mkdirSync(avatarsDir(), { recursive: true })
+    clearAvatarImage(id) // 先清干净，保证一个 id 只剩一张（换格式重传也不留旧图）
+    writeFileSync(join(avatarsDir(), `${id}.${ext}`), buf)
+  } catch {
+    return ''
+  }
+  return readAvatarImage(id)
 }
 
 /** 读取 config.json 的 personas.enabled 映射（不存在则空）。 */
@@ -126,7 +218,7 @@ function makeId(name: string): string {
   return id
 }
 
-function parsePersona(id: string, raw: string, enabled: boolean): PersonaRecord {
+function parsePersona(id: string, raw: string, enabled: boolean, withImage: boolean): PersonaRecord {
   const { data, body } = parseFrontmatter(raw)
   const name = fmString(data, 'name') || id
   return {
@@ -134,7 +226,7 @@ function parsePersona(id: string, raw: string, enabled: boolean): PersonaRecord 
     name,
     description: fmString(data, 'description'),
     avatar: fmString(data, 'avatar'),
-    color: fmString(data, 'color'),
+    avatarImage: withImage ? readAvatarImage(id) : '',
     tagline: fmString(data, 'tagline'),
     model: fmString(data, 'model'),
     tools: fmArray(data, 'tools'),
@@ -143,8 +235,11 @@ function parsePersona(id: string, raw: string, enabled: boolean): PersonaRecord 
   }
 }
 
-/** 列出所有 persona（扫描 personas 目录下每个 `<id>.md`）。解析失败的文件跳过，绝不抛错。 */
-export function listPersonas(): PersonaRecord[] {
+/**
+ * 列出所有 persona（扫描 personas 目录下每个 `<id>.md`）。解析失败的文件跳过，绝不抛错。
+ * `withImages` 仅 IPC 出口传 true（见 avatarImage 字段注释）。
+ */
+export function listPersonas(withImages = false): PersonaRecord[] {
   const dir = personasDir()
   if (!existsSync(dir)) return []
   const map = enabledMap()
@@ -161,7 +256,7 @@ export function listPersonas(): PersonaRecord[] {
     if (!isSafeId(id)) continue
     try {
       const raw = readFileSync(personaFile(id), 'utf8')
-      out.push(parsePersona(id, raw, map[id] === true))
+      out.push(parsePersona(id, raw, map[id] === true, withImages))
     } catch {
       /* 读失败 → 跳过该文件 */
     }
@@ -179,11 +274,12 @@ export function listPersonas(): PersonaRecord[] {
   return out
 }
 
-export function getPersona(id: string): PersonaRecord | null {
+/** 读一条 persona；`withImage` 仅 IPC 出口传 true（见 avatarImage 字段注释）。 */
+export function getPersona(id: string, withImage = false): PersonaRecord | null {
   if (!isSafeId(id)) return null
   try {
     const raw = readFileSync(personaFile(id), 'utf8')
-    return parsePersona(id, raw, enabledMap()[id] === true)
+    return parsePersona(id, raw, enabledMap()[id] === true, withImage)
   } catch {
     return null
   }
@@ -194,7 +290,6 @@ function composePersonaMd(input: {
   name: string
   description: string
   avatar: string
-  color: string
   tagline: string
   model: string
   tools: string[]
@@ -204,8 +299,6 @@ function composePersonaMd(input: {
   if (input.description) lines.push(`description: ${fmScalar(input.description)}`)
   // avatar 为 JSON 字符串（含引号/大括号），必须经 fmScalar 引号化 + 转义，方能安全存进 YAML 单行。
   if (input.avatar) lines.push(`avatar: ${fmScalar(input.avatar)}`)
-  // 颜色多为 `#rrggbb`，必须经 fmScalar 引号化，否则 `#` 被 YAML 当注释吃掉。
-  if (input.color) lines.push(`color: ${fmScalar(input.color)}`)
   if (input.tagline) lines.push(`tagline: ${fmScalar(input.tagline)}`)
   if (input.model) lines.push(`model: ${fmScalar(input.model)}`)
   if (input.tools.length) lines.push(`tools: [${input.tools.map(fmScalar).join(', ')}]`)
@@ -224,7 +317,6 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
     name,
     description: (input.description ?? '').trim(),
     avatar: (input.avatar ?? '').trim(),
-    color: (input.color ?? '').trim(),
     tagline: (input.tagline ?? '').trim(),
     model: (input.model ?? '').trim(),
     tools: (input.tools ?? []).filter((t) => typeof t === 'string' && t.trim()),
@@ -242,13 +334,14 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
   if (typeof input.enabled === 'boolean') setPersonaEnabled(id, input.enabled)
   else if (isNew) setPersonaEnabled(id, false)
 
+  // 带图返回：渲染层用它整项替换列表，少了图会把已存头像「擦掉」到下次 refresh 才回来。
   return (
-    getPersona(id) ?? {
+    getPersona(id, true) ?? {
       id,
       name,
       description: (input.description ?? '').trim(),
       avatar: (input.avatar ?? '').trim(),
-      color: (input.color ?? '').trim(),
+      avatarImage: readAvatarImage(id),
       tagline: (input.tagline ?? '').trim(),
       model: (input.model ?? '').trim(),
       tools: input.tools ?? [],
@@ -265,6 +358,9 @@ export function deletePersona(id: string): void {
   } catch {
     /* 忽略删除失败 */
   }
+  // 必须连自定义头像一起删：makeId 只查 `<id>.md` 是否存在来判重，且中文名全被 slug 成同一个
+  // `persona`，故删掉一个角色后新建极易**复用同一个 id**——遗留的图会平白挂到新角色脸上。
+  clearAvatarImage(id)
   const map = enabledMap()
   if (id in map) {
     delete map[id]
@@ -339,7 +435,6 @@ export function ensureSeededPersonas(): void {
       description: def.description,
       // avatar 省略 → 由 id 确定性生成一枚稳定 Humation 头像（用户可在编辑器改）。
       avatar: def.avatar ?? '',
-      color: def.color,
       tagline: def.tagline,
       model: def.model ?? '',
       tools: def.tools ?? [],
@@ -362,8 +457,8 @@ export function ensureSeededPersonas(): void {
 
 /** Agent 提示词读写 IPC（全局；启用态入 config.json）。 */
 export function registerPersonasIpc(): void {
-  ipcMain.handle('personas:list', (): PersonaRecord[] => listPersonas())
-  ipcMain.handle('personas:get', (_e, id: string): PersonaRecord | null => getPersona(id))
+  ipcMain.handle('personas:list', (): PersonaRecord[] => listPersonas(true))
+  ipcMain.handle('personas:get', (_e, id: string): PersonaRecord | null => getPersona(id, true))
   ipcMain.handle('personas:upsert', (_e, input: PersonaUpsertInput): PersonaRecord =>
     upsertPersona(input)
   )
@@ -377,6 +472,14 @@ export function registerPersonasIpc(): void {
   })
   ipcMain.handle('personas:reorder', (_e, ids: string[]): { ok: true } => {
     reorderPersonas(Array.isArray(ids) ? ids : [])
+    return { ok: true }
+  })
+  // 自定义头像：与 upsert 分开，因为它不入 frontmatter，且新建角色要等 upsert 返回 id 后才能落图。
+  ipcMain.handle('personas:set-avatar-image', (_e, id: string, dataUri: string): string =>
+    writeAvatarImage(String(id ?? ''), String(dataUri ?? ''))
+  )
+  ipcMain.handle('personas:clear-avatar-image', (_e, id: string): { ok: true } => {
+    clearAvatarImage(String(id ?? ''))
     return { ok: true }
   })
 }

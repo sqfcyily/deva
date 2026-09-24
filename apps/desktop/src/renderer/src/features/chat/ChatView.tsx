@@ -733,7 +733,10 @@ export function BlockView({
     return (
       <div className="msg__notice">
         <Info size={14} />
-        <span>{t(NOTICE_KEY[block.code])}</span>
+        <span>
+          {t(NOTICE_KEY[block.code])}
+          {block.detail ? <span className="msg__notice-detail">{block.detail}</span> : null}
+        </span>
       </div>
     )
   }
@@ -817,7 +820,9 @@ function MountRequestCard({
 
 /**
  * 计划审阅卡（exit_plan）：展示模型提交的待批准计划（Markdown 正文），提供「批准并执行 / 继续完善」。
- * 未决态可交互；decided 为终态、只读展示（重开对话按 plans 边车复原）。onPlan 缺省 → 只读（如旧壳）。
+ * 未决态可交互；decided 为终态、只读展示（重开对话按 plans 边车复原）。其中 cancelled = 这次审阅已随
+ * 回合结束（中断 / 历史回填），主进程已无人接应——只展示不给按钮，免得留下点不动的「僵尸卡」。
+ * onPlan 缺省 → 只读（如旧壳）。
  */
 function PlanReviewCard({
   block,
@@ -835,7 +840,11 @@ function PlanReviewCard({
         <span className="msg__plan-title">{t('chat.plan.cardTitle')}</span>
         {decided && (
           <span className="msg__plan-badge">
-            {decided === 'approve' ? t('chat.plan.approved') : t('chat.plan.kept')}
+            {decided === 'approve'
+              ? t('chat.plan.approved')
+              : decided === 'keep'
+                ? t('chat.plan.kept')
+                : t('chat.plan.cancelled')}
           </span>
         )}
       </div>
@@ -1288,10 +1297,7 @@ function AgentCard({
           : undefined
       }
     >
-      <span
-        className="agentcard__avatar"
-        style={{ '--p': draft.color } as React.CSSProperties}
-      >
+      <span className="agentcard__avatar">
         {/* 提案中的智能体尚无 id：以名字为 seed 确定性生成头像（用户接受后可在编辑器改）。 */}
         <HumationFace seed={name} title={name} />
       </span>

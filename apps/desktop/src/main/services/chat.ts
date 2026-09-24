@@ -112,12 +112,11 @@ interface ChatCreateSessionRequest {
 export interface AgentDraft {
   name: string
   desc: string
-  color: string
   model: string
   prompt: string
 }
 
-/** 归一化 propose_agent 的原始参数为角色草稿：description→desc、补空 model、缺省 color。
+/** 归一化 propose_agent 的原始参数为角色草稿：description→desc、补空 model。
  * 头像不由 LLM 提议（无从得知部件词表）：名片按 name 确定性渲染，用户接受后可在编辑器定制。 */
 function normalizeAgentDraft(input: unknown): AgentDraft {
   const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
@@ -125,7 +124,6 @@ function normalizeAgentDraft(input: unknown): AgentDraft {
   return {
     name: str(a.name).trim(),
     desc: str(a.description).trim(),
-    color: str(a.color).trim() || '#4f8cff',
     model: '',
     prompt: str(a.prompt)
   }
@@ -213,10 +211,12 @@ type DisplayBlock =
    */
   | { kind: 'ask'; id: string; questions: AskQuestion[]; answers?: string[] | null }
   /**
-   * exit_plan 计划卡：重建为待批准/已决的计划审阅卡。计划正文从 tool_use 入参（input.plan）还原，
-   * decision 由 StoredSession.plans 边车还原（'approve'/'keep'/null=未决）。
+   * exit_plan 计划卡：重建为**已决**的计划审阅卡。计划正文从 tool_use 入参（input.plan）还原，
+   * decision 由 StoredSession.plans 边车还原：'approve'/'keep' = 用户的决定；'cancelled' = 中止 / 未决。
+   * **恒为终态、绝不留「待批准」**：历史重建只发生在回合结束之后，主进程的 pendingPlan 待决键早已随
+   * 回合解开删除（且重建卡用的是 toolUseId，本就与那把键不同名），此时若还画出按钮，点了必然石沉大海。
    */
-  | { kind: 'plan'; id: string; plan: string; decision?: 'approve' | 'keep' | null }
+  | { kind: 'plan'; id: string; plan: string; decision: 'approve' | 'keep' | 'cancelled' }
 
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
@@ -315,9 +315,13 @@ function toDisplayMessages(
               plan: typeof (p.input as { plan?: unknown })?.plan === 'string'
                 ? ((p.input as { plan: string }).plan)
                 : '',
-              // 有边车 → 用边车决定（null=中止未决）；无边车但有 tool_result（旧数据）→ 视为已决（keep）占位；
-              // 两者皆无（真正未决，罕见）→ undefined，重开后只读展示。
-              decision: plans[p.id] ? plans[p.id].decision : resultIds.has(p.id) ? 'keep' : undefined
+              // 有边车 → 用边车决定（null = 中止/取消 → cancelled）；无边车但有 tool_result（旧数据）→
+              // 视为已决（keep）占位；两者皆无（回合半途夭折）→ cancelled。一律终态、只读。
+              decision: plans[p.id]
+                ? (plans[p.id].decision ?? 'cancelled')
+                : resultIds.has(p.id)
+                  ? 'keep'
+                  : 'cancelled'
             })
           else
             blocks.push({
@@ -1684,6 +1688,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (!controller.signal.aborted && needsCompaction(session, turnModel.model)) {
       try {
         const r = await compactSession({ session, model: turnModel, signal: controller.signal })
+        // 失败原因落主进程日志：渲染层虽已展示，但后台回合（定时任务）无人盯着，日志是唯一痕迹。
+        if (r.status === 'failed') console.warn('[compaction] 自动压缩失败：', r.message)
         if (r.status !== 'none')
           emit(turnId, sessionId, {
             type: 'compacted',
@@ -1691,8 +1697,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             status: r.status,
             message: r.message
           })
-      } catch {
+      } catch (e) {
         /* 压缩自身抛错（极少）：忽略，历史未动，本轮照常 */
+        console.warn('[compaction] 自动压缩异常：', (e as Error)?.message ?? e)
       }
     }
 
@@ -1874,6 +1881,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (!controller.signal.aborted && needsCompaction(session, turnModel.model)) {
       try {
         const r = await compactSession({ session, model: turnModel, signal: controller.signal })
+        // 失败原因落主进程日志：渲染层虽已展示，但后台回合（定时任务）无人盯着，日志是唯一痕迹。
+        if (r.status === 'failed') console.warn('[compaction] 自动压缩失败：', r.message)
         if (r.status !== 'none')
           emit(turnId, sessionId, {
             type: 'compacted',
@@ -1881,8 +1890,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             status: r.status,
             message: r.message
           })
-      } catch {
+      } catch (e) {
         /* 压缩自身抛错：忽略，历史未动，本轮照常 */
+        console.warn('[compaction] 自动压缩异常：', (e as Error)?.message ?? e)
       }
     }
 
@@ -2024,6 +2034,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           })
           status = r.status
           message = r.message
+          if (status === 'failed') console.warn('[compaction] 手动压缩失败：', message)
         }
         emit(turnId, sessionId, { type: 'compacted', scope: 'manual', status, message })
       } catch (e) {

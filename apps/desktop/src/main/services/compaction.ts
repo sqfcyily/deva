@@ -214,8 +214,20 @@ export function buildTranscript(messages: Message[], locale: string): string {
   return text
 }
 
-const SUMMARY_TIMEOUT_MS = 60_000
-const SUMMARY_MAX_TOKENS = 2048
+/**
+ * 单次摘要请求的总时长上限：只用来兜住「一直慢吞吞吐字却永不收尾」的跑飞流。
+ * 真正的「死连接」判定交给 SSE 层的空闲看门狗（STREAM_IDLE_MS：静默 60s 即判中断、可重试）。
+ * 注：此处曾是 60s 总时长——长转录 + 慢模型（尤其先吐一大段思维链的推理模型）正常也跑不完，
+ * 一刀切下去正文为空，用户只看到一句无从下手的「压缩失败」。
+ */
+const SUMMARY_TIMEOUT_MS = 300_000
+/** 摘要输出预算。留足余量：推理模型的思维链同样吃这份预算，给太小会挤得吐不出正文。 */
+const SUMMARY_MAX_TOKENS = 4096
+/**
+ * 摘要请求的重试次数（与主循环 MAX_RECONNECT 同值）。
+ * 主循环遇可重试断流会自动重连，摘要却是一次性请求——断一次就前功尽弃，故必须自己重试。
+ */
+const SUMMARY_MAX_RETRY = 3
 
 const SUMMARY_SYSTEM_ZH = [
   '你是一个对话压缩器。请把以下开发者与 AI 助手的对话，压缩成一份简洁但信息完整的摘要，供后续对话继续参考。',
@@ -239,6 +251,28 @@ const SUMMARY_SYSTEM_EN = [
   'Rules: use bullet points; keep code snippets, file paths, commands, and identifiers verbatim; do not invent anything; output only the summary body, no pleasantries or extra explanation.'
 ].join('\n')
 
+/** 可被取消打断的退避等待（重试间隔）。 */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
+/** 摘要中止（用户按下停止）：与「摘要失败」区分开，调用方据此给不同结论。 */
+class SummaryAborted extends Error {}
+
+/**
+ * 请模型产出摘要。**只接受「干净收尾且有正文」的结果**——
+ * 半截摘要一旦被采信就会顶替掉真实历史，且不可逆，故宁可整轮不压也不要残缺摘要。
+ * 断流/限流/超时按可重试处理（指数退避，至多 SUMMARY_MAX_RETRY 次）；
+ * 鉴权、参数等致命错误立即抛出——重试无益，把原文抛给用户看才有用。
+ */
 async function summarize(
   model: CompactModelConfig,
   transcript: string,
@@ -251,32 +285,71 @@ async function summarize(
     ? `以下是需要压缩的对话记录，请据此产出摘要：\n\n${transcript}`
     : `Here is the conversation to compact. Produce the summary accordingly:\n\n${transcript}`
 
-  const ctrl = new AbortController()
-  const onAbort = (): void => ctrl.abort()
-  signal.addEventListener('abort', onAbort, { once: true })
-  const timer = setTimeout(() => ctrl.abort(), SUMMARY_TIMEOUT_MS)
-  try {
+  let lastReason = '摘要请求未能完成'
+
+  for (let attempt = 0; ; attempt++) {
+    if (signal.aborted) throw new SummaryAborted('已中止')
+
+    const ctrl = new AbortController()
+    const onAbort = (): void => ctrl.abort()
+    signal.addEventListener('abort', onAbort, { once: true })
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      ctrl.abort()
+    }, SUMMARY_TIMEOUT_MS)
+
     let text = ''
-    let errMsg = ''
-    for await (const ev of streamChat(
-      { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
-      {
-        model: model.model,
-        system,
-        messages: [{ role: 'user', content: userText }],
-        maxTokens: SUMMARY_MAX_TOKENS,
-        temperature: 0.3,
-        signal: ctrl.signal
+    let fatal = ''
+    let retryable = ''
+    // 流是否非正常收尾（done 的 stopReason 为 error/aborted）：此时手里的正文必定残缺，不可采信。
+    let interrupted = false
+
+    try {
+      for await (const ev of streamChat(
+        { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
+        {
+          model: model.model,
+          system,
+          messages: [{ role: 'user', content: userText }],
+          maxTokens: SUMMARY_MAX_TOKENS,
+          temperature: 0.3,
+          signal: ctrl.signal
+        }
+      )) {
+        if (ev.type === 'text_delta') text += ev.text
+        else if (ev.type === 'error') {
+          if (ev.error.retryable) retryable = ev.error.message
+          else fatal = ev.error.message
+        } else if (ev.type === 'done') {
+          if (ev.stopReason === 'error' || ev.stopReason === 'aborted') interrupted = true
+        }
       }
-    )) {
-      if (ev.type === 'text_delta') text += ev.text
-      else if (ev.type === 'error') errMsg = ev.error.message
+    } catch (e) {
+      // 适配器之外的意外（JSON/运行时错误）：按可重试处理，最后一次仍败则原文上报。
+      retryable = (e as Error)?.message ?? String(e)
+    } finally {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
     }
-    if (!text.trim() && errMsg) throw new Error(errMsg)
-    return text.trim()
-  } finally {
-    clearTimeout(timer)
-    signal.removeEventListener('abort', onAbort)
+
+    if (signal.aborted) throw new SummaryAborted('已中止')
+    if (fatal) throw new Error(fatal)
+
+    const body = text.trim()
+    if (!retryable && !timedOut && !interrupted) {
+      if (body) return body
+      // 干净收尾却没有正文：多为模型只吐了思维链、或被内容策略挡下。重试无益，直说。
+      throw new Error('模型没有返回摘要正文（可能只输出了思维链，或被内容策略拦截）')
+    }
+
+    lastReason = timedOut
+      ? `摘要请求超过 ${Math.round(SUMMARY_TIMEOUT_MS / 1000)}s 仍未完成`
+      : retryable || '连接中断'
+    if (attempt >= SUMMARY_MAX_RETRY)
+      throw new Error(`${lastReason}（已重试 ${SUMMARY_MAX_RETRY} 次）`)
+
+    await sleep(Math.min(1000 * 2 ** attempt, 8000), signal)
   }
 }
 
@@ -310,10 +383,13 @@ export async function compactSession(args: {
   try {
     summary = await summarize(model, transcript, locale, signal)
   } catch (e) {
-    return { status: 'failed', message: (e as Error)?.message ?? String(e) }
+    // 失败原因原样带回（鉴权 / 断流 / 超时 / 无正文）：调用方会连同提示一起展示给用户。
+    // 历史在此之前一个字都没动，返回即安全收场。
+    const message = e instanceof SummaryAborted ? '已中止' : ((e as Error)?.message ?? String(e))
+    return { status: 'failed', message }
   }
-  if (signal.aborted) return { status: 'failed', message: 'aborted' }
-  if (!summary) return { status: 'failed', message: 'empty-summary' }
+  if (signal.aborted) return { status: 'failed', message: '已中止' }
+  if (!summary) return { status: 'failed', message: '模型没有返回摘要正文' }
 
   const zh = locale !== 'en'
   const header = zh

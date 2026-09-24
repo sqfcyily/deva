@@ -1228,14 +1228,6 @@ textarea {
   width: 100%;
   height: 100%;
 }
-.agentcard__avatar::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  box-shadow: inset 0 0 0 1.5px var(--p, var(--border));
-  pointer-events: none;
-}
 .agentcard__body {
   display: flex;
   flex-direction: column;
@@ -2060,6 +2052,14 @@ textarea {
   flex-shrink: 0;
   margin-top: 0.15em;
   color: var(--warning, #f5a623);
+}
+/* 失败原因原文（压缩失败）：另起一行、更淡——提示语说「发生了什么」，它说「为什么」。 */
+.msg__notice-detail {
+  display: block;
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--fg-muted) 80%, transparent);
+  font-size: 12px;
+  word-break: break-word;
 }
 /* 待批准计划卡（exit_plan）：以 accent 观感呼应问答卡（.ask），区别于 warning 权限卡。
  * 已决态（is-decided）淡化边框与底色、隐藏操作按钮，仅留计划正文与状态徽标。 */

@@ -68,6 +68,12 @@ interface ExtensionsContextValue {
    * name，故重命名不打乱顺序（对标 IM 联系人手动排序）。
    */
   reorderPersonas: (ids: string[]) => void
+  /**
+   * Persona 自定义头像：写入（dataUri 非空）或清除（空串）。与 upsertPersona 分开，因为头像图不入
+   * frontmatter，且新建角色要等 upsert 返回 id 之后才有落图的对象。返回落盘后的 data URI（清除或
+   * 失败为空串），并同步本地列表的 avatarImage。
+   */
+  setPersonaAvatarImage: (id: string, dataUri: string) => Promise<string>
   /** 技能：上传文件（.zip 技能包或单个 SKILL.md）导入并自动启用；失败弹出本地化提示。 */
   importSkill: () => void
   /** MCP：连接（或重连）一个服务（状态经 onStatus 广播回流）。 */
@@ -104,7 +110,7 @@ function personaRecToPersona(rec: PersonaRecord): Persona {
     name: rec.name,
     desc: rec.description,
     avatar: rec.avatar,
-    color: rec.color,
+    avatarImage: rec.avatarImage ?? '',
     tagline: rec.tagline,
     model: rec.model,
     tools: rec.tools,
@@ -122,7 +128,6 @@ function personaToInput(p: Persona): PersonaUpsertInput {
     name: p.name,
     description: p.desc,
     avatar: p.avatar,
-    color: p.color,
     tagline: p.tagline,
     model: p.model,
     tools: p.tools,
@@ -377,7 +382,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
           name: '新角色',
           description: '',
           // avatar 留空 → 由新 id 确定性生成头像；用户可在编辑器改。
-          color: '#7c7cf0',
           tagline: '',
           model: '',
           tools: [],
@@ -398,6 +402,20 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       const p = personaRecToPersona(rec)
       setPersonas((list) => (list.some((x) => x.id === p.id) ? list.map((x) => (x.id === p.id ? p : x)) : [...list, p]))
       return p
+    }
+
+    // 自定义头像：空串走 clear（删图回落生成头像），否则写图。两路都把结果回灌本地列表。
+    const setPersonaAvatarImage = async (id: string, dataUri: string): Promise<string> => {
+      if (!id) return ''
+      let next = ''
+      try {
+        if (dataUri) next = (await window.deva?.personas?.setAvatarImage(id, dataUri)) ?? ''
+        else await window.deva?.personas?.clearAvatarImage(id)
+      } catch {
+        return ''
+      }
+      setPersonas((list) => list.map((p) => (p.id === id ? { ...p, avatarImage: next } : p)))
+      return next
     }
 
     // 手动排序：乐观按传入 id 顺序重排本地列表（未列出的角色兜底追加末尾，防丢失），并落盘。
@@ -477,6 +495,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       },
       upsertPersona,
       reorderPersonas,
+      setPersonaAvatarImage,
       importSkill,
       mcpConnect: (id) => void window.deva?.mcp?.connect(id).catch(() => {}),
       mcpDisconnect: (id) => void window.deva?.mcp?.disconnect(id).catch(() => {}),

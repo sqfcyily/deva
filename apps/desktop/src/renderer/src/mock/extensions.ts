@@ -77,7 +77,7 @@ export interface McpServer {
 }
 
 /**
- * Agent 提示词（Persona）：对话优先外壳里的**完整身份**——name/头像/主题色/专长/开场白/
+ * Agent 提示词（Persona）：对话优先外壳里的**完整身份**——name/头像/专长/开场白/
  * 偏好模型/工具白名单/提示词。旧壳仅用 name+prompt（叠加注入），新增字段可选、缺省安全。
  */
 export interface Persona {
@@ -86,8 +86,11 @@ export interface Persona {
   desc: string
   /** 头像 spec（Humation AvatarSpec 的 JSON 字符串；空 → 由 id 确定性生成。见 components/humation）。 */
   avatar: string
-  /** 身份主题色（头像描边 / 名字色）。 */
-  color: string
+  /**
+   * 用户上传的自定义头像（data URI；空串 = 无，回落 avatar 生成头像）。**只读**：由主进程按磁盘上
+   * 是否存在图片文件派生，不随 upsert 写回——改图走 store 的 setPersonaAvatarImage / clear。
+   */
+  avatarImage: string
   /** 开场白 / 口头禅。 */
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */

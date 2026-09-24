@@ -149,7 +149,6 @@ export function TaskPersonaSelect({
         title={t('tasks.fPersona')}
         onClick={() => setOpen((v) => !v)}
       >
-        {selected && <span className="chip__dot" style={{ background: selected.color }} />}
         <span className="chip__label">{selected ? selected.name : t('tasks.personaNone')}</span>
         <ChevronDown size={13} className="chip__caret" />
       </button>
@@ -172,7 +171,6 @@ export function TaskPersonaSelect({
                     setOpen(false)
                   }}
                 >
-                  <span className="model-pick__dot" style={{ background: p.color }} />
                   <span className="model-pick__name">{p.name}</span>
                   {active && <Check size={14} className="model-pick__check" />}
                 </button>

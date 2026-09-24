@@ -27,7 +27,6 @@ const DEVA = {
     name: 'Deva',
     avatar: "{\"selections\":{\"head\":\"hm1-p-000006\",\"body\":\"hm1-p-000032\",\"bottom\":\"hm1-p-000033\",\"item\":\"hm1-p-000068\",\"glasses\":\"hm1-p-000056\"},\"colors\":{\"stroke\":\"000000\",\"hair\":\"6B4226\",\"skin\":\"FFE0BD\",\"clothes\":\"FFD23F\",\"bottom\":\"000000\"},\"background\":\"F6F5F4\"}",
     description: '全能型工作助手，善用各类工具解决实际问题，亦能从专业角度答疑解惑。',
-    color: '#7c7cf0',
     tagline: '有什么我能帮上忙的？',
     enabled: true,
     prompt: PROMPT

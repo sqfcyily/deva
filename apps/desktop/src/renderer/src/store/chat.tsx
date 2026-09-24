@@ -55,7 +55,6 @@ export interface SubagentChild {
 export interface AgentDraft {
   name: string
   desc: string
-  color: string
   model: string
   prompt: string
 }
@@ -130,11 +129,13 @@ export type ChatBlock =
       /**
        * 计划审阅卡：exit_plan 提交的待批准计划。undecided（decided 缺省）可点「批准并执行/继续完善」；
        * decided 为终态、只读展示。批准（approve）即让主进程循环继续，按计划执行。
+       * cancelled = 这次审阅已随回合结束（用户中断 / 重开对话回填）：主进程那把待决键已经解开，
+       * 再点也无人接应，故不画按钮——否则留下的是一张点了没反应的「僵尸卡」。
        */
       kind: 'plan'
       key: string
       plan: string
-      decided?: 'approve' | 'keep'
+      decided?: 'approve' | 'keep' | 'cancelled'
     }
   | {
       /**
@@ -160,6 +161,12 @@ export type ChatBlock =
   | {
       kind: 'notice'
       code: 'truncated' | 'empty' | 'refused' | 'compacted' | 'compact_none' | 'compact_failed'
+      /**
+       * 失败原因原文（仅 compact_failed，且只活在本次运行的渲染态）。
+       * 压缩失败的成因差别极大——密钥失效、连接中断、模型没吐正文——一律折成同一句
+       * 「压缩失败」，用户就无从下手。故把主进程带回的原文一并显示。
+       */
+      detail?: string
     }
 
 export interface ChatMessage {
@@ -226,7 +233,7 @@ type DisplayBlock =
       taskId?: string
     }
   | { kind: 'ask'; id: string; questions: AskQuestion[]; answers?: string[] | null }
-  | { kind: 'plan'; id: string; plan: string; decision?: 'approve' | 'keep' | null }
+  | { kind: 'plan'; id: string; plan: string; decision: 'approve' | 'keep' | 'cancelled' }
 type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: AttachKind }[] }
   | { role: 'assistant'; blocks: DisplayBlock[] }
@@ -382,10 +389,9 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
       // key 用 toolUseId：稳定唯一，供极少数交互态复用（已答卡不使用 key）。
       if (b.kind === 'ask')
         return { kind: 'ask', key: b.id, questions: b.questions, answers: b.answers === null ? [] : b.answers }
-      // 历史回填：exit_plan 计划卡。decision=approve/keep 复原为已决态（只读展示）；
-      // null（中止未决）与 undefined（罕见未决）皆复原为可交互，其 respondPlan 对已结束的轮为无操作。
-      if (b.kind === 'plan')
-        return { kind: 'plan', key: b.id, plan: b.plan, decided: b.decision ?? undefined }
+      // 历史回填：exit_plan 计划卡。主进程已把 decision 归一为终态（approve/keep/cancelled），此处原样
+      // 复原为只读展示——历史里的计划卡必定属于已结束的回合，画出按钮只会是点不动的摆设。
+      if (b.kind === 'plan') return { kind: 'plan', key: b.id, plan: b.plan, decided: b.decision }
       const status: ToolStatus = b.status === 'error' ? 'error' : 'ok'
       // 历史回填：run_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children 为空、仅存结论）。
       if (b.name === 'run_subagent') {
@@ -432,7 +438,6 @@ function normalizeAgentDraft(input: unknown): AgentDraft {
   return {
     name: str(a.name).trim(),
     desc: str(a.description).trim(),
-    color: str(a.color).trim() || '#4f8cff',
     model: '',
     prompt: str(a.prompt)
   }
@@ -580,7 +585,7 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
           : ev.status === 'none'
             ? 'compact_none'
             : 'compact_failed'
-      next.push({ kind: 'notice', code })
+      next.push({ kind: 'notice', code, detail: ev.status === 'failed' ? ev.message : undefined })
       return next
     }
     default:
@@ -651,6 +656,41 @@ function updateLastAssistant(
   const copy = list.slice()
   copy[copy.length - 1] = { ...last, blocks: nextBlocks }
   return copy
+}
+
+/**
+ * 回合终结（done）时收敛仍未决的交互卡：计划审阅 / 询问 / 挂载请求。
+ * 这三张卡的按钮背后都是主进程里的一把待决键；回合一旦结束（正常收尾、出错，尤其是用户中断——
+ * chat:abort 会把它们一律按「取消」解开），键已被删除，再点只会拿到 {ok:false}，可卡片看上去仍
+ * 可点——这正是「点批准没有任何反应」的由来。故在此一并落终态，让 UI 与主进程的真实状态对齐。
+ * 卡片可能落在非末条助手消息里（其后还有 tool_result 与收尾文本），故遍历全部助手消息。
+ */
+function settleOpenCards(list: ChatMessage[]): ChatMessage[] {
+  let changed = false
+  const next = list.map((m) => {
+    if (m.role !== 'assistant') return m
+    let touched = false
+    const blocks = m.blocks.map((b) => {
+      if (b.kind === 'plan' && !b.decided) {
+        touched = true
+        return { ...b, decided: 'cancelled' as const }
+      }
+      // 问答卡的终态是「已答」——空数组即逐题回落「未作答」，与主进程按取消回灌的语义一致。
+      if (b.kind === 'ask' && !b.answers) {
+        touched = true
+        return { ...b, answers: [] }
+      }
+      if (b.kind === 'mount' && !b.decided) {
+        touched = true
+        return { ...b, decided: 'skipped' as const }
+      }
+      return b
+    })
+    if (!touched) return m
+    changed = true
+    return { ...m, blocks }
+  })
+  return changed ? next : list
 }
 
 /**
@@ -904,8 +944,11 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
             streaming: false,
             turnId: null,
             reconnecting: null,
-            // 据终止原因补「中断说明」：截断/空回合给出可见提示，正常回合原样短路。
-            messages: updateLastAssistant(r.messages, (b) => appendTerminalNotice(b, ev.stopReason))
+            // 先收敛仍未决的交互卡（用户中断时最常见），再据终止原因补「中断说明」：
+            // 截断/空回合给出可见提示，正常回合原样短路。
+            messages: updateLastAssistant(settleOpenCards(r.messages), (b) =>
+              appendTerminalNotice(b, ev.stopReason)
+            )
           }))
         } else {
           // 后台回合完成：主进程已落盘。绝不留下 messages:[] 的空壳 runtime 遮蔽已落盘内容
@@ -1283,11 +1326,22 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     const respondPlan = (key: string, decision: 'approve' | 'keep'): void => {
-      void window.deva.chat.respondPlan({ key, decision })
+      const sid = sessionIdRef.current
       // 计划卡属当前所视会话 → 就地收敛为已决态。
-      patchCardBlocks(sessionIdRef.current, (blocks) =>
+      patchCardBlocks(sid, (blocks) =>
         blocks.map((b) => (b.kind === 'plan' && b.key === key ? { ...b, decided: decision } : b))
       )
+      // 主进程回 {ok:false} = 这把待决键已经没人接了（回合早已结束）→ 把卡片改记为「已取消」，
+      // 而不是留一个看起来生效、实则什么都没发生的「已批准」。
+      void (async () => {
+        const r = await window.deva.chat.respondPlan({ key, decision })
+        if (r?.ok) return
+        patchCardBlocks(sid, (blocks) =>
+          blocks.map((b) =>
+            b.kind === 'plan' && b.key === key ? { ...b, decided: 'cancelled' as const } : b
+          )
+        )
+      })()
     }
 
     const respondMount = (key: string, path: string | null): void => {

@@ -98,7 +98,6 @@ export interface ChatSessionMeta {
 export interface AgentDraft {
   name: string
   desc: string
-  color: string
   model: string
   prompt: string
 }
@@ -136,9 +135,9 @@ export type DisplayBlock =
   | { kind: 'ask'; id: string; questions: AskQuestion[]; answers?: string[] | null }
   /**
    * exit_plan 计划卡（重建）：计划正文从 tool_use 入参（input.plan）还原，decision 由主进程 plans 边车还原。
-   * decision 有值（approve/keep）= 已决（只读展示）；null = 中止未决；undefined = 从未决（罕见）。
+   * 恒为终态：'approve'/'keep' = 用户的决定；'cancelled' = 中止 / 未决。重建卡一律只读、不再可点。
    */
-  | { kind: 'plan'; id: string; plan: string; decision?: 'approve' | 'keep' | null }
+  | { kind: 'plan'; id: string; plan: string; decision: 'approve' | 'keep' | 'cancelled' }
 
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
@@ -206,8 +205,11 @@ export interface PersonaRecord {
   description: string
   /** 头像 spec（Humation AvatarSpec 的 JSON 字符串；空 → 由 id 确定性生成）。 */
   avatar: string
-  /** 身份主题色（头像描边 / 名字色）。 */
-  color: string
+  /**
+   * 自定义头像图片（data URI；空串 = 无，回落生成头像）。**只读派生字段**：真源是主进程磁盘上的
+   * 图片文件，不入 upsert 入参——改图走 setAvatarImage / clearAvatarImage。
+   */
+  avatarImage: string
   /** 开场白 / 口头禅。 */
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
@@ -225,7 +227,6 @@ export interface PersonaUpsertInput {
   name: string
   description?: string
   avatar?: string
-  color?: string
   tagline?: string
   model?: string
   tools?: string[]
@@ -600,7 +601,16 @@ const api = {
       ipcRenderer.invoke('personas:set-enabled', id, enabled),
     /** 覆盖手动排序：整表按传入 id 顺序落盘（花名册拖拽 / 置顶）。 */
     reorder: (ids: string[]): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('personas:reorder', ids)
+      ipcRenderer.invoke('personas:reorder', ids),
+    /**
+     * 写入自定义头像（data URI，png/jpeg/webp）。返回落盘后读回的 data URI；参数非法 / 写失败返回空串。
+     * 同一 id 重复上传即覆盖。新建角色须**先 upsert 拿到 id** 再调用。
+     */
+    setAvatarImage: (id: string, dataUri: string): Promise<string> =>
+      ipcRenderer.invoke('personas:set-avatar-image', id, dataUri),
+    /** 清除自定义头像（回落 Humation 生成头像）。 */
+    clearAvatarImage: (id: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('personas:clear-avatar-image', id)
   },
   /**
    * MCP 服务（全局 ~/.deva/mcp.json）：列出 / 读取 / 增改删 / 启停 / 连接管理 / 密钥。
