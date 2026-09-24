@@ -178,6 +178,12 @@ const TOC_ACTIVE_OFFSET = 48
 const TOC_JUMP_PAD = 16
 /** 索引项保留的文本长度上限（DOM 体积护栏）；列表里的视觉截断交给 CSS line-clamp。 */
 const TOC_TEXT_MAX = 200
+/**
+ * 面板一屏最多显示的索引条数，多出的在列表内部滚动（条数本身不设上限）。
+ * 不做成「条数 × 固定行高」的估算：索引项 1~2 行不定高，收起态只剩刻度更矮，
+ * 必须实测第 N 条的底边才不会多显或少显一条。
+ */
+const TOC_VISIBLE_MAX = 10
 
 /** 系统默认角色 id（首启种子「Deva」，id 恒为 general）：兼作兜底身份，且不允许删除。 */
 const DEFAULT_PERSONA_ID = 'general'
@@ -2776,6 +2782,38 @@ function TurnIndex({
   const { t } = useI18n()
   const [hovering, setHovering] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
+  // 收起态被悬停时临时展开；常驻态恒展开。展开与否决定索引项高度（收起态无文字），
+  // 故须在高度实测之前就定下来。
+  const open = !collapsed || hovering
+
+  // 一屏只放 TOC_VISIBLE_MAX 条：实测第 N 条底边定上限，其余靠列表自身滚动。
+  // 用 layout 副作用（而非 effect）避免先铺满再收窄的一帧抖动。
+  const [maxH, setMaxH] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const list = listRef.current
+    if (!list) return
+    const nodes = list.querySelectorAll<HTMLElement>('.cf-toc__item')
+    if (nodes.length <= TOC_VISIBLE_MAX) {
+      setMaxH((p) => (p === null ? p : null))
+      return
+    }
+    const measure = (): void => {
+      // 取 rect 之差而非 offsetTop：列表已滚动时两者一起位移，差值仍是布局距离。
+      const cs = getComputedStyle(list)
+      const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+      const top = nodes[0].getBoundingClientRect().top
+      const bottom = nodes[TOC_VISIBLE_MAX - 1].getBoundingClientRect().bottom
+      const h = Math.round(bottom - top + pad)
+      setMaxH((p) => (p === h ? p : h))
+    }
+    measure()
+    // 盯住首条而非列表自身：收起↔展开时列表宽度有 0.14s 过渡，只测一次会量到过渡中途
+    // 的行高（窄宽度下文字多折一行），面板就会稳定地多显几条。观察条目宽度不会因为
+    // 上限生效而变化，故不存在测量回环（观察列表则可能自激）。
+    const ro = new ResizeObserver(measure)
+    ro.observe(nodes[0])
+    return () => ro.disconnect()
+  }, [items, open])
 
   // 轮次多到列表内部要滚动时，保证高亮项始终可见。
   useEffect(() => {
@@ -2783,8 +2821,8 @@ function TurnIndex({
     el?.scrollIntoView({ block: 'nearest' })
   }, [active])
 
-  // 滚轮：轮次多到列表自己能滚时先给列表，滚到头再转发给消息流，
-  // 免得鼠标停在面板上时整个界面纹丝不动。deltaMode 非像素时换算成像素。
+  // 滚轮：轮次多到列表自己能滚时先给列表。面板不在 .cf-msgs 内，浏览器不会把滚动
+  // 链到对话上，所以「滚到头之后还滚不滚对话」完全由这里决定。
   const onWheel = (e: React.WheelEvent<HTMLDivElement>): void => {
     const list = listRef.current
     if (!list) return
@@ -2793,12 +2831,14 @@ function TurnIndex({
       room > 1 &&
       (e.deltaY < 0 ? list.scrollTop > 0 : list.scrollTop < room - 1)
     if (canSelf) return
+    // 收起态（浮层盖在正文之上）：滚到头就停住，绝不转发——看索引时正文在底下跟着
+    // 乱跑，既晃眼又会把高亮一路带走。常驻态面板待在右侧留白里、不遮挡正文，仍转发，
+    // 保持「鼠标搁哪儿都能滚页面」的直觉，也免得停在面板上时整个界面纹丝不动。
+    if (collapsed) return
     const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? list.clientHeight : 1
     onWheelOut(e.deltaY * unit)
   }
 
-  // 收起态被悬停时临时展开；常驻态恒展开。
-  const open = !collapsed || hovering
   return (
     <nav
       className={`cf-toc${collapsed ? ' is-collapsed' : ''}${open ? ' is-open' : ''}`}
@@ -2808,7 +2848,13 @@ function TurnIndex({
         setHovering(false)
       }}
     >
-      <div className="cf-toc__list" ref={listRef} onWheel={onWheel}>
+      <div
+        className="cf-toc__list"
+        ref={listRef}
+        onWheel={onWheel}
+        // 与 CSS 的 max-height:100% 取较小值：窗口矮于 10 条时以消息区高度为准。
+        style={maxH === null ? undefined : { maxHeight: `min(${maxH}px, 100%)` }}
+      >
         {items.map((it) => (
           <button
             key={it.turn}
