@@ -508,6 +508,12 @@ const zhCN: MessageTree = {
     mountHint: '挂载一个文件夹，让当前对话聚焦其中',
     unmountHint: '卸载文件夹，回到全机通用助手',
     mountWorkspace: '挂载工作区',
+    // 输入框「/ 指令」联想（技能项的说明取自各自 SKILL.md，不在此处）
+    slash: {
+      title: '指令',
+      compact: '压缩当前对话上下文，较早内容折叠为摘要',
+      hint: '↑↓ 选择 · Enter 采用 · Esc 关闭'
+    },
     git: {
       menuHint: 'Git 操作',
       detached: '游离 HEAD',
@@ -1132,6 +1138,11 @@ const en: MessageTree = {
     mountHint: 'Mount a folder to focus this conversation inside it',
     unmountHint: 'Unmount the folder and return to the whole-machine assistant',
     mountWorkspace: 'Mount workspace',
+    slash: {
+      title: 'Commands',
+      compact: 'Compact this conversation — fold earlier turns into a summary',
+      hint: '↑↓ navigate · Enter accept · Esc dismiss'
+    },
     git: {
       menuHint: 'Git actions',
       detached: 'detached HEAD',

@@ -1122,9 +1122,76 @@
   color: var(--fg);
 }
 .cf-composer__inner {
+  position: relative; /* 「/ 指令」联想面板的定位锚 */
   width: 100%;
   max-width: var(--cf-main);
   margin: 0 auto;
+}
+/* 「/ 指令」联想：浮在输入盒正上方、与其同宽；仅在输入直接以 / 开头且尚未带参数时出现。 */
+.cf-slash {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin-bottom: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.cf-slash__list {
+  max-height: 264px;
+  overflow-y: auto;
+  padding: var(--space-1);
+}
+.cf-slash__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  font-size: 13px;
+  cursor: pointer;
+}
+.cf-slash__item svg {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+}
+/* 键盘高亮与鼠标悬停同一态（悬停即把高亮移过去），故只有 .is-on 一种选中外观。 */
+.cf-slash__item.is-on {
+  background: var(--bg-hover);
+}
+.cf-slash__item.is-on svg {
+  color: var(--accent);
+}
+.cf-slash__name {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.cf-slash__desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.cf-slash__hint {
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-inset);
+  font-size: 11px;
+  color: var(--fg-subtle);
 }
 .cf-box {
   border: 1px solid var(--border-strong);

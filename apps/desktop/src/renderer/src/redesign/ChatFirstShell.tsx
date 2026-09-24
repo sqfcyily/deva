@@ -38,6 +38,7 @@ import {
   RotateCcw,
   Search,
   ShieldCheck,
+  Shrink,
   Sparkles,
   Square,
   Trash2,
@@ -2991,6 +2992,26 @@ function ConvMessage({
   )
 }
 
+/**
+ * 输入框「/ 指令」联想的一个候选项。
+ * `command` = 渲染层自有指令（目前仅 /compact，见 store/chat 的手动压缩分支）；
+ * `skill` = 已启用技能，由主进程按 `/name` 匹配并把 SKILL.md 正文预置进本轮消息。
+ */
+interface SlashCommand {
+  name: string
+  desc: string
+  kind: 'command' | 'skill'
+}
+
+/**
+ * 取「/ 指令」联想的查询词：仅当输入**直接以 / 开头**且其后尚无空白（仍在敲指令名本身）时生效。
+ * 返回 '' 表示刚敲下 `/`（列全部）；返回 null 表示不该联想（正文中间的 /、已带参数的指令、多行输入）。
+ */
+function slashQueryOf(input: string): string | null {
+  const m = /^\/([A-Za-z0-9_-]*)$/.exec(input)
+  return m ? m[1] : null
+}
+
 function Composer({
   owner,
   streaming,
@@ -3015,9 +3036,17 @@ function Composer({
   onPrefillConsumed: () => void
 }): React.JSX.Element {
   const { t, locale } = useI18n()
+  const { skills } = useExtensions()
   const [input, setInput] = useState('')
   const [pending, setPending] = useState<Picked[]>([])
   const taRef = useRef<HTMLTextAreaElement>(null)
+  /** 「/ 指令」联想：当前高亮项下标（随查询词变化复位）。 */
+  const [slashSel, setSlashSel] = useState(0)
+  /** Esc 收起联想；任何一次输入改动都会复位，重新键入即可再唤出。 */
+  const [slashOff, setSlashOff] = useState(false)
+  /** 输入框是否持有焦点：失焦即收起联想（采纳项走 mousedown+preventDefault，不会触发失焦）。 */
+  const [focused, setFocused] = useState(false)
+  const slashRef = useRef<HTMLDivElement>(null)
 
   // 预填（不发送）：把父层注入的文本写进输入框，聚焦并将光标移到末尾，交由用户自己发送。
   // nonce 变化触发一次；消费后立即回调置空（父层 prefill→null），guard 防重入与重挂载复活。
@@ -3036,6 +3065,63 @@ function Composer({
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill?.nonce])
+
+  // 指令表：渲染层自有的 /compact 置顶，其后是已启用技能（停用技能主进程也不认，故一并滤掉）。
+  // 同名技能会被 /compact 遮蔽（渲染层先拦截），按小写名去重、保留先者，不给出点了没反应的候选。
+  const slashCommands = useMemo<SlashCommand[]>(() => {
+    const out: SlashCommand[] = [{ name: 'compact', desc: t('cf.slash.compact'), kind: 'command' }]
+    const seen = new Set(out.map((c) => c.name.toLowerCase()))
+    for (const s of skills) {
+      if (!s.enabled) continue
+      const key = s.name.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push({ name: s.name, desc: s.desc, kind: 'skill' })
+    }
+    return out
+  }, [skills, t])
+
+  const slashQuery = slashQueryOf(input)
+  // 排序：前缀命中优先于子串命中，组内保持原序（/compact 在前，技能按扩展页顺序）。
+  const slashMatches = useMemo<SlashCommand[]>(() => {
+    if (slashQuery === null) return []
+    const q = slashQuery.toLowerCase()
+    if (!q) return slashCommands
+    const head: SlashCommand[] = []
+    const tail: SlashCommand[] = []
+    for (const c of slashCommands) {
+      const n = c.name.toLowerCase()
+      if (n.startsWith(q)) head.push(c)
+      else if (n.includes(q)) tail.push(c)
+    }
+    return [...head, ...tail]
+  }, [slashCommands, slashQuery])
+  const slashOpen = focused && slashQuery !== null && slashMatches.length > 0 && !slashOff
+  // 高亮下标就地夹紧：命中集随输入收缩时，无需等 effect 落地即为合法值。
+  const slashCur = slashOpen ? Math.min(slashSel, slashMatches.length - 1) : -1
+
+  // 查询词一变就回到第一项（最贴合用户刚敲的那几个字母）。
+  useEffect(() => {
+    setSlashSel(0)
+  }, [slashQuery])
+
+  // 键盘上下移动时把高亮项滚进可视区（列表超高时才有实际位移）。
+  useEffect(() => {
+    if (!slashOpen) return
+    slashRef.current?.querySelector('[data-on="1"]')?.scrollIntoView({ block: 'nearest' })
+  }, [slashCur, slashOpen])
+
+  /** 采纳候选：写回 `/name `（尾随空格便于接着补充说明，发送前会被 trim），光标留在末尾。 */
+  const applySlash = (c: SlashCommand): void => {
+    const next = `/${c.name} `
+    setInput(next)
+    requestAnimationFrame(() => {
+      const el = taRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(next.length, next.length)
+    })
+  }
 
   const name = owner?.name ?? t('cf.assistant')
   const placeholder = locale === 'en' ? `Message ${name}…` : `跟 ${name} 说点什么…`
@@ -3080,14 +3166,40 @@ function Composer({
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
-    if (e.shiftKey || e.ctrlKey || e.altKey) return // 交给默认换行
+    if (e.nativeEvent.isComposing) return // 输入法组字中：按键一律交给 IME
+    const plain = !e.shiftKey && !e.ctrlKey && !e.altKey
+    // 「/ 指令」联想打开时这几个键先归联想；其余（含 Shift+Enter 换行）照旧落到输入框。
+    if (slashOpen) {
+      if (plain && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault()
+        const d = e.key === 'ArrowDown' ? 1 : -1
+        setSlashSel((i) => {
+          const n = slashMatches.length
+          return (Math.min(i, n - 1) + d + n) % n
+        })
+        return
+      }
+      if (e.key === 'Tab' || (plain && e.key === 'Enter')) {
+        e.preventDefault()
+        const pick = slashMatches[slashCur]
+        if (pick) applySlash(pick)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSlashOff(true)
+        return
+      }
+    }
+    if (e.key !== 'Enter') return
+    if (!plain) return // 交给默认换行
     e.preventDefault()
     submit()
   }
 
   const autoGrow = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
     setInput(e.target.value)
+    setSlashOff(false) // 又动了输入：Esc 收起的联想重新可唤出
     const el = e.target
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`
@@ -3108,6 +3220,37 @@ function Composer({
         </button>
       )}
       <div className="cf-composer__inner">
+        {slashOpen && (
+          <div className="cf-slash" ref={slashRef}>
+            <div className="cf-slash__list" role="listbox" aria-label={t('cf.slash.title')}>
+              {slashMatches.map((c, i) => {
+                const on = i === slashCur
+                return (
+                  <button
+                    key={`${c.kind}:${c.name}`}
+                    type="button"
+                    role="option"
+                    aria-selected={on}
+                    data-on={on ? '1' : undefined}
+                    className={`cf-slash__item${on ? ' is-on' : ''}`}
+                    title={c.desc}
+                    // 鼠标按下即采纳：抢在 blur 之前，输入框不失焦、光标不丢。
+                    onMouseDown={(e) => {
+                      e.preventDefault()
+                      applySlash(c)
+                    }}
+                    onMouseEnter={() => setSlashSel(i)}
+                  >
+                    {c.kind === 'command' ? <Shrink size={14} /> : <Puzzle size={14} />}
+                    <span className="cf-slash__name">{`/${c.name}`}</span>
+                    <span className="cf-slash__desc">{c.desc}</span>
+                  </button>
+                )
+              })}
+            </div>
+            <div className="cf-slash__hint">{t('cf.slash.hint')}</div>
+          </div>
+        )}
         <div className="cf-box">
           {pending.length > 0 && (
             <div className="cf-composer__files">
@@ -3136,6 +3279,8 @@ function Composer({
             placeholder={placeholder}
             onChange={autoGrow}
             onKeyDown={onKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
           />
           <div className="cf-box__bar">
             <button
