@@ -66,7 +66,7 @@ export function getConfig(): Record<string, unknown> {
 
 /**
  * 主进程内写配置（顶层浅合并，值为 undefined 时删除该键），并落盘。
- * 供 skills.ts / agents.ts 等服务在进程内维护启用态（config.json 内的 skills/agents 段），
+ * 供 skills.ts / personas.ts 等服务在进程内维护启用态（config.json 内的 skills/personas 段），
  * 与渲染层的 `config:set` IPC 走同一份内存态 + 持久化路径。
  */
 export function setConfig(patch: Record<string, unknown>): void {

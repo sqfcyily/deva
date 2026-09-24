@@ -59,7 +59,20 @@ export interface ToolSpec {
   inputSchema: Record<string, unknown>
 }
 
-export type StopReason = 'end_turn' | 'tool_use' | 'max_tokens' | 'stop' | 'aborted' | 'error'
+/**
+ * 归一化的终止原因。
+ * 'refusal' = 模型拒绝作答、或被服务端内容策略拦截（OpenAI finish_reason 'content_filter' /
+ * Anthropic stop_reason 'refusal'）。**必须与 end_turn 区分**：这类回合同样「自然结束且无正文」，
+ * 混作 end_turn 会让空回合被一律归咎于「上下文接近上限」，给出完全错误的排查方向。
+ */
+export type StopReason =
+  | 'end_turn'
+  | 'tool_use'
+  | 'max_tokens'
+  | 'stop'
+  | 'refusal'
+  | 'aborted'
+  | 'error'
 
 export interface GenerateRequest {
   model: string
@@ -69,6 +82,13 @@ export interface GenerateRequest {
   maxTokens?: number
   temperature?: number
   signal?: AbortSignal
+  /**
+   * 是否给本次请求打**提示缓存断点**。目前只有 Anthropic 协议支持显式断点；
+   * OpenAI / DeepSeek 是服务端自动前缀缓存，无需请求参数，此开关对其无作用也无副作用。
+   * **只有「带着同一前缀反复重发」的场景才该开**：Agent 循环每步都重发全量历史，正是典型；
+   * 一次性调用（压缩摘要、生成提交信息）打了断点只会白付 1.25 倍缓存写入费，故默认关闭。
+   */
+  cache?: boolean
 }
 
 export type ErrorKind =
@@ -92,7 +112,13 @@ export type StreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; args: unknown }
-  | { type: 'usage'; input: number; output: number }
+  /**
+   * 用量。input = 本次请求的**总提示 token**（已含缓存命中/写入部分）。
+   * 注意 Anthropic 协议的 input_tokens 只是「未命中缓存的余量」，适配器已在此把三段相加归一，
+   * 保证跨服务商语义一致——上下文压缩的触发判定依赖它，不会因日后开启提示缓存而失真。
+   * cacheRead / cacheWrite = 提示缓存的命中 / 写入 token 数；缺省表示该服务商未报告该项。
+   */
+  | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   | { type: 'error'; error: NormalizedError }
   | { type: 'done'; stopReason: StopReason }
 

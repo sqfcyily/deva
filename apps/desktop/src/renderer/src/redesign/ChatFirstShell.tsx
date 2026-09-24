@@ -213,7 +213,8 @@ export function ChatFirstShell(): React.JSX.Element {
     draftSession,
     mountFocus,
     respondAsk,
-    respondPlan
+    respondPlan,
+    respondMount
   } = useChat()
   const { personas, remove, reorderPersonas } = useExtensions()
   const { t, locale } = useI18n()
@@ -463,6 +464,7 @@ export function ChatFirstShell(): React.JSX.Element {
                 onMount={mountFocus}
                 onAsk={respondAsk}
                 onPlan={respondPlan}
+                onMountReq={respondMount}
                 onOpenProposal={openProposal}
                 onOpenAutotask={openAutotask}
                 onDeleteTurns={deleteTurnsWithConfirm}
@@ -2272,6 +2274,7 @@ function Conversation({
   onMount,
   onAsk,
   onPlan,
+  onMountReq,
   onOpenProposal,
   onOpenAutotask,
   onDeleteTurns,
@@ -2290,6 +2293,8 @@ function Conversation({
   onMount: (path: string | null) => void
   onAsk: (key: string, answers: string[]) => void
   onPlan: (key: string, decision: 'approve' | 'keep') => void
+  /** 回应「请求挂载工作区」（path=用户选定目录 / null=暂不挂载）。 */
+  onMountReq: (key: string, path: string | null) => void
   onOpenProposal: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
   /** created 态定时任务名片「打开任务会话」。 */
   onOpenAutotask: (taskId: string) => void
@@ -2432,6 +2437,7 @@ function Conversation({
       dataTurn={turn}
       onAsk={onAsk}
       onPlan={onPlan}
+      onMountReq={onMountReq}
       onOpenProposal={onOpenProposal}
       onOpenAutotask={onOpenAutotask}
     />
@@ -2637,6 +2643,7 @@ function ConvMessage({
   dataTurn,
   onAsk,
   onPlan,
+  onMountReq,
   onOpenProposal,
   onOpenAutotask
 }: {
@@ -2647,6 +2654,7 @@ function ConvMessage({
   dataTurn?: number
   onAsk: (key: string, answers: string[]) => void
   onPlan: (key: string, decision: 'approve' | 'keep') => void
+  onMountReq: (key: string, path: string | null) => void
   onOpenProposal: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
   onOpenAutotask: (taskId: string) => void
 }): React.JSX.Element {
@@ -2692,6 +2700,7 @@ function ConvMessage({
               thinkingDone={!(active && i === msg.blocks.length - 1)}
               onAsk={onAsk}
               onPlan={onPlan}
+              onMountReq={onMountReq}
               onOpenProposal={onOpenProposal}
               onOpenAutotask={onOpenAutotask}
             />
@@ -3552,16 +3561,17 @@ function GeneralPane(): React.JSX.Element {
 
 function ExtensionsPane(): React.JSX.Element {
   const { t } = useI18n()
-  // 角色（persona）不在此列出：它有专属的「角色」tab 与资料卡来管理，扩展页只管技能/MCP/子智能体。
-  const { skills, mcp, subagents, toggle, refresh } = useExtensions()
+  // 角色（persona）不在此列出：它有专属的「角色」tab 与资料卡来管理，扩展页只管技能 / MCP。
+  // 子智能体亦不在此列：它是内置能力（通用 / Explore / Plan），不可配置，见 main/services/subagents.ts。
+  const { skills, mcp, toggle, refresh } = useExtensions()
   // 进入扩展页即从磁盘重拉最新：技能可能经对话 create_skill、上传或直接改盘在别处新增，Provider 仅在
   // 应用启动时载入一次，故此处显式刷新，避免必须重启才能看到新技能。refresh 标识稳定，不会形成刷新循环。
   useEffect(() => {
     refresh()
   }, [refresh])
 
-  // 钻取导航：选中某个 MCP 服务 → 进入详情编辑（对齐模型设置页的主从抽屉）。技能只读、子智能体暂不在此编辑，
-  // 故只有 MCP 行可点开。MCP 的新增经对话工具 / 直接改盘 ~/.deva/mcp.json，扩展页不放新增入口。
+  // 钻取导航：选中某个 MCP 服务 → 进入详情编辑（对齐模型设置页的主从抽屉）。技能只读，故只有 MCP 行
+  // 可点开。MCP 的新增经对话工具 / 直接改盘 ~/.deva/mcp.json，扩展页不放新增入口。
   const [openMcpId, setOpenMcpId] = useState<string | null>(null)
   const openMcp = openMcpId ? mcp.find((m) => m.id === openMcpId) : undefined
 
@@ -3570,7 +3580,7 @@ function ExtensionsPane(): React.JSX.Element {
   }
 
   type Item = {
-    kind: 'skill' | 'mcp' | 'subagent'
+    kind: 'skill' | 'mcp'
     id: string
     name: string
     enabled: boolean
@@ -3598,15 +3608,6 @@ function ExtensionsPane(): React.JSX.Element {
         enabled: m.enabled,
         badge: t('cf.kindMcp'),
         note: m.status === 'connected' ? t('cf.mcpConnected') : t('cf.mcpDisconnected')
-      })
-    ),
-    ...subagents.map(
-      (a): Item => ({
-        kind: 'subagent',
-        id: a.id,
-        name: a.name,
-        enabled: a.enabled,
-        badge: t('cf.kindSubagent')
       })
     )
   ]

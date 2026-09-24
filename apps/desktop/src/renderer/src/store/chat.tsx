@@ -136,6 +136,20 @@ export type ChatBlock =
       plan: string
       decided?: 'approve' | 'keep'
     }
+  | {
+      /**
+       * 挂载工作区请求卡：未挂载工作区时，模型某次调用缺「相对路径基准」，主进程闸门暂停循环等用户处置。
+       * undecided（decided 缺省）可点「挂载工作区/暂不挂载」；decided 为终态、只读展示。
+       * **只活在本次运行的渲染态**（不落边车）：重开时那对 tool_use/tool_result 已把来龙去脉讲清楚。
+       */
+      kind: 'mount'
+      key: string
+      tool: string
+      path: string
+      decided?: 'mounted' | 'skipped'
+      /** decided='mounted' 时的已挂载目录，供卡片展示。 */
+      root?: string
+    }
   | { kind: 'error'; message: string }
   /**
    * 回合终止 / 上下文压缩提示（非错误，弱化样式）。
@@ -143,7 +157,10 @@ export type ChatBlock =
    * compacted=较早历史已压缩为摘要；compact_none=无需压缩；compact_failed=压缩失败历史未动。
    * 正文按 code 在渲染层翻译（随语言切换生效，不在 store 里定格文案）。
    */
-  | { kind: 'notice'; code: 'truncated' | 'empty' | 'compacted' | 'compact_none' | 'compact_failed' }
+  | {
+      kind: 'notice'
+      code: 'truncated' | 'empty' | 'refused' | 'compacted' | 'compact_none' | 'compact_failed'
+    }
 
 export interface ChatMessage {
   id: string
@@ -198,7 +215,7 @@ export interface SessionLiveState {
 type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
-  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' }
+  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' | 'refused' }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   | {
@@ -239,7 +256,8 @@ type StreamEvent =
     }
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   | { type: 'plan_review'; key: string; plan: string }
-  | { type: 'usage'; input: number; output: number }
+  | { type: 'mount_request'; key: string; tool: string; path: string }
+  | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   | { type: 'reconnecting'; attempt: number; max: number }
   | { type: 'stream_reset' }
   | { type: 'error'; kind: string; message: string }
@@ -303,6 +321,12 @@ interface ChatContextValue {
    * approve 后主进程循环继续、按计划执行；无渲染层临时态需清除。
    */
   respondPlan: (key: string, decision: 'approve' | 'keep') => void
+  /**
+   * 回应「请求挂载工作区」：path=用户已选目录（调用方须先经 fs.openFolder 受信）、null=暂不挂载。
+   * 挂载成功时**同步更新本对话绑定覆盖层**（等价于 mountFocus）——否则下次 chat:send 会用旧覆盖层
+   * 把主进程刚就地设好的 focusRoot 覆盖回去。就地把该卡收敛为终态。
+   */
+  respondMount: (key: string, path: string | null) => void
   /**
    * 落定角色名片终态（接受/拒绝）：就地把名片状态收敛为终态并持久化（防重开退回 pending / 重复建角色）。
    * 「接受」建角色的写入（personas:upsert）由编辑器直接发起，本方法只管名片状态与终态落库。
@@ -542,6 +566,9 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
     case 'plan_review':
       next.push({ kind: 'plan', key: ev.key, plan: ev.plan })
       return next
+    case 'mount_request':
+      next.push({ kind: 'mount', key: ev.key, tool: ev.tool, path: ev.path })
+      return next
     case 'error':
       next.push({ kind: 'error', message: ev.message })
       return next
@@ -588,6 +615,7 @@ function hasVisibleAnswer(blocks: ChatBlock[]): boolean {
       b.kind === 'tool' ||
       b.kind === 'subagent' ||
       b.kind === 'ask' ||
+      b.kind === 'mount' ||
       b.kind === 'error' ||
       b.kind === 'notice'
   )
@@ -596,12 +624,16 @@ function hasVisibleAnswer(blocks: ChatBlock[]): boolean {
 /**
  * 回合终止时按 stopReason 补一条「中断原因」提示（解决「不显示中断原因」）：
  * - max_tokens：回复达输出长度上限被截断——无论是否已有正文都提示，解释为何戛然而止；
- * - 自然结束（end_turn/stop）却通篇无可见回复：本轮未产生回复（多因上下文接近上限）；
+ * - refusal：模型拒绝作答 / 被服务商内容策略拦截——有拒绝正文就不加提示（正文已自解释），
+ *   通篇为空才补一条「被拒绝」。**绝不并入空回合**：那会把拒绝谎报成上下文问题，误导排查；
+ * - 自然结束（end_turn/stop）却通篇无可见回复：本轮未产生回复（原因不确定，文案不臆断）；
  * - aborted（用户主动停止）不提示；error（已另有红色错误块）也不重复提示。
  * 无需补提示时返回原数组引用（updateLastAssistant 据引用相等短路，不触发无谓重渲染）。
  */
 function appendTerminalNotice(blocks: ChatBlock[], stopReason: string): ChatBlock[] {
   if (stopReason === 'max_tokens') return [...blocks, { kind: 'notice', code: 'truncated' }]
+  if (stopReason === 'refusal')
+    return hasVisibleAnswer(blocks) ? blocks : [...blocks, { kind: 'notice', code: 'refused' }]
   if ((stopReason === 'end_turn' || stopReason === 'stop') && !hasVisibleAnswer(blocks))
     return [...blocks, { kind: 'notice', code: 'empty' }]
   return blocks
@@ -655,7 +687,8 @@ function hasAttention(messages: ChatMessage[]): boolean {
   return last.blocks.some(
     (b) =>
       (b.kind === 'ask' && b.answers === undefined) ||
-      (b.kind === 'plan' && !b.decided)
+      (b.kind === 'plan' && !b.decided) ||
+      (b.kind === 'mount' && !b.decided)
   )
 }
 
@@ -1257,6 +1290,19 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       )
     }
 
+    const respondMount = (key: string, path: string | null): void => {
+      void window.deva.chat.respondMount({ key, path })
+      // 主进程已就地把 session.focusRoot 设为该目录；渲染层覆盖层必须同步，否则下次 send 会覆盖回去。
+      if (path) setBinding(sessionIdRef.current, { focusRoot: path })
+      patchCardBlocks(sessionIdRef.current, (blocks) =>
+        blocks.map((b) =>
+          b.kind === 'mount' && b.key === key
+            ? { ...b, decided: path ? 'mounted' : 'skipped', root: path ?? undefined }
+            : b
+        )
+      )
+    }
+
     const resolveProposal = (toolId: string, status: 'accepted' | 'rejected'): void => {
       const sid = sessionIdRef.current
       // 就地把名片收敛为终态（名片属当前所视会话；惰性名片重开后不在末条助手消息里，故遍历全部）。
@@ -1313,6 +1359,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       setSessionModel,
       respondAsk,
       respondPlan,
+      respondMount,
       resolveProposal,
       resolveAutotask
     }

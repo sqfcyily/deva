@@ -469,12 +469,44 @@ function looksBinary(buf: Buffer): boolean {
 }
 
 /**
+ * 展开开头的 `~`（`~`、`~/x`、Windows 下 `~` 加反斜杠）为用户主目录。
+ * 模型极常写 `~/notes.txt`，而 Node 的 isAbsolute('~/x') 在所有平台都是 false——不展开就会被
+ * 当成相对路径：未挂载时拦成挂载卡，挂载后 join 出 `<root>/~/notes.txt` 这种字面量 `~` 目录
+ * （ENOENT）。展开必须发生在 isAbsolute / isSensitivePath 之前，`~/.ssh/id_rsa` 才会被 Tier-1 硬拒。
+ * 只认不带用户名的形式；`~other/x` 无法可靠解析他人主目录，保持原样按相对路径处理。
+ */
+function expandHome(p: string): string {
+  if (p === '~') return homedir()
+  if (p.startsWith('~/') || p.startsWith('~\\')) return join(homedir(), p.slice(2))
+  return p
+}
+
+/**
+ * 「模型给的 path → 绝对路径」的唯一规则：先展开 `~`，绝对路径用之，否则基于项目根。
+ * 闸门（writeTargetPath）与执行（resolveReadPath / resolveWritePath）必须共用它，否则
+ * 「判定的落点」与「实际落点」会分叉——那是安全判定被绕过的经典缺口。
+ */
+function toAbsPath(root: string | null, p: string): string {
+  const raw = expandHome(p)
+  return isAbsolute(raw) ? resolve(raw) : root ? join(root, raw) : resolve(raw)
+}
+
+/**
  * 读取类路径解析：把 path 解析为绝对路径，仅拒绝 Tier-1 敏感目录（凭据/密钥）。
  * 刻意不校验受信根——读操作可及任意「非敏感」目录（对标 Claude Code：读不受工作区边界约束）。
  */
 function resolveReadPath(root: string | null, p: unknown): string {
   if (typeof p !== 'string' || !p.trim()) throw new Error('缺少有效的 path 参数')
-  const abs = isAbsolute(p) ? resolve(p) : root ? join(root, p) : resolve(p)
+  // 未挂载工作区 + 相对路径 = 没有基准。旧行为是悄悄落到应用自身的 process.cwd()——读多半 ENOENT、
+  // 写则**静默成功**在谁也找不到的地方。一律明确报错，让模型改用绝对路径（写入类更早一步由
+  // needsWorkspaceMount 拦成挂载卡，正常走不到这里；此处是所有通道共同的兜底）。
+  if (!root && !isAbsolute(expandHome(p)))
+    throw new Error(
+      // 刻意不提「请用户挂载」：主轮该弹卡的调用早被 needsWorkspaceMount 截走，能走到这里的是
+      // 子智能体与密封定时任务——它们没有人可问，提了只会诱导出一句无人应答的文字请求。
+      '未挂载工作区，相对路径没有基准：请改用绝对路径（~/ 开头的主目录路径亦可）。'
+    )
+  const abs = toAbsPath(root, p)
   if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/密钥目录（安全策略），请勿重试。')
   return abs
 }
@@ -505,8 +537,54 @@ export function writeTargetPath(
   const a = (args ?? {}) as Record<string, unknown>
   const p = a.path
   if (typeof p !== 'string' || !p.trim()) return null
-  const abs = isAbsolute(p) ? resolve(p) : root ? join(root, p) : resolve(p)
+  const abs = toAbsPath(root, p)
   return { abs, dir: dirname(abs) }
+}
+
+/** 扫描类工具：省略 path 即隐含「项目根」，未挂载工作区时没有默认根可用。 */
+const SCAN_TOOLS = new Set(['list_dir', 'glob', 'grep'])
+
+/** 单文件类工具：path 是必填的落点，相对写法以项目根为基准。 */
+const FILE_PATH_TOOLS = new Set(['write_file', 'edit_file', 'read_file'])
+
+/**
+ * 「本次调用是否缺少相对路径基准」——挂载工作区提示卡的**唯一判据**。
+ *
+ * 刻意**不按工具语义**（查询类 / 需求类）分档：那既模糊又判不准——`run_command` 里既有 `date`
+ * 也有 `npm test`，`read_file` 读 `/etc/hosts` 不需要工作区、读 `src/index.ts` 需要。工具粒度
+ * 根本区分不了，同一个工具的不同入参落在两边。故判据是纯机械的「这次调用的落点能否解析」，
+ * 零语义猜测：没有 path 参数的调用（取系统时间之类）自动出局，绝对路径（含 `~/` 展开后的主
+ * 目录路径）一律放行。
+ *
+ * 两档命中：
+ *  ① 单文件类（write_file / edit_file / read_file）给了**相对路径**。写入档是唯一会「悄悄出错」
+ *     的：未挂载时 resolve 基准是**应用自身的 process.cwd()**（打包态是 exe 目录），会静默写成功
+ *     在谁也不知道的地方。
+ *  ② 扫描类（list_dir / glob / grep）**省略 path 或给了相对路径** —— 前者本就抛「未打开项目，且
+ *     未提供 path」这句对用户毫无帮助的裸错误；升级成可点的挂载卡是净赚。
+ *
+ * `read_file` 一度被排除（当时理由：失败是响亮的 ENOENT，模型自会改绝对路径，不值得再打断用户）。
+ * **系统提示词改成「默认相对路径」之后这笔账翻转了**：模型被明确劝向相对写法，「自会改绝对路径」
+ * 的本能随之减弱，而回灌文案里若再提「请用户挂载」，就会诱导它用文字索要挂载——正是本功能要消灭
+ * 的行为。判据本身（落点能否解析）从来就覆盖 read_file，当初只是按性价比排除。
+ *
+ * 仍刻意不含 `run_command`：命令文本里的相对路径无法可靠判定（`cat src/a.ts` / `cd /tmp && ls` /
+ * `npm test`），要判就得解析 shell 语法，正是 exec-policy 已承认走不通的那条路；何况它有 homedir
+ * 兜底，失败同样响亮（失败时另追加一行提示，见 run_command 分支）。
+ */
+export function needsWorkspaceMount(
+  name: string,
+  args: unknown,
+  root: string | null
+): { tool: string; path: string } | null {
+  if (root) return null
+  const a = (args ?? {}) as Record<string, unknown>
+  // 先展开 ~ 再判 isAbsolute：`~/notes.txt` 是明确的主目录落点，不缺基准，不该打断用户。
+  const p = typeof a.path === 'string' ? expandHome(a.path.trim()) : ''
+  if (FILE_PATH_TOOLS.has(name)) return p && !isAbsolute(p) ? { tool: name, path: p } : null
+  // 扫描类：省略 path（隐含项目根）与相对 path 都缺基准，同样命中。
+  if (SCAN_TOOLS.has(name)) return isAbsolute(p) ? null : { tool: name, path: p }
+  return null
 }
 
 /** 解析「搜索根目录」（读取语义）：给了 path 用之，否则回落项目根；两者皆缺则报错。 */
@@ -1169,7 +1247,14 @@ export async function executeTool(
         summary = `退出码 ${r.code}`
       }
       const isError = Boolean(r.spawnError) || r.aborted || r.timedOut || r.code !== 0
-      const content = (body ? body + '\n' : '') + status
+      // 未挂载工作区时命令在用户主目录执行，失败多半只是「不在项目里」（典型：git 报 not a git
+      // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。命令文本里的相对路径无法
+      // 可靠判定（故 needsWorkspaceMount 不拦 run_command），改用这种「失败才提示」的事后自愈。
+      const cwdHint =
+        isError && !ctx.workspaceRoot
+          ? `\n（提示：当前未挂载工作区，命令在用户主目录 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或请用户挂载该项目为工作区。）`
+          : ''
+      const content = (body ? body + '\n' : '') + status + cwdHint
       return { content, summary, isError }
     }
 

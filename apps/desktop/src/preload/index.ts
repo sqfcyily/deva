@@ -114,7 +114,7 @@ export interface AutotaskDraft {
 export type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
-  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' }
+  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' | 'refused' }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   /**
@@ -171,6 +171,12 @@ export interface PlanResponse {
   decision: 'approve' | 'keep'
 }
 
+/** 用户对「请求挂载工作区」的回应：path=已选目录的绝对路径；null=暂不挂载。 */
+export interface MountResponse {
+  key: string
+  path: string | null
+}
+
 /** 技能记录（与 services/skills.ts 的 SkillRecord 对齐）。 */
 export interface SkillRecord {
   id: string
@@ -190,31 +196,6 @@ export interface SkillImportResult {
   id?: string
   name?: string
   error?: string
-}
-
-/** 子智能体记录（与 services/agents.ts 的 AgentRecord 对齐）。 */
-export interface AgentRecord {
-  id: string
-  name: string
-  description: string
-  /** 模型引用 `"providerId:modelId"`；空串 = 跟随主对话。 */
-  model: string
-  /** 工具白名单（内置 / MCP 名）；空数组 = 全部内置工具。 */
-  tools: string[]
-  /** 正文 = 子智能体系统提示词。 */
-  prompt: string
-  enabled: boolean
-}
-
-/** 子智能体新建/更新入参（有 id 覆盖，无 id 新建）。 */
-export interface AgentUpsertInput {
-  id?: string
-  name: string
-  description?: string
-  model?: string
-  tools?: string[]
-  prompt?: string
-  enabled?: boolean
 }
 
 /** Agent 提示词记录（与 services/personas.ts 的 PersonaRecord 对齐）。 */
@@ -537,7 +518,13 @@ export type ChatStreamEvent =
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   /** 计划审阅：exit_plan 提交计划，暂停等待用户批准（approve/keep）。 */
   | { type: 'plan_review'; key: string; plan: string }
-  | { type: 'usage'; input: number; output: number }
+  /**
+   * 请求挂载工作区：未挂载工作区时，模型的某次调用缺「相对路径基准」（写相对路径 / 扫描类工具
+   * 省略 path），暂停等待用户一键挂载或跳过。tool=触发的工具名，path=模型给的相对路径（可为空）。
+   */
+  | { type: 'mount_request'; key: string; tool: string; path: string }
+  /** 用量。input 为总提示 token（含缓存命中/写入）；cacheRead/cacheWrite 供观测缓存是否生效。 */
+  | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   | { type: 'reconnecting'; attempt: number; max: number }
   | { type: 'stream_reset' }
   | { type: 'error'; kind: string; message: string }
@@ -601,16 +588,6 @@ const api = {
     remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('skills:remove', id),
     setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke('skills:set-enabled', id, enabled)
-  },
-  /** 子智能体（全局 ~/.deva/agents）：列出 / 读取 / 新建更新 / 删除 / 启停。 */
-  agents: {
-    list: (): Promise<AgentRecord[]> => ipcRenderer.invoke('agents:list'),
-    get: (id: string): Promise<AgentRecord | null> => ipcRenderer.invoke('agents:get', id),
-    upsert: (input: AgentUpsertInput): Promise<AgentRecord> =>
-      ipcRenderer.invoke('agents:upsert', input),
-    remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('agents:remove', id),
-    setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('agents:set-enabled', id, enabled)
   },
   /** Agent 提示词（全局 ~/.deva/personas）：列出 / 读取 / 新建更新 / 删除 / 启停。 */
   personas: {
@@ -738,6 +715,9 @@ const api = {
     /** 回应 exit_plan 计划审阅（approve=批准并执行 / keep=继续完善） */
     respondPlan: (payload: PlanResponse): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:plan-response', payload),
+    /** 回应「请求挂载工作区」（path=已选目录 / null=暂不挂载） */
+    respondMount: (payload: MountResponse): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('chat:mount-response', payload),
     /** 订阅 chat:event，返回取消订阅函数 */
     onEvent: (cb: (payload: ChatEventPayload) => void): (() => void) => {
       const listener = (_e: unknown, payload: ChatEventPayload): void => cb(payload)

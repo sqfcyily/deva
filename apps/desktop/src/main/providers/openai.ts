@@ -96,6 +96,8 @@ function mapFinishReason(raw: string | null | undefined): StopReason {
     case 'tool_calls':
     case 'function_call':
       return 'tool_use'
+    case 'content_filter':
+      return 'refusal'
     case 'length':
       return 'max_tokens'
     default:
@@ -160,6 +162,7 @@ export async function* streamOpenAI(
   let stopReason: StopReason = 'end_turn'
   let inputTokens = 0
   let outputTokens = 0
+  let cacheRead = 0
 
   const flushCalls = function* (): Generator<StreamEvent> {
     const indices = [...calls.keys()].sort((a, b) => a - b)
@@ -186,10 +189,40 @@ export async function* streamOpenAI(
         continue
       }
 
-      const usage = chunk.usage as { prompt_tokens?: number; completion_tokens?: number } | null
+      // 带内错误块：不少网关用 HTTP 200 + `data: {"error":{...}}` 报错（配额耗尽、内容拦截、
+      // 上游 5xx 等）。这类块没有 choices，若只管 choices 就会被静默跳过 —— 本轮遂以
+      // 「自然结束 + 零正文」收场，用户只看到一句语焉不详的空回合提示。必须原样上报。
+      const inband = chunk.error as { message?: string; code?: string; type?: string } | undefined
+      if (inband && !Array.isArray(chunk.choices)) {
+        const message = inband.message ?? inband.code ?? inband.type ?? '服务端返回了未说明的错误'
+        yield { type: 'error', error: { kind: 'server', retryable: false, message } }
+        yield { type: 'done', stopReason: 'error' }
+        return
+      }
+
+      const usage = chunk.usage as {
+        prompt_tokens?: number
+        completion_tokens?: number
+        /** OpenAI 口径：命中量是 prompt_tokens 的子集 */
+        prompt_tokens_details?: { cached_tokens?: number }
+        /** DeepSeek 口径：命中 / 未命中分列，相加等于 prompt_tokens */
+        prompt_cache_hit_tokens?: number
+        prompt_cache_miss_tokens?: number
+      } | null
       if (usage) {
         if (usage.prompt_tokens) inputTokens = usage.prompt_tokens
         if (usage.completion_tokens) outputTokens = usage.completion_tokens
+        // 两家都是**服务端自动前缀缓存**（无需请求参数、不额外收写入费），故只有命中量、没有写入量。
+        // prompt_tokens 本就是含命中的总量，不必再加。
+        const hit = usage.prompt_tokens_details?.cached_tokens ?? usage.prompt_cache_hit_tokens
+        if (hit) cacheRead = hit
+        // 个别网关只透传 DeepSeek 的命中/未命中两段而不给 prompt_tokens，此时相加兜底出总量。
+        if (
+          !usage.prompt_tokens &&
+          (usage.prompt_cache_hit_tokens || usage.prompt_cache_miss_tokens)
+        )
+          inputTokens =
+            (usage.prompt_cache_hit_tokens ?? 0) + (usage.prompt_cache_miss_tokens ?? 0)
       }
 
       const choice = (chunk.choices as unknown[] | undefined)?.[0] as
@@ -197,6 +230,8 @@ export async function* streamOpenAI(
             delta?: {
               content?: string | null
               reasoning_content?: string | null
+              /** 结构化拒绝文本（OpenAI 及兼容网关在拒绝时改走此字段，content 为空）。 */
+              refusal?: string | null
               tool_calls?: {
                 index: number
                 id?: string
@@ -212,6 +247,9 @@ export async function* streamOpenAI(
       if (delta?.content) yield { type: 'text_delta', text: delta.content }
       // DeepSeek-R1 等把思维链放在 reasoning_content
       if (delta?.reasoning_content) yield { type: 'thinking_delta', text: delta.reasoning_content }
+      // 拒绝走的是 refusal 字段而非 content：不接这一路，整轮就会「什么都没返回」——
+      // 模型明明解释了为何不做，用户却只看到一条空回合提示。作为正文展示。
+      if (delta?.refusal) yield { type: 'text_delta', text: delta.refusal }
 
       if (delta?.tool_calls) {
         for (const tc of delta.tool_calls) {
@@ -244,6 +282,7 @@ export async function* streamOpenAI(
     yield* flushCalls()
   }
 
-  if (inputTokens || outputTokens) yield { type: 'usage', input: inputTokens, output: outputTokens }
+  if (inputTokens || outputTokens)
+    yield { type: 'usage', input: inputTokens, output: outputTokens, cacheRead }
   yield { type: 'done', stopReason }
 }

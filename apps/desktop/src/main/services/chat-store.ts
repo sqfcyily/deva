@@ -34,6 +34,13 @@ export interface StoredSession {
    */
   lastInputTokens?: number
   /**
+   * 上一轮的**提示缓存**用量（provider 报告的命中 / 写入 token）。**纯观测字段，不参与任何判定**。
+   * 用于核对缓存是否真的生效：命中长期为 0，说明前缀被破坏、或未达该模型的最小可缓存长度。
+   * Anthropic 需显式断点才会非零；OpenAI/DeepSeek 是服务端自动前缀缓存，只有命中量没有写入量。
+   */
+  lastCacheRead?: number
+  lastCacheWrite?: number
+  /**
    * 绑定的 persona id（对话优先外壳：一对话一身份，单选当值）。
    * 缺省 = 旧 AppShell 路径（叠加式 enabledPersonas，不做单身份注入）。首发落库后绑定不再改。
    */
@@ -112,7 +119,7 @@ export interface StoredNotice {
   /** kind='error' 时的错误文案。 */
   message?: string
   /** kind='notice' 时的提示码。 */
-  code?: 'truncated' | 'empty'
+  code?: 'truncated' | 'empty' | 'refused'
 }
 
 /** 会话元信息（左侧列表用，不含正文）。 */

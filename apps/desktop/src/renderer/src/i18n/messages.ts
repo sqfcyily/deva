@@ -121,12 +121,10 @@ const zhCN: MessageTree = {
     personas: '提示词',
     skills: '技能',
     mcp: 'MCP 服务',
-    subagents: '子智能体',
     selectHint: '从左侧选择一项查看详情',
     detailEmpty: '从左侧选择一项，或点「+」新建',
     addSkill: '新建技能',
     addMcp: '添加 MCP 服务',
-    addSubagent: '新建子智能体',
     addPersona: '新建提示词',
     personaPrompt: '提示词内容',
     personaPromptHint: '启用后会追加进主智能体的系统提示词，用于设定性格、语气、行文风格与偏好；可同时启用多条（叠加）。',
@@ -213,7 +211,8 @@ const zhCN: MessageTree = {
     error: '出错了',
     notice: {
       truncated: '回复已达输出长度上限被截断，可发送「继续」让我接着写。',
-      empty: '本轮未产生回复：可能已接近上下文长度上限，建议新建对话，或精简内容后重试。',
+      empty: '本轮模型没有返回任何内容。可换种说法重试或换个模型；若这轮对话已经很长，也可以新建对话或先压缩上下文。',
+      refused: '模型拒绝了本次请求（或被服务商的内容策略拦截），本轮没有返回内容。换种说法或换个模型再试。',
       compacted: '较早的对话已压缩为摘要，以节省上下文。',
       compactNone: '当前对话较短，无需压缩。',
       compactFailed: '压缩失败，历史保持不变。'
@@ -244,7 +243,7 @@ const zhCN: MessageTree = {
     status: { running: '执行中', done: '完成', failed: '失败', denied: '已拒绝' },
     subagent: {
       title: '子智能体任务',
-      // 空 agent 名 = 未指定预设专家，即内置通用子智能体（见主进程 GENERAL_SUBAGENT）。
+      // 空 agent 名 = 未指定内置子智能体，即回落通用子智能体（见主进程 subagents.ts）。
       fallback: '通用子智能体',
       task: '任务',
       stepUnit: '步',
@@ -264,6 +263,7 @@ const zhCN: MessageTree = {
       subagent: '子智能体运行中',
       awaitingAnswer: '等待你的选择（在上方问答卡选择或输入）',
       awaitingPlan: '等待你批准计划（在上方计划卡选择）',
+      awaitingMount: '等待你挂载工作区（在上方卡片选择）',
       reconnecting: '连接中断，正在重连'
     },
     ask: {
@@ -285,6 +285,17 @@ const zhCN: MessageTree = {
       keep: '继续完善',
       approved: '已批准',
       kept: '继续完善'
+    },
+    mount: {
+      cardTitle: '需要挂载工作区',
+      reasonPath: '当前对话未挂载工作区，无法确定相对路径的落点：',
+      reasonScan: '当前对话未挂载工作区，扫描类操作没有默认的项目根可用。',
+      byTool: '触发于工具',
+      pick: '挂载工作区…',
+      skip: '暂不挂载',
+      mounted: '已挂载',
+      skipped: '暂不挂载',
+      doneHint: '已挂载工作区：'
     },
     md: { copy: '复制', copied: '已复制' }
   },
@@ -598,7 +609,6 @@ const zhCN: MessageTree = {
     extEmpty: '暂无扩展',
     kindSkill: '技能',
     kindMcp: 'MCP',
-    kindSubagent: '子智能体',
     builtin: '内置',
     mcpConnected: '已连接',
     mcpDisconnected: '未连接',
@@ -717,12 +727,10 @@ const en: MessageTree = {
     personas: 'Prompts',
     skills: 'Skills',
     mcp: 'MCP Servers',
-    subagents: 'Sub-agents',
     selectHint: 'Select an item on the left to view details',
     detailEmpty: 'Select an item on the left, or click “+” to create',
     addSkill: 'New skill',
     addMcp: 'Add MCP server',
-    addSubagent: 'New sub-agent',
     addPersona: 'New prompt',
     personaPrompt: 'Prompt',
     personaPromptHint:
@@ -811,7 +819,10 @@ const en: MessageTree = {
     error: 'Something went wrong',
     notice: {
       truncated: 'Reply cut off at the output length limit — send “continue” and I’ll pick up where I left off.',
-      empty: 'No reply this turn: the context may be near its length limit — try a new chat, or shorten and retry.',
+      empty:
+        'The model returned nothing this turn. Try rephrasing or another model; if this chat has grown long, start a new one or compact the context first.',
+      refused:
+        'The model declined this request (or the provider blocked it by content policy), so nothing came back. Try rephrasing, or switch models.',
       compacted: 'Earlier conversation was compacted into a summary to save context.',
       compactNone: 'This conversation is still short — nothing to compact.',
       compactFailed: 'Compaction failed; history is unchanged.'
@@ -861,6 +872,7 @@ const en: MessageTree = {
       subagent: 'Running subagent',
       awaitingAnswer: 'Waiting for your choice (pick or type in the card above)',
       awaitingPlan: 'Waiting for you to approve the plan (choose in the card above)',
+      awaitingMount: 'Waiting for you to mount a workspace (choose in the card above)',
       reconnecting: 'Connection lost, reconnecting'
     },
     ask: {
@@ -882,6 +894,19 @@ const en: MessageTree = {
       keep: 'Keep planning',
       approved: 'Approved',
       kept: 'Kept planning'
+    },
+    mount: {
+      cardTitle: 'Workspace needed',
+      reasonPath:
+        'No workspace is mounted for this chat, so this relative path has no base directory: ',
+      reasonScan:
+        'No workspace is mounted for this chat, so a scan has no project root to start from.',
+      byTool: 'Triggered by tool',
+      pick: 'Mount workspace…',
+      skip: 'Not now',
+      mounted: 'Mounted',
+      skipped: 'Skipped',
+      doneHint: 'Workspace mounted: '
     },
     md: { copy: 'Copy', copied: 'Copied' }
   },
@@ -1204,7 +1229,6 @@ const en: MessageTree = {
     extEmpty: 'No extensions',
     kindSkill: 'Skill',
     kindMcp: 'MCP',
-    kindSubagent: 'Sub-agent',
     builtin: 'Built-in',
     mcpConnected: 'Connected',
     mcpDisconnected: 'Not connected',

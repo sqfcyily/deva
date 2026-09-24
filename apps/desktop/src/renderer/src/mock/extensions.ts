@@ -1,12 +1,12 @@
 /**
- * 扩展（技能 / MCP 服务 / 子智能体）的**类型定义**。全部为全局配置，与项目无关。
+ * 扩展（技能 / MCP 服务）的**类型定义**。全部为全局配置，与项目无关。
  * 用户内容首启为空态（由用户上传/对话创建，或手放于 ~/.deva 下，source='custom'）；
  * 唯一的内置项是系统元技能 `create-skill`（source='builtin'，随二进制内置、不落盘/不可删）。
- * 技能与 MCP 已接入真实存储（~/.deva/skills、~/.deva/mcp.json，经 deva.skills / deva.mcp IPC）；
- * 子智能体的真实运行时随后续阶段接入。
+ * 技能与 MCP 已接入真实存储（~/.deva/skills、~/.deva/mcp.json，经 deva.skills / deva.mcp IPC）。
+ * 子智能体（通用 / Explore / Plan）是**内置能力**，不可配置、不在此列——见 main/services/subagents.ts。
  */
 
-export type ExtKind = 'persona' | 'skill' | 'mcp' | 'subagent'
+export type ExtKind = 'persona' | 'skill' | 'mcp'
 /** 作用域：首版仅全局。 */
 export type ExtScope = 'global'
 /** 来源：`custom` = 用户自定义；`builtin` = 系统内置（目前仅元技能 create-skill）。 */
@@ -74,21 +74,6 @@ export interface McpServer {
   lastError: string | null
   /** 已发现工具清单（连接成功后有值） */
   tools: McpTool[]
-}
-
-export interface SubAgent {
-  id: string
-  name: string
-  desc: string
-  /** 使用的模型 ID */
-  model: string
-  /** 允许使用的工具 */
-  tools: string[]
-  /** 角色系统提示词 */
-  prompt: string
-  scope: ExtScope
-  source: ExtSource
-  enabled: boolean
 }
 
 /**

@@ -2116,6 +2116,64 @@ textarea {
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
+/* 挂载工作区请求卡：与计划卡同构（accent 观感、is-decided 淡化），正文是纯文本说明而非 Markdown。 */
+.msg__mount {
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
+  padding: var(--space-3);
+  margin-top: var(--space-2);
+}
+.msg__mount.is-decided {
+  border-color: var(--border);
+  background: var(--bg-elevated);
+}
+.msg__mount-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+.msg__mount-head svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.msg__mount.is-decided .msg__mount-head svg {
+  color: var(--fg-muted);
+}
+.msg__mount-title {
+  color: var(--fg);
+}
+.msg__mount-badge {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-full);
+}
+.msg__mount-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.msg__mount-body code {
+  word-break: break-all;
+}
+.msg__mount-tool {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.msg__mount-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
 .permission__resolved {
   font-size: 12px;
   font-weight: 600;

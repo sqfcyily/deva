@@ -1,9 +1,12 @@
 import { ipcMain, type BrowserWindow } from 'electron'
+import { statSync } from 'node:fs'
+import { resolve as resolvePath } from 'node:path'
 import { streamChat } from '../providers'
 import type { ContentPart, Message, StopReason, ToolSpec } from '../providers/types'
 import {
   executeTool,
   isMcpTool,
+  needsWorkspaceMount,
   writeTargetPath,
   toolCategory,
   toolSpecs,
@@ -13,7 +16,7 @@ import {
 } from './tools'
 import { isDangerousCommand, touchesSensitivePath } from './exec-policy'
 import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
-import { enabledAgentSummaries, getEnabledAgentByName, type AgentRecord } from './agents'
+import { GENERAL_SUBAGENT, getSubagentByName, subagentSummaries, type SubagentDef } from './subagents'
 import { enabledPersonas, getPersona } from './personas'
 import { resolveDefaultModel, resolveModelRef, resolveModelRefOrNull } from './model-resolve'
 import { sealedDecision } from './sealed'
@@ -187,7 +190,7 @@ type DisplayBlock =
    * 弱化提示气泡：compacted=较早历史已压缩（由 messages 里的摘要标记还原）；
    * truncated=达输出上限被截断 / empty=通篇无回复（由 StoredNotice 边车还原）。
    */
-  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' }
+  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' | 'refused' }
   /** 请求失败红框：由 StoredNotice 边车还原（原样展示错误文案）。 */
   | { kind: 'error'; message: string }
   /** 角色名片：propose_agent 的提议。status 终态（accepted/rejected）由 StoredSession.proposals 边车持久化。 */
@@ -527,6 +530,12 @@ interface PlanResponse {
   decision: 'approve' | 'keep'
 }
 
+/** 用户对「请求挂载工作区」的回应：path=已选目录（渲染层已经 fs.openFolder 受信）；null=暂不挂载。 */
+interface MountResponse {
+  key: string
+  path: string | null
+}
+
 /**
  * 判定某选项 label 是否与界面内置的「自己输入」入口重复。界面每题都会追加该伪选项，
  * 模型仍常自作主张塞一个「自己输入 / 自定义 / 手动输入 / Custom / Enter your own」——需剔除以免重复。
@@ -677,7 +686,14 @@ export type ChatStreamEvent =
   | { type: 'ask_user'; key: string; questions: AskQuestion[] }
   /** 计划审阅：exit_plan 提交计划，暂停循环等用户批准（approve=批准后按计划执行 / keep=继续完善 / 取消）。 */
   | { type: 'plan_review'; key: string; plan: string }
-  | { type: 'usage'; input: number; output: number }
+  /**
+   * 请求挂载工作区：本次工具调用缺相对路径基准（未挂载 + 写入类相对路径 / 扫描类省略 path），
+   * 暂停循环等用户一键挂载。tool/path 仅供卡片说明「为什么需要」。**不是模型发起的工具**——
+   * 由权限闸门前置判定生成（判据见 tools.needsWorkspaceMount），故模型既不占工具槽也无从滥用。
+   */
+  | { type: 'mount_request'; key: string; tool: string; path: string }
+  /** 用量。input 为总提示 token（含缓存命中/写入）；cacheRead/cacheWrite 供观测缓存是否生效。 */
+  | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   /** 连接中断、正在自动重连（transient；attempt/max 供 UI 显示进度）。 */
   | { type: 'reconnecting'; attempt: number; max: number }
   /** 重连前置：丢弃本步骤已画出的残缺尾部，随后重新流式（无法无缝续传，只能重发本步）。 */
@@ -726,6 +742,17 @@ const pendingPlan = new Map<
   string,
   { resolve: (decision: 'approve' | 'keep' | null) => void; turnId: string }
 >()
+/** 待用户处理的「请求挂载工作区」（键 → resolve + 所属轮次）；null 表示暂不挂载/取消/中止。 */
+const pendingMount = new Map<
+  string,
+  { resolve: (path: string | null) => void; turnId: string }
+>()
+/**
+ * 已明确拒绝过挂载的会话（内存态，随重启清空）。会话级去重：用户点过一次「暂不挂载」后，
+ * 同会话后续同类调用只回灌文案、绝不再弹卡——否则一个多步循环会连弹好几张，比不提示还烦。
+ * 用户之后若自己在输入框上方挂载了工作区，判据（root 非空）本就不再命中，无需清除此标记。
+ */
+const mountDeclined = new Set<string>()
 
 let idCounter = 0
 function genId(prefix: string): string {
@@ -768,19 +795,22 @@ function systemPrompt(
   skills: { name: string; description: string }[] = [],
   personas: { name: string; prompt: string }[] = []
 ): string {
+  // 挂载态那句的「历史目录一律作废」不是废话：工作区可在同一对话中途切换，而历史里的工具结果、
+  // 旧的挂载提示、模型自己的行文全是旧根的绝对路径。本行每轮重建，必须被声明为唯一权威。
   const loc = workspaceRoot
-    ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
-    : '当前未挂载工作区（全机通用助手）：文件与命令工具照常可用——涉及文件请用**绝对路径**，run_command 的工作目录为用户主目录。若任务确实针对某个项目，可请用户在顶部挂载该文件夹；但不要因「未打开项目」而拒绝执行。'
+    ? `当前工作目录：${workspaceRoot}。用户可随时切换工作区——历史消息里出现过的其它目录一律作废，恒以本行为准。`
+    : '当前未挂载工作区（全机通用助手）：文件与命令工具照常可用。涉及某个项目的读写与扫描请直接按**相对路径**发起——系统会自动弹出「挂载工作区」卡片请用户一键选定目录，选定后该目录即成为本对话的相对路径基准（不必用文字索要路径，也不必先问「要不要挂载」）；用户若选择「暂不挂载」，再改用绝对路径继续。run_command 的工作目录为用户主目录。不要因「未打开项目」而拒绝执行。'
   // ── ① 系统默认提示词：纯规范。开场句仅交代运行环境与「身份/风格见角色设定」，不作任何身份/风格规定。
   const lines = [
     personas.length
       ? '你运行在 Deva 桌面应用中，可通过工具读取/写入文件、执行命令、加载技能等来完成用户请求。以下是你在本应用内必须始终遵守的规范；你的身份、性格、语气与行文风格由后文的「角色设定」决定，本段不作规定。'
       : '你是 Deva，一个运行在用户桌面上的 AI 助手，可通过工具读取/写入文件、执行命令、加载技能等来完成用户请求。以下是你在本应用内必须始终遵守的规范。',
     `【环境】${loc}`,
+    '【路径约定】默认用**相对路径**（相对上面的当前工作目录）：落点始终由应用按当前挂载的工作区解析，你无需记忆基准目录，也不会被历史消息里的旧目录带偏。只有当目标明确在工作区之外时才用绝对路径——用户指名了桌面、主目录、系统某处或另一个项目（`~/` 表示用户主目录）。切勿把历史消息里出现过的绝对路径当作当前工作目录的依据；未挂载工作区时也照常按相对路径发起，由挂载卡片解决基准问题。',
     '【工具使用】先用 read_file / list_dir 了解现状再动手；write_file 会覆盖整个文件，务必先读后写、保留无关内容。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用被安全策略拒绝，回灌结果会写明原因——据此改道或如实说明受限之处，切勿反复重试同一被拒操作。',
     '【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。唯有三类不可协商的安全底线会被静默拒绝并回灌原因——① 私钥/凭据目录（~/.ssh、~/.aws、~/.gnupg）与本应用配置目录（~/.deva）的读写；② 版本库内部（.git）的写入；③ 明显危险的命令（如 rm -rf）。被拒时请改用其它方式或向用户如实说明，切勿重试。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。',
     '【决策与澄清】当需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时，调用 ask_user 抛出一个或多个问题（每题可给候选项、可单选或多选，界面另有内置「自己输入」入口），用户在同一张卡片里一次性作答后回灌给你再继续；能合理默认就直接做，别为琐碎选择打断用户。注意区分：ask_user 只用于征求决策/澄清；写入与执行本就无需授权，切勿用它去问「是否允许写入/执行」。',
-    '【计划先行】遇到非平凡的实现类任务（新功能、跨多文件改动、有多个各有取舍的方案、或需求尚不明确等），先用只读工具（read_file / list_dir / glob / grep / web_fetch）充分调研理解现状，再调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件或执行命令**。用户批准后你直接按计划执行、无需再次征求授权（写入/执行照常只受上述安全底线约束）；用户若选择继续完善，请依其反馈调整后再重新提交，在收到新反馈前不要重复调用 exit_plan。琐碎、单点、只读或答疑类任务直接做，不必先出计划。'
+    '【计划先行】遇到非平凡的实现类任务（新功能、跨多文件改动、有多个各有取舍的方案、或需求尚不明确等），先用只读工具（read_file / list_dir / glob / grep / web_fetch）充分调研理解现状——调研面较大时（要翻多个目录、追多条调用链、或需摸清一整套既有约定）可先用 `run_subagent` 派发 `Plan` 子智能体在隔离上下文里完成调研并带回方案要点，再由你综合判断——然后调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件或执行命令**。用户批准后你直接按计划执行、无需再次征求授权（写入/执行照常只受上述安全底线约束）；用户若选择继续完善，请依其反馈调整后再重新提交，在收到新反馈前不要重复调用 exit_plan。琐碎、单点、只读或答疑类任务直接做，不必先出计划。'
   ]
   if (skills.length) {
     // 渐进式披露：此处只列「名称 + 一句话描述」；当任务匹配时，模型再调用 skill 工具取完整指令。
@@ -852,13 +882,13 @@ function buildSkillTool(skills: { name: string; description: string }[]): ToolSp
 }
 
 /**
- * 构建 run_subagent 工具规格。**恒返回**（不再因「无预设子智能体」而对模型隐藏）：
- * 子智能体按需现场派生，任务内容完全由本次调用的 `prompt` 给出；`agent` 只是可选的「预设专家」
- * （固定提示词 / 工具白名单 / 指定模型），省略或未命中即回落内置通用子智能体（见 GENERAL_SUBAGENT）。
- * 对标 Claude Code：预设是可选增强，不是派生的前置条件。
+ * 构建 run_subagent 工具规格。**恒返回**：子智能体是内置能力，无需用户先配置任何东西。
+ * 任务内容完全由本次调用的 `prompt` 现场给出；`agent` 只是在内置子智能体里挑一个（各自的职责
+ * 正文 + 收窄的工具集），省略或未命中即回落通用子智能体（见 subagents.ts）。
+ * 对标 Claude Code：内置类型开箱可用，选型是可选增强而非派生的前置条件。
  */
-function buildSubagentTool(agents: { name: string; description: string }[]): ToolSpec {
-  const list = agents
+function buildSubagentTool(): ToolSpec {
+  const list = subagentSummaries()
     .map((a) => `${a.name}${a.description ? `（${a.description}）` : ''}`)
     .join('；')
   return {
@@ -866,15 +896,13 @@ function buildSubagentTool(agents: { name: string; description: string }[]): Too
     description:
       '把一项相对独立、需要隔离上下文的子任务，派发给一个「子智能体（Subagent）」独立完成，只返回其最终结论。' +
       '适合大范围检索/梳理、专项分析等与主线相对独立的封闭子任务——其大量中间过程不会占用本对话的上下文预算。' +
-      '子智能体运行在隔离上下文中（看不到主对话历史），有自己的系统提示词、工具集与模型，其内部每一次工具调用照常受权限约束。' +
+      '子智能体运行在隔离上下文中（看不到主对话历史），有自己的系统提示词与工具集，其内部每一次工具调用照常受权限约束。' +
       '彼此独立的多个子任务，请在**同一轮里一次性发起多个调用**——它们会真正并行执行；有先后依赖的才分轮发起。' +
       '子智能体是一次性的：跑完即结束，无法追问、无法补充指令，因此任务描述必须一次说清。' +
       '不要用它做你自己直接做更快的事：已经知道文件/符号/取值在哪就自己读、自己搜；单点查询、需要与用户交互、以及需要你亲自落笔改动的工作，都不要派发。' +
       '派发之后就采信它的结论，不要再自己把同一件事重做一遍。' +
       '它的结论默认折叠在任务卡里、用户不会主动展开——请在你的回复里转述其中要紧的部分，不要只说一句「已完成」。' +
-      (list
-        ? `可选的预设专家：${list}。省略 agent 即派生通用子智能体（具备全部内置工具）。`
-        : '当前没有预设专家，省略 agent 即可：将派生具备全部内置工具的通用子智能体。'),
+      `可派发的子智能体：${list}。省略 agent 即派生通用子智能体。`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -885,9 +913,8 @@ function buildSubagentTool(agents: { name: string; description: string }[]): Too
         agent: {
           type: 'string',
           description:
-            '可选。要派发到的预设专家名称；省略或未命中时派生通用子智能体。无特殊需要时省略即可。',
-          // 无预设时不给 enum：空枚举会让该属性不可满足。
-          ...(agents.length ? { enum: agents.map((a) => a.name) } : {})
+            '可选。要派发到的子智能体：检索/定位选 Explore，方案调研选 Plan，其余省略即可（省略或未命中一律派生通用子智能体）。',
+          enum: subagentSummaries().map((a) => a.name)
         },
         prompt: {
           type: 'string',
@@ -901,14 +928,14 @@ function buildSubagentTool(agents: { name: string; description: string }[]): Too
 }
 
 /**
- * 子智能体本轮可用工具集：内置工具（排除 ask_user / skill / run_subagent）为基。
- * - allowlist 为空 → 全部内置工具 **+ 全部已连接 MCP 工具**（对标 Claude Code 的
- *   general-purpose：工具集就是 `*`；通用子智能体本就为「大范围检索/专项分析」而生，
- *   把 MCP 挡在外面只会逼主智能体自己去干那些本该外包的活）。
- * - allowlist 非空 → 仅其中命中的内置工具 + 命中的已连接 MCP 工具。
- * 白名单只**收窄**可见工具；被保留的每个工具调用仍照常过同一道权限闸门（无提权）。
+ * 子智能体本轮可用工具集：内置工具（排除 ask_user / skill / run_subagent 等交互与创建类）为基。
+ * - `tools === '*'`（通用子智能体）→ 全部内置工具，对标 Claude Code general-purpose 的 `*`。
+ * - 否则 → 仅白名单命中的内置工具（如 Explore / Plan 的只读集：不给 write_file / edit_file）。
+ * **已连接的 MCP 工具两种情况都全量附加**：MCP 是外部能力面，把它挡在外面只会逼主智能体自己去干
+ * 那些本该外包的活；其写入风险与 run_command 同源，由统一的安全地板兜底。
+ * 工具集只**收窄**可见工具；被保留的每个调用仍照常过同一道权限闸门（无提权）。
  */
-function buildSubagentTools(allowlist: string[]): ToolSpec[] {
+function buildSubagentTools(def: SubagentDef): ToolSpec[] {
   // create_skill / propose_agent / create_mcp / create_task 亦排除：子智能体不得创建技能/角色/MCP 服务/定时任务
   //（它们在 toolSpecs 基表里，须显式剔除）。
   const EXCLUDED = new Set([
@@ -921,11 +948,10 @@ function buildSubagentTools(allowlist: string[]): ToolSpec[] {
     'create_task'
   ])
   const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
-  if (!allowlist || allowlist.length === 0) return [...builtins, ...getMcpToolSpecs()]
-  const allow = new Set(allowlist)
-  const pickedBuiltins = builtins.filter((t) => allow.has(t.name))
-  const pickedMcp = getMcpToolSpecs().filter((t) => allow.has(t.name))
-  return [...pickedBuiltins, ...pickedMcp]
+  const mcp = getMcpToolSpecs()
+  if (def.tools === '*') return [...builtins, ...mcp]
+  const allow = new Set(def.tools)
+  return [...builtins.filter((t) => allow.has(t.name)), ...mcp]
 }
 
 /**
@@ -952,24 +978,8 @@ function buildSealedTools(skills: { name: string; description: string }[]): Tool
   return [...builtins, ...(skillTool ? [skillTool] : []), ...getMcpToolSpecs()]
 }
 
-/**
- * 内置通用子智能体：未指定预设、或指定的预设未命中时的回落定义。
- * 纯代码常量——不落盘、不进 ~/.deva/agents、不出现在扩展页列表，因此**无需用户先创建任何东西**
- * 即可派生（「按需派生」不该以「先去建一个预设」为前提）。
- * `model: ''` = 跟随主对话（继承父轮模型）；`tools: []` = 全部内置工具（见 buildSubagentTools）。
- */
-const GENERAL_SUBAGENT: AgentRecord = {
-  id: '',
-  name: '通用子智能体',
-  description: '按主智能体现场给定的任务描述，独立完成一项封闭子任务。',
-  model: '',
-  tools: [],
-  prompt: '',
-  enabled: true
-}
-
 /** 子智能体系统提示词：固定的隔离/约束说明 + 该子智能体自身的职责正文（prompt）。 */
-function buildSubagentSystem(def: AgentRecord, workspaceRoot: string | null): string {
+function buildSubagentSystem(def: SubagentDef, workspaceRoot: string | null): string {
   const loc = workspaceRoot
     ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
     : '当前未挂载工作区：文件与命令工具照常可用——涉及文件请用**绝对路径**，run_command 的工作目录为用户主目录。'
@@ -1025,8 +1035,11 @@ interface AgentLoopArgs {
    * 渲染层据此把嵌套事件归入**正确的那张** Task 卡——并行派发时这是唯一可靠依据。
    */
   parentToolId?: string
-  /** 每收到一次真实 usage.input 即回调（主轮据此持久化 lastInputTokens 作压缩触发依据）。 */
-  onUsage?: (input: number) => void
+  /**
+   * 每收到一次真实用量即回调（主轮据此持久化 lastInputTokens 作压缩触发依据）。
+   * input 为**总提示 token**（含缓存命中/写入）；cacheRead/cacheWrite 仅供观测，不参与任何判定。
+   */
+  onUsage?: (input: number, cacheRead: number, cacheWrite: number) => void
   /**
    * ask_user 得到答复即回调（主轮据此把答案存入 StoredSession.asks 边车，供重开还原问答卡）。
    * answers=null 表示取消/中止。仅主轮传入；子轮无 ask_user，且不得污染父轮边车。
@@ -1072,6 +1085,22 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const key = genId('plan')
     emit(turnId, sessionId, { type: 'plan_review', key, plan })
     return new Promise((resolve) => pendingPlan.set(key, { resolve, turnId }))
+  }
+
+  /**
+   * 请求用户挂载工作区、暂停循环等其处置。返回已挂载目录的绝对路径，或 null（暂不挂载/取消/中止）。
+   * 路径**只可能**来自用户在系统目录对话框里的选择（渲染层 fs.openFolder → trustRoot）：这里既不
+   * 接受模型给的目录、也不替用户预选，故它不是一条能被模型诱导的提权通道。
+   */
+  function requestMount(
+    turnId: string,
+    sessionId: string,
+    tool: string,
+    path: string
+  ): Promise<string | null> {
+    const key = genId('mount')
+    emit(turnId, sessionId, { type: 'mount_request', key, tool, path })
+    return new Promise((resolve) => pendingMount.set(key, { resolve, turnId }))
   }
 
   /**
@@ -1125,19 +1154,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const a = (tc.args ?? {}) as { agent?: unknown; prompt?: unknown }
       const wantedAgent = typeof a.agent === 'string' ? a.agent.trim() : ''
       const prompt = typeof a.prompt === 'string' ? a.prompt.trim() : ''
-      // 预设未指定 / 未命中 → 一律回落内置通用子智能体，**绝不因此失败**（对标 Claude Code：
+      // 未指定 / 未命中 → 一律回落内置通用子智能体，**绝不因此失败**（对标 Claude Code：
       // 未知 subagent_type 同样落到 general-purpose）。名字落空时在结论前缀一行说明，免得模型
-      // 以为自己点名的那位专家生效了。
-      const preset = wantedAgent ? getEnabledAgentByName(wantedAgent) : null
-      const def = preset ?? GENERAL_SUBAGENT
+      // 以为自己点名的那位子智能体生效了。
+      const picked = wantedAgent ? getSubagentByName(wantedAgent) : null
+      const def = picked ?? GENERAL_SUBAGENT
       const missNote =
-        wantedAgent && !preset
-          ? `（未找到名为「${wantedAgent}」的已启用子智能体，已改用通用子智能体完成。当前预设：${
-              enabledAgentSummaries()
-                .map((x) => x.name)
-                .join('、') || '无'
-            }。）
-`
+        wantedAgent && !picked
+          ? `（没有名为「${wantedAgent}」的子智能体，已改用通用子智能体完成。可选：${subagentSummaries()
+              .map((x) => x.name)
+              .join('、')}。）\n`
           : ''
 
       let conclusion: string
@@ -1153,9 +1179,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             // 隔离历史：只带本次任务描述，不继承父对话（避免上下文串味与预算膨胀）。
             history: [{ role: 'user', content: prompt }],
             system: buildSubagentSystem(def, ctx.workspaceRoot),
-            tools: buildSubagentTools(def.tools),
-            // 指定模型 → 解析；为空或不可解析 → 回落父轮模型（「跟随主对话」）。
-            model: resolveModelRef(def.model, model),
+            tools: buildSubagentTools(def),
+            // 内置子智能体恒跟随主对话（继承父轮模型）。
+            model,
             ctx,
             controller,
             maxSteps: SUBAGENT_MAX_STEPS,
@@ -1225,7 +1251,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             system,
             messages: history,
             tools,
-            signal: controller.signal
+            signal: controller.signal,
+            // 工具循环每步都要把 system + tools + 全量历史整个重发一遍，是提示缓存最典型的受益者
+            // （Anthropic 才需显式断点；OpenAI/DeepSeek 自动命中，此开关对它们无作用）。
+            // 子智能体同样走这里：其 system/tools 与主轮不同，自成一套缓存条目，各缓各的。
+            cache: true
           }
         )) {
           if (ev.type === 'text_delta') {
@@ -1248,8 +1278,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           } else if (ev.type === 'usage') {
             // 子轮用量不代表主对话的上下文占用，不喂渲染层的上下文计量。
             if (!isSub)
-              emit(turnId, sessionId, { type: 'usage', input: ev.input, output: ev.output })
-            args.onUsage?.(ev.input)
+              emit(turnId, sessionId, {
+                type: 'usage',
+                input: ev.input,
+                output: ev.output,
+                cacheRead: ev.cacheRead,
+                cacheWrite: ev.cacheWrite
+              })
+            args.onUsage?.(ev.input, ev.cacheRead ?? 0, ev.cacheWrite ?? 0)
           } else if (ev.type === 'error') {
             // 可重试且非用户中止 → 暂不上报，走自动重连；否则作为致命错误立即上报。
             if (ev.error.retryable && !controller.signal.aborted) retryableDrop = true
@@ -1454,8 +1490,48 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // 「仅此次」授权临时精确放行的路径：执行后必须撤销，避免长期扩大受信面。
         let oneShotPath: string | null = null
         let denyContent = '该操作被安全策略拒绝。'
+        /** 非安全策略的拒绝（当前仅「用户暂不挂载工作区」）：徽标文案与安全底线拒绝区分开。 */
+        let denySummary: string | null = null
+        /** 挂载成功时给本次 tool_result 加的前言：系统提示词本轮已定格，必须在这里讲清新基准。 */
+        let mountNote = ''
 
-        if (!interactive) {
+        // ── 挂载前置闸：未挂载工作区、且本次调用缺「相对路径基准」→ 暂停循环，请用户一键挂载。
+        // 判据纯机械（tools.needsWorkspaceMount：落点能否解析），不猜工具语义——无 path 的调用
+        // （取系统时间之类）永不命中，绝对路径一律放行，read_file / run_command 刻意不在其列。
+        // 仅主轮交互式触发：密封轮无人应答（另走 sealedDecision），子轮同 ask_user 不与用户交互。
+        const mountNeed =
+          interactive && depth === 0
+            ? needsWorkspaceMount(tc.name, tc.args, ctx.workspaceRoot)
+            : null
+        let mountRefused = false
+        if (mountNeed) {
+          const picked = mountDeclined.has(sessionId)
+            ? null
+            : await requestMount(turnId, sessionId, mountNeed.tool, mountNeed.path)
+          // 中止（chat:abort 会把待决挂载按 null 解开）不算「拒绝」：直接收尾，别污染会话级去重标记。
+          if (controller.signal.aborted) return { text: finalText, stopReason: 'aborted' }
+          if (picked) {
+            // 就地生效：ctx 供本轮后续步骤（含本次调用照常执行），session.focusRoot 供后续回合与重开。
+            // 渲染层同步更新自己的绑定覆盖层（见 store 的 respondMount），两侧不会在下次 send 打架。
+            ctx.workspaceRoot = picked
+            const s = getSession(sessionId)
+            if (s) s.focusRoot = picked
+            // 措辞刻意只陈述「本次」：工作区可被用户随时切换，而这条 tool_result 会永久留在上下文里。
+            // 若写成「后续所有相对路径均以此为基准」，切换之后它就成了一条与【环境】行对撞的假规则。
+            mountNote = `（用户已挂载工作区：${picked}，本次调用的相对路径以此为基准。工作区可由用户随时切换，后续一律以系统提示词【环境】里的当前工作目录为准。）\n`
+          } else {
+            mountRefused = true
+            mountDeclined.add(sessionId)
+            denySummary = '未挂载工作区'
+            denyContent = mountNeed.path
+              ? `未挂载工作区，无法确定相对路径「${mountNeed.path}」的落点，本次调用未执行。用户已选择暂不挂载。请改用**绝对路径**重试（必要时先问清用户目标目录），不要再请求挂载工作区。`
+              : `未挂载工作区，${mountNeed.tool} 省略 path 时没有默认根可用，本次调用未执行。用户已选择暂不挂载。请显式传入**绝对路径** path 重试，不要再请求挂载工作区。`
+          }
+        }
+
+        if (mountRefused) {
+          allowed = false
+        } else if (!interactive) {
           // 密封无头执行（定时任务）：绝不弹窗、绝不挂起——改走纯策略 sealedDecision（含同源安全地板）。
           const verdict = sealedDecision(tc.name, tc.args, ctx.workspaceRoot)
           allowed = verdict.allowed
@@ -1516,13 +1592,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         }
 
         if (!allowed) {
-          const denySummary = policyDenied ? '已拒绝（安全策略）' : '已拒绝'
-          args.onToolSummary?.(tc.id, denySummary)
+          const label = denySummary ?? (policyDenied ? '已拒绝（安全策略）' : '已拒绝')
+          args.onToolSummary?.(tc.id, label)
           emit(turnId, sessionId, {
             type: 'tool_result',
             id: tc.id,
             name: tc.name,
-            summary: denySummary,
+            summary: label,
             isError: true,
             ...(evMeta ?? {})
           })
@@ -1557,7 +1633,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         resultParts.push({
           type: 'tool_result',
           toolUseId: tc.id,
-          content: res.content,
+          // mountNote 仅在本次调用触发了挂载时非空：告诉模型相对路径基准已变（本轮系统提示词定格在
+          // 「未挂载」，不这样讲清楚它会继续按未挂载的指引走）。
+          content: mountNote + res.content,
           isError: res.isError
         })
       }
@@ -1623,6 +1701,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const turnStart = history.length
     // 本轮真实输入 token（用于压缩触发判定）：runAgentLoop 每收到一次 usage 即回调，取最后一次。
     let lastInput = 0
+    // 本轮提示缓存命中 / 写入量（纯观测，不参与判定），同样取最后一次。
+    let lastCacheRead = 0
+    let lastCacheWrite = 0
 
     // 本轮是否产出「可见回复」：本轮新增的任一 assistant 消息含非空正文或工具调用即算。
     // 与渲染层 hasVisibleAnswer 同义——决定自然结束却空回合时是否补「空回合」提示。
@@ -1642,12 +1723,18 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
     // 终态提示持久化（错误红框 / 截断 / 空回合）→ session.notices 边车，重开对话即可重建。
     // 镜像渲染层的 error 事件 + appendTerminalNotice：error 只记红框（不再叠空回合提示），
-    // max_tokens 记截断，自然结束却无可见回复记空回合，aborted（用户主动停止）不记。
+    // max_tokens 记截断，refusal（模型拒绝 / 内容策略拦截）无正文时记「被拒绝」——绝不并进空回合，
+    // 否则会把一次拒绝谎报成「上下文接近上限」；自然结束却无可见回复才记空回合；
+    // aborted（用户主动停止）不记。
     const recordTurnNotice = (stopReason: StopReason, errorMessage?: string): void => {
       const after = history.length
       const notices = (session.notices ??= [])
       if (stopReason === 'error') notices.push({ after, kind: 'error', message: errorMessage })
       else if (stopReason === 'max_tokens') notices.push({ after, kind: 'notice', code: 'truncated' })
+      // 拒绝：模型给了拒绝正文就无须再加提示（正文自己解释了），只在通篇为空时补一条。
+      else if (stopReason === 'refusal') {
+        if (!turnProducedVisible()) notices.push({ after, kind: 'notice', code: 'refused' })
+      }
       else if ((stopReason === 'end_turn' || stopReason === 'stop') && !turnProducedVisible())
         notices.push({ after, kind: 'notice', code: 'empty' })
     }
@@ -1666,8 +1753,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         : []
       : enabledPersonas()
     const skillTool = buildSkillTool(skillSummaries)
-    // run_subagent 恒提供：已启用的预设（若有）作为「专家」枚举进工具描述，无预设时回落通用子智能体。
-    const subagentTool = buildSubagentTool(enabledAgentSummaries())
+    // run_subagent 恒提供：内置子智能体（通用 / Explore / Plan）枚举进工具描述，无需任何用户配置。
+    const subagentTool = buildSubagentTool()
     // 每轮定格：内置工具 + exit_plan（计划先行）+（有启用技能时）skill + run_subagent +
     // 当前已连接 MCP 工具。exit_plan 仅主轮提供（子智能体的 buildSubagentTools 不含它）。
     // 角色不再收窄工具可见性：所有角色均可按需调用全部工具（每个调用仍照常过同一道权限闸门，零提权）。
@@ -1696,8 +1783,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         allowAskUser: true,
         allowSubagents: true,
         skillSummaries,
-        onUsage: (n) => {
+        onUsage: (n, read, write) => {
           if (n > 0) lastInput = n
+          lastCacheRead = read
+          lastCacheWrite = write
         },
         // ask_user 答复 / 工具摘要 → 展示边车（按 toolUseId），供重开还原问答卡与工具卡摘要。
         // 只挂主轮：子智能体的嵌套调用不传这两个回调，其工具/问询不会污染父对话边车。
@@ -1724,7 +1813,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     } finally {
       activeTurns.delete(turnId)
       // 记录本轮真实输入 token 作为下轮压缩触发依据（比字符估算准，天然覆盖图片/工具）。
-      if (lastInput > 0) session.lastInputTokens = lastInput
+      // 缓存命中/写入量是纯观测字段（不参与任何判定），与 token 数同源同步——本轮没拿到真实
+      // 用量（如秒中止）就整体不动，免得用 0 覆盖掉上一轮的有效读数。
+      if (lastInput > 0) {
+        session.lastInputTokens = lastInput
+        session.lastCacheRead = lastCacheRead
+        session.lastCacheWrite = lastCacheWrite
+      }
       // 本轮对 history 的原地改写落盘（一对话一文件：只重写这一条）；更新时间用于左侧列表排序
       session.updatedAt = Date.now()
       saveProject(sessionId)
@@ -1797,6 +1892,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const sealedTools = buildSealedTools(skillSummaries)
 
     let lastInput = 0
+    let lastCacheRead = 0
+    let lastCacheWrite = 0
     let result: ScheduledTurnResult = { stopReason: 'end_turn', text: '' }
     try {
       const { text, stopReason, errorMessage } = await runAgentLoop({
@@ -1815,8 +1912,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         allowAskUser: false,
         allowSubagents: false,
         skillSummaries,
-        onUsage: (n) => {
+        onUsage: (n, read, write) => {
           if (n > 0) lastInput = n
+          lastCacheRead = read
+          lastCacheWrite = write
         }
       })
       emit(turnId, sessionId, { type: 'done', stopReason })
@@ -1828,7 +1927,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       result = { stopReason: 'error', text: '', errorMessage: message }
     } finally {
       activeTurns.delete(turnId)
-      if (lastInput > 0) session.lastInputTokens = lastInput
+      if (lastInput > 0) {
+        session.lastInputTokens = lastInput
+        session.lastCacheRead = lastCacheRead
+        session.lastCacheWrite = lastCacheWrite
+      }
       session.updatedAt = Date.now()
       saveProject(sessionId)
     }
@@ -2064,6 +2167,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         p.resolve(null)
       }
     }
+    // 待决挂载请求按「未挂载」解开（循环内会先判 aborted 再收尾，不会被误记成用户拒绝）。
+    for (const [key, p] of pendingMount) {
+      if (p.turnId === turnId) {
+        pendingMount.delete(key)
+        p.resolve(null)
+      }
+    }
     return { ok: true }
   })
 
@@ -2125,6 +2235,31 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (!p) return { ok: false }
     pendingPlan.delete(payload.key)
     p.resolve(payload.decision)
+    return { ok: true }
+  })
+
+  // 用户对「请求挂载工作区」的回应：path=已选目录 / null=暂不挂载。
+  // 与 fs:open-path 同等信任语义——只认真实存在的目录，并（幂等）登记受信根。渲染层走的是
+  // fs.openFolder（系统目录对话框，已 trustRoot），这里只是兜底，不构成新的提权面：渲染层本就
+  // 能直接调 fs:open-path 受信任意目录。拿不到有效目录一律按「暂不挂载」处置。
+  ipcMain.handle('chat:mount-response', (_e, payload: MountResponse): { ok: boolean } => {
+    const p = pendingMount.get(payload.key)
+    if (!p) return { ok: false }
+    pendingMount.delete(payload.key)
+    const raw = typeof payload.path === 'string' ? payload.path.trim() : ''
+    let dir: string | null = null
+    if (raw) {
+      const abs = resolvePath(raw)
+      try {
+        if (statSync(abs).isDirectory()) {
+          trustRoot(abs)
+          dir = abs
+        }
+      } catch {
+        dir = null
+      }
+    }
+    p.resolve(dir)
     return { ok: true }
   })
 }

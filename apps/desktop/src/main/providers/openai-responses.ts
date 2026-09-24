@@ -158,12 +158,23 @@ export async function* streamResponses(
   let sawTool = false
   let inputTokens = 0
   let outputTokens = 0
+  let cacheRead = 0
 
   const takeUsage = (evt: Record<string, unknown>): void => {
-    const usage = (evt.response as { usage?: { input_tokens?: number; output_tokens?: number } })
-      ?.usage
+    const usage = (
+      evt.response as {
+        usage?: {
+          input_tokens?: number
+          output_tokens?: number
+          input_tokens_details?: { cached_tokens?: number }
+        }
+      }
+    )?.usage
     if (usage?.input_tokens) inputTokens = usage.input_tokens
     if (usage?.output_tokens) outputTokens = usage.output_tokens
+    // Responses API 的 input_tokens 已是含缓存命中的总量，cached_tokens 只是其中命中的那部分。
+    const hit = usage?.input_tokens_details?.cached_tokens
+    if (hit) cacheRead = hit
   }
 
   try {
@@ -187,6 +198,10 @@ export async function* streamResponses(
         // 推理模型的思维摘要（仅在服务端产出时到达）——作为思考展示，本应用不持久化。
         const delta = evt.delta
         if (typeof delta === 'string' && delta) yield { type: 'thinking_delta', text: delta }
+      } else if (type === 'response.refusal.delta') {
+        // 结构化拒绝文本（同 Chat Completions 的 delta.refusal）：作为正文展示，别丢。
+        const delta = evt.delta
+        if (typeof delta === 'string' && delta) yield { type: 'text_delta', text: delta }
       } else if (type === 'response.output_item.added') {
         const item = evt.item as { id?: string; type?: string; call_id?: string; name?: string }
         if (item?.type === 'function_call' && item.id)
@@ -225,6 +240,7 @@ export async function* streamResponses(
         const reason = (evt.response as { incomplete_details?: { reason?: string } })
           ?.incomplete_details?.reason
         if (reason === 'max_output_tokens') stopReason = 'max_tokens'
+        else if (reason === 'content_filter') stopReason = 'refusal'
       } else if (type === 'response.failed') {
         takeUsage(evt)
         const err = (evt.response as { error?: { message?: string } })?.error
@@ -257,6 +273,7 @@ export async function* streamResponses(
   // 有完整工具调用即让主循环继续（覆盖 max_tokens：仅在工具调用完整收尾时才置 tool_use）。
   if (sawTool) stopReason = 'tool_use'
 
-  if (inputTokens || outputTokens) yield { type: 'usage', input: inputTokens, output: outputTokens }
+  if (inputTokens || outputTokens)
+    yield { type: 'usage', input: inputTokens, output: outputTokens, cacheRead }
   yield { type: 'done', stopReason }
 }

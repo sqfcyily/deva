@@ -8,11 +8,9 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { ExtKind, Skill, McpServer, McpKV, SubAgent, Persona } from '../mock/extensions'
+import type { ExtKind, Skill, McpServer, McpKV, Persona } from '../mock/extensions'
 import type {
   SkillRecord,
-  AgentRecord,
-  AgentUpsertInput,
   PersonaRecord,
   PersonaUpsertInput,
   McpServerConfig,
@@ -24,17 +22,20 @@ import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 
 /**
- * 扩展配置（全局，与项目无关）：技能 / MCP 服务 / 子智能体。
+ * 扩展配置（全局，与项目无关）：技能 / MCP 服务 / Agent 提示词。
  * 左侧面板选中某项 → 中央详情页展示与编辑；也可新建自定义项。
  *
- * 技能 / MCP / 子智能体均已**文件回填**：挂载时经 `deva.skills.list()` / `deva.mcp.list()` /
- * `deva.agents.list()` 读取 ~/.deva，增删改启停都落盘；MCP 还订阅 `deva.mcp.onStatus`
- * 实时打运行期状态补丁（连接/断开/错误）。子智能体经 `run_subagent` 工具在主进程内递归派生。
+ * 三类均已**文件回填**：挂载时经 `deva.skills.list()` / `deva.mcp.list()` /
+ * `deva.personas.list()` 读取 ~/.deva，增删改启停都落盘；MCP 还订阅 `deva.mcp.onStatus`
+ * 实时打运行期状态补丁（连接/断开/错误）。
+ *
+ * 子智能体**不在此列**：它是内置能力（通用 / Explore / Plan，见 main/services/subagents.ts），
+ * 由模型经 `run_subagent` 在主进程内递归派生，不落盘、不可配置、不进本页。
  */
-type AnyExt = Skill | McpServer | SubAgent | Persona
-// 各类各自的部分补丁（并集，非交集）：`tools` 在 McpServer 与 SubAgent 上类型不同
+type AnyExt = Skill | McpServer | Persona
+// 各类各自的部分补丁（并集，非交集）：`tools` 在 McpServer 与 Persona 上类型不同
 // （McpTool[] vs string[]），交集会退化为不可满足的 `McpTool[] & string[]`，故用并集。
-type ExtPatch = Partial<Skill> | Partial<McpServer> | Partial<SubAgent> | Partial<Persona>
+type ExtPatch = Partial<Skill> | Partial<McpServer> | Partial<Persona>
 
 export interface Selection {
   kind: ExtKind
@@ -44,7 +45,6 @@ export interface Selection {
 interface ExtensionsContextValue {
   skills: Skill[]
   mcp: McpServer[]
-  subagents: SubAgent[]
   personas: Persona[]
   selected: Selection | null
   /**
@@ -94,34 +94,6 @@ function recToSkill(rec: SkillRecord): Skill {
     scope: 'global',
     source: rec.source ?? 'custom',
     enabled: rec.enabled
-  }
-}
-
-/** AgentRecord（主进程）→ 渲染层 SubAgent（description → desc + 全局/自定义徽标字段）。 */
-function agentRecToSub(rec: AgentRecord): SubAgent {
-  return {
-    id: rec.id,
-    name: rec.name,
-    desc: rec.description,
-    model: rec.model,
-    tools: rec.tools,
-    prompt: rec.prompt,
-    scope: 'global',
-    source: 'custom',
-    enabled: rec.enabled
-  }
-}
-
-/** SubAgent → upsert 入参（desc → description）。 */
-function subToInput(a: SubAgent): AgentUpsertInput {
-  return {
-    id: a.id,
-    name: a.name,
-    description: a.desc,
-    model: a.model,
-    tools: a.tools,
-    prompt: a.prompt,
-    enabled: a.enabled
   }
 }
 
@@ -245,7 +217,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
   const dialog = useDialog()
   const [skills, setSkills] = useState<Skill[]>([])
   const [mcp, setMcp] = useState<McpServer[]>([])
-  const [subagents, setSubagents] = useState<SubAgent[]>([])
   const [personas, setPersonas] = useState<Persona[]>([])
   const [selected, setSelected] = useState<Selection | null>(null)
 
@@ -303,22 +274,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
     }
   }, [])
 
-  // 挂载：从磁盘载入子智能体。
-  useEffect(() => {
-    let alive = true
-    void window.deva?.agents
-      ?.list()
-      .then((list) => {
-        if (alive) setSubagents(list.map(agentRecToSub))
-      })
-      .catch(() => {
-        /* 读失败 → 保持空态 */
-      })
-    return () => {
-      alive = false
-    }
-  }, [])
-
   // 挂载：从磁盘载入 Agent 提示词（Personas）。
   useEffect(() => {
     let alive = true
@@ -335,7 +290,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
     }
   }, [])
 
-  // 显式刷新：重新从磁盘拉取四类扩展清单（见接口 refresh 注释）。只用稳定的 setter / 模块级转换器 /
+  // 显式刷新：重新从磁盘拉取三类扩展清单（见接口 refresh 注释）。只用稳定的 setter / 模块级转换器 /
   // window.deva，故 useCallback([]) 标识恒稳定，可安全作 effect 依赖而不致刷新循环。Provider 为
   // 应用级、不会卸载，故 .then 里 setState 无卸载竞态，无需 alive 守卫。
   const refresh = useCallback((): void => {
@@ -347,10 +302,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       ?.list()
       .then((l) => setMcp(l.map(viewToMcp)))
       .catch(() => {})
-    void window.deva?.agents
-      ?.list()
-      .then((l) => setSubagents(l.map(agentRecToSub)))
-      .catch(() => {})
     void window.deva?.personas
       ?.list()
       .then((l) => setPersonas(l.map(personaRecToPersona)))
@@ -360,8 +311,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
   const setterFor = (kind: ExtKind): React.Dispatch<React.SetStateAction<AnyExt[]>> => {
     if (kind === 'skill') return setSkills as React.Dispatch<React.SetStateAction<AnyExt[]>>
     if (kind === 'mcp') return setMcp as React.Dispatch<React.SetStateAction<AnyExt[]>>
-    if (kind === 'persona') return setPersonas as React.Dispatch<React.SetStateAction<AnyExt[]>>
-    return setSubagents as React.Dispatch<React.SetStateAction<AnyExt[]>>
+    return setPersonas as React.Dispatch<React.SetStateAction<AnyExt[]>>
   }
 
   const patchLocal = (kind: ExtKind, id: string, fn: (item: AnyExt) => AnyExt): void =>
@@ -421,23 +371,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       })()
     }
 
-    const addSubagent = (): void => {
-      void (async () => {
-        const rec = await window.deva?.agents?.upsert({
-          name: '新子智能体',
-          description: '',
-          model: '',
-          tools: [],
-          prompt: '',
-          enabled: true
-        })
-        if (!rec) return
-        const a = agentRecToSub(rec)
-        setSubagents((list) => [...list, a])
-        setSelected({ kind: 'subagent', id: a.id })
-      })()
-    }
-
     const addPersona = (): void => {
       void (async () => {
         const rec = await window.deva?.personas?.upsert({
@@ -488,7 +421,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
     return {
       skills,
       mcp,
-      subagents,
       personas,
       selected,
       refresh,
@@ -507,9 +439,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         } else if (kind === 'persona') {
           const cur = personas.find((p) => p.id === id)
           if (cur) void window.deva?.personas?.setEnabled(id, !cur.enabled).catch(() => {})
-        } else {
-          const cur = subagents.find((a) => a.id === id)
-          if (cur) void window.deva?.agents?.setEnabled(id, !cur.enabled).catch(() => {})
         }
       },
       update: (kind, id, patch) => {
@@ -529,12 +458,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
             void window.deva?.personas
               ?.upsert(personaToInput({ ...cur, ...(patch as Partial<Persona>) }))
               .catch(() => {})
-        } else {
-          const cur = subagents.find((a) => a.id === id)
-          if (cur)
-            void window.deva?.agents
-              ?.upsert(subToInput({ ...cur, ...(patch as Partial<SubAgent>) }))
-              .catch(() => {})
         }
       },
       remove: (kind, id) => {
@@ -544,15 +467,13 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         setSelected((cur) => (cur && cur.kind === kind && cur.id === id ? null : cur))
         if (kind === 'skill') void window.deva?.skills?.remove(id).catch(() => {})
         else if (kind === 'mcp') void window.deva?.mcp?.remove(id).catch(() => {})
-        else if (kind === 'persona') void window.deva?.personas?.remove(id).catch(() => {})
-        else void window.deva?.agents?.remove(id).catch(() => {})
+        else void window.deva?.personas?.remove(id).catch(() => {})
       },
       add: (kind) => {
-        // 技能的「+」即上传导入（无手写空建）；MCP / 子智能体 / Agent 提示词为可编辑空建。
+        // 技能的「+」即上传导入（无手写空建）；MCP / Agent 提示词为可编辑空建。
         if (kind === 'skill') return importSkill()
         if (kind === 'mcp') return addMcp()
-        if (kind === 'persona') return addPersona()
-        return addSubagent()
+        return addPersona()
       },
       upsertPersona,
       reorderPersonas,
@@ -569,7 +490,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
         }
       }
     }
-  }, [skills, mcp, subagents, personas, selected, refresh, t, dialog])
+  }, [skills, mcp, personas, selected, refresh, t, dialog])
 
   return <ExtensionsContext.Provider value={value}>{children}</ExtensionsContext.Provider>
 }

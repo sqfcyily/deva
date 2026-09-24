@@ -9,7 +9,6 @@ import { registerProviderIpc } from './services/provider'
 import { registerDecisionIpc } from './services/decision'
 import { registerChatIpc } from './services/chat'
 import { registerSkillsIpc } from './services/skills'
-import { registerAgentsIpc } from './services/agents'
 import { ensureSeededPersonas, registerPersonasIpc } from './services/personas'
 import {
   autoConnectEnabledServers,
@@ -229,9 +228,6 @@ if (!app.requestSingleInstanceLock()) {
 
   // 技能（Skills，全局 ~/.deva/skills/*/SKILL.md；渐进式披露，启用态入 config.json）
   registerSkillsIpc(() => mainWindow)
-
-  // 子智能体（Subagents，全局 ~/.deva/agents/*.md；run_subagent 进程内递归派生，启用态入 config.json）
-  registerAgentsIpc()
 
   // Agent 提示词（Personas，全局 ~/.deva/personas/*.md；已启用者追加进主智能体系统提示词，启用态入 config.json）
   // 首启种子：逐条种入默认角色（Deva / 小码酱 …，见 default-personas.ts），对话优先外壳默认身份；

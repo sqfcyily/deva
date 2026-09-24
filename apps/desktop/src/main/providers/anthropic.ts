@@ -43,6 +43,39 @@ function mapMessages(messages: Message[]): unknown[] {
   return messages.map((m) => ({ role: m.role, content: mapContent(m.content) }))
 }
 
+/**
+ * 提示缓存断点（Anthropic 专有，见 GenerateRequest.cache）。服务端按**前缀字节**匹配，
+ * 渲染顺序固定为 tools → system → messages，故本适配器打两个断点、分工明确：
+ *  ① system 末尾：把「工具定义 + 系统提示」这段整轮不变的大前缀钉成缓存条目；
+ *  ② 最后一条消息的末块：随对话增长而移动，把已产生的历史尾巴一并写进缓存，
+ *     下一步（Agent 循环每步都要重发全量历史）即可命中，省掉 O(N²) 的重复计费。
+ * 命中读取约为基础输入价的 1/10，写入则为 1.25 倍：**两次请求即回本**，而工具循环动辄十几步。
+ * 多断点不会重复计费——已缓存的部分只写增量。前缀短于该模型的最小可缓存长度（512~4096 token
+ * 不等）时服务端**静默忽略**，不报错。是否真的生效看 usage 的 cacheRead / cacheWrite。
+ */
+const CACHE_CONTROL = { type: 'ephemeral' } as const
+
+/** 断点②：给最后一条消息的最后一个内容块挂上标记（就地改 mapMessages 产出的新对象）。 */
+function markCacheTail(messages: unknown[]): void {
+  const last = messages[messages.length - 1] as { content?: unknown } | undefined
+  const blocks = last?.content
+  if (!Array.isArray(blocks) || blocks.length === 0) return
+  const tail = blocks[blocks.length - 1]
+  if (tail && typeof tail === 'object')
+    (tail as Record<string, unknown>).cache_control = CACHE_CONTROL
+}
+
+/**
+ * Anthropic 用量字段。**input_tokens 只计「未命中缓存的余量」**，缓存写入 / 命中分别单列，
+ * 三者相加才是本次请求的总提示 token——这点与 OpenAI/DeepSeek 的「prompt_tokens 即总量」相反。
+ */
+interface AnthropicUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
+}
+
 function mapStopReason(raw: string | null | undefined): StopReason {
   switch (raw) {
     case 'end_turn':
@@ -51,6 +84,9 @@ function mapStopReason(raw: string | null | undefined): StopReason {
       return 'tool_use'
     case 'max_tokens':
       return 'max_tokens'
+    // 内容策略拒绝：正文通常为空，必须单独归类（否则渲染层会误报「上下文接近上限」）。
+    case 'refusal':
+      return 'refusal'
     case 'stop_sequence':
       return 'stop'
     default:
@@ -63,10 +99,18 @@ export async function* streamAnthropic(
   req: GenerateRequest
 ): AsyncGenerator<StreamEvent> {
   const url = `${cfg.baseURL.replace(/\/$/, '')}/v1/messages`
+  const messages = mapMessages(req.messages)
+  if (req.cache) markCacheTail(messages)
+  // 断点①：挂 cache_control 须把 system 从纯字符串改成 text 块数组（字符串挂不上）。
+  // 不打断点时照旧发字符串，请求体与改造前逐字节一致。
+  const system =
+    req.cache && req.system
+      ? [{ type: 'text', text: req.system, cache_control: CACHE_CONTROL }]
+      : req.system
   const body = {
     model: req.model,
-    system: req.system,
-    messages: mapMessages(req.messages),
+    system,
+    messages,
     tools: req.tools?.map((t) => ({
       name: t.name,
       description: t.description,
@@ -109,9 +153,22 @@ export async function* streamAnthropic(
 
   // index -> 正在累积的 tool_use 块
   const toolBlocks = new Map<number, { id: string; name: string; json: string }>()
-  let inputTokens = 0
+  /** 未命中缓存的输入余量（Anthropic 的 input_tokens 语义），**不是**总量。 */
+  let uncachedInput = 0
+  let cacheWrite = 0
+  let cacheRead = 0
   let outputTokens = 0
   let stopReason: StopReason = 'end_turn'
+
+  // 用量分散在 message_start（输入侧）与 message_delta（输出侧）两处，且各版本带的字段互有出入，
+  // 统一用同一个取值器：谁带哪段就取哪段，不覆盖没带的。
+  const takeUsage = (u: AnthropicUsage | undefined): void => {
+    if (!u) return
+    if (u.input_tokens) uncachedInput = u.input_tokens
+    if (u.output_tokens) outputTokens = u.output_tokens
+    if (u.cache_creation_input_tokens) cacheWrite = u.cache_creation_input_tokens
+    if (u.cache_read_input_tokens) cacheRead = u.cache_read_input_tokens
+  }
 
   try {
     for await (const { data } of iterateSSE(res, STREAM_IDLE_MS)) {
@@ -125,8 +182,7 @@ export async function* streamAnthropic(
       const type = evt.type as string
 
       if (type === 'message_start') {
-        const usage = (evt.message as { usage?: { input_tokens?: number } })?.usage
-        if (usage?.input_tokens) inputTokens = usage.input_tokens
+        takeUsage((evt.message as { usage?: AnthropicUsage })?.usage)
       } else if (type === 'content_block_start') {
         const index = evt.index as number
         const block = evt.content_block as { type: string; id?: string; name?: string }
@@ -164,8 +220,7 @@ export async function* streamAnthropic(
         }
       } else if (type === 'message_delta') {
         const delta = evt.delta as { stop_reason?: string }
-        const usage = evt.usage as { output_tokens?: number }
-        if (usage?.output_tokens) outputTokens = usage.output_tokens
+        takeUsage(evt.usage as AnthropicUsage | undefined)
         if (delta?.stop_reason) stopReason = mapStopReason(delta.stop_reason)
       } else if (type === 'error') {
         const err = evt.error as { message?: string }
@@ -187,6 +242,10 @@ export async function* streamAnthropic(
     return
   }
 
-  if (inputTokens || outputTokens) yield { type: 'usage', input: inputTokens, output: outputTokens }
+  // 归一成「总提示 token」：未命中余量 + 缓存写入 + 缓存命中。
+  // 未用提示缓存时后两项恒为 0，与旧行为逐字节一致；日后加了断点，压缩触发判定也不会因此失真。
+  const inputTokens = uncachedInput + cacheWrite + cacheRead
+  if (inputTokens || outputTokens)
+    yield { type: 'usage', input: inputTokens, output: outputTokens, cacheRead, cacheWrite }
   yield { type: 'done', stopReason }
 }

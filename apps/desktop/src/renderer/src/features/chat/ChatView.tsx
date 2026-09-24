@@ -31,6 +31,7 @@ import {
   CheckSquare,
   ClipboardList,
   ClipboardCheck,
+  FolderOpen,
   X
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
@@ -150,15 +151,17 @@ export type Activity =
   | { kind: 'subagent'; agent: string }
   | { kind: 'ask' }
   | { kind: 'plan' }
+  | { kind: 'mount' }
 
 /**
  * 从最后一条助手消息的块序列推断"此刻在干什么"：
- * 未答复的问答卡 / 未决计划 > 运行中的工具 / 子智能体 > 末块有正文=生成回答 > 其余=思考中。
+ * 未处理的挂载请求 / 未答复的问答卡 / 未决计划 > 运行中的工具 / 子智能体 > 末块有正文=生成回答 > 其余=思考中。
  */
 export function deriveActivity(messages: ChatMessage[]): Activity {
   const last = messages[messages.length - 1]
   if (!last || last.role !== 'assistant') return { kind: 'thinking' }
   const blocks = last.blocks
+  if (blocks.some((b) => b.kind === 'mount' && !b.decided)) return { kind: 'mount' }
   if (blocks.some((b) => b.kind === 'plan' && !b.decided)) return { kind: 'plan' }
   if (blocks.some((b) => b.kind === 'ask' && b.answers === undefined)) return { kind: 'ask' }
   for (let i = blocks.length - 1; i >= 0; i--) {
@@ -505,6 +508,16 @@ export function StatusIndicator({
     )
   }
 
+  // 等待挂载工作区：引导用户去上方卡片点「挂载工作区 / 暂不挂载」。
+  if (activity.kind === 'mount') {
+    return (
+      <div className="chat__status is-waiting" role="status" aria-live="polite">
+        <FolderOpen size={14} />
+        <span>{t('chat.work.awaitingMount')}</span>
+      </div>
+    )
+  }
+
   // 等待批准计划：引导用户去上方计划卡点「批准并执行 / 继续完善」。
   if (activity.kind === 'plan') {
     return (
@@ -636,6 +649,7 @@ export function BlockView({
   thinkingDone,
   onAsk,
   onPlan,
+  onMountReq,
   onOpenProposal,
   onOpenAutotask
 }: {
@@ -644,6 +658,8 @@ export function BlockView({
   onAsk: (key: string, answers: string[]) => void
   /** 回应 exit_plan 计划审阅（批准并执行 / 继续完善）。缺省 → 计划卡只读展示（如旧壳）。 */
   onPlan?: (key: string, decision: 'approve' | 'keep') => void
+  /** 回应「请求挂载工作区」（path=已选目录 / null=暂不挂载）。缺省 → 卡片只读展示（如旧壳）。 */
+  onMountReq?: (key: string, path: string | null) => void
   /** 点角色名片 → 打开预填的 PersonaEditor（仅对话优先外壳传入；旧壳不传 → 名片只读展示）。 */
   onOpenProposal?: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
   /** created 态定时任务名片「打开任务会话」（仅对话优先外壳传入；旧壳不传 → 不显跳转）。 */
@@ -700,11 +716,16 @@ export function BlockView({
     return <PlanReviewCard block={block} onPlan={onPlan} />
   }
 
+  if (block.kind === 'mount') {
+    return <MountRequestCard block={block} onMountReq={onMountReq} />
+  }
+
   // notice：回合终止说明（截断/空回合）或上下文压缩结果，弱化提示样式，区别于红色错误
   if (block.kind === 'notice') {
     const NOTICE_KEY: Record<typeof block.code, string> = {
       truncated: 'chat.notice.truncated',
       empty: 'chat.notice.empty',
+      refused: 'chat.notice.refused',
       compacted: 'chat.notice.compacted',
       compact_none: 'chat.notice.compactNone',
       compact_failed: 'chat.notice.compactFailed'
@@ -722,6 +743,74 @@ export function BlockView({
     <div className="msg__error">
       <AlertTriangle size={14} />
       <span style={{ whiteSpace: 'pre-wrap' }}>{block.message}</span>
+    </div>
+  )
+}
+
+/**
+ * 挂载工作区请求卡：未挂载工作区时，模型某次调用缺「相对路径基准」，主进程闸门已暂停循环等这里的处置。
+ * 「挂载工作区」走系统目录对话框（fs.openFolder，与输入框上方的挂载入口同一条路径与信任语义）——
+ * 目录只可能是用户亲手选的，卡片里绝不出现「按模型给的路径一键挂载」。取消对话框 ≠ 暂不挂载：
+ * 卡片保持未决，循环继续等着。decided 为终态、只读展示。
+ */
+function MountRequestCard({
+  block,
+  onMountReq
+}: {
+  block: Extract<ChatBlock, { kind: 'mount' }>
+  onMountReq?: (key: string, path: string | null) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const decided = block.decided
+  const pick = (): void => {
+    void (async () => {
+      const r = await window.deva.fs.openFolder()
+      if (r && onMountReq) onMountReq(block.key, r.path)
+    })()
+  }
+  return (
+    <div className={decided ? 'msg__mount is-decided' : 'msg__mount'}>
+      <div className="msg__mount-head">
+        <FolderOpen size={14} />
+        <span className="msg__mount-title">{t('chat.mount.cardTitle')}</span>
+        {decided && (
+          <span className="msg__mount-badge">
+            {decided === 'mounted' ? t('chat.mount.mounted') : t('chat.mount.skipped')}
+          </span>
+        )}
+      </div>
+      <div className="msg__mount-body">
+        {decided === 'mounted' ? (
+          <span>
+            {t('chat.mount.doneHint')} <code>{block.root}</code>
+          </span>
+        ) : (
+          <>
+            <span>
+              {block.path ? t('chat.mount.reasonPath') : t('chat.mount.reasonScan')}
+              {block.path && <code>{block.path}</code>}
+            </span>
+            <span className="msg__mount-tool">
+              {t('chat.mount.byTool')} <code>{block.tool}</code>
+            </span>
+          </>
+        )}
+      </div>
+      {!decided && onMountReq && (
+        <div className="msg__mount-actions">
+          <button type="button" className="btn btn--sm btn--primary" onClick={pick}>
+            <FolderOpen size={14} />
+            {t('chat.mount.pick')}
+          </button>
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={() => onMountReq(block.key, null)}
+          >
+            {t('chat.mount.skip')}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
