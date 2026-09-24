@@ -1056,9 +1056,9 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
     { label: t('cf.git.fetch'), icon: <Download size={14} />, onClick: () => void run(() => window.deva.git.fetch(root), t('cf.git.doneFetch')) },
     { label: t('cf.git.pull'), icon: <ArrowDownToLine size={14} />, onClick: () => void run(() => window.deva.git.pull(root), t('cf.git.donePull')) },
     { label: t('cf.git.push'), icon: <ArrowUpFromLine size={14} />, onClick: () => void run(() => window.deva.git.push(root, status.upstream ? null : status.branch), t('cf.git.donePush')) },
-    { label: t('cf.git.switchBranch'), icon: <GitBranch size={14} />, onClick: () => void openBranches() },
     { label: t('cf.git.commit'), icon: <GitCommitHorizontal size={14} />, onClick: () => setCommitOpen(true) },
-    { label: t('cf.git.refresh'), icon: <RefreshCw size={14} />, onClick: () => void refresh() }
+    { label: t('cf.git.refresh'), icon: <RefreshCw size={14} />, onClick: () => void refresh() },
+    { label: t('cf.git.switchBranch'), icon: <GitBranch size={14} />, onClick: () => void openBranches() }
   ]
 
   const branchItems = branches.map((b) => ({
