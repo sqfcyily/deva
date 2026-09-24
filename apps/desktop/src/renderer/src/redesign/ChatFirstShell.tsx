@@ -154,6 +154,31 @@ function reorderIds(
 /** 距底 ≤ 此像素即视为「贴住底部」，留缓冲避免临界抖动（与 ChatView 同值）。 */
 const BOTTOM_THRESHOLD = 64
 
+/**
+ * 右侧「对话轮次索引」面板参数。纯渲染层视觉常量：不持久化、不给设置项。
+ * 面板只索引用户消息（对话的锚点），轮次少时不出现，避免短对话占位。
+ */
+/** 触发阈值：用户消息条数 ≥ 此值才渲染面板。 */
+const TOC_MIN_TURNS = 4
+/** 展开态面板宽度（px）。 */
+const TOC_WIDTH = 160
+/**
+ * 判定「右侧留白够常驻展开」时，在面板宽度之外额外要求的余量（px）。
+ * 须覆盖面板自身的右内缩（CSS .cf-toc 的 right: var(--space-4) = 16px）再留 16px 呼吸位，
+ * 否则留白恰好卡在阈值时面板会压住正文右缘。
+ */
+const TOC_GAP = 32
+/**
+ * 当前轮判定线：距滚动容器顶边的偏移（px），最后一条越过它的用户消息即当前轮。
+ * 须与 {@link TOC_JUMP_PAD} 保持接近——二者之差若超过相邻两条用户消息的最小间距，
+ * 跳转落位后下一轮会立刻越线把高亮抢走，表现为「点了 A 却亮 B」。
+ */
+const TOC_ACTIVE_OFFSET = 48
+/** 跳转后目标消息距容器顶边的留白（px）。 */
+const TOC_JUMP_PAD = 16
+/** 索引项保留的文本长度上限（DOM 体积护栏）；列表里的视觉截断交给 CSS line-clamp。 */
+const TOC_TEXT_MAX = 200
+
 /** 系统默认角色 id（首启种子「Deva」，id 恒为 general）：兼作兜底身份，且不允许删除。 */
 const DEFAULT_PERSONA_ID = 'general'
 
@@ -2335,6 +2360,125 @@ function Conversation({
     }
     return arr
   }, [messages])
+  // 右侧轮次索引的数据源：只取用户消息，turn 与上面的 turnOf 同源（每遇 user +1，0 基）。
+  // 正文为空（纯附件）时回落到附件名，再空则用占位文案，保证每轮都有可点的锚点。
+  const tocItems = useMemo<TocItem[]>(() => {
+    const out: TocItem[] = []
+    let turn = -1
+    for (const m of messages) {
+      if (m.role !== 'user') continue
+      turn++
+      let full = m.blocks
+        .map((b) => (b.kind === 'text' ? b.text : ''))
+        .join('')
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (!full && m.attachments?.length) full = m.attachments.map((a) => a.name).join(' ')
+      if (!full) full = t('cf.toc.untitled')
+      out.push({
+        turn,
+        text: full.length > TOC_TEXT_MAX ? full.slice(0, TOC_TEXT_MAX) + '…' : full
+      })
+    }
+    return out
+  }, [messages, t])
+
+  // 当前所在轮（高亮）。-1 表示无（无消息时）。滚动中经 rAF 去抖重算，避免每个滚动事件都量 DOM。
+  const [activeTurn, setActiveTurn] = useState(-1)
+  const tocRafRef = useRef(0)
+  const recomputeActive = useCallback((): void => {
+    const el = scrollRef.current
+    if (!el) return
+    const nodes = el.querySelectorAll<HTMLElement>('.cf-msg.is-user[data-turn]')
+    if (nodes.length === 0) {
+      setActiveTurn((p) => (p === -1 ? p : -1))
+      return
+    }
+    let hit = -1
+    if (el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD) {
+      // 已滚到底时强制取最后一轮：末轮下方内容往往不足以把它顶过判定线，
+      // 不特判就会出现「点了最后一项却高亮上一轮」。
+      hit = Number(nodes[nodes.length - 1].dataset.turn)
+    } else {
+      const line = el.getBoundingClientRect().top + TOC_ACTIVE_OFFSET
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i].getBoundingClientRect().top > line) break
+        hit = Number(nodes[i].dataset.turn)
+      }
+      // 全部都在判定线之下（滚到最顶）：取第一条，保证总有高亮。
+      if (hit < 0) hit = Number(nodes[0].dataset.turn)
+    }
+    if (!Number.isInteger(hit)) hit = -1
+    setActiveTurn((p) => (p === hit ? p : hit))
+  }, [])
+  const scheduleActive = useCallback((): void => {
+    if (tocRafRef.current) return
+    tocRafRef.current = requestAnimationFrame(() => {
+      tocRafRef.current = 0
+      recomputeActive()
+    })
+  }, [recomputeActive])
+  useEffect(
+    () => () => {
+      // 清零不可省：tocRafRef 兼作「已排队」闸门，只 cancel 不复位会让闸门永久关闭，
+      // 之后所有 scheduleActive() 都直接 return（StrictMode 挂载即 setup→cleanup→setup，必踩）。
+      if (tocRafRef.current) {
+        cancelAnimationFrame(tocRafRef.current)
+        tocRafRef.current = 0
+      }
+    },
+    []
+  )
+
+  // 面板是否常驻展开：消息列固定 --cf-main 宽且居中，右侧留白够放下面板才常驻，否则收起为细条
+  // （悬停再展开为浮层），免得窄窗口下压住正文。宽度读 CSS 变量，不在 JS 里重复写死。
+  const [tocOpen, setTocOpen] = useState(false)
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const measure = (): void => {
+      const raw = parseFloat(getComputedStyle(el).getPropertyValue('--cf-main'))
+      const mainW = Number.isFinite(raw) && raw > 0 ? raw : 780
+      const gutter = (el.clientWidth - Math.min(el.clientWidth, mainW)) / 2
+      const open = gutter >= TOC_WIDTH + TOC_GAP
+      setTocOpen((p) => (p === open ? p : open))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // 索引面板不在 .cf-msgs 内，鼠标停在它上面滚轮什么也不会滚（面板「吞掉」滚轮，
+  // 看起来就像高亮卡住不跟随）。故由面板把自己消化不掉的滚动量转发过来。
+  const scrollMsgsBy = useCallback((dy: number): void => {
+    const el = scrollRef.current
+    if (el) el.scrollTop += dy
+  }, [])
+
+  // 跳到某一轮的用户消息：复用右键删除已标注的 data-turn 作锚点。
+  const jumpToTurn = useCallback((turn: number): void => {
+    const el = scrollRef.current
+    if (!el) return
+    const target = el.querySelector<HTMLElement>(`.cf-msg.is-user[data-turn="${turn}"]`)
+    if (!target) return
+    const top = Math.max(
+      0,
+      target.getBoundingClientRect().top -
+        el.getBoundingClientRect().top +
+        el.scrollTop -
+        TOC_JUMP_PAD
+    )
+    // 贴底态按目标位置同步算，不能等 onScroll 回填：目标与当前位置相同时一次 scroll 都不会触发，
+    // 贴底态会卡在错值（§4.8 流式跟随据此决策）。
+    const atBot = el.scrollHeight - top - el.clientHeight <= BOTTOM_THRESHOLD
+    stickRef.current = atBot
+    setAtBottom(atBot)
+    // 直接落位，不用 behavior:"smooth"：长对话里一路滚过去既慢又晃眼。
+    el.scrollTop = top
+    setActiveTurn(turn)
+  }, [])
+
   const exitSelect = (): void => {
     setSelecting(false)
     setSelected(new Set())
@@ -2385,9 +2529,11 @@ function Conversation({
 
   // 新内容到达：仅当仍贴底才自动滚到底；用户上滚查看历史时保持不动。
   useEffect(() => {
+    scheduleActive()
     if (!stickRef.current) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, streaming])
 
   // 切换会话（Conversation 不按会话重挂载）：复位贴底并直接滚到底；同时退出选择态（选择只属当前对话）。
@@ -2397,6 +2543,7 @@ function Conversation({
     setSelecting(false)
     setSelected(new Set())
     setCtxMenu(null)
+    setActiveTurn(-1)
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [currentSessionId])
@@ -2408,6 +2555,7 @@ function Conversation({
     const atBot = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD
     stickRef.current = atBot
     setAtBottom((prev) => (prev === atBot ? prev : atBot))
+    scheduleActive()
   }
 
   // 回到最新：平滑滚到底并恢复自动跟随。
@@ -2462,53 +2610,71 @@ function Conversation({
       </div>
 
       {/* 删除入口在聊天区右键唤起（见 onMsgsContextMenu）；选择态由右键菜单的「选择删除」开启。 */}
-      <div className="cf-msgs" ref={scrollRef} onScroll={onScroll} onContextMenu={onMsgsContextMenu}>
-        <div className={`cf-msgs__inner${selecting ? ' is-selecting' : ''}`}>
-          {messages.length === 0 ? (
-            <div className="cf-empty">
-              {owner ? (owner.desc ? `${owner.name} · ${owner.desc}` : owner.name) : ''}
-            </div>
-          ) : selecting ? (
-            // 选择态：按「轮」分组，每轮一张可勾选卡片；前言（turn<0）原样呈现、不可选。
-            groupTurns(messages).map((g) => {
-              const items = messages.slice(g.from, g.to)
-              if (g.turn < 0)
+      {/* .cf-convmid 只为给右侧轮次索引面板提供定位上下文（.cf-msgs 自身会滚动，面板不能放里面）。 */}
+      <div className="cf-convmid">
+        <div
+          className="cf-msgs"
+          ref={scrollRef}
+          onScroll={onScroll}
+          onContextMenu={onMsgsContextMenu}
+        >
+          <div className={`cf-msgs__inner${selecting ? ' is-selecting' : ''}`}>
+            {messages.length === 0 ? (
+              <div className="cf-empty">
+                {owner ? (owner.desc ? `${owner.name} · ${owner.desc}` : owner.name) : ''}
+              </div>
+            ) : selecting ? (
+              // 选择态：按「轮」分组，每轮一张可勾选卡片；前言（turn<0）原样呈现、不可选。
+              groupTurns(messages).map((g) => {
+                const items = messages.slice(g.from, g.to)
+                if (g.turn < 0)
+                  return (
+                    <Fragment key={`pre-${g.from}`}>
+                      {items.map((m, k) => renderMsg(m, g.from + k))}
+                    </Fragment>
+                  )
+                const isSel = selected.has(g.turn)
                 return (
-                  <Fragment key={`pre-${g.from}`}>
-                    {items.map((m, k) => renderMsg(m, g.from + k))}
-                  </Fragment>
-                )
-              const isSel = selected.has(g.turn)
-              return (
-                <div
-                  key={`turn-${g.turn}`}
-                  className={`cf-turn is-selectable${isSel ? ' is-selected' : ''}`}
-                  role="button"
-                  aria-pressed={isSel}
-                  onClick={() => toggleTurn(g.turn)}
-                >
-                  <span className="cf-turn__check" aria-hidden>
-                    {isSel && <Check size={13} />}
-                  </span>
-                  <div className="cf-turn__body">
-                    {items.map((m, k) => renderMsg(m, g.from + k))}
+                  <div
+                    key={`turn-${g.turn}`}
+                    className={`cf-turn is-selectable${isSel ? ' is-selected' : ''}`}
+                    role="button"
+                    aria-pressed={isSel}
+                    onClick={() => toggleTurn(g.turn)}
+                  >
+                    <span className="cf-turn__check" aria-hidden>
+                      {isSel && <Check size={13} />}
+                    </span>
+                    <div className="cf-turn__body">
+                      {items.map((m, k) => renderMsg(m, g.from + k))}
+                    </div>
                   </div>
-                </div>
-              )
-            })
-          ) : (
-            <>
-              {messages.map((m, i) => renderMsg(m, i, turnOf[i]))}
-              {streaming && (
-                <StatusIndicator
-                  activity={deriveActivity(messages)}
-                  status={streamStatus}
-                  onStop={onStop}
-                />
-              )}
-            </>
-          )}
+                )
+              })
+            ) : (
+              <>
+                {messages.map((m, i) => renderMsg(m, i, turnOf[i]))}
+                {streaming && (
+                  <StatusIndicator
+                    activity={deriveActivity(messages)}
+                    status={streamStatus}
+                    onStop={onStop}
+                  />
+                )}
+              </>
+            )}
+          </div>
         </div>
+        {/* 轮次索引：只在轮次够多且非选择态时出现（选择态要让位给勾选交互）。 */}
+        {!selecting && tocItems.length >= TOC_MIN_TURNS && (
+          <TurnIndex
+            items={tocItems}
+            active={activeTurn}
+            collapsed={!tocOpen}
+            onJump={jumpToTurn}
+            onWheelOut={scrollMsgsBy}
+          />
+        )}
       </div>
 
       {ctxMenu && (
@@ -2574,6 +2740,89 @@ function Conversation({
         />
       )}
     </main>
+  )
+}
+
+/** 一条轮次索引项：turn 与 turnOf/groupTurns 同源的 0 基轮下标；text 已归一空白并限长。 */
+interface TocItem {
+  turn: number
+  text: string
+}
+
+/**
+ * 右侧对话轮次索引面板（对标 DeepSeek 网页版）：只索引用户消息，点击跳转、悬停看完整摘要、
+ * 当前轮高亮。collapsed 时只显刻度短横线，悬停整条面板才展开为浮层文字列表——窄窗口下
+ * 右侧留白不足以常驻，收起可避免压住正文。
+ *
+ * 摘要卡用 position:fixed 才能逃出 .cf-toc__list 的 overflow 裁剪；因此本组件与其祖先
+ * 都绝不可用 transform 定位（transform 会使自身成为 fixed 的包含块，卡片就被拉回来裁掉）。
+ */
+function TurnIndex({
+  items,
+  active,
+  collapsed,
+  onJump,
+  onWheelOut
+}: {
+  items: TocItem[]
+  /** 当前所在轮下标；-1 表示无。 */
+  active: number
+  /** 右侧留白不足：收起为细竖条，悬停才展开。 */
+  collapsed: boolean
+  onJump: (turn: number) => void
+  /** 把面板自身消化不掉的滚轮量转发给消息滚动容器（像素）。 */
+  onWheelOut: (deltaY: number) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const [hovering, setHovering] = useState(false)
+  const listRef = useRef<HTMLDivElement>(null)
+
+  // 轮次多到列表内部要滚动时，保证高亮项始终可见。
+  useEffect(() => {
+    const el = listRef.current?.querySelector<HTMLElement>('.cf-toc__item.is-active')
+    el?.scrollIntoView({ block: 'nearest' })
+  }, [active])
+
+  // 滚轮：轮次多到列表自己能滚时先给列表，滚到头再转发给消息流，
+  // 免得鼠标停在面板上时整个界面纹丝不动。deltaMode 非像素时换算成像素。
+  const onWheel = (e: React.WheelEvent<HTMLDivElement>): void => {
+    const list = listRef.current
+    if (!list) return
+    const room = list.scrollHeight - list.clientHeight
+    const canSelf =
+      room > 1 &&
+      (e.deltaY < 0 ? list.scrollTop > 0 : list.scrollTop < room - 1)
+    if (canSelf) return
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? list.clientHeight : 1
+    onWheelOut(e.deltaY * unit)
+  }
+
+  // 收起态被悬停时临时展开；常驻态恒展开。
+  const open = !collapsed || hovering
+  return (
+    <nav
+      className={`cf-toc${collapsed ? ' is-collapsed' : ''}${open ? ' is-open' : ''}`}
+      aria-label={t('cf.toc.title')}
+      onMouseEnter={() => setHovering(true)}
+      onMouseLeave={() => {
+        setHovering(false)
+      }}
+    >
+      <div className="cf-toc__list" ref={listRef} onWheel={onWheel}>
+        {items.map((it) => (
+          <button
+            key={it.turn}
+            className={`cf-toc__item${it.turn === active ? ' is-active' : ''}`}
+            aria-current={it.turn === active ? 'true' : undefined}
+            title={it.text}
+            onClick={() => onJump(it.turn)}
+          >
+            <span className="cf-toc__dash" aria-hidden />
+            <span className="cf-toc__label">{it.text}</span>
+          </button>
+        ))}
+      </div>
+    </nav>
   )
 }
 

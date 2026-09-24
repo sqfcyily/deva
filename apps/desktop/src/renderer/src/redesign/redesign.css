@@ -782,12 +782,165 @@
   cursor: not-allowed;
 }
 
-/* 消息流 */
+/* 消息流。外层 .cf-convmid 只做定位容器：.cf-msgs 自身滚动，右侧轮次索引面板不能放它里面，
+   否则会跟着内容滚走。 */
+.cf-convmid {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .cf-msgs {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-5) 0;
+}
+
+/* ---- 对话轮次索引（右侧导航） ---- */
+/* 垂直居中刻意用 top/bottom + flex 而非 transform：transform 会让 .cf-toc 成为
+   .cf-toc__card（position:fixed）的包含块，摘要卡就被拉回面板内并被裁掉。
+   right 须大于 .cf-msgs 的 10px 滚动条宽度，才不会压在滚动条上。 */
+.cf-toc {
+  position: absolute;
+  right: var(--space-4);
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  pointer-events: none;
+  z-index: 40;
+}
+.cf-toc__list {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 160px;
+  max-height: 100%;
+  padding: var(--space-2) 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  border-radius: var(--radius);
+  transition:
+    width 0.14s ease,
+    background 0.14s ease;
+}
+.cf-toc__list::-webkit-scrollbar {
+  display: none;
+}
+.cf-toc__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 4px var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--fg-subtle);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.cf-toc__item:hover {
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+}
+.cf-toc__item.is-active {
+  color: var(--fg);
+}
+/* 刻度短横线：收起态是唯一可见部分，当前轮加长加粗并染 accent。 */
+.cf-toc__dash {
+  flex: none;
+  width: 10px;
+  height: 2px;
+  margin-top: 8px;
+  border-radius: 1px;
+  background: var(--border-strong);
+  transition:
+    width 0.14s ease,
+    background 0.14s ease;
+}
+.cf-toc__item:hover .cf-toc__dash {
+  background: var(--fg-subtle);
+}
+.cf-toc__item.is-active .cf-toc__dash {
+  width: 14px;
+  height: 3px;
+  background: var(--accent);
+}
+/* 列表里只给两行，超出以省略号收尾；完整文本走悬停摘要卡。 */
+.cf-toc__label {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  word-break: break-word;
+}
+.cf-toc__item.is-active .cf-toc__label {
+  font-weight: 600;
+}
+
+/* 收起态（右侧留白不足）：只留刻度，悬停整条面板才展开成浮层，不挤压正文。 */
+.cf-toc.is-collapsed .cf-toc__list {
+  width: 26px;
+  align-items: flex-end;
+}
+.cf-toc.is-collapsed .cf-toc__item {
+  justify-content: flex-end;
+  padding: 3px var(--space-2);
+}
+.cf-toc.is-collapsed .cf-toc__label {
+  display: none;
+}
+.cf-toc.is-collapsed.is-open .cf-toc__list {
+  width: 200px;
+  align-items: stretch;
+  padding: var(--space-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.cf-toc.is-collapsed.is-open .cf-toc__item {
+  justify-content: flex-start;
+  padding: 4px var(--space-2);
+}
+/* 浮层里每条只占一行：浮层是盖在正文上的，越矮越不挡；完整文本走悬停摘要卡。 */
+.cf-toc.is-collapsed.is-open .cf-toc__label {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+}
+
+/* 悬停摘要卡：fixed 以逃出 .cf-toc__list 的 overflow 裁剪；坐标由 JS 夹回视口内。 */
+.cf-toc__card {
+  position: fixed;
+  z-index: 41;
+  max-width: 320px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 8;
+  line-clamp: 8;
+  overflow: hidden;
+  pointer-events: none;
 }
 .cf-msgs__inner {
   max-width: var(--cf-main);

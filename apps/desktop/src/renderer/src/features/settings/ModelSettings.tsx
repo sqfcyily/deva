@@ -12,9 +12,7 @@ import {
   RotateCcw,
   AlertTriangle,
   ChevronLeft,
-  ChevronRight,
-  MessageSquare,
-  Zap
+  ChevronRight
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useModels } from '../../store/models'
@@ -61,8 +59,6 @@ export function ModelSettings(): React.JSX.Element {
 
   // 钻取导航：'list' 浏览服务商列表，'detail' 编辑单个服务商
   const [view, setView] = useState<'list' | 'detail'>('list')
-  // 「新增」浮动菜单：选择新建对话模型 / 决策模型
-  const [addMenu, setAddMenu] = useState(false)
   const [showKey, setShowKey] = useState(false)
   const [addingModel, setAddingModel] = useState(false)
   const [newModelId, setNewModelId] = useState('')
@@ -130,10 +126,13 @@ export function ModelSettings(): React.JSX.Element {
   }, [fetchState, newModelId, selectedProvider])
 
   // 列表只呈现「在用」的服务商：已启用 / 已配密钥，以及全部自定义（用户自建，恒显以免新建后走丢）。
-  // 其余官方对话预置藏进编辑页的「供应商」下拉。决策模型无该下拉入口，故恒显（供用户配置）。
-  // 对话模型与决策模型在同一扁平列表里呈现，用途差异由每行的「标签」标示（不再分组、不再显官方/自定义）。
+  // 其余官方对话预置藏进编辑页的「供应商」下拉。
+  // 决策模型（purpose==='decision'）当前整体隐藏：不进列表、也无新建入口，详情页因而不可达
+  //（view 每次挂载都从 'list' 起，不存在被持久化的选中项直接落进决策详情的情况）。
+  // 主进程运行时（services/decision.ts / decision:test）与本文件的决策分支一并保留，
+  // 恢复时改回此处过滤 + 右上角「新增」按钮即可。
   const visibleProviders = providers.filter(
-    (p) => p.enabled || hasKey(p.id) || p.kind === 'custom' || p.purpose === 'decision'
+    (p) => (p.purpose ?? 'llm') === 'llm' && (p.enabled || hasKey(p.id) || p.kind === 'custom')
   )
 
   const renderProviderRow = (p: (typeof providers)[number]): React.JSX.Element => {
@@ -220,25 +219,9 @@ export function ModelSettings(): React.JSX.Element {
     setView('detail')
   }
 
-  // 「新增」浮动菜单：悬停即开、离开略延迟收起（容忍按钮→浮层途中的空档），对齐「添加角色」入口交互。
-  const addMenuTimer = useRef<number | null>(null)
-  const cancelAddClose = (): void => {
-    if (addMenuTimer.current !== null) {
-      window.clearTimeout(addMenuTimer.current)
-      addMenuTimer.current = null
-    }
-  }
-  const scheduleAddClose = (): void => {
-    cancelAddClose()
-    addMenuTimer.current = window.setTimeout(() => setAddMenu(false), 140)
-  }
-  useEffect(() => cancelAddClose, [])
-
   // 新建自定义服务商后直接进入其详情编辑（addCustomProvider 已把它设为选中项）。
-  // purpose 决定新建的是对话模型还是决策模型；建后收起浮动菜单。
+  // purpose 决定新建的是对话模型还是决策模型；决策模型隐藏期间只会以 'llm' 调用。
   const onAddProvider = (purpose: ProviderPurpose): void => {
-    cancelAddClose()
-    setAddMenu(false)
     addCustomProvider(
       purpose === 'decision' ? t('models.newDecisionName') : t('models.newProviderName'),
       purpose
@@ -428,44 +411,16 @@ export function ModelSettings(): React.JSX.Element {
         <>
           <div className="models__head">
             <h2 className="models__title">{t('models.providers')}</h2>
-            <div
-              className="models__addwrap"
-              onMouseEnter={() => {
-                cancelAddClose()
-                setAddMenu(true)
-              }}
-              onMouseLeave={scheduleAddClose}
-            >
+            {/* 决策模型隐藏期间「新增」只剩一种结果，故去掉浮动菜单，点按直接新建对话模型 */}
+            <div className="models__addwrap">
               <button
                 className="models__add-btn"
                 title={t('models.addProvider')}
                 aria-label={t('models.addProvider')}
-                aria-haspopup="menu"
-                aria-expanded={addMenu}
-                onClick={() => setAddMenu(true)}
+                onClick={() => onAddProvider('llm')}
               >
                 <Plus size={16} />
               </button>
-              {addMenu && (
-                <div className="cf-addmenu__pop cf-addmenu__pop--fit" role="menu">
-                  <button
-                    className="cf-addmenu__item"
-                    role="menuitem"
-                    onClick={() => onAddProvider('llm')}
-                  >
-                    <MessageSquare size={15} className="cf-addmenu__icon" />
-                    <span>{t('models.addChatModel')}</span>
-                  </button>
-                  <button
-                    className="cf-addmenu__item"
-                    role="menuitem"
-                    onClick={() => onAddProvider('decision')}
-                  >
-                    <Zap size={15} className="cf-addmenu__icon" />
-                    <span>{t('models.addDecisionModel')}</span>
-                  </button>
-                </div>
-              )}
             </div>
           </div>
           <div className="models__rows">

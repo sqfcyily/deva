@@ -482,6 +482,11 @@ const zhCN: MessageTree = {
   },
   // 对话优先外壳（chat-first）专用文案。t 只收 key、不插值——含名字/计数/相对时间的动态串在 JS 组。
   cf: {
+    // 右侧对话轮次索引（只索引用户消息）
+    toc: {
+      title: '对话导航',
+      untitled: '（附件）'
+    },
     brandTag: '对话优先',
     newChat: '新建对话',
     search: '搜索',
@@ -1097,6 +1102,10 @@ const en: MessageTree = {
   },
   // Chat-first shell strings. t takes a key only; dynamic strings (names/counts/relative time) are composed in JS.
   cf: {
+    toc: {
+      title: 'Conversation index',
+      untitled: '(attachment)'
+    },
     brandTag: 'Chat-first',
     newChat: 'New chat',
     search: 'Search',
