@@ -106,10 +106,14 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
         if (!alive) return
         const savedProviders = saved?.providers
         if (Array.isArray(savedProviders) && savedProviders.length > 0) {
-          // 已保存的为准，并追加用户尚未见过的新内置服务商（保留用户编辑 + 呈现新预置，
-          // 含新引入的决策模型 typesafe——老配置无该项时自动补齐）。
-          const savedIds = new Set(savedProviders.map((p) => p.id))
-          const merged = [...savedProviders, ...seedProviders.filter((p) => !savedIds.has(p.id))]
+          // 已保存的为准，并追加用户尚未见过的新内置服务商（保留用户编辑 + 呈现新预置）。
+          // 决策模型已改为「默认不内置」：老配置里曾自动补入的 typesafe 若用户从未启用则剔除，
+          // 已启用（填过密钥会自动启用）的保留，避免丢失用户配置。
+          const kept = savedProviders.filter(
+            (p) => !(p.id === 'typesafe' && p.kind === 'official' && !p.enabled)
+          )
+          const savedIds = new Set(kept.map((p) => p.id))
+          const merged = [...kept, ...seedProviders.filter((p) => !savedIds.has(p.id))]
           // 向后兼容：既有配置里未带 purpose 的服务商一律视为对话模型（'llm'），显式落定以便持久化。
           setProviders(
             merged.map((p) => ({

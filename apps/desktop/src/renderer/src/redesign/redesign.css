@@ -116,6 +116,10 @@
   background: var(--bg-hover);
   color: var(--fg);
 }
+/* 搜索行是拖拽区：独立按钮（不在 .cf-addmenu 内）需自行排除，保证可点。 */
+.cf-rail__addbtn--nodrag {
+  -webkit-app-region: no-drag;
+}
 /* 「添加角色」悬停弹层：+ 按钮 hover/点击弹出二选一（手动添加 / 通过对话添加）。 */
 .cf-addmenu {
   position: relative;
@@ -434,6 +438,33 @@
   height: 100%;
   object-fit: cover;
 }
+/* 群头像（微信式拼图）：每位成员占一片（clip-path 裁剪），片内头像按中心/边长绝对定位。 */
+.cf-ava__slice {
+  position: absolute;
+  inset: 0;
+}
+.cf-ava__slice-face {
+  position: absolute;
+}
+.cf-ava__slice-face > svg,
+.cf-ava__slice-face > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* 分隔线：与所在面板同色的细线，让各片之间有清晰缝隙。 */
+.cf-ava__face > svg.cf-ava__dividers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cf-ava__dividers path {
+  fill: none;
+  stroke: var(--bg-panel);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
 
 /* 忙碌（对话生成中）：一道高光斜带自左向右扫过头像，作就地「思考/生成中」指示。
    遮层与 .cf-ava__face 同框（inset:0）且自行圆形裁剪，故光带只在头像圆内可见、不会漏到行上。 */
@@ -533,6 +564,92 @@
   font-size: 14px;
   font-weight: 700;
   color: var(--fg);
+}
+/* 群聊对话头：成员胶囊一行（可点开资料卡）+ 轮数提示 */
+.cf-grouphead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.cf-grouphead__icon {
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.cf-grouphead__member {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 3px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.cf-grouphead__member:hover {
+  background: var(--bg-hover);
+}
+.cf-grouphead__hint {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  margin-left: 4px;
+}
+/* 「发起群聊」弹窗：角色勾选网格 */
+.cf-groupmembers {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.cf-groupmember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.cf-groupmember:hover {
+  background: var(--bg-hover);
+}
+.cf-groupmember.is-on {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.cf-groupmember__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-groupmember__check {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid var(--border-strong);
+  color: #fff;
+}
+.cf-groupmember.is-on .cf-groupmember__check {
+  background: var(--accent);
+  border-color: var(--accent);
 }
 .cf-wschip {
   display: inline-flex;
@@ -968,6 +1085,50 @@
   /* 全局 body 为 user-select:none（应用外壳观感）；对话内容须可选中才能右键复制，故在消息体上放开。
      头像 .cf-ava 自带 user-select:none，不受影响。 */
   user-select: text;
+}
+/* 群聊未署名的提示气泡（如无人回复）：无头像，占满两列。 */
+.cf-msg__body--bare {
+  grid-column: 1 / -1;
+}
+/* 群聊决策中：三点依次跳动（无头像、无名字），占满两列、左对齐。 */
+.cf-typing {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 4px;
+}
+.cf-typing > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-subtle);
+  animation: cf-typing 1.2s ease-in-out infinite;
+}
+.cf-typing > span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.cf-typing > span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes cf-typing {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-typing > span {
+    animation: none;
+    opacity: 0.7;
+  }
 }
 .cf-msg__head {
   display: flex;

@@ -18,7 +18,13 @@ import { isDangerousCommand, touchesSensitivePath } from './exec-policy'
 import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
 import { GENERAL_SUBAGENT, getSubagentByName, subagentSummaries, type SubagentDef } from './subagents'
 import { enabledPersonas, getPersona } from './personas'
-import { resolveDefaultModel, resolveModelRef, resolveModelRefOrNull } from './model-resolve'
+import {
+  resolveDecisionProvider,
+  resolveDefaultModel,
+  resolveModelRef,
+  resolveModelRefOrNull
+} from './model-resolve'
+import { decide, type DecisionOutcome, type DecisionQuestion } from './decision'
 import { sealedDecision } from './sealed'
 import { createTask, type CreateTaskResult } from './tasks'
 import type { TaskCreateInput, TaskRecord } from './tasks-types'
@@ -38,6 +44,8 @@ import {
   listSessions,
   save as saveProject,
   type ChatSessionMeta,
+  type GroupConfig,
+  type GroupNoticeCode,
   type StoredNotice,
   type StoredSession
 } from './chat-store'
@@ -106,6 +114,23 @@ interface ChatCreateSessionRequest {
   personaId?: string
   focusRoot?: string | null
   modelRef?: string
+  /** 群聊配置：提供即建为群聊会话（一次性绑定）。 */
+  group?: GroupConfig
+}
+
+/** 渲染层传入的群聊配置清洗：成员去重、过滤非法 id、至少 2 人；轮数夹到 [1,12]。非法 → undefined。 */
+function sanitizeGroup(g: unknown): GroupConfig | undefined {
+  if (!g || typeof g !== 'object') return undefined
+  const raw = g as { memberIds?: unknown; maxTurns?: unknown }
+  if (!Array.isArray(raw.memberIds)) return undefined
+  const ids = [
+    ...new Set(
+      raw.memberIds.filter((x): x is string => typeof x === 'string' && /^[A-Za-z0-9_-]+$/.test(x))
+    )
+  ]
+  if (ids.length < 2) return undefined
+  const n = typeof raw.maxTurns === 'number' && Number.isFinite(raw.maxTurns) ? Math.round(raw.maxTurns) : 4
+  return { memberIds: ids, maxTurns: Math.max(1, Math.min(12, n)) }
 }
 
 /** 角色名片草稿：propose_agent 原始参数归一化后的形状（编辑器/名片消费）。 */
@@ -188,7 +213,12 @@ type DisplayBlock =
    * 弱化提示气泡：compacted=较早历史已压缩（由 messages 里的摘要标记还原）；
    * truncated=达输出上限被截断 / empty=通篇无回复（由 StoredNotice 边车还原）。
    */
-  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' | 'refused' }
+  | {
+      kind: 'notice'
+      code: 'compacted' | 'truncated' | 'empty' | 'refused' | GroupNoticeCode
+      /** 附加说明原文（如决策失败原因）。 */
+      detail?: string
+    }
   /** 请求失败红框：由 StoredNotice 边车还原（原样展示错误文案）。 */
   | { kind: 'error'; message: string }
   /** 角色名片：propose_agent 的提议。status 终态（accepted/rejected）由 StoredSession.proposals 边车持久化。 */
@@ -220,13 +250,19 @@ type DisplayBlock =
 
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
-  | { role: 'assistant'; blocks: DisplayBlock[] }
+  /** author：群聊发言角色 personaId（单聊缺省，渲染层回落会话 owner）。 */
+  | { role: 'assistant'; blocks: DisplayBlock[]; author?: string }
 
 /** StoredNotice → 展示消息（一条独立的 assistant 气泡，仅含该提示块）。 */
 function noticeToDisplay(nt: StoredNotice): DisplayMessage {
   if (nt.kind === 'error')
     return { role: 'assistant', blocks: [{ kind: 'error', message: nt.message ?? '请求失败。' }] }
-  return { role: 'assistant', blocks: [{ kind: 'notice', code: nt.code ?? 'empty' }] }
+  return {
+    role: 'assistant',
+    blocks: [
+      { kind: 'notice', code: nt.code ?? 'empty', ...(nt.message ? { detail: nt.message } : {}) }
+    ]
+  }
 }
 
 /**
@@ -338,10 +374,15 @@ function toDisplayMessages(
       // 有工具调用时，一轮在持久化历史里是多条 assistant 被 tool_result(user) 隔开，逐条成气泡会让重开后
       // 每段各显一个头像（像输出了多次）。lastAssistant 非空即代表「自上条 assistant 起只隔了 tool_result
       // 回灌」——真实用户轮 / 压缩摘要 / 提示气泡都会把它置空，从而使其后的 assistant 另起新气泡（新头像）。
-      if (lastAssistant) {
+      // 群聊：发言人变化即另起气泡（即便中间无用户轮），保证「一人一头像」。
+      if (lastAssistant && lastAssistant.author === m.author) {
         lastAssistant.blocks.push(...blocks)
       } else {
-        const msg: Extract<DisplayMessage, { role: 'assistant' }> = { role: 'assistant', blocks }
+        const msg: Extract<DisplayMessage, { role: 'assistant' }> = {
+          role: 'assistant',
+          blocks,
+          ...(m.author ? { author: m.author } : {})
+        }
         out.push(msg)
         lastAssistant = msg
       }
@@ -660,6 +701,13 @@ function parseAskQuestions(args: unknown): AskQuestion[] {
 /** 发往渲染层的富事件（比 provider 的 StreamEvent 多了工具执行/权限阶段）。 */
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
+  /**
+   * 群聊：下一位发言人即将开口（渲染层据此另起一个带作者的助手气泡）。
+   * reason：mention=用户 @ 点名 / decision=决策模型选定。
+   */
+  | { type: 'speaker'; personaId: string; reason?: string }
+  /** 群聊提示：group_idle=无人被 @ 且无决策模型；group_decision_failed=决策请求失败（message=原因）。 */
+  | { type: 'group_notice'; code: GroupNoticeCode; message?: string }
   | { type: 'thinking_delta'; text: string }
   /**
    * depth>0 + agent + parent：本事件来自某子智能体（渲染层据此折叠进 parent 指向的那张
@@ -1059,6 +1107,209 @@ interface AgentLoopArgs {
    * decision=null 表示取消/中止。仅主轮传入。
    */
   onPlanDecided?: (toolUseId: string, decision: 'approve' | 'keep' | null) => void
+}
+
+/* ───────────────────────── 群聊（多角色轮番发言） ───────────────────────── */
+
+/** 群聊成员运行时快照（本轮定格）。label 为唯一化显示名，作决策候选项与历史署名。 */
+interface GroupMember {
+  id: string
+  label: string
+  description: string
+  /** 决策用成员档案（专长 + 口头禅 + 角色设定摘录）。见 memberProfile。 */
+  profile: string
+  prompt: string
+  model: string
+}
+
+/** 决策 choice 题里代表「无人需要回复，交还用户」的保留选项键。 */
+const GROUP_END_OPTION = '__end__'
+/** 点名判定阈值：某成员 addressed ≥ 此值即视为被点名，直接由其发言（优先于 choice）。 */
+const GROUP_ADDRESSED_MIN = 0.8
+/** 群聊单次发言时，喂给决策模型的近期消息条数与单条截断长度。 */
+const GROUP_STATE_RECENT = 12
+const GROUP_STATE_CLIP = 400
+
+/** 取一条消息的纯文本（忽略工具/附件块）。 */
+function messageText(m: Message): string {
+  if (typeof m.content === 'string') return m.content
+  return m.content
+    .map((p) => (p.type === 'text' ? p.text : ''))
+    .filter(Boolean)
+    .join('\n')
+}
+
+/** 是否工具结果回灌消息（user 角色、含 tool_result）。 */
+function isToolResultMsg(m: Message): boolean {
+  return m.role === 'user' && typeof m.content !== 'string' && m.content.some((p) => p.type === 'tool_result')
+}
+
+/** 成员快照：按 memberIds 顺序读取角色；已删除的成员跳过。重名则追加序号保证候选项唯一。 */
+function loadGroupMembers(memberIds: string[]): GroupMember[] {
+  const out: GroupMember[] = []
+  const seen = new Map<string, number>()
+  for (const id of memberIds) {
+    const p = getPersona(id)
+    if (!p) continue
+    const base = p.name.trim() || id
+    const n = (seen.get(base) ?? 0) + 1
+    seen.set(base, n)
+    out.push({
+      id,
+      label: n > 1 ? `${base}${n}` : base,
+      description: p.description,
+      profile: memberProfile(p.description, p.tagline, p.prompt),
+      prompt: p.prompt,
+      model: p.model
+    })
+  }
+  return out
+}
+
+/** 成员档案里角色设定摘录的长度上限（字符）：够 Jev 判断专长，又不至于把请求撑大。 */
+const GROUP_PROFILE_PROMPT_CLIP = 300
+
+/**
+ * 供决策模型判断「该谁发言」的成员档案：专长（description）+ 口头禅（tagline）+ 角色设定摘录。
+ * description 常为空或过短，只给它 Jev 无从区分成员——故补上角色提示词开头（去 Markdown 记号、压空白）。
+ */
+function memberProfile(description: string, tagline: string, prompt: string): string {
+  const parts: string[] = []
+  const desc = description.trim()
+  if (desc) parts.push(`专长：${desc}`)
+  const tag = tagline.trim()
+  if (tag) parts.push(`口头禅：${tag}`)
+  const plain = prompt
+    .replace(/```[\s\S]*?```/g, ' ') // 代码块
+    .replace(/^#{1,6}\s*/gm, '') // 标题记号
+    .replace(/[*_`>|]/g, '') // 强调/引用/表格记号
+    .replace(/^\s*[-+]\s+/gm, '') // 列表记号
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (plain)
+    parts.push(
+      `角色设定摘录：${plain.length > GROUP_PROFILE_PROMPT_CLIP ? `${plain.slice(0, GROUP_PROFILE_PROMPT_CLIP)}…` : plain}`
+    )
+  return parts.join('；') || '（未填写专长）'
+}
+
+/**
+ * 为某发言人构造「专属历史视图」：自己的 assistant 发言（含工具调用与其 tool_result）原样保留；
+ * 其他成员的发言折成 user 消息「【名】：正文」、其工具回灌丢弃；真实用户消息原样保留。
+ * 这样每个角色只会把**自己**说过的话当作 assistant，不会把别人的发言误认成自己的。
+ */
+function buildGroupView(messages: Message[], speakerId: string, members: GroupMember[]): Message[] {
+  const nameOf = (id: string | undefined): string =>
+    members.find((mm) => mm.id === id)?.label ?? '其他成员'
+  const view: Message[] = []
+  for (const m of messages) {
+    if (m.author === undefined) {
+      // 真实用户消息 / 压缩摘要 / 旧数据：原样
+      view.push({ role: m.role, content: m.content })
+      continue
+    }
+    if (m.author === speakerId) {
+      view.push({ role: m.role, content: m.content })
+      continue
+    }
+    if (m.role === 'assistant') {
+      const text = messageText(m).trim()
+      if (text) view.push({ role: 'user', content: `【${nameOf(m.author)}】：${text}` })
+    }
+    // 其他成员的 tool_result 回灌：丢弃
+  }
+  // 兜底：视图不得以 assistant 收尾（部分服务商不支持 assistant 预填）。
+  if (view.length && view[view.length - 1].role === 'assistant')
+    view.push({ role: 'user', content: '（轮到你发言）' })
+  return view
+}
+
+/** 群聊附加说明：告知成员名单与本角色身份，约束「只以自己身份发言、不加署名前缀」。 */
+function groupPromptSection(speaker: GroupMember, members: GroupMember[]): string {
+  const roster = members
+    .map((mm) => `  - ${mm.label}${mm.description ? `：${mm.description}` : ''}${mm.id === speaker.id ? '（你）' : ''}`)
+    .join('\n')
+  return [
+    '───────── 群聊 ─────────',
+    `你正在一个多人群聊中，参与者为用户与以下角色：\n${roster}`,
+    `你是「${speaker.label}」。只以你自己的身份发言，不要替其他成员说话，也不要在开头加「${speaker.label}：」之类的署名前缀。`,
+    '历史中以「【某某】：」开头的用户消息是其他成员的发言，而非用户本人。',
+    '回应要简洁、有针对性：可以回应、补充或反驳其他成员的观点，避免重复别人已说过的内容；若确实没有新内容，简短表态即可。'
+  ].join('\n')
+}
+
+/** 决策 state 里代表真实用户的发言者名（英文，与 Jev 题目语言一致）。 */
+const GROUP_USER_NAME = 'user'
+/** 最新一条发言喂给决策模型的长度上限（防止用户贴大段代码把请求撑大）。 */
+const GROUP_LATEST_CLIP = 1500
+
+/** 群聊可见发言（跳过工具回灌 / 压缩摘要 / 空文本），附发言者名。 */
+function groupLines(messages: Message[], members: GroupMember[]): { from: string; text: string }[] {
+  const out: { from: string; text: string }[] = []
+  for (const m of messages) {
+    if (isToolResultMsg(m) || isCompactionSummary(m)) continue
+    const text = messageText(m).trim()
+    if (!text) continue
+    const from =
+      m.author === undefined
+        ? m.role === 'user'
+          ? GROUP_USER_NAME
+          : 'assistant'
+        : (members.find((mm) => mm.id === m.author)?.label ?? 'other member')
+    out.push({ from, text })
+  }
+  return out
+}
+
+const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s)
+
+/**
+ * 决策用结构化 state（文档推荐对象形式，字段名即语义，题目可用反引号引用字段）：
+ *   members         —— 成员档案（name / profile / just_spoke）
+ *   recent_messages —— 最近 N 条发言（逐条截断），不含最新一条
+ *   latest_message  —— 最新一条发言（单独给出，较宽上限）
+ *   replies_so_far  —— 本轮用户发言后已有几位成员回复
+ */
+function groupDecisionState(
+  messages: Message[],
+  members: GroupMember[],
+  justSpoke: GroupMember | null,
+  repliesSoFar: number
+): Record<string, unknown> {
+  const lines = groupLines(messages, members)
+  const latest = lines[lines.length - 1]
+  const recent = lines.slice(Math.max(0, lines.length - 1 - GROUP_STATE_RECENT), -1)
+  return {
+    members: members.map((mm) => ({
+      name: mm.label,
+      profile: mm.profile,
+      ...(mm === justSpoke ? { just_spoke: true } : {})
+    })),
+    recent_messages: recent.map((l) => ({ from: l.from, text: clip(l.text, GROUP_STATE_CLIP) })),
+    latest_message: latest ? { from: latest.from, text: clip(latest.text, GROUP_LATEST_CLIP) } : null,
+    replies_so_far: repliesSoFar
+  }
+}
+
+/**
+ * 用户消息里 @ 点名的全部成员，按首次出现位置排序（去重）。
+ * 名字长者优先匹配：避免「@小明」被「@小」抢先命中（同位置时取更长的名字）。
+ */
+function mentionedMembers(text: string, members: GroupMember[]): GroupMember[] {
+  const hits: { m: GroupMember; at: number }[] = []
+  for (const mm of members) {
+    const at = text.indexOf(`@${mm.label}`)
+    if (at >= 0) hits.push({ m: mm, at })
+  }
+  hits.sort((a, b) => a.at - b.at || b.m.label.length - a.m.label.length)
+  const out: GroupMember[] = []
+  let lastAt = -1
+  for (const h of hits) {
+    if (h.at === lastAt) continue // 同位置的更短名字是长名字的前缀，跳过
+    lastAt = h.at
+    if (!out.includes(h.m)) out.push(h.m)
+  }
+  return out
 }
 
 export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
@@ -1834,6 +2085,281 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   /**
+   * 群聊一轮（用户发言后）：循环「择人 → 该角色以自身提示词/模型跑一次 Agent 循环 → 判断是否结束」，
+   * 至多 group.maxTurns 次发言。择人与判结束交给决策模型（Jev：choice + noul 同一请求）；
+   * 被 @ 的成员优先依次发言；无决策模型 / 决策失败 → 只认 @（不 @ 则无人发言）。整轮共用一个 turnId，最后只发一次 done，
+   * 故「停止」与计时直接复用单聊逻辑。每位发言前发 `speaker` 事件，渲染层据此另起一个带作者的气泡。
+   */
+  async function runGroupTurn(
+    sessionId: string,
+    turnId: string,
+    config: ChatModelConfig,
+    workspaceRoot: string | null,
+    userText: string
+  ): Promise<void> {
+    const controller = new AbortController()
+    activeTurns.set(turnId, controller)
+    const session = ensureSession(sessionId)
+    const group = session.group
+    const effectiveRoot = session.focusRoot ?? workspaceRoot
+    const ctx: ToolContext = { workspaceRoot: effectiveRoot, signal: controller.signal }
+    let finalStop: StopReason = 'end_turn'
+    try {
+      const members = group ? loadGroupMembers(group.memberIds) : []
+      if (members.length === 0) {
+        const message = '群聊成员均已不存在，无法继续。'
+        emit(turnId, sessionId, { type: 'error', kind: 'unknown', message })
+        ;(session.notices ??= []).push({ after: session.messages.length, kind: 'error', message })
+        finalStop = 'error'
+        return
+      }
+      const maxTurns = Math.max(1, Math.min(12, group?.maxTurns ?? 4))
+      const baseModel = resolveModelRef(session.model, config)
+      const skillSummaries = enabledSkillSummaries()
+      const skillTool = buildSkillTool(skillSummaries)
+      const turnTools: ToolSpec[] = [
+        ...toolSpecs,
+        buildPlanTool(),
+        ...(skillTool ? [skillTool] : []),
+        buildSubagentTool(),
+        ...getMcpToolSpecs()
+      ]
+
+      let decider = members.length > 1 ? resolveDecisionProvider() : null
+      const hadDecider = decider !== null
+      let decisionError: string | undefined
+      // 决策模型判定「结束对话」胜出（区别于「没配决策 / 没人被 @」），供结尾提示区分原因。
+      let decidedEnd = false
+      // 本轮已请求决策模型的次数（观测用）。
+      let decisionCalls = 0
+
+      /**
+       * 择人决策（一次请求，依 TypeSafe 文档的 intent routing + atomic questions 模式）：
+       *   · next        —— Choice：谁该发下一条（选项描述 = 成员档案），另含 `__end__`（无人需回复）；
+       *   · addressed_i —— 每位候选一道 Noul：最新发言是否点名/称呼该成员（只问这一件事）；
+       *   · concluded   —— Score（3 级）：讨论进展到哪一步，辅助判断是否该停。
+       * 代码组合：
+       *   1) 有候选 addressed ≥ GROUP_ADDRESSED_MIN → 取最高者发言（点名最可靠，优先）；
+       *   2) 否则 next.choice 为 `__end__` 或 next.confidence < 阈值 → 停；
+       *   3) 否则由 next.choice 发言；但若已有人回复且 concluded ≥ 1.5（已有结论）→ 停。
+       * exclude = 刚发过言的成员（不许同一人连说），不进候选（仍在 state.members 中标 just_spoke）。
+       * 返回胜出成员；判定停止 → null；请求失败 → 本轮停用决策并返回 undefined。
+       */
+      const decideNext = async (
+        exclude: GroupMember | null
+      ): Promise<GroupMember | null | undefined> => {
+        if (!decider) return undefined
+        const cands = members.filter((mm) => mm !== exclude)
+        if (cands.length === 0) return null
+        const optionCriteria: Record<string, string> = {}
+        for (const mm of cands) optionCriteria[mm.label] = mm.profile
+        optionCriteria[GROUP_END_OPTION] =
+          'No member needs to reply right now: the question in `latest_message` has been answered, the discussion has concluded, or further replies would only repeat what was said.'
+        const questions: DecisionQuestion[] = [
+          {
+            id: 'next',
+            type: 'choice',
+            prompt: {
+              question:
+                'In this group chat, who should send the next message in reply to `latest_message`?',
+              guidance:
+                'Prefer the member who is addressed by name in `latest_message`. Otherwise prefer the member whose profile best matches the topic. A member marked `just_spoke` in `members` should not reply twice in a row.'
+            },
+            optionCriteria
+          },
+          ...cands.map((mm, i) => ({
+            id: `addressed_${i}`,
+            type: 'noul' as const,
+            prompt: `Does \`latest_message\` address, call on, or ask for ${mm.label} by name?`,
+            noulCriteria: {
+              true: `${mm.label} is named or directly addressed, e.g. "${mm.label}, are you there?"`,
+              false: `${mm.label} is not named, or another member is the one being addressed`
+            }
+          })),
+          {
+            id: 'concluded',
+            type: 'score',
+            prompt:
+              "How far has the group discussion progressed on the user's latest request?",
+            levels: [
+              'The user just asked or addressed someone and no member has replied yet',
+              'Partly answered; a member could still add something new and useful',
+              'Fully answered or concluded; more replies would repeat what was said'
+            ]
+          }
+        ]
+        const state = groupDecisionState(session.messages, members, exclude, spoken)
+        decisionCalls++
+        console.info(
+          `[group] 决策请求 #${decisionCalls}（候选 ${cands.length} 人，state ${JSON.stringify(state).length} 字）`
+        )
+        const r = await decide(decider, { data: state }, questions)
+        if (!r.ok) {
+          console.warn('[group] 决策失败，仅按 @ 点名发言：', r.kind, r.message)
+          decisionError = r.message || r.kind
+          decider = null
+          return undefined
+        }
+        const get = (id: string): DecisionOutcome | undefined => r.outcomes.find((o) => o.id === id)
+        const next = get('next')
+        const addressed = cands.map((mm, i) => ({ mm, p: get(`addressed_${i}`)?.noul ?? 0 }))
+        const concluded = get('concluded')?.score
+        const threshold = decider.threshold
+
+        // 1) 点名优先
+        const topAddr = addressed.reduce((a, b) => (b.p > a.p ? b : a))
+        let pick: GroupMember | null = null
+        let why: string
+        if (topAddr.p >= GROUP_ADDRESSED_MIN) {
+          pick = topAddr.mm
+          why = `addressed ${topAddr.p.toFixed(2)}`
+        } else if (!next?.choice || next.choice === GROUP_END_OPTION) {
+          why = 'next=end'
+        } else if (next.confidence < threshold) {
+          why = `next confidence ${next.confidence.toFixed(2)} < ${threshold}`
+        } else if (spoken > 0 && concluded !== undefined && concluded >= 1.5) {
+          why = `concluded ${concluded.toFixed(2)}`
+        } else {
+          pick = cands.find((mm) => mm.label === next.choice) ?? null
+          why = pick ? `next ${next.confidence.toFixed(2)}` : `unknown choice ${next.choice}`
+        }
+        console.info(
+          '[group] 决策',
+          JSON.stringify({
+            next: next?.choice,
+            nextConf: next?.confidence,
+            probs: next?.probabilities,
+            addressed: Object.fromEntries(addressed.map((x) => [x.mm.label, Number(x.p.toFixed(3))])),
+            concluded
+          }),
+          '→',
+          pick ? pick.label : '停止',
+          `(${why})`
+        )
+        if (!pick) decidedEnd = true
+        return pick
+      }
+
+      // 择人规则：
+      //  · 用户 @ 了成员 → 被点名者按出现顺序依次发言（点名优先，不受决策左右）；
+      //  · 之后（或未 @ 任何人时）→ 交给决策模型择人/判结束；
+      //  · 无决策模型 / 决策失败 → 只认 @：未点名则无人发言，绝不轮流。
+      const mentioned = mentionedMembers(userText, members)
+      // 点名者全部发言（即便多于上限），其后决策续聊仍受 maxTurns 约束。
+      const limit = Math.max(maxTurns, mentioned.length)
+      let lastSpeaker: GroupMember | null = null
+      let spoken = 0
+      for (let step = 0; step < limit; step++) {
+        if (controller.signal.aborted) {
+          finalStop = 'aborted'
+          break
+        }
+        // ── 择人 ──
+        let speaker: GroupMember | undefined
+        let reason: string | undefined
+        if (step < mentioned.length) {
+          speaker = mentioned[step]
+          reason = 'mention'
+        } else {
+          if (!decider) break // 无决策：点名的都说完了（或无人点名）→ 停
+          // Jev 择人：刚说完的成员不进候选（不许同一人连说）。
+          const cand = await decideNext(lastSpeaker)
+          if (!cand) break // 结束对话胜出 / 决策失败 → 停（不轮流）
+          speaker = cand
+          reason = 'decision'
+        }
+        if (controller.signal.aborted) {
+          finalStop = 'aborted'
+          break
+        }
+        lastSpeaker = speaker
+        spoken++
+        emit(turnId, sessionId, { type: 'speaker', personaId: speaker.id, reason })
+
+        // ── 发言：专属视图上跑一次 Agent 循环，新增消息打上 author 追加回会话 ──
+        const view = buildGroupView(session.messages, speaker.id, members)
+        const start = view.length
+        const system =
+          systemPrompt(effectiveRoot, skillSummaries, speaker.prompt.trim() ? [{ name: speaker.label, prompt: speaker.prompt }] : []) +
+          '\n' +
+          groupPromptSection(speaker, members)
+        const { stopReason, errorMessage } = await runAgentLoop({
+          turnId,
+          sessionId,
+          history: view,
+          system,
+          tools: turnTools,
+          model: resolveModelRef(speaker.model, baseModel),
+          ctx,
+          controller,
+          maxSteps: MAX_STEPS,
+          depth: 0,
+          interactive: true,
+          allowAskUser: true,
+          allowSubagents: true,
+          skillSummaries,
+          onAskAnswered: (id, answers) => {
+            ;(session.asks ??= {})[id] = { answers }
+          },
+          onToolSummary: (id, summary) => {
+            ;(session.summaries ??= {})[id] = summary
+          },
+          onPlanDecided: (id, decision) => {
+            ;(session.plans ??= {})[id] = { decision }
+          }
+        })
+        for (const m of view.slice(start)) session.messages.push({ ...m, author: speaker.id })
+        session.updatedAt = Date.now()
+        saveProject(sessionId)
+        finalStop = stopReason
+        if (stopReason === 'error') {
+          ;(session.notices ??= []).push({
+            after: session.messages.length,
+            kind: 'error',
+            message: errorMessage
+          })
+          break
+        }
+        if (stopReason === 'aborted') break
+        // 单人群聊：说一次即交还用户。
+        if (members.length === 1) break
+      }
+      // 群聊提示（弱化样式，随会话持久化）：
+      //  · 决策失败 → 说明原因（其后只认 @ 点名）；
+      //  · 无决策模型且没人被 @ → 提示「@ 谁谁发言」，避免误报成「模型没有返回内容」。
+      if (finalStop !== 'error' && finalStop !== 'aborted' && !controller.signal.aborted) {
+        const code: GroupNoticeCode | null =
+          hadDecider && decisionError !== undefined
+            ? 'group_decision_failed'
+            : spoken === 0
+              ? decidedEnd
+                ? 'group_no_reply'
+                : 'group_idle'
+              : null
+        if (code) {
+          emit(turnId, sessionId, { type: 'group_notice', code, message: decisionError })
+          ;(session.notices ??= []).push({
+            after: session.messages.length,
+            kind: 'notice',
+            code,
+            ...(decisionError ? { message: decisionError } : {})
+          })
+        }
+      }
+    } catch (e) {
+      const message = (e as Error)?.message ?? String(e)
+      emit(turnId, sessionId, { type: 'error', kind: 'unknown', message })
+      ;(session.notices ??= []).push({ after: session.messages.length, kind: 'error', message })
+      finalStop = 'error'
+    } finally {
+      activeTurns.delete(turnId)
+      emit(turnId, sessionId, { type: 'done', stopReason: finalStop })
+      session.updatedAt = Date.now()
+      saveProject(sessionId)
+    }
+  }
+
+  /**
    * 定时任务密封无头执行一次（runTurn 的姊妹，供 scheduler 直调）：
    *  · 载入/新建任务独占会话；无固定工作目录（effectiveRoot=null，写入请用绝对路径）；
    *  · 追加一条合成 user 消息（任务 prompt），首次触发派生标题；
@@ -2007,7 +2533,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     saveProject(sessionId)
 
     const turnId = genId('turn')
-    void runTurn(sessionId, turnId, model, workspaceRoot)
+    // 群聊会话：走多角色编排；否则单聊主轮（行为不变）。
+    if (session.group) void runGroupTurn(sessionId, turnId, model, workspaceRoot, text)
+    else void runTurn(sessionId, turnId, model, workspaceRoot)
     return { turnId }
   })
 
@@ -2059,7 +2587,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     'chat:create-session',
     (_e, payload: ChatCreateSessionRequest): { ok: true } => {
       const { sessionId, personaId, focusRoot, modelRef } = payload
-      ensureSession(sessionId, { personaId, focusRoot, model: modelRef })
+      const group = sanitizeGroup(payload.group)
+      ensureSession(sessionId, {
+        // 群聊：personaId 置为首个成员（列表头像 / 兜底身份）。
+        personaId: group ? group.memberIds[0] : personaId,
+        focusRoot,
+        model: modelRef,
+        group
+      })
       saveProject(sessionId)
       return { ok: true }
     }

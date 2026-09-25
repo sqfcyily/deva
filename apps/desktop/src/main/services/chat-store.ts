@@ -108,6 +108,17 @@ export interface StoredSession {
    * 时无需调整（同 proposals）。见 chat.ts:chat:resolve-autotask。
    */
   autotasks?: Record<string, { status: 'created' | 'dismissed'; taskId?: string }>
+  /**
+   * 群聊配置：存在即为群聊会话（被 @ 者依次发言，其余由决策模型择人/判结束；无决策则只认 @）。
+   * 建档时写入，之后不改。personaId 同时置为首个成员（供列表头像/兜底）。见 chat.ts:runGroupTurn。
+   */
+  group?: GroupConfig
+}
+
+/** 群聊配置：成员 personaId 列表（≥2，按顺序展示）+ 用户发言后最多连续发言次数。 */
+export interface GroupConfig {
+  memberIds: string[]
+  maxTurns: number
 }
 
 /** 回合终态提示（持久化边车项）。见 StoredSession.notices。 */
@@ -116,11 +127,17 @@ export interface StoredNotice {
   after: number
   /** error=请求失败红框（原样展示 message）；notice=弱化提示（按 code 在渲染层翻译）。 */
   kind: 'error' | 'notice'
-  /** kind='error' 时的错误文案。 */
+  /** kind='error' 时的错误文案；kind='notice' 时可选的附加说明（如群聊决策失败原因）。 */
   message?: string
   /** kind='notice' 时的提示码。 */
-  code?: 'truncated' | 'empty' | 'refused'
+  code?: 'truncated' | 'empty' | 'refused' | GroupNoticeCode
 }
+
+/**
+ * 群聊提示码：group_idle=无人被 @ 且无决策模型；group_decision_failed=决策请求失败；
+ * group_no_reply=决策模型判定无需任何成员回复（「结束对话」得分最高）。
+ */
+export type GroupNoticeCode = 'group_idle' | 'group_decision_failed' | 'group_no_reply'
 
 /** 会话元信息（左侧列表用，不含正文）。 */
 export interface ChatSessionMeta {
@@ -132,6 +149,8 @@ export interface ChatSessionMeta {
   focusRoot?: string | null
   /** 本对话的模型引用 `"providerId:modelId"`；空串/缺省 = 跟随全局默认。见 StoredSession.model。 */
   model?: string
+  /** 群聊配置（存在即群聊）。见 StoredSession.group。 */
+  group?: GroupConfig
 }
 
 /**
@@ -184,7 +203,8 @@ function metaOf(s: StoredSession): ChatSessionMeta {
     updatedAt: s.updatedAt,
     personaId: s.personaId,
     focusRoot: s.focusRoot ?? null,
-    model: s.model
+    model: s.model,
+    ...(s.group ? { group: s.group } : {})
   }
 }
 
@@ -285,7 +305,7 @@ export function getSession(id: string): StoredSession | undefined {
  */
 export function ensureSession(
   id: string,
-  opts?: { personaId?: string; focusRoot?: string | null; model?: string }
+  opts?: { personaId?: string; focusRoot?: string | null; model?: string; group?: GroupConfig }
 ): StoredSession {
   let s = loadSessionFile(id)
   if (!s) {
@@ -298,11 +318,17 @@ export function ensureSession(
       messages: [],
       personaId: opts?.personaId,
       focusRoot: opts?.focusRoot ?? null,
-      model: opts?.model
+      model: opts?.model,
+      ...(opts?.group ? { group: opts.group } : {})
     }
     sessionCache.set(id, s)
     ensureIndex().set(id, metaOf(s))
   } else {
+    // group：一次性绑定（同 personaId），已是群聊则不改。
+    if (!s.group && opts?.group) {
+      s.group = opts.group
+      ensureIndex().set(id, metaOf(s))
+    }
     // personaId：一次性绑定，绝不覆盖已绑定值。
     if (s.personaId === undefined && opts?.personaId !== undefined) s.personaId = opts.personaId
     // focusRoot：可变（挂/卸），显式提供（含 null 卸载）即应用；未提供（undefined）则不动。

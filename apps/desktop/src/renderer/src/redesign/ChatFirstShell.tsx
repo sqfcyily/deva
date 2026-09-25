@@ -69,6 +69,7 @@ import {
   type AttachKind,
   type ChatBlock,
   type ChatMessage,
+  type GroupConfig,
   type SendAttachment,
   type SessionMeta
 } from '../store/chat'
@@ -238,6 +239,7 @@ export function ChatFirstShell(): React.JSX.Element {
     send,
     stop,
     newSession,
+    newGroupSession,
     selectSession,
     deleteSession,
     deleteSessions,
@@ -266,6 +268,8 @@ export function ChatFirstShell(): React.JSX.Element {
    */
   const [tasksTarget, setTasksTarget] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  /** 「发起群聊」弹窗开合。 */
+  const [groupOpen, setGroupOpen] = useState(false)
   /** 非空时打开角色编辑器（Part G）。 */
   const [editor, setEditor] = useState<EditorState | null>(null)
   /**
@@ -463,6 +467,7 @@ export function ChatFirstShell(): React.JSX.Element {
               onAddPersona={() => setEditor({ mode: 'create' })}
               onAddPersonaByChat={addPersonaByChat}
               onNewChatFromThread={newChatFromThread}
+              onNewGroup={() => setGroupOpen(true)}
               onDeleteThread={deleteThread}
               onDeletePersona={deletePersona}
               onReorderPersonas={reorderPersonas}
@@ -486,6 +491,8 @@ export function ChatFirstShell(): React.JSX.Element {
             ) : (
               <Conversation
                 owner={owner}
+                personas={personas}
+                group={currentBinding.group}
                 currentSessionId={currentSessionId}
                 messages={messages}
                 streaming={streaming}
@@ -511,6 +518,17 @@ export function ChatFirstShell(): React.JSX.Element {
 
       {editor && <PersonaEditor initial={editor} onClose={() => setEditor(null)} />}
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      {groupOpen && (
+        <GroupCreateModal
+          personas={personas}
+          onClose={() => setGroupOpen(false)}
+          onCreate={(group) => {
+            newGroupSession(group)
+            setGroupOpen(false)
+            setRailTab('chats')
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -594,6 +612,7 @@ function Rail({
   onAddPersona,
   onAddPersonaByChat,
   onNewChatFromThread,
+  onNewGroup,
   onDeleteThread,
   onDeletePersona,
   onReorderPersonas
@@ -611,6 +630,8 @@ function Rail({
   onAddPersona: () => void
   onAddPersonaByChat: () => void
   onNewChatFromThread: (id: string) => void
+  /** 「消息」tab 搜索行右侧「发起群聊」。 */
+  onNewGroup: () => void
   onDeleteThread: (id: string, title: string) => void
   onDeletePersona: (id: string, name: string) => void
   onReorderPersonas: (ids: string[]) => void
@@ -695,6 +716,16 @@ function Rail({
             </button>
           )}
         </div>
+        {tab === 'chats' && (
+          <button
+            className="cf-rail__addbtn cf-rail__addbtn--nodrag"
+            title={t('cf.newGroup')}
+            aria-label={t('cf.newGroup')}
+            onClick={onNewGroup}
+          >
+            <Users size={16} />
+          </button>
+        )}
         {tab === 'roster' && (
           <AddMenu
             manualLabel={t('cf.addPersona')}
@@ -715,6 +746,8 @@ function Rail({
                 key={s.id}
                 session={s}
                 owner={personas.find((p) => p.id === s.personaId)}
+                groupName={groupNameOf(s, personas)}
+                groupMembers={groupMembersOf(s, personas)}
                 state={sessionStates[s.id]}
                 active={s.id === currentSessionId}
                 onClick={() => onOpenThread(s.id)}
@@ -1339,9 +1372,28 @@ function AddMenu({
   )
 }
 
+/** 群聊显示名：成员名顿号相连（已删成员略过）；非群聊返回 null。 */
+function groupNameOf(s: { group?: GroupConfig }, personas: Persona[]): string | null {
+  if (!s.group) return null
+  const names = s.group.memberIds
+    .map((id) => personas.find((p) => p.id === id)?.name)
+    .filter((n): n is string => Boolean(n))
+  return names.join('、')
+}
+
+/** 群聊成员（按 memberIds 顺序，已删成员略过）；非群聊返回 null。 */
+function groupMembersOf(s: { group?: GroupConfig }, personas: Persona[]): Persona[] | null {
+  if (!s.group) return null
+  return s.group.memberIds
+    .map((id) => personas.find((p) => p.id === id))
+    .filter((p): p is Persona => Boolean(p))
+}
+
 function ThreadRow({
   session,
   owner,
+  groupName,
+  groupMembers,
   state,
   active,
   onClick,
@@ -1349,6 +1401,10 @@ function ThreadRow({
 }: {
   session: SessionMeta
   owner?: Persona
+  /** 群聊：成员名串（替代单角色名显示，并打「群聊」徽标）；非群聊为 null。 */
+  groupName?: string | null
+  /** 群聊：成员列表（左侧显示群头像拼图）；非群聊为 null。 */
+  groupMembers?: Persona[] | null
   state?: { streaming: boolean; attention: boolean }
   active: boolean
   onClick: () => void
@@ -1366,11 +1422,20 @@ function ThreadRow({
       onContextMenu={onContext}
     >
       {/* 对话中（streaming）→ 头像上一道扫光指示。 */}
-      <Avatar persona={owner} size={38} busy={state?.streaming} />
+      {groupMembers ? (
+        <GroupAvatar members={groupMembers} size={38} busy={state?.streaming} />
+      ) : (
+        <Avatar persona={owner} size={38} busy={state?.streaming} />
+      )}
       <div className="cf-thread__main">
         {/* 上：角色名与时间；下：首次对话标题。挂载目录不在此展示。 */}
         <div className="cf-thread__top">
-          <span className="cf-thread__owner">{owner?.name ?? ''}</span>
+          <span className="cf-thread__owner">{groupName ?? owner?.name ?? ''}</span>
+          {groupName != null && (
+            <span className="cf-thread__badge" title={t('cf.groupChat')}>
+              <Users size={11} />
+            </span>
+          )}
           {isTask && (
             <span className="cf-thread__badge" title={t('cf.tabTasks')}>
               <AlarmClock size={11} />
@@ -2253,6 +2318,111 @@ function TaskFormModal({
   )
 }
 
+/**
+ * 「发起群聊」弹窗：勾选 ≥2 个角色 + 设定用户每次发言后最多连续发言次数。
+ * 勾选顺序即成员展示顺序。复用 .cf-modal is-editor 表单骨架。
+ */
+function GroupCreateModal({
+  personas,
+  onClose,
+  onCreate
+}: {
+  personas: Persona[]
+  onClose: () => void
+  onCreate: (group: GroupConfig) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const { providers } = useModels()
+  const [picked, setPicked] = useState<string[]>([])
+  const [maxTurns, setMaxTurns] = useState(4)
+  // 是否有可用决策模型：仅作提示（无决策时只认 @ 点名）。
+  const hasDecider = providers.some((p) => p.purpose === 'decision' && p.enabled)
+  const toggle = (id: string): void =>
+    setPicked((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
+  const canCreate = picked.length >= 2
+
+  return (
+    <div className="cf-modal__backdrop" onClick={onClose}>
+      <div
+        className="cf-modal is-editor"
+        role="dialog"
+        aria-label={t('cf.newGroup')}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="cf-modal__head">
+          <span className="cf-modal__title">{t('cf.newGroup')}</span>
+          <button className="cf-modal__close" title={t('common.close')} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="cf-editor">
+          <div className="cf-field">
+            <label className="cf-field__label">
+              {t('cf.groupMembers')}（{picked.length}）
+            </label>
+            <div className="cf-groupmembers">
+              {personas.length === 0 ? (
+                <div className="cf-field__hint">{t('cf.noPersona')}</div>
+              ) : (
+                personas.map((p) => {
+                  const idx = picked.indexOf(p.id)
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className={`cf-groupmember${idx >= 0 ? ' is-on' : ''}`}
+                      onClick={() => toggle(p.id)}
+                      aria-pressed={idx >= 0}
+                    >
+                      <Avatar persona={p} size={28} />
+                      <span className="cf-groupmember__name">{p.name}</span>
+                      <span className="cf-groupmember__check">
+                        {idx >= 0 ? idx + 1 : ''}
+                      </span>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+            <span className="cf-field__hint">{t('cf.groupMembersHint')}</span>
+          </div>
+
+          <div className="cf-field">
+            <label className="cf-field__label">{t('cf.groupMaxTurns')}</label>
+            <input
+              className="cf-input"
+              type="number"
+              min={1}
+              max={12}
+              value={maxTurns}
+              onChange={(e) => {
+                const n = Math.round(Number(e.target.value))
+                setMaxTurns(Number.isFinite(n) ? Math.max(1, Math.min(12, n)) : 4)
+              }}
+            />
+            <span className="cf-field__hint">
+              {hasDecider ? t('cf.groupDeciderOn') : t('cf.groupDeciderOff')}
+            </span>
+          </div>
+
+          <div className="cf-editor__actions">
+            <button className="cf-btn" onClick={onClose}>
+              {t('cf.cancel')}
+            </button>
+            <button
+              className="cf-btn is-primary"
+              disabled={!canCreate}
+              onClick={() => onCreate({ memberIds: picked, maxTurns })}
+            >
+              {t('cf.groupCreate')}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** tasks tab 右侧空态（未选中任务时）：对齐角色页 RosterEmpty。 */
 function TasksEmpty({ hasTasks }: { hasTasks: boolean }): React.JSX.Element {
   const { t } = useI18n()
@@ -2290,6 +2460,8 @@ function groupTurns(messages: ChatMessage[]): { turn: number; from: number; to: 
 
 function Conversation({
   owner,
+  personas,
+  group,
   currentSessionId,
   messages,
   streaming,
@@ -2309,6 +2481,10 @@ function Conversation({
   onPrefillConsumed
 }: {
   owner?: Persona
+  /** 全部角色（群聊按消息 author 取发言人头像/名称）。 */
+  personas: Persona[]
+  /** 群聊配置（存在即群聊）。 */
+  group?: GroupConfig
   currentSessionId: string
   messages: ChatMessage[]
   streaming: boolean
@@ -2578,11 +2754,25 @@ function Conversation({
 
   // 单条消息渲染（选择态与常态复用；选择态下 active 恒 false，因选择只在非流式时可用）。
   // turn：常态渲染传入，标注到根 data-turn 供右键定位；选择态用卡片自身处理点击，无需传。
+  // 群聊成员（按 memberIds 顺序，已删成员略过）：供未署名气泡的群头像使用。
+  const groupMembers = useMemo(
+    () =>
+      group
+        ? group.memberIds
+            .map((id) => personas.find((p) => p.id === id))
+            .filter((p): p is Persona => Boolean(p))
+        : [],
+    [group, personas]
+  )
+
   const renderMsg = (m: ChatMessage, i: number, turn?: number): React.JSX.Element => (
     <ConvMessage
       key={m.id}
       msg={m}
-      owner={owner}
+      owner={
+        (m.author && personas.find((p) => p.id === m.author)) || (group ? undefined : owner)
+      }
+      groupMembers={group && !m.author ? groupMembers : undefined}
       active={!selecting && streaming && i === messages.length - 1}
       dataTurn={turn}
       onAsk={onAsk}
@@ -2596,14 +2786,39 @@ function Conversation({
   return (
     <main className="cf-conv">
       <div className="cf-conv__head">
-        <button
-          className="cf-idbtn"
-          onClick={() => owner && onOpenProfile(owner.id)}
-          title={t('cf.viewProfile')}
-        >
-          {/* 顶部只显示角色名称（去掉头像与描述行）；仍可点击打开资料卡。 */}
-          <div className="cf-idbtn__name">{owner?.name ?? ''}</div>
-        </button>
+        {group ? (
+          // 群聊：顶部列出成员（各自可点开资料卡）+ 最大连续发言次数提示。
+          <div className="cf-grouphead">
+            <Users size={14} className="cf-grouphead__icon" />
+            {group.memberIds.map((id) => {
+              const p = personas.find((x) => x.id === id)
+              if (!p) return null
+              return (
+                <button
+                  key={id}
+                  className="cf-grouphead__member"
+                  onClick={() => onOpenProfile(id)}
+                  title={t('cf.viewProfile')}
+                >
+                  <Avatar persona={p} size={20} />
+                  <span>{p.name}</span>
+                </button>
+              )
+            })}
+            <span className="cf-grouphead__hint">
+              {t('cf.groupMaxTurnsHint').replace('{n}', String(group.maxTurns))}
+            </span>
+          </div>
+        ) : (
+          <button
+            className="cf-idbtn"
+            onClick={() => owner && onOpenProfile(owner.id)}
+            title={t('cf.viewProfile')}
+          >
+            {/* 顶部只显示角色名称（去掉头像与描述行）；仍可点击打开资料卡。 */}
+            <div className="cf-idbtn__name">{owner?.name ?? ''}</div>
+          </button>
+        )}
       </div>
 
       {/* 删除入口在聊天区右键唤起（见 onMsgsContextMenu）；选择态由右键菜单的「选择删除」开启。 */}
@@ -2925,6 +3140,7 @@ function UserText({ text }: { text: string }): React.JSX.Element {
 function ConvMessage({
   msg,
   owner,
+  groupMembers,
   active,
   dataTurn,
   onAsk,
@@ -2935,6 +3151,11 @@ function ConvMessage({
 }: {
   msg: ChatMessage
   owner?: Persona
+  /**
+   * 群聊里尚未署名的助手气泡（决策中的占位 / 群聊提示）：以群头像 + 群名呈现，
+   * 而不是先挂在某个成员名下、决策完成后再跳变成别人。
+   */
+  groupMembers?: Persona[]
   active: boolean
   /** 该消息所属的对话轮下标（0 基）；标注在根节点上，供右键菜单定位「删除此轮」。前言/未知为 undefined。 */
   dataTurn?: number
@@ -2968,6 +3189,36 @@ function ConvMessage({
   }
   return (
     <div className="cf-msg" data-turn={dataTurn}>
+      {groupMembers ? (
+        // 群聊未署名气泡：决策中只画三点跳动动画；落为提示（如无人回复）时不画头像/名字。
+        msg.blocks.length === 0 ? (
+          active ? (
+            <div className="cf-typing" aria-label="…" role="status">
+              <span />
+              <span />
+              <span />
+            </div>
+          ) : null
+        ) : (
+          <div className="cf-msg__body cf-msg__body--bare">
+            <div className="msg__content">
+              {msg.blocks.map((b, i) => (
+                <BlockView
+                  key={i}
+                  block={b}
+                  thinkingDone
+                  onAsk={onAsk}
+                  onPlan={onPlan}
+                  onMountReq={onMountReq}
+                  onOpenProposal={onOpenProposal}
+                  onOpenAutotask={onOpenAutotask}
+                />
+              ))}
+            </div>
+          </div>
+        )
+      ) : (
+        <>
       <Avatar persona={owner} size={32} />
       <div className="cf-msg__body">
         <div className="cf-msg__head">
@@ -2988,6 +3239,8 @@ function ConvMessage({
           ))}
         </div>
       </div>
+        </>
+      )}
     </div>
   )
 }
@@ -4631,6 +4884,102 @@ function Toggle({
 //  - 角色：seed=persona.id，叠加其 avatar spec（若有）。
 //  - 用户：固定 seed（USER_AVATAR_SEED）。
 // 结构：外层 .cf-ava 作定位框，内层 .cf-ava__face 圆形裁剪头像（无描边）。
+/**
+ * 群头像切片布局（坐标均为头像框的百分比）：clip=该片的裁剪多边形；cx/cy=片内头像中心；s=头像边长。
+ * 1 人整圆；2 人左右平分；3 人三等分扇形（上 / 右下 / 左下，各 120°）；4 人四象限。
+ * 3 人扇形的边界射线与左右边的交点 y = 50 − 50·tan30° ≈ 21.13%。
+ */
+const GROUP_SLOTS: Record<number, { clip: string; cx: number; cy: number; s: number }[]> = {
+  1: [{ clip: 'none', cx: 50, cy: 50, s: 100 }],
+  2: [
+    { clip: 'polygon(0 0, 50% 0, 50% 100%, 0 100%)', cx: 25, cy: 50, s: 80 },
+    { clip: 'polygon(50% 0, 100% 0, 100% 100%, 50% 100%)', cx: 75, cy: 50, s: 80 }
+  ],
+  3: [
+    { clip: 'polygon(50% 50%, 0 21.13%, 0 0, 100% 0, 100% 21.13%)', cx: 50, cy: 23, s: 58 },
+    { clip: 'polygon(50% 50%, 100% 21.13%, 100% 100%, 50% 100%)', cx: 74, cy: 65, s: 58 },
+    { clip: 'polygon(50% 50%, 50% 100%, 0 100%, 0 21.13%)', cx: 26, cy: 65, s: 58 }
+  ],
+  4: [
+    { clip: 'polygon(0 0, 50% 0, 50% 50%, 0 50%)', cx: 29, cy: 29, s: 56 },
+    { clip: 'polygon(50% 0, 100% 0, 100% 50%, 50% 50%)', cx: 71, cy: 29, s: 56 },
+    { clip: 'polygon(0 50%, 50% 50%, 50% 100%, 0 100%)', cx: 29, cy: 71, s: 56 },
+    { clip: 'polygon(50% 50%, 100% 50%, 100% 100%, 50% 100%)', cx: 71, cy: 71, s: 56 }
+  ]
+}
+
+/** 群头像分隔线（viewBox 0..100）：与切片边界一致。 */
+const GROUP_DIVIDERS: Record<number, string> = {
+  1: '',
+  2: 'M50 0 V100',
+  3: 'M50 50 L0 21.13 M50 50 L100 21.13 M50 50 V100',
+  4: 'M50 0 V100 M0 50 H100'
+}
+
+/**
+ * 群头像（微信式）：把至多 4 位成员的头像按人数切片拼进一个圆。
+ * 与 Avatar 同尺寸体系（--sz）、同忙碌扫光；成员为空时退化为空占位圈。
+ */
+function GroupAvatar({
+  members,
+  size,
+  busy,
+  title
+}: {
+  members: Persona[]
+  size?: number
+  busy?: boolean
+  title?: string
+}): React.JSX.Element {
+  const style = { ...(size ? { '--sz': `${size}px` } : {}) } as React.CSSProperties
+  const shown = members.slice(0, 4)
+  const n = shown.length
+  const slots = GROUP_SLOTS[n] ?? []
+  return (
+    <div
+      className={`cf-ava cf-ava--group${busy ? ' is-busy' : ''}`}
+      style={style}
+      title={title ?? shown.map((p) => p.name).join('、')}
+    >
+      <span className="cf-ava__face">
+        {shown.map((p, i) => {
+          const sl = slots[i]
+          return (
+            <span
+              key={p.id}
+              className="cf-ava__slice"
+              style={{ clipPath: sl.clip === 'none' ? undefined : sl.clip }}
+            >
+              <span
+                className="cf-ava__slice-face"
+                style={{
+                  left: `${sl.cx - sl.s / 2}%`,
+                  top: `${sl.cy - sl.s / 2}%`,
+                  width: `${sl.s}%`,
+                  height: `${sl.s}%`
+                }}
+              >
+                <PersonaFace
+                  seed={p.id}
+                  spec={parseAvatarSpec(p.avatar)}
+                  image={p.avatarImage}
+                  title={p.name}
+                />
+              </span>
+            </span>
+          )
+        })}
+        {n > 1 && (
+          <svg className="cf-ava__dividers" viewBox="0 0 100 100" aria-hidden="true">
+            <path d={GROUP_DIVIDERS[n]} />
+          </svg>
+        )}
+      </span>
+      {busy ? <span className="cf-ava__sweep" aria-hidden="true" /> : null}
+    </div>
+  )
+}
+
 function Avatar({
   persona,
   user,

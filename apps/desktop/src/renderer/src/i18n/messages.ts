@@ -215,7 +215,10 @@ const zhCN: MessageTree = {
       refused: '模型拒绝了本次请求（或被服务商的内容策略拦截），本轮没有返回内容。换种说法或换个模型再试。',
       compacted: '较早的对话已压缩为摘要，以节省上下文。',
       compactNone: '当前对话较短，无需压缩。',
-      compactFailed: '压缩失败，历史保持不变。'
+      compactFailed: '压缩失败，历史保持不变。',
+      groupIdle: '没有成员被 @，本轮无人发言。用「@角色名」点名让其回复（启用决策模型后可自动安排发言）。',
+      groupDecisionFailed: '决策模型请求失败，本轮只由被 @ 的成员发言。',
+      groupNoReply: '决策模型判断这条消息无需成员回复。可以用「@角色名」直接点名。'
     },
     noModel: '尚未选择模型，请先在「设置 › 模型」添加并启用模型，再从输入框上方的模型选择器中选择。',
     noKey: '该模型尚未配置 API 密钥，请在「设置 › 模型」中填写。',
@@ -505,6 +508,16 @@ const zhCN: MessageTree = {
     settings: '设置',
     defaultModel: '跟随默认',
     viewProfile: '查看资料',
+    // 群聊
+    newGroup: '发起群聊',
+    groupChat: '群聊',
+    groupMembers: '选择成员',
+    groupMembersHint: '至少选 2 个角色。消息中写「@角色名」点名，被点名者按 @ 的先后依次发言。',
+    groupMaxTurns: '每次最多连续发言',
+    groupDeciderOn: '已启用决策模型：点名者说完后（或未点名时），由它决定下一位发言人，以及何时停下交还给你。',
+    groupDeciderOff: '未启用决策模型：只有被 @ 的成员发言，不 @ 则无人回复。可在 设置 › 模型 添加决策模型。',
+    groupCreate: '创建群聊',
+    groupMaxTurnsHint: '每轮最多 {n} 次发言',
     mountHint: '挂载一个文件夹，让当前对话聚焦其中',
     unmountHint: '卸载文件夹，回到全机通用助手',
     mountWorkspace: '挂载工作区',
@@ -840,7 +853,11 @@ const en: MessageTree = {
         'The model declined this request (or the provider blocked it by content policy), so nothing came back. Try rephrasing, or switch models.',
       compacted: 'Earlier conversation was compacted into a summary to save context.',
       compactNone: 'This conversation is still short — nothing to compact.',
-      compactFailed: 'Compaction failed; history is unchanged.'
+      compactFailed: 'Compaction failed; history is unchanged.',
+      groupIdle:
+        'No member was @-mentioned, so nobody replied. Use “@Name” to call on someone (or enable a decision model to schedule replies automatically).',
+      groupDecisionFailed: 'The decision model request failed; only @-mentioned members replied this round.',
+      groupNoReply: 'The decision model judged that no member needs to reply. Use “@Name” to call on someone directly.'
     },
     noModel:
       'No model selected — add and enable a model under Settings › Models, then pick it from the model selector above the input box.',
@@ -1135,6 +1152,19 @@ const en: MessageTree = {
     settings: 'Settings',
     defaultModel: 'Follow default',
     viewProfile: 'View profile',
+    // Group chat
+    newGroup: 'New group chat',
+    groupChat: 'Group chat',
+    groupMembers: 'Members',
+    groupMembersHint:
+      'Pick at least 2 personas. Write “@Name” in a message to call on members; they reply in the order mentioned.',
+    groupMaxTurns: 'Max consecutive replies',
+    groupDeciderOn:
+      'Decision model enabled: after the mentioned members reply (or if nobody is mentioned), it picks the next speaker and decides when to hand back to you.',
+    groupDeciderOff:
+      'No decision model: only @-mentioned members reply; mention nobody and nobody replies. Add one in Settings › Models.',
+    groupCreate: 'Create group',
+    groupMaxTurnsHint: 'Up to {n} replies per round',
     mountHint: 'Mount a folder to focus this conversation inside it',
     unmountHint: 'Unmount the folder and return to the whole-machine assistant',
     mountWorkspace: 'Mount workspace',

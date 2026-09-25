@@ -18,18 +18,40 @@ import { httpError, type ErrorKind, type NormalizedError } from '../providers/ty
 /** 决策适配器（可扩展；当前仅 Jev）。 */
 export type DecisionAdapter = 'jev'
 
-/** 单个类型化问题：一句话描述要决策什么，可选给出候选项（供适配器做更结构化的判定）。 */
+/**
+ * 单个类型化问题。
+ * 简写：只给 prompt（+ 可选 options）→ 无 options 为 noul、有 options 为 choice（选项描述=选项名）。
+ * 显式：给 type 与对应 criteria（与 Jev 契约同形）——
+ *   · choice：optionCriteria = { 选项: 描述 | null }（描述会发给模型，应写清各选项区别）；
+ *   · score ：levels = 有序等级描述数组（2~10 级）；
+ *   · noul  ：noulCriteria = { true?: 是的含义, false?: 否的含义 }。
+ * prompt 可为字符串或对象（Jev instructions 支持结构化：问题放一个字段，数据放其他字段）。
+ */
 export interface DecisionQuestion {
-  /** 稳定标识，用于把结果对回问题。 */
+  /** 稳定标识，用于把结果对回问题（不发给模型）。 */
   id: string
-  /** 自然语言：要决策的事项（如「现在是否该主动给用户发条消息？」）。 */
-  prompt: string
-  /** 可选候选项/枚举，交由适配器解释。 */
+  /** 要决策的事项（Jev instructions）。 */
+  prompt: string | Record<string, unknown>
+  /** 简写 choice 的候选项（描述即选项名）。 */
   options?: string[]
+  /** 显式题型；缺省按 options 推断。 */
+  type?: 'noul' | 'choice' | 'score'
+  /** choice：选项 → 描述（null = 无需描述）。 */
+  optionCriteria?: Record<string, string | Record<string, unknown> | null>
+  /** score：有序等级描述（低 → 高）。 */
+  levels?: string[]
+  /** noul：是/否各自含义。 */
+  noulCriteria?: { true?: string; false?: string }
 }
 
-/** 交给决策模型的「世界状态」：自由文本情境 + 结构化信号（近期活动/计数/时间戳等）。 */
+/**
+ * 交给决策模型的「世界状态」。
+ * data（推荐）：结构化对象，原样作为 Jev 的 state 上送（文档推荐用对象，字段名即语义）。
+ * 否则退回旧形态：自由文本 context + signals JSON 拼成字符串。
+ */
 export interface DecisionState {
+  /** 结构化 state（优先）。 */
+  data?: Record<string, unknown> | unknown[]
   /** 自由文本情境描述。 */
   context?: string
   /** 结构化信号，键值不限，序列化后随请求上送。 */
@@ -45,6 +67,14 @@ export interface DecisionOutcome {
   decide: boolean
   /** 适配器若返回则带上的简短理由。 */
   reason?: string
+  /** choice 题：所选候选项（原样对应 DecisionQuestion.options 之一）；noul 题缺省。 */
+  choice?: string
+  /** choice / score 题：各候选项（score 为等级下标字符串）概率。 */
+  probabilities?: Record<string, number>
+  /** noul 题：是的概率（与 confidence 相同，显式给出便于阅读）。 */
+  noul?: number
+  /** score 题：概率加权等级值（可落在两级之间，0 基）。 */
+  score?: number
 }
 
 export interface DecisionResult {
@@ -117,8 +147,9 @@ function networkError(e: unknown): NormalizedError {
  *   noul → {type,noul:number[0,1]}；choice → {type,choice,confidence,probabilities}；score → {type,score,confidence,legend,probabilities}
  */
 
-/** 通用 state（context+signals）折成 Jev 需要的单串文本：情境正文 + 结构化信号 JSON。 */
-function stateToText(state: DecisionState): string {
+/** 通用 state → Jev state：有 data 原样上送（对象/数组）；否则 context + signals JSON 拼成字符串。 */
+function stateToJev(state: DecisionState): unknown {
+  if (state.data !== undefined) return state.data
   const ctx = state.context?.trim() ?? ''
   if (state.signals && Object.keys(state.signals).length > 0) {
     const sig = JSON.stringify(state.signals)
@@ -127,35 +158,88 @@ function stateToText(state: DecisionState): string {
   return ctx
 }
 
-/** 通用问题数组折成 Jev 的 questions 对象：无候选→noul（是/否概率），有候选→choice。 */
+/** 通用问题数组折成 Jev 的 questions 对象（显式 type 优先，否则按 options 推断 noul/choice）。 */
 function buildJevQuestions(questions: DecisionQuestion[]): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   for (const q of questions) {
-    if (q.options && q.options.length > 0) {
-      const criteria: Record<string, string> = {}
-      for (const opt of q.options) criteria[opt] = opt
+    const type = q.type ?? (q.options && q.options.length > 0 ? 'choice' : 'noul')
+    if (type === 'choice') {
+      let criteria = q.optionCriteria
+      if (!criteria) {
+        criteria = {}
+        for (const opt of q.options ?? []) criteria[opt] = opt
+      }
       out[q.id] = { type: 'choice', instructions: q.prompt, criteria }
+    } else if (type === 'score') {
+      out[q.id] = { type: 'score', instructions: q.prompt, criteria: q.levels ?? [] }
     } else {
-      out[q.id] = { type: 'noul', instructions: q.prompt }
+      out[q.id] = {
+        type: 'noul',
+        instructions: q.prompt,
+        ...(q.noulCriteria ? { criteria: q.noulCriteria } : {})
+      }
     }
   }
   return out
 }
 
+/** 可重试的状态码：429 限流 / 529 过载（文档要求指数退避重试）。 */
+const RETRYABLE_STATUS = new Set([429, 529])
+/** 最多额外重试次数与退避基数（ms）：500 → 1000。 */
+const MAX_RETRIES = 2
+const RETRY_BASE_MS = 500
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+/** 退避时长：优先服务端 Retry-After（秒，封顶 5s），否则指数退避 + 少量抖动。 */
+function retryDelay(res: Response, attempt: number): number {
+  const ra = Number(res.headers.get('retry-after'))
+  if (Number.isFinite(ra) && ra > 0) return Math.min(5000, ra * 1000)
+  return RETRY_BASE_MS * 2 ** attempt + Math.floor(Math.random() * 150)
+}
+
 /** 从单个 Jev answer 折出闸门用置信度 [0,1]（+ 可选理由：所选项 / 分值）。 */
-function answerConfidence(answer: unknown): { confidence: number; reason?: string } {
+function answerConfidence(answer: unknown): {
+  confidence: number
+  reason?: string
+  choice?: string
+  probabilities?: Record<string, number>
+  noul?: number
+  score?: number
+} {
   const a = (answer ?? {}) as {
     type?: unknown
     noul?: unknown
     confidence?: unknown
     choice?: unknown
     score?: unknown
+    probabilities?: unknown
   }
-  if (a.type === 'noul' || a.noul !== undefined) return { confidence: clamp01(a.noul) }
-  if (a.type === 'choice')
-    return { confidence: clamp01(a.confidence), reason: typeof a.choice === 'string' ? a.choice : undefined }
-  if (a.type === 'score')
-    return { confidence: clamp01(a.confidence), reason: a.score !== undefined ? String(a.score) : undefined }
+  const probs = (): Record<string, number> | undefined => {
+    if (!a.probabilities || typeof a.probabilities !== 'object') return undefined
+    const p: Record<string, number> = {}
+    for (const [k, v] of Object.entries(a.probabilities as Record<string, unknown>)) p[k] = clamp01(v)
+    return p
+  }
+  if (a.type === 'noul' || a.noul !== undefined) {
+    const n = clamp01(a.noul)
+    return { confidence: n, noul: n }
+  }
+  if (a.type === 'choice') {
+    const choice = typeof a.choice === 'string' ? a.choice : undefined
+    return { confidence: clamp01(a.confidence), reason: choice, choice, probabilities: probs() }
+  }
+  if (a.type === 'score') {
+    const s = typeof a.score === 'number' && Number.isFinite(a.score) ? a.score : undefined
+    return {
+      confidence: clamp01(a.confidence),
+      reason: s !== undefined ? String(s) : undefined,
+      score: s,
+      probabilities: probs()
+    }
+  }
   // 兜底：拿得到 confidence/noul 就用。
   return { confidence: clamp01(a.confidence ?? a.noul) }
 }
@@ -169,16 +253,26 @@ async function decideJev(
   const apiKey = (await getSecret(cfg.providerId)) ?? ''
   if (!apiKey) return { ok: false, outcomes: [], kind: 'auth', message: 'no-key' }
   const base = normalizeBase(cfg.baseURL)
+  const body = JSON.stringify({
+    state: stateToJev(state),
+    model: cfg.model ?? DEFAULT_JEV_MODEL,
+    questions: buildJevQuestions(questions)
+  })
   try {
-    const res = await fetchWithTimeout(`${base}/v1/systemone`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        state: stateToText(state),
-        model: cfg.model ?? DEFAULT_JEV_MODEL,
-        questions: buildJevQuestions(questions)
+    let res: Response
+    // 429/529：按文档指数退避重试（最多 MAX_RETRIES 次）；其余错误立即返回。
+    for (let attempt = 0; ; attempt++) {
+      res = await fetchWithTimeout(`${base}/v1/systemone`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body
       })
-    })
+      if (res.ok || !RETRYABLE_STATUS.has(res.status) || attempt >= MAX_RETRIES) break
+      const wait = retryDelay(res, attempt)
+      console.warn(`[decision] ${res.status}，${wait}ms 后重试（第 ${attempt + 1} 次）`)
+      await res.text().catch(() => '')
+      await sleep(wait)
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       const err = httpError(res.status, text)
@@ -188,8 +282,8 @@ async function decideJev(
     const answers = (json as { answers?: Record<string, unknown> } | null)?.answers ?? {}
     // 按 id 对回；缺失的问题给 0 置信度（不发起）。阈值折算成布尔闸门。
     const outcomes: DecisionOutcome[] = questions.map((q) => {
-      const { confidence, reason } = answerConfidence(answers[q.id])
-      return { id: q.id, confidence, decide: confidence >= cfg.threshold, reason }
+      const a = answerConfidence(answers[q.id])
+      return { id: q.id, ...a, decide: a.confidence >= cfg.threshold }
     })
     return { ok: true, outcomes }
   } catch (e) {

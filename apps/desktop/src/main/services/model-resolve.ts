@@ -83,6 +83,38 @@ export function resolveModelRefOrNull(ref: string | null | undefined): ResolvedM
 }
 
 /**
+ * 解析首个可用的决策模型服务商（purpose==='decision' 且已启用）→ 决策连接配置（不含密钥）。
+ * 群聊择人/判结束用。无配置/读取失败 → null（调用方回退轮转）。永不抛错。
+ */
+export function resolveDecisionProvider(): {
+  adapter: 'jev'
+  providerId: string
+  baseURL: string
+  threshold: number
+} | null {
+  try {
+    const models = (getConfig().models ?? {}) as { providers?: unknown }
+    const providers = Array.isArray(models.providers)
+      ? (models.providers as (StoredProvider & {
+          purpose?: unknown
+          enabled?: unknown
+          threshold?: unknown
+        })[])
+      : []
+    const p = providers.find(
+      (x) => x && x.purpose === 'decision' && x.enabled === true && x.adapter === 'jev'
+    )
+    if (!p || typeof p.id !== 'string') return null
+    const baseURL = typeof p.apiHost === 'string' ? p.apiHost.trim() : ''
+    if (!/^https?:\/\/[^/]+/.test(baseURL)) return null
+    const t = typeof p.threshold === 'number' && Number.isFinite(p.threshold) ? p.threshold : 0.6
+    return { adapter: 'jev', providerId: p.id, baseURL, threshold: Math.min(1, Math.max(0, t)) }
+  } catch {
+    return null
+  }
+}
+
+/**
  * 解析全局默认模型（`config.models.activeModelId`，即用户最近一次在对话输入框选定的模型）。
  * 供无父轮可回落的场景使用——典型是定时任务密封执行（task.auth.modelRef 为空时的回落）。
  * 无配置 / 悬空引用 → 返回 null（调度器据此记「未配置默认模型」错误，绝不崩溃）。

@@ -50,6 +50,11 @@ export type ContentPart =
 export interface Message {
   role: 'user' | 'assistant'
   content: string | ContentPart[]
+  /**
+   * 群聊：该条 assistant 消息（及其 tool_result 回灌）的发言角色 personaId。
+   * 纯本地元数据——normalizeMessages 只重建 {role, content}，绝不发往 API。单聊恒缺省。
+   */
+  author?: string
 }
 
 /** 归一化工具声明（JSON Schema 为准）。 */

@@ -31,7 +31,7 @@ export default defineConfig({
     // dev 模式 ERR_CONNECTION_REFUSED。显式绑 127.0.0.1 + 定端口即可根治。
     server: {
       host: '127.0.0.1',
-      port: 5173,
+      port: 8868,
       strictPort: true
     }
   }

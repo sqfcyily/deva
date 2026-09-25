@@ -153,23 +153,9 @@ export const seedProviders: Provider[] = [
     docUrl: 'https://ollama.com/library',
     enabled: false,
     models: []
-  },
-  {
-    // 决策模型（TypeSafe · Jev / System One）：状态 + 类型化问题 → 类型化概率决策，
-    // 非 LLM、无文本流式。独立于对话/写作模型：绝不进对话选择器，运行时走 services/decision.ts（Phase 2）。
-    // apiHost / docUrl 为可编辑默认值（用户在设置页按自己的接入信息调整）。
-    id: 'typesafe',
-    name: 'TypeSafe · Jev',
-    kind: 'official',
-    purpose: 'decision',
-    accent: '#6d5efc',
-    adapter: 'jev',
-    apiHost: 'https://api.typesafe.ai',
-    docUrl: 'https://console.typesafe.ai',
-    enabled: false,
-    threshold: 0.6,
-    models: []
   }
+  // 决策模型（purpose==='decision'，如 TypeSafe · Jev）默认不内置：
+  // 由用户在设置 › 模型 右上角「新增 › 添加决策模型」自建（adapter 固定 jev）。
 ]
 
 /**

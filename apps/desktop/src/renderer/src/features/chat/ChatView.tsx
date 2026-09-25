@@ -728,7 +728,10 @@ export function BlockView({
       refused: 'chat.notice.refused',
       compacted: 'chat.notice.compacted',
       compact_none: 'chat.notice.compactNone',
-      compact_failed: 'chat.notice.compactFailed'
+      compact_failed: 'chat.notice.compactFailed',
+      group_idle: 'chat.notice.groupIdle',
+      group_decision_failed: 'chat.notice.groupDecisionFailed',
+      group_no_reply: 'chat.notice.groupNoReply'
     }
     return (
       <div className="msg__notice">

@@ -64,6 +64,8 @@ export interface ChatCreateSessionRequest {
   personaId?: string
   focusRoot?: string | null
   modelRef?: string
+  /** 群聊配置：提供即建为群聊会话（一次性绑定）。 */
+  group?: GroupConfig
 }
 
 /** 附件类型（与 services/attachments.ts 对齐）。 */
@@ -92,6 +94,14 @@ export interface ChatSessionMeta {
   focusRoot?: string | null
   /** 本对话模型引用 `"providerId:modelId"`；空串/缺省 = 跟随全局默认。见 ChatSendRequest.modelRef。 */
   model?: string
+  /** 群聊配置（存在即群聊）。与 chat-store.ts 的 GroupConfig 对齐。 */
+  group?: GroupConfig
+}
+
+/** 群聊配置：成员 personaId（≥2）+ 用户发言后最多连续发言次数。 */
+export interface GroupConfig {
+  memberIds: string[]
+  maxTurns: number
 }
 
 /** 角色名片草稿（与 services/chat.ts 的 AgentDraft 对齐）。 */
@@ -113,7 +123,18 @@ export interface AutotaskDraft {
 export type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
-  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' | 'refused' }
+  | {
+      kind: 'notice'
+      code:
+        | 'compacted'
+        | 'truncated'
+        | 'empty'
+        | 'refused'
+        | 'group_idle'
+        | 'group_decision_failed'
+        | 'group_no_reply'
+      detail?: string
+    }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   /**
@@ -141,7 +162,8 @@ export type DisplayBlock =
 
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
-  | { role: 'assistant'; blocks: DisplayBlock[] }
+  /** author：群聊发言角色 personaId（单聊缺省）。 */
+  | { role: 'assistant'; blocks: DisplayBlock[]; author?: string }
 
 /** ask_user 候选项（与 services/chat.ts 对齐）。 */
 export interface AskOption {
@@ -494,6 +516,10 @@ export interface DecisionTestResult {
 /** 主进程 → 渲染层的富事件（与 services/chat.ts 的 ChatStreamEvent 对齐）。 */
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
+  /** 群聊：下一位发言人即将开口（另起带作者的助手气泡）。 */
+  | { type: 'speaker'; personaId: string; reason?: string }
+  /** 群聊提示：group_idle=无人被 @ 且无决策模型；group_decision_failed=决策失败（message=原因）。 */
+  | { type: 'group_notice'; code: 'group_idle' | 'group_decision_failed' | 'group_no_reply'; message?: string }
   | { type: 'thinking_delta'; text: string }
   /** depth>0 + agent + parent：来自某子智能体（折叠进 parent 那次 run_subagent 调用开出的 Task 卡）。 */
   | {
