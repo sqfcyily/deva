@@ -249,6 +249,10 @@ const zhCN: MessageTree = {
       stepUnit: '步',
       noSteps: '无内部工具调用'
     },
+    toolGroup: {
+      title: '调用了 {n} 个工具',
+      failed: '{n} 个失败'
+    },
     agentcard: {
       title: '角色名片',
       fallback: '未命名角色',
@@ -872,6 +876,10 @@ const en: MessageTree = {
       task: 'Task',
       stepUnit: 'steps',
       noSteps: 'No internal tool calls'
+    },
+    toolGroup: {
+      title: '{n} tool calls',
+      failed: '{n} failed'
     },
     agentcard: {
       title: 'Agent card',

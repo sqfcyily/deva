@@ -796,6 +796,126 @@ function AskCard({
   )
 }
 
+/** 折叠卡内的一行工具调用（子智能体内部步骤 / 连续工具组共用）：图标 + 名称与参数（单行省略）+ 状态徽标。 */
+function ToolStepRow({
+  step
+}: {
+  step: { name: string; args: unknown; status: ToolStatus; summary?: string }
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const meta = TOOL_META[step.name] ?? { icon: <Wrench size={13} />, key: 'chat.tool.unknown' }
+  const hint = argHint(step.args)
+  return (
+    <div className="subagent__step" title={hintTitle(hint)}>
+      <span className="subagent__step-icon">{meta.icon}</span>
+      <span className="subagent__step-title">
+        {t(meta.key)} {hint && <code>{hint.text}</code>}
+      </span>
+      <ToolBadge status={step.status} summary={step.summary} />
+    </div>
+  )
+}
+
+type ToolBlock = Extract<ChatBlock, { kind: 'tool' }>
+
+/** 连续工具调用达到此数即折叠成一张工具组卡。 */
+export const TOOL_GROUP_MIN = 2
+
+/**
+ * 块序列的渲染单元：single = 原样渲染的单块（index 为其在原序列中的下标，供 thinkingDone 判定）；
+ * toolGroup = 连续 ≥ TOOL_GROUP_MIN 个普通工具调用，折叠成一张卡。
+ */
+export type BlockItem =
+  | { type: 'single'; block: ChatBlock; index: number }
+  | { type: 'toolGroup'; tools: ToolBlock[]; key: string }
+
+/**
+ * 把助手块序列切成渲染单元（纯函数）。只合并 kind==='tool'；其间的空文本块视作透明（流式间隙常见）、
+ * 不断开也不渲染；非空正文 / 思考 / 其余任何卡片都会断开——那是模型给用户看的内容，不该被折进去。
+ * 不足 TOOL_GROUP_MIN 的连续段原样拆回单块（连同被跳过的空文本块），保持与分组前逐块一致。
+ */
+export function groupBlocks(blocks: ChatBlock[]): BlockItem[] {
+  const out: BlockItem[] = []
+  let run: { block: ChatBlock; index: number }[] = []
+  let tools: ToolBlock[] = []
+
+  const flush = (): void => {
+    if (tools.length >= TOOL_GROUP_MIN) {
+      // 以首个工具 id 作 key：组在流式中增长时卡片不重挂载，用户展开态得以保留。
+      out.push({ type: 'toolGroup', tools, key: `tg:${tools[0].id}` })
+    } else {
+      for (const r of run) out.push({ type: 'single', block: r.block, index: r.index })
+    }
+    run = []
+    tools = []
+  }
+
+  blocks.forEach((b, i) => {
+    if (b.kind === 'tool') {
+      run.push({ block: b, index: i })
+      tools.push(b)
+    } else if (b.kind === 'text' && !b.text.trim() && tools.length > 0) {
+      run.push({ block: b, index: i })
+    } else {
+      flush()
+      out.push({ type: 'single', block: b, index: i })
+    }
+  })
+  flush()
+  return out
+}
+
+/**
+ * 连续工具调用折叠卡：默认收起。标题 = 总数 + 最后一个工具（收起时也能看出「此刻在做什么」）；
+ * 徽标 = 仍有执行中 → 执行中；否则有失败/拒绝 → N 个失败；全部成功 → 完成。展开后逐行列出每个调用。
+ */
+export function ToolGroupCard({ tools }: { tools: ToolBlock[] }): React.JSX.Element {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const last = tools[tools.length - 1]
+  const meta = TOOL_META[last.name] ?? { icon: <Wrench size={14} />, key: 'chat.tool.unknown' }
+  const hint = argHint(last.args)
+  const running = tools.some((x) => x.status === 'running')
+  const failed = tools.filter((x) => x.status === 'error' || x.status === 'denied').length
+  const count = t('chat.toolGroup.title').replace('{n}', String(tools.length))
+
+  let badge: React.JSX.Element
+  if (running) badge = <ToolBadge status="running" />
+  else if (failed > 0)
+    badge = <ToolBadge status="error" summary={t('chat.toolGroup.failed').replace('{n}', String(failed))} />
+  else badge = <ToolBadge status="ok" />
+
+  return (
+    <div className={`subagent toolgroup${open ? ' is-open' : ''}`}>
+      <button
+        type="button"
+        className="subagent__head"
+        onClick={() => setOpen((v) => !v)}
+        title={hint?.full}
+        aria-expanded={open}
+      >
+        <ChevronRight size={13} className="subagent__caret" />
+        <span className="subagent__head-icon">{meta.icon}</span>
+        <span className="toolgroup__title">
+          <span className="toolgroup__count">{count}</span>
+          <span className="toolgroup__sep">·</span>
+          {t(meta.key)} {hint && <code>{hint.text}</code>}
+        </span>
+        {badge}
+      </button>
+      {open && (
+        <div className="subagent__body">
+          <div className="subagent__steps">
+            {tools.map((x) => (
+              <ToolStepRow key={x.id} step={x} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * 子智能体折叠 Task 卡（仿 Claude Code）：默认收起、只显示结论徽标；展开后看任务描述与内部工具调用序列。
  * 子智能体的权限请求不在此卡内——照常作为顶层权限卡浮出确认（见 reduceBlocks）。
@@ -840,19 +960,9 @@ function SubagentCard({
             <div className="subagent__empty">{t('chat.subagent.noSteps')}</div>
           ) : (
             <div className="subagent__steps">
-              {block.children.map((c) => {
-                const meta = TOOL_META[c.name] ?? { icon: <Wrench size={13} />, key: 'chat.tool.unknown' }
-                const hint = argHint(c.args)
-                return (
-                  <div key={c.id} className="subagent__step" title={hintTitle(hint)}>
-                    <span className="subagent__step-icon">{meta.icon}</span>
-                    <span className="subagent__step-title">
-                      {t(meta.key)} {hint && <code>{hint.text}</code>}
-                    </span>
-                    <ToolBadge status={c.status} summary={c.summary} />
-                  </div>
-                )
-              })}
+              {block.children.map((c) => (
+                <ToolStepRow key={c.id} step={c} />
+              ))}
             </div>
           )}
         </div>

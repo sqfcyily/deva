@@ -95,7 +95,13 @@ import {
   type AvatarSpec
 } from '../components/humation'
 import { useTheme } from '../theme/ThemeContext'
-import { BlockView, StatusIndicator, deriveActivity } from '../features/chat/blocks'
+import {
+  BlockView,
+  StatusIndicator,
+  ToolGroupCard,
+  deriveActivity,
+  groupBlocks
+} from '../features/chat/blocks'
 import { ModelSettings } from '../features/settings/ModelSettings'
 
 /**
@@ -162,14 +168,6 @@ const BOTTOM_THRESHOLD = 64
  */
 /** 触发阈值：用户消息条数 ≥ 此值才渲染面板。 */
 const TOC_MIN_TURNS = 4
-/** 展开态面板宽度（px）。 */
-const TOC_WIDTH = 160
-/**
- * 判定「右侧留白够常驻展开」时，在面板宽度之外额外要求的余量（px）。
- * 须覆盖面板自身的右内缩（CSS .cf-toc 的 right: var(--space-4) = 16px）再留 16px 呼吸位，
- * 否则留白恰好卡在阈值时面板会压住正文右缘。
- */
-const TOC_GAP = 32
 /**
  * 当前轮判定线：距滚动容器顶边的偏移（px），最后一条越过它的用户消息即当前轮。
  * 须与 {@link TOC_JUMP_PAD} 保持接近——二者之差若超过相邻两条用户消息的最小间距，
@@ -2432,31 +2430,6 @@ function Conversation({
     []
   )
 
-  // 面板是否常驻展开：消息列固定 --cf-main 宽且居中，右侧留白够放下面板才常驻，否则收起为细条
-  // （悬停再展开为浮层），免得窄窗口下压住正文。宽度读 CSS 变量，不在 JS 里重复写死。
-  const [tocOpen, setTocOpen] = useState(false)
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const measure = (): void => {
-      const raw = parseFloat(getComputedStyle(el).getPropertyValue('--cf-main'))
-      const mainW = Number.isFinite(raw) && raw > 0 ? raw : 780
-      const gutter = (el.clientWidth - Math.min(el.clientWidth, mainW)) / 2
-      const open = gutter >= TOC_WIDTH + TOC_GAP
-      setTocOpen((p) => (p === open ? p : open))
-    }
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-
-  // 索引面板不在 .cf-msgs 内，鼠标停在它上面滚轮什么也不会滚（面板「吞掉」滚轮，
-  // 看起来就像高亮卡住不跟随）。故由面板把自己消化不掉的滚动量转发过来。
-  const scrollMsgsBy = useCallback((dy: number): void => {
-    const el = scrollRef.current
-    if (el) el.scrollTop += dy
-  }, [])
 
   // 跳到某一轮的用户消息：复用右键删除已标注的 data-turn 作锚点。
   const jumpToTurn = useCallback((turn: number): void => {
@@ -2664,13 +2637,7 @@ function Conversation({
         </div>
         {/* 轮次索引：只在轮次够多且非选择态时出现（选择态要让位给勾选交互）。 */}
         {!selecting && tocItems.length >= TOC_MIN_TURNS && (
-          <TurnIndex
-            items={tocItems}
-            active={activeTurn}
-            collapsed={!tocOpen}
-            onJump={jumpToTurn}
-            onWheelOut={scrollMsgsBy}
-          />
+          <TurnIndex items={tocItems} active={activeTurn} onJump={jumpToTurn} />
         )}
       </div>
 
@@ -2748,34 +2715,23 @@ interface TocItem {
 
 /**
  * 右侧对话轮次索引面板（对标 DeepSeek 网页版）：只索引用户消息，点击跳转、悬停看完整摘要、
- * 当前轮高亮。collapsed 时只显刻度短横线，悬停整条面板才展开为浮层文字列表——窄窗口下
- * 右侧留白不足以常驻，收起可避免压住正文。
- *
- * 摘要卡用 position:fixed 才能逃出 .cf-toc__list 的 overflow 裁剪；因此本组件与其祖先
- * 都绝不可用 transform 定位（transform 会使自身成为 fixed 的包含块，卡片就被拉回来裁掉）。
+ * 当前轮高亮。默认只显刻度短横线，悬停整条面板才展开为浮层文字列表，不压住正文；
+ * 不随窗口宽度切换，任何宽度下行为一致。
  */
 function TurnIndex({
   items,
   active,
-  collapsed,
-  onJump,
-  onWheelOut
+  onJump
 }: {
   items: TocItem[]
   /** 当前所在轮下标；-1 表示无。 */
   active: number
-  /** 右侧留白不足：收起为细竖条，悬停才展开。 */
-  collapsed: boolean
   onJump: (turn: number) => void
-  /** 把面板自身消化不掉的滚轮量转发给消息滚动容器（像素）。 */
-  onWheelOut: (deltaY: number) => void
 }): React.JSX.Element {
   const { t } = useI18n()
-  const [hovering, setHovering] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
-  // 收起态被悬停时临时展开；常驻态恒展开。展开与否决定索引项高度（收起态无文字），
-  // 故须在高度实测之前就定下来。
-  const open = !collapsed || hovering
+  // 悬停即展开浮层。展开与否决定索引项高度（收起时无文字），故须在高度实测之前就定下来。
+  const [open, setOpen] = useState(false)
 
   // 一屏只放 TOC_VISIBLE_MAX 条：实测第 N 条底边定上限，其余靠列表自身滚动。
   // 用 layout 副作用（而非 effect）避免先铺满再收窄的一帧抖动。
@@ -2812,37 +2768,18 @@ function TurnIndex({
     el?.scrollIntoView({ block: 'nearest' })
   }, [active])
 
-  // 滚轮：轮次多到列表自己能滚时先给列表。面板不在 .cf-msgs 内，浏览器不会把滚动
-  // 链到对话上，所以「滚到头之后还滚不滚对话」完全由这里决定。
-  const onWheel = (e: React.WheelEvent<HTMLDivElement>): void => {
-    const list = listRef.current
-    if (!list) return
-    const room = list.scrollHeight - list.clientHeight
-    const canSelf =
-      room > 1 &&
-      (e.deltaY < 0 ? list.scrollTop > 0 : list.scrollTop < room - 1)
-    if (canSelf) return
-    // 收起态（浮层盖在正文之上）：滚到头就停住，绝不转发——看索引时正文在底下跟着
-    // 乱跑，既晃眼又会把高亮一路带走。常驻态面板待在右侧留白里、不遮挡正文，仍转发，
-    // 保持「鼠标搁哪儿都能滚页面」的直觉，也免得停在面板上时整个界面纹丝不动。
-    if (collapsed) return
-    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? list.clientHeight : 1
-    onWheelOut(e.deltaY * unit)
-  }
-
+  // 滚轮刻意不转发给对话：面板不在 .cf-msgs 内、列表又有 overscroll-behavior:contain，滚到头即停——
+  // 浮层盖在正文之上，看索引时正文在底下跟着乱跑既晃眼、又会把高亮一路带走。
   return (
     <nav
-      className={`cf-toc${collapsed ? ' is-collapsed' : ''}${open ? ' is-open' : ''}`}
+      className={`cf-toc${open ? ' is-open' : ''}`}
       aria-label={t('cf.toc.title')}
-      onMouseEnter={() => setHovering(true)}
-      onMouseLeave={() => {
-        setHovering(false)
-      }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
     >
       <div
         className="cf-toc__list"
         ref={listRef}
-        onWheel={onWheel}
         // 与 CSS 的 max-height:100% 取较小值：窗口矮于 10 条时以消息区高度为准。
         style={maxH === null ? undefined : { maxHeight: `min(${maxH}px, 100%)` }}
       >
@@ -2974,18 +2911,23 @@ function ConvMessage({
           <span className="cf-msg__name">{owner?.name ?? t('cf.assistant')}</span>
         </div>
         <div className="msg__content">
-          {msg.blocks.map((b, i) => (
-            <BlockView
-              key={i}
-              block={b}
-              thinkingDone={!(active && i === msg.blocks.length - 1)}
-              onAsk={onAsk}
-              onPlan={onPlan}
-              onMountReq={onMountReq}
-              onOpenProposal={onOpenProposal}
-              onOpenAutotask={onOpenAutotask}
-            />
-          ))}
+          {/* 连续 ≥2 个工具调用折叠成一张工具组卡（见 groupBlocks）；其余块逐个原样渲染。 */}
+          {groupBlocks(msg.blocks).map((item) =>
+            item.type === 'toolGroup' ? (
+              <ToolGroupCard key={item.key} tools={item.tools} />
+            ) : (
+              <BlockView
+                key={item.index}
+                block={item.block}
+                thinkingDone={!(active && item.index === msg.blocks.length - 1)}
+                onAsk={onAsk}
+                onPlan={onPlan}
+                onMountReq={onMountReq}
+                onOpenProposal={onOpenProposal}
+                onOpenAutotask={onOpenAutotask}
+              />
+            )
+          )}
         </div>
       </div>
     </div>
