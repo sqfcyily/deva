@@ -1251,7 +1251,7 @@
 }
 /* 模型选择器吸右：占尽左侧空白，把「模型选择器 + 发送键」一并推到工具条右端，
    模型切换恰落在发送键之前（📎 / 工作区 chip 仍留在左侧）。仅作用于对话输入框，
-   不影响 ChatView 旧壳与任务表单的同款选择器。 */
+   不影响任务表单的同款选择器。 */
 .cf-composer .model-pick {
   margin-left: auto;
 }
@@ -1279,7 +1279,7 @@
   opacity: 0.45;
   cursor: default;
 }
-/* 停止态：中性底色（对齐旧壳停止键），与醒目的发送键区分开。 */
+/* 停止态：中性底色，与醒目的发送键区分开。 */
 .cf-send.is-stop {
   background: var(--bg-hover);
   color: var(--fg);

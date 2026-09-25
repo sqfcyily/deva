@@ -814,8 +814,9 @@ export function registerGitIpc(): void {
             model: model.model,
             system: commitSystemPrompt(lang),
             messages: [{ role: 'user', content: userText }],
-            maxTokens: 400,
-            temperature: 0.3,
+            // 留足余量（网关若默认开启 thinking，过小的上限会被拒或截断）；输出另经 cleanCommitMessage 清洗。
+            maxTokens: 1024,
+            // 不传 temperature：新版 Claude（如 Opus）已弃用该参数，传了直接 400；用模型默认值即可。
             signal: ctrl.signal
           }
         )) {

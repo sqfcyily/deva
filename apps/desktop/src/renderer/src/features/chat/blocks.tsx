@@ -1,11 +1,8 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  ArrowUp,
   Square,
-  Paperclip,
   Sparkles,
   Check,
-  ChevronDown,
   ChevronRight,
   FileText,
   FolderTree,
@@ -22,8 +19,6 @@ import {
   Loader2,
   AlertTriangle,
   Info,
-  Image as ImageIcon,
-  FileCode2,
   MessageCircleQuestion,
   Bot,
   Pencil,
@@ -31,49 +26,18 @@ import {
   CheckSquare,
   ClipboardList,
   ClipboardCheck,
-  FolderOpen,
-  X
+  FolderOpen
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
-import {
-  useChat,
-  type AttachKind,
-  type ChatBlock,
-  type ChatMessage,
-  type StreamStatus,
-  type ToolStatus
-} from '../../store/chat'
-import { useModels } from '../../store/models'
+import type { ChatBlock, ChatMessage, StreamStatus, ToolStatus } from '../../store/chat'
 import { Markdown } from './Markdown'
 import { HumationFace } from '../../components/humation'
 import { TaskConfirmCard } from './TaskConfirmCard'
 
 /**
- * 对话主视图（DeepSeek 网页版风格）。消费 chat store 的真实数据：
- * 用户消息靠右气泡，助手消息靠左通栏；助手块按到达顺序渲染文本/思考/工具卡/权限卡/错误。
+ * 助手消息的块渲染（对话优先外壳复用）：文本 / 思考 / 工具卡 / 子智能体 / 挂载请求 / 计划审阅 /
+ * 问答卡 / 角色名片 / 定时任务名片，以及对话流底部的工作状态指示器。
  */
-
-/** 一次挑选返回的附件（与 preload PickedAttachment 结构一致）。 */
-interface Picked {
-  path: string
-  name: string
-  ext: string
-  size: number
-  kind: 'image' | 'document' | 'text' | 'unsupported'
-  supported: boolean
-  reason?: string
-}
-
-/** 距底 ≤ 此像素即视为「贴住底部」，留缓冲避免临界抖动。 */
-const BOTTOM_THRESHOLD = 64
-
-/** 附件类型 → 图标。 */
-function iconFor(kind: AttachKind | 'unsupported'): React.ReactNode {
-  if (kind === 'image') return <ImageIcon size={13} />
-  if (kind === 'document') return <FileText size={13} />
-  if (kind === 'text') return <FileCode2 size={13} />
-  return <Paperclip size={13} />
-}
 
 const TOOL_META: Record<string, { icon: React.ReactNode; key: string }> = {
   read_file: { icon: <FileText size={14} />, key: 'chat.tool.readFile' },
@@ -93,7 +57,7 @@ const TOOL_META: Record<string, { icon: React.ReactNode; key: string }> = {
  * 路径展示的字符预算。780px 列宽下标题约可容 70 字符，但结果徽标宽度不定
  * （「第 590–669/670 行」比「176 行」宽得多，实测同一条 68 字符路径会因此一行放得下、也可能折行），
  * 故取 54 留一档余量：窄徽标下本就放得下的路径不动，宽徽标下会折行的一律先压。
- * 窗口远窄于列宽上限时仍可能折行，届时由 .card__title 的 overflow-wrap 兜底。
+ * 窗口远窄于列宽上限时仍可能放不下，届时由 .card__title 的单行省略号兜底。
  */
 const PATH_BUDGET = 54
 
@@ -123,7 +87,7 @@ function compressPath(p: string): string {
 /**
  * 工具卡上要展示的参数提示：优先 command（run_command），再 path，再 pattern（grep/glob），再 url（web_fetch）。
  * full 为原值（压缩过时挂 title 供悬停查看），text 为展示值——只有 path 压缩中段，
- * 命令的头部、正则的全文、URL 的域名与查询串同样字字关键，照旧折行不动。
+ * 命令、正则、URL 原样展示，超长时由 CSS 单行省略号截断尾部（悬停可看全文）。
  */
 function argHint(args: unknown): { text: string; full: string } | null {
   if (args && typeof args === 'object') {
@@ -138,9 +102,9 @@ function argHint(args: unknown): { text: string; full: string } | null {
   return null
 }
 
-/** 压缩过才挂 title：未压缩时展示值即全值，重复的悬停提示只是噪声。 */
+/** 悬停 title 恒给原值：标题单行、超出以省略号截断，被截掉的部分只能靠悬停查看。 */
 function hintTitle(h: { text: string; full: string } | null): string | undefined {
-  return h && h.text !== h.full ? h.full : undefined
+  return h ? h.full : undefined
 }
 
 /** 底部指示器要表达的当前活动。（对话优先外壳复用 StatusIndicator/deriveActivity，故导出。） */
@@ -173,307 +137,6 @@ export function deriveActivity(messages: ChatMessage[]): Activity {
   const tail = blocks[blocks.length - 1]
   if (tail?.kind === 'text' && tail.text.trim()) return { kind: 'responding' }
   return { kind: 'thinking' }
-}
-
-export function ChatView(): React.JSX.Element {
-  const { t } = useI18n()
-  const {
-    messages,
-    streaming,
-    streamStatus,
-    currentSessionId,
-    send,
-    stop,
-    respondAsk
-  } = useChat()
-  const { activeModel, providers, setActiveModel } = useModels()
-  const [input, setInput] = useState('')
-  const [pickOpen, setPickOpen] = useState(false)
-  const [pending, setPending] = useState<Picked[]>([])
-
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const taRef = useRef<HTMLTextAreaElement>(null)
-  // 是否「贴住底部」：决定流式新内容是否自动跟随滚动。用户上滚离开底部即脱离跟随，
-  // 回到底部（或点「回到最新」）即重新跟随。ref 供滚动副作用同步读取（避免闭包过期、且其变化不触发副作用重跑），
-  // state 仅驱动「回到最新」按钮显隐。
-  const stickRef = useRef(true)
-  const [atBottom, setAtBottom] = useState(true)
-
-  // 新内容到达时，仅当仍贴住底部才自动滚到底；用户上滚查看历史时保持不动。
-  useEffect(() => {
-    if (!stickRef.current) return
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages, streaming])
-
-  // 切换会话（含首次挂载）：复位为贴底并直接滚到底（ChatView 不按会话重挂载，故需显式复位）。
-  useEffect(() => {
-    stickRef.current = true
-    setAtBottom(true)
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [currentSessionId])
-
-  // 监听用户滚动：据距底距离更新「是否贴底」。程序化滚到底同样会触发，结果仍为贴底、幂等。
-  const onScroll = (): void => {
-    const el = scrollRef.current
-    if (!el) return
-    const atBot = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD
-    stickRef.current = atBot
-    setAtBottom((prev) => (prev === atBot ? prev : atBot))
-  }
-
-  // 回到最新：平滑滚到底并恢复自动跟随。
-  const jumpToLatest = (): void => {
-    const el = scrollRef.current
-    if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-    stickRef.current = true
-    setAtBottom(true)
-  }
-
-  const supportedPending = pending.filter((p) => p.supported)
-  const canSend = Boolean(input.trim()) || supportedPending.length > 0
-
-  const pickFiles = async (): Promise<void> => {
-    if (streaming) return
-    const picked = (await window.deva.fs.pickAttachments()) as Picked[]
-    if (!picked.length) return
-    setPending((prev) => {
-      const seen = new Set(prev.map((p) => p.path))
-      return [...prev, ...picked.filter((p) => !seen.has(p.path))]
-    })
-  }
-
-  const removePending = (path: string): void =>
-    setPending((prev) => prev.filter((p) => p.path !== path))
-
-  const submit = (): void => {
-    const text = input
-    const atts = pending.filter((p) => p.supported)
-    if ((!text.trim() && atts.length === 0) || streaming) return
-    setInput('')
-    setPending([])
-    if (taRef.current) taRef.current.style.height = 'auto'
-    // 发送后必看到自己的消息与回复：无论此刻是否上滚，都恢复贴底跟随。
-    stickRef.current = true
-    setAtBottom(true)
-    void send(
-      text,
-      atts.map((p) => ({ path: p.path, name: p.name, kind: p.kind as AttachKind }))
-    )
-  }
-
-  // 在光标处插入换行并同步 state / 自适应高度（Ctrl/Alt+Enter 走此路，浏览器默认不会为这些组合键插入换行）。
-  const insertNewlineAtCursor = (el: HTMLTextAreaElement): void => {
-    const start = el.selectionStart ?? el.value.length
-    const end = el.selectionEnd ?? el.value.length
-    const next = `${el.value.slice(0, start)}\n${el.value.slice(end)}`
-    setInput(next)
-    // 同步原生值与光标，避免下一帧受控回填把光标拽回，并即时重算高度。
-    el.value = next
-    const caret = start + 1
-    el.selectionStart = caret
-    el.selectionEnd = caret
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-  }
-
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
-    // Shift/Ctrl/Alt + Enter 一律换行；仅裸 Enter 发送。
-    if (e.shiftKey || e.ctrlKey || e.altKey) {
-      // Shift+Enter 交给浏览器默认换行；Ctrl/Alt+Enter 默认不换行，需手动插入。
-      if (e.ctrlKey || e.altKey) {
-        e.preventDefault()
-        insertNewlineAtCursor(e.currentTarget)
-      }
-      return
-    }
-    e.preventDefault()
-    submit()
-  }
-
-  const autoGrow = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
-    setInput(e.target.value)
-    const el = e.target
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-  }
-
-  // 可选模型：按服务商分组（仅启用的服务商 / 其下启用的模型），供分组下拉渲染。
-  const groups = providers
-    .filter((p) => p.enabled)
-    .map((p) => ({ p, models: p.models.filter((m) => m.enabled) }))
-    .filter((g) => g.models.length > 0)
-
-  return (
-    <div className="chat">
-      <div className="chat__scroll" ref={scrollRef} onScroll={onScroll}>
-        {messages.length === 0 ? (
-          <div className="chat__empty">
-            <Sparkles size={30} />
-            <div className="chat__empty-title">{t('chat.empty')}</div>
-            <div className="chat__empty-hint">{t('chat.emptyHint')}</div>
-          </div>
-        ) : (
-          <div className="chat__thread">
-            {messages.map((m, i) => (
-              <MessageRow
-                key={m.id}
-                msg={m}
-                active={streaming && i === messages.length - 1}
-                onAsk={respondAsk}
-              />
-            ))}
-            {streaming && (
-              <StatusIndicator
-                activity={deriveActivity(messages)}
-                status={streamStatus}
-                onStop={stop}
-              />
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* 输入区 */}
-      <div className="composer">
-        {/* 回到最新：仅当用户上滚离开底部且已有消息时浮现，锚在输入框顶边正上方居中 */}
-        {!atBottom && messages.length > 0 && (
-          <button
-            className="chat__jump"
-            type="button"
-            onClick={jumpToLatest}
-            title={t('chat.jumpToLatest')}
-            aria-label={t('chat.jumpToLatest')}
-          >
-            <ChevronDown size={18} />
-          </button>
-        )}
-        <div className="composer__box">
-          {pending.length > 0 && (
-            <div className="composer__attachments">
-              {pending.map((p) => (
-                <span
-                  key={p.path}
-                  className={`attach-chip${p.supported ? '' : ' is-bad'}`}
-                  title={p.supported ? p.name : `${p.name} · ${p.reason ?? ''}`}
-                >
-                  {iconFor(p.kind)}
-                  <span className="attach-chip__name">{p.name}</span>
-                  <button
-                    className="attach-chip__x"
-                    type="button"
-                    onClick={() => removePending(p.path)}
-                    title={t('chat.attachRemove')}
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-          <textarea
-            ref={taRef}
-            className="composer__input"
-            rows={1}
-            placeholder={t('chat.placeholder')}
-            value={input}
-            onChange={autoGrow}
-            onKeyDown={onKeyDown}
-          />
-          <div className="composer__toolbar">
-            <button className="chip" type="button" onClick={pickFiles} disabled={streaming}>
-              <Paperclip size={13} />
-              {t('chat.attach')}
-            </button>
-
-            <div className="composer__spacer" />
-
-            {/* 模型选择 */}
-            <div className="model-pick">
-              <button
-                className={`chip${pickOpen ? ' is-open' : ''}`}
-                type="button"
-                onClick={() => setPickOpen((v) => !v)}
-              >
-                {activeModel && (
-                  <span
-                    className="chip__dot"
-                    style={{ background: activeModel.provider.accent }}
-                  />
-                )}
-                <span className="chip__label">
-                  {activeModel ? activeModel.model.name : t('chat.selectModel')}
-                </span>
-                <ChevronDown size={13} className="chip__caret" />
-              </button>
-              {pickOpen && (
-                <>
-                  <div className="model-pick__backdrop" onClick={() => setPickOpen(false)} />
-                  <div className="model-pick__menu" role="menu">
-                    {groups.length === 0 && (
-                      <div className="model-pick__empty">{t('chat.noModel')}</div>
-                    )}
-                    {groups.map(({ p, models }) => (
-                      <div key={p.id} className="model-pick__group">
-                        <div className="model-pick__group-head">
-                          <span className="model-pick__dot" style={{ background: p.accent }} />
-                          <span className="model-pick__group-name">{p.name}</span>
-                        </div>
-                        {models.map((m) => {
-                          const active =
-                            activeModel?.provider.id === p.id && activeModel?.model.id === m.id
-                          return (
-                            <button
-                              key={m.id}
-                              role="menuitemradio"
-                              aria-checked={active}
-                              className={`model-pick__item${active ? ' is-active' : ''}`}
-                              title={m.name}
-                              onClick={() => {
-                                setActiveModel(p.id, m.id)
-                                setPickOpen(false)
-                              }}
-                            >
-                              <span className="model-pick__name">{m.name}</span>
-                              {active && <Check size={14} className="model-pick__check" />}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-
-            {streaming ? (
-              <button
-                className="icon-btn"
-                style={{ background: 'var(--bg-hover)', color: 'var(--fg)' }}
-                title={t('chat.stop')}
-                onClick={stop}
-              >
-                <Square size={14} fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                className="icon-btn"
-                style={{ background: 'var(--accent)', color: 'var(--accent-fg)' }}
-                title={t('chat.send')}
-                onClick={submit}
-                disabled={!canSend}
-              >
-                <ArrowUp size={16} />
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
 }
 
 /**
@@ -557,65 +220,6 @@ export function StatusIndicator({
 }
 
 /**
- * 单条消息行。用 React.memo + msg 引用比较：store 的 updateLastAssistant 只替换最后一条消息对象、
- * 其余引用不变，故流式期间只有「正在生长的那条」会重渲染/重解析，历史消息全部跳过。
- * 比较刻意忽略 onAsk 的引用变化——它以 setMessages 函数式更新 + 按 key 派发，
- * 行为与创建它的那次渲染无关，用「旧」回调也不会出错。
- */
-const MessageRow = memo(
-  function MessageRow({
-    msg,
-    active,
-    onAsk
-  }: {
-    msg: ChatMessage
-    active: boolean
-    onAsk: (key: string, answers: string[]) => void
-  }): React.JSX.Element {
-    if (msg.role === 'user') {
-    const text = msg.blocks.map((b) => (b.kind === 'text' ? b.text : '')).join('')
-    return (
-      <div className="msg msg--user">
-        <div className="bubble--user">
-          {msg.attachments && msg.attachments.length > 0 && (
-            <div className="msg__attachments">
-              {msg.attachments.map((a, i) => (
-                <span key={i} className="attach-chip attach-chip--sent" title={a.name}>
-                  {iconFor(a.kind)}
-                  <span className="attach-chip__name">{a.name}</span>
-                </span>
-              ))}
-            </div>
-          )}
-          {text && (
-            <div className="msg__text">
-              <p style={{ whiteSpace: 'pre-wrap' }}>{text}</p>
-            </div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-    return (
-      <div className="msg msg--agent">
-        <div className="msg__content">
-          {msg.blocks.map((b, i) => (
-            <BlockView
-              key={i}
-              block={b}
-              thinkingDone={!(active && i === msg.blocks.length - 1)}
-              onAsk={onAsk}
-            />
-          ))}
-        </div>
-      </div>
-    )
-  },
-  (prev, next) => prev.msg === next.msg && prev.active === next.active
-)
-
-/**
  * 思考块（可折叠）。对齐 Codex/DeepSeek 的推理折叠：思考中默认展开，思考完成后自动收起
  * （用户仍可手动点开）。标签随状态在「思考中」/「已思考」间切换。正文按弱化配色渲染 Markdown（muted）。
  */
@@ -656,13 +260,13 @@ export function BlockView({
   block: ChatBlock
   thinkingDone: boolean
   onAsk: (key: string, answers: string[]) => void
-  /** 回应 exit_plan 计划审阅（批准并执行 / 继续完善）。缺省 → 计划卡只读展示（如旧壳）。 */
+  /** 回应 exit_plan 计划审阅（批准并执行 / 继续完善）。缺省 → 计划卡只读展示。 */
   onPlan?: (key: string, decision: 'approve' | 'keep') => void
-  /** 回应「请求挂载工作区」（path=已选目录 / null=暂不挂载）。缺省 → 卡片只读展示（如旧壳）。 */
+  /** 回应「请求挂载工作区」（path=已选目录 / null=暂不挂载）。缺省 → 卡片只读展示。 */
   onMountReq?: (key: string, path: string | null) => void
-  /** 点角色名片 → 打开预填的 PersonaEditor（仅对话优先外壳传入；旧壳不传 → 名片只读展示）。 */
+  /** 点角色名片 → 打开预填的 PersonaEditor（缺省 → 名片只读展示）。 */
   onOpenProposal?: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
-  /** created 态定时任务名片「打开任务会话」（仅对话优先外壳传入；旧壳不传 → 不显跳转）。 */
+  /** created 态定时任务名片「打开任务会话」（缺省 → 不显跳转）。 */
   onOpenAutotask?: (taskId: string) => void
 }): React.JSX.Element | null {
   const { t } = useI18n()
@@ -822,7 +426,7 @@ function MountRequestCard({
  * 计划审阅卡（exit_plan）：展示模型提交的待批准计划（Markdown 正文），提供「批准并执行 / 继续完善」。
  * 未决态可交互；decided 为终态、只读展示（重开对话按 plans 边车复原）。其中 cancelled = 这次审阅已随
  * 回合结束（中断 / 历史回填），主进程已无人接应——只展示不给按钮，免得留下点不动的「僵尸卡」。
- * onPlan 缺省 → 只读（如旧壳）。
+ * onPlan 缺省 → 只读。
  */
 function PlanReviewCard({
   block,
@@ -1260,7 +864,7 @@ function SubagentCard({
 /**
  * 角色名片（propose_agent 提议）：微信名片式紧凑卡。
  * pending → 可点，点开预填的 PersonaEditor 供查看/微调/接受/拒绝；accepted/rejected 为终态、不可点。
- * 旧壳（ChatView）不传 onOpen → 名片始终只读展示（不影响旧壳）。
+ * 不传 onOpen → 名片始终只读展示。
  */
 function AgentCard({
   block,

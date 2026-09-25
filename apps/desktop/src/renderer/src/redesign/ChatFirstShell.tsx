@@ -95,7 +95,7 @@ import {
   type AvatarSpec
 } from '../components/humation'
 import { useTheme } from '../theme/ThemeContext'
-import { BlockView, StatusIndicator, deriveActivity } from '../features/chat/ChatView'
+import { BlockView, StatusIndicator, deriveActivity } from '../features/chat/blocks'
 import { ModelSettings } from '../features/settings/ModelSettings'
 
 /**
@@ -106,7 +106,7 @@ import { ModelSettings } from '../features/settings/ModelSettings'
  *  - 一对话一身份：中列是「我 ↔ 某一个角色」的单人对话，头顶显示当值角色（persona 单选、首发绑定后不可改）
  *  - 角色可查看资料、可反复发起对话；「添加/编辑角色」走 PersonaEditor（round-trip upsertPersona）
  *  - 工作区可选：头部一个 chip，挂了文件夹就「聚焦中」（focusRoot），没挂就是全机通用助手
- *  - 动手全内联：复用 ChatView 的 BlockView / StatusIndicator / deriveActivity 渲染工具/权限/思考/子智能体
+ *  - 动手全内联：复用 features/chat/blocks 的 BlockView / StatusIndicator / deriveActivity 渲染工具/权限/思考/子智能体
  *
  * 安全不变式全程不动：persona 工具白名单只收窄可见性、每次调用仍过同一闸门；聚焦挂载复用 fs.openFolder 的
  * trustRoot；~/.deva 等 Tier-1 永不可写。旧壳（PREVIEW_CHAT_FIRST=false）零回归靠后端 personaId 缺省 gate。
@@ -114,7 +114,7 @@ import { ModelSettings } from '../features/settings/ModelSettings'
 
 /* ============================ 小工具 ============================ */
 
-/** 附件类型 → 图标（ChatView 内 iconFor 未导出，此处内联同款）。 */
+/** 附件类型 → 图标。 */
 function iconFor(kind: AttachKind): React.ReactNode {
   if (kind === 'image') return <ImageIcon size={13} />
   if (kind === 'document') return <FileText size={13} />
@@ -153,7 +153,7 @@ function reorderIds(
   return without
 }
 
-/** 距底 ≤ 此像素即视为「贴住底部」，留缓冲避免临界抖动（与 ChatView 同值）。 */
+/** 距底 ≤ 此像素即视为「贴住底部」，留缓冲避免临界抖动。 */
 const BOTTOM_THRESHOLD = 64
 
 /**
@@ -2921,7 +2921,7 @@ function UserText({ text }: { text: string }): React.JSX.Element {
   )
 }
 
-/** 单条消息：IM 头像外壳 + 复用 ChatView 的 BlockView（安全渲染器不重写）。 */
+/** 单条消息：IM 头像外壳 + 复用 features/chat/blocks 的 BlockView（安全渲染器不重写）。 */
 function ConvMessage({
   msg,
   owner,
@@ -3348,8 +3348,8 @@ function Composer({
 }
 
 /**
- * 模型选择器。复用 ChatView 同款 app.css 类
- * （model-pick / chip / model-pick__backdrop / model-pick__menu），零新增 CSS，视觉与旧壳一致。
+ * 模型选择器。复用 app.css 的既有类
+ * （model-pick / chip / model-pick__backdrop / model-pick__menu），零新增 CSS。
  * 只列「已启用服务商 × 已启用模型」，按服务商分组。
  * 切换时做两件事：① 写当前对话覆盖层（setSessionModel），下一条消息随 modelRef 落库到会话属性，
  * 故同角色的多个对话可各用不同模型；② 把这次选择记为「最近使用模型」（setActiveModel）——本应用不设

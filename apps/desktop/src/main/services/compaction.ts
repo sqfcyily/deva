@@ -313,7 +313,7 @@ async function summarize(
           system,
           messages: [{ role: 'user', content: userText }],
           maxTokens: SUMMARY_MAX_TOKENS,
-          temperature: 0.3,
+          // 不传 temperature：新版 Claude（如 Opus）已弃用该参数，传了直接 400；用模型默认值即可。
           signal: ctrl.signal
         }
       )) {

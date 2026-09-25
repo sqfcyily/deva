@@ -1011,8 +1011,8 @@ textarea {
 }
 .card__head {
   display: flex;
-  /* 顶对齐而非居中：命令过长换行时，图标与退出码徽标仍钉在首行，不随多行标题浮到中间造成错位 */
-  align-items: flex-start;
+  /* 标题恒为单行（见 .card__title），图标 / 标题 / 徽标居中对齐即可 */
+  align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   background: var(--bg-panel);
@@ -1024,14 +1024,16 @@ textarea {
   place-items: center;
   color: var(--accent);
   flex-shrink: 0;
-  /* 图标框恰为一行高，令其在首行内垂直居中——单行时与旧居中效果一致，多行时对齐首行 */
   height: 1.5em;
 }
 .card__title {
   font-weight: 600;
-  /* 允许标题收缩并换行，长命令在自身列内折行，而不是把徽标挤走或撑出横向滚动 */
+  /* 单行不换行，超出以省略号截断（完整参数见悬停 title）；min-width:0 令其可收缩、不挤走徽标 */
+  flex: 1 1 auto;
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .card__title code {
   font-family: var(--font-mono);
@@ -1108,6 +1110,7 @@ textarea {
   display: grid;
   place-items: center;
   color: var(--accent);
+  flex: none;
 }
 .subagent__title {
   font-weight: 600;
@@ -1115,6 +1118,17 @@ textarea {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+  /* 单行不换行：描述过长时省略号截断，步数徽标不收缩 */
+  overflow: hidden;
+  white-space: nowrap;
+}
+.subagent__title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subagent__count {
+  flex: none;
 }
 .subagent__title strong {
   font-weight: 600;
