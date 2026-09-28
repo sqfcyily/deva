@@ -42,7 +42,10 @@ const SEALED_FORBIDDEN = new Set([
   'propose_agent',
   'create_mcp',
   'create_task',
-  'exit_plan'
+  'exit_plan',
+  // 记忆写/删：无人值守不得改写用户记忆（已从密封工具表剔除，此处纵深防御）；memory_read 属 read 照常放行。
+  'memory_write',
+  'memory_delete'
 ])
 
 /**

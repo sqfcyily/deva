@@ -235,6 +235,9 @@ const zhCN: MessageTree = {
       askUser: '询问用户',
       createSkill: '创建技能',
       createMcp: '创建 MCP 服务',
+      memoryRead: '读取记忆',
+      memoryWrite: '记住',
+      memoryDelete: '删除记忆',
       unknown: '调用工具'
     },
     status: { running: '执行中', done: '完成', failed: '失败', denied: '已拒绝' },
@@ -865,6 +868,9 @@ const en: MessageTree = {
       askUser: 'Ask user',
       createSkill: 'Create skill',
       createMcp: 'Create MCP server',
+      memoryRead: 'Read memory',
+      memoryWrite: 'Remember',
+      memoryDelete: 'Forget memory',
       unknown: 'Call tool'
     },
     status: { running: 'Running', done: 'Done', failed: 'Failed', denied: 'Denied' },

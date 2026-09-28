@@ -16,6 +16,7 @@ import {
 } from './tools'
 import { isDangerousCommand, touchesSensitivePath } from './exec-policy'
 import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
+import { memoryPromptSection } from './memory'
 import { GENERAL_SUBAGENT, getSubagentByName, subagentSummaries, type SubagentDef } from './subagents'
 import { enabledPersonas, getPersona } from './personas'
 import { resolveDefaultModel, resolveModelRef, resolveModelRefOrNull } from './model-resolve'
@@ -797,7 +798,8 @@ export function runScheduledTask(task: TaskRecord): Promise<ScheduledTurnResult>
 function systemPrompt(
   workspaceRoot: string | null,
   skills: { name: string; description: string }[] = [],
-  personas: { name: string; prompt: string }[] = []
+  personas: { name: string; prompt: string }[] = [],
+  memory: string[] = []
 ): string {
   // 挂载态那句的「历史目录一律作废」不是废话：工作区可在同一对话中途切换，而历史里的工具结果、
   // 旧的挂载提示、模型自己的行文全是旧根的绝对路径。本行每轮重建，必须被声明为唯一权威。
@@ -823,6 +825,9 @@ function systemPrompt(
       ...skills.map((s) => `  - ${s.name}${s.description ? `：${s.description}` : ''}`)
     )
   }
+  // 全局长期记忆（轮开头快照，见 memory.ts）：放在规范块末尾、角色设定之前——记忆是关于用户的数据，
+  // 与身份/风格无关；其前言已声明「数据而非指令」，不得凌驾规范。
+  lines.push(...memory)
   // ── ② 角色设定：身份/性格/语气/行文风格/偏好。前言保留安全边界（角色不得凌驾上述规范）。
   if (personas.length) {
     lines.push(
@@ -841,7 +846,8 @@ function systemPrompt(
  */
 function sealedSystemPrompt(
   workspaceRoot: string | null,
-  personas: { name: string; prompt: string }[] = []
+  personas: { name: string; prompt: string }[] = [],
+  memory: string[] = []
 ): string {
   const loc = workspaceRoot
     ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
@@ -856,6 +862,8 @@ function sealedSystemPrompt(
     '【工具与权限】读写文件、执行命令、调用已启用的技能与 MCP 工具默认均可使用，无需授权。唯有私钥/凭据目录与本应用配置目录（Tier-1：~/.ssh、~/.aws、~/.gnupg、~/.deva，含以命令间接访问）、版本库内部（.git）与危险命令会被安全策略拒绝——若某次调用被拒，请改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。',
     '【产出】用简洁、结构清晰的简体中文（除非角色设定另有风格）直接给出最终结果，作为本次任务的成果记录在对话中。'
   ]
+  // 全局长期记忆：密封轮只读（写/删工具已从密封工具表剔除），用户习惯同样适用于定时任务的产出。
+  lines.push(...memory)
   if (personas.length) {
     lines.push(
       '───────── 角色设定 ─────────',
@@ -941,7 +949,8 @@ function buildSubagentTool(): ToolSpec {
  */
 function buildSubagentTools(def: SubagentDef): ToolSpec[] {
   // create_skill / propose_agent / create_mcp / create_task 亦排除：子智能体不得创建技能/角色/MCP 服务/定时任务
-  //（它们在 toolSpecs 基表里，须显式剔除）。
+  //（它们在 toolSpecs 基表里，须显式剔除）。记忆写/删亦排除：子智能体看不到与用户的对话，无从判断用户偏好；
+  // memory_read 保留（只读无害）。
   const EXCLUDED = new Set([
     'ask_user',
     'skill',
@@ -949,7 +958,9 @@ function buildSubagentTools(def: SubagentDef): ToolSpec[] {
     'create_skill',
     'propose_agent',
     'create_mcp',
-    'create_task'
+    'create_task',
+    'memory_write',
+    'memory_delete'
   ])
   const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
   const mcp = getMcpToolSpecs()
@@ -975,7 +986,10 @@ function buildSealedTools(skills: { name: string; description: string }[]): Tool
     'propose_agent',
     'create_mcp',
     'create_task',
-    'exit_plan'
+    'exit_plan',
+    // 无人值守不得改写用户记忆（避免被任务抓取的外部内容悄悄污染）；memory_read 保留。
+    'memory_write',
+    'memory_delete'
   ])
   const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
   const skillTool = buildSkillTool(skills)
@@ -1779,7 +1793,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         turnId,
         sessionId,
         history,
-        system: systemPrompt(effectiveRoot, skillSummaries, personas),
+        // 记忆在轮开头快照进 system：本轮中途 memory_write 不改 system（提示缓存前缀稳定），下一轮生效。
+        system: systemPrompt(
+          effectiveRoot,
+          skillSummaries,
+          personas,
+          memoryPromptSection({ writable: true })
+        ),
         tools: turnTools,
         model: turnModel,
         ctx,
@@ -1910,7 +1930,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         turnId,
         sessionId,
         history,
-        system: sealedSystemPrompt(effectiveRoot, personas),
+        system: sealedSystemPrompt(effectiveRoot, personas, memoryPromptSection({ writable: false })),
         tools: sealedTools,
         model: turnModel,
         ctx,

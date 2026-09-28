@@ -5,6 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'path'
 import { assertInside, isSensitivePath } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
 import { upsertSkill } from './skills'
+import { deleteMemory, formatMemoryLine, listMemories, writeMemory, MEMORY_MAX_CHARS } from './memory'
 import { upsertServer, type McpValue } from './mcp-config'
 import type { ToolSpec } from '../providers/types'
 
@@ -223,6 +224,40 @@ export const toolSpecs: ToolSpec[] = [
     }
   },
   {
+    name: 'memory_read',
+    description:
+      '读取用户的全局长期记忆（跨对话、与项目无关的用户习惯/偏好），返回全部条目及其 id。' +
+      '系统提示词已列出记忆，通常无需调用；仅当提示词里的记忆被截断、或需要确认最新内容再更新/删除时使用。',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'memory_write',
+    description:
+      '写入一条用户的全局长期记忆：记录用户本人稳定、可跨对话复用的习惯/偏好/纠正（如「用户偏好 pnpm」）。' +
+      '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增）。' +
+      `内容须是一句简洁的第三人称事实（≤${MEMORY_MAX_CHARS} 字）；不得记录密码/密钥等敏感信息、一次性任务细节或特定项目的约定。` +
+      '记忆存于受保护目录，这是写入它的唯一途径（write_file 等工具无法写入）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: '要记住的一句话事实。' },
+        id: { type: 'string', description: '可选：要更新的已有记忆 id（如 m_1a2b3c4d）；省略则新增。' }
+      },
+      required: ['content']
+    }
+  },
+  {
+    name: 'memory_delete',
+    description: '删除一条用户的全局长期记忆（用户要求忘记、或该记忆已过时/与新偏好矛盾时使用）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '要删除的记忆 id（如 m_1a2b3c4d）。' }
+      },
+      required: ['id']
+    }
+  },
+  {
     name: 'propose_agent',
     description:
       '当用户想「用对话创建一个角色（Agent/性格身份）」时，据已厘清的需求生成一张**角色名片**供用户确认。' +
@@ -396,6 +431,8 @@ const READ_TOOLS = new Set([
   'ask_user',
   'skill',
   'run_subagent',
+  // 读全局记忆（主进程直读 ~/.deva/memory.json，无路径入参）；写/删记忆不在此集，落默认分支同 create_skill。
+  'memory_read',
   // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「接受」（走渲染层 personas:upsert）。
   'propose_agent',
   // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「创建」（走渲染层 chat:resolve-autotask）。
@@ -1277,6 +1314,34 @@ export async function executeTool(
         content: `已创建并启用技能「${rec.name}」(id: ${rec.id})，用户可用 /${rec.name} 触发。`,
         summary: '已创建技能'
       }
+    }
+
+    if (name === 'memory_read') {
+      const entries = listMemories()
+      if (!entries.length) return { content: '（当前尚无记忆）', summary: '0 条' }
+      return { content: entries.map(formatMemoryLine).join('\n'), summary: `${entries.length} 条` }
+    }
+
+    if (name === 'memory_write') {
+      const content = typeof a.content === 'string' ? a.content : ''
+      const id = typeof a.id === 'string' && a.id.trim() ? a.id.trim() : undefined
+      // 直调主进程 memory 服务（~/.deva 在 Tier-1 硬地板内，文件工具写不进；本工具即受控开口）。
+      const r = writeMemory(content, id)
+      if (!r.ok) return { content: r.error, summary: '未写入', isError: true }
+      // 系统提示词本轮已定格：须在结果里讲清新记忆下一轮才出现在提示词中，免得模型误以为写入失败而重试。
+      return {
+        content: `${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}（下一轮起出现在系统提示词的长期记忆中）`,
+        summary: r.created ? '已记住' : id ? '已更新' : '已存在'
+      }
+    }
+
+    if (name === 'memory_delete') {
+      const id = typeof a.id === 'string' ? a.id.trim() : ''
+      if (!id) return { content: '缺少要删除的记忆 id', summary: '参数无效', isError: true }
+      const removed = deleteMemory(id)
+      if (!removed)
+        return { content: `不存在 id 为 ${id} 的记忆（可先用 memory_read 查看）`, summary: '未找到', isError: true }
+      return { content: `已删除记忆：${formatMemoryLine(removed)}`, summary: '已删除' }
     }
 
     if (name === 'propose_agent') {

@@ -26,6 +26,7 @@ import {
   CheckSquare,
   ClipboardList,
   ClipboardCheck,
+  Brain,
   FolderOpen
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
@@ -50,7 +51,10 @@ const TOOL_META: Record<string, { icon: React.ReactNode; key: string }> = {
   run_command: { icon: <SquareTerminal size={14} />, key: 'chat.tool.runCommand' },
   ask_user: { icon: <MessageCircleQuestion size={14} />, key: 'chat.tool.askUser' },
   create_skill: { icon: <Sparkles size={14} />, key: 'chat.tool.createSkill' },
-  create_mcp: { icon: <Plug size={14} />, key: 'chat.tool.createMcp' }
+  create_mcp: { icon: <Plug size={14} />, key: 'chat.tool.createMcp' },
+  memory_read: { icon: <Brain size={14} />, key: 'chat.tool.memoryRead' },
+  memory_write: { icon: <Brain size={14} />, key: 'chat.tool.memoryWrite' },
+  memory_delete: { icon: <Brain size={14} />, key: 'chat.tool.memoryDelete' }
 }
 
 /**
@@ -98,6 +102,10 @@ function argHint(args: unknown): { text: string; full: string } | null {
     if (typeof o.pattern === 'string' && o.pattern.trim())
       return { text: o.pattern, full: o.pattern }
     if (typeof o.url === 'string' && o.url.trim()) return { text: o.url, full: o.url }
+    // memory_write 的记忆正文：让用户在卡片上直接看到模型记了什么（写入对用户可见、可审计）。
+    const m = args as { content?: unknown; id?: unknown }
+    if (typeof m.content === 'string' && m.content.trim()) return { text: m.content, full: m.content }
+    if (typeof m.id === 'string' && m.id.trim()) return { text: m.id, full: m.id }
   }
   return null
 }
