@@ -608,6 +608,30 @@ const zhCN: MessageTree = {
     avaEdit: '编辑头像',
     avaEditHint: '点击编辑头像',
     avaDone: '完成',
+    profile: {
+      open: '个人资料',
+      title: '个人资料',
+      memTitle: '全局记忆',
+      memUsage: '{n}/{maxEntries} 条 · {used}/{budget} 字',
+      memUsageHint: '记忆会注入每轮对话的系统提示词；写满后模型需先合并或删除旧条目才能再记。',
+      memBulletHint: '双击编辑',
+      memEmpty: '还没有记忆。对 Deva 说「记住……」，或点 + 追加。',
+      memEdit: '编辑',
+      memDelete: '删除',
+      memDeleteConfirm: '确定删除这条记忆吗？\n「{content}」',
+      memAdd: '追加记忆',
+      memAddPlaceholder: '如：我偏好用 pnpm',
+      memClear: '清空全部记忆',
+      memClearConfirm: '确定清空全部记忆吗？Deva 将忘记关于你的所有习惯与偏好，此操作不可撤销。',
+      err: {
+        empty: '内容不能为空',
+        tooLong: '单条最多 {max} 字，请精简成一句话',
+        full: '记忆已达 {entries} 条上限，请先删除或合并旧条目',
+        budget: '记忆总量已达 {budget} 字上限，请先精简、合并或删除旧条目',
+        notFound: '该记忆已不存在（可能刚被删除），列表已刷新',
+        failed: '操作失败，请重试'
+      }
+    },
     avaNone: '无',
     avaSlot: {
       head: '发型',
@@ -1248,6 +1272,32 @@ const en: MessageTree = {
     avaEdit: 'Edit avatar',
     avaEditHint: 'Click to edit avatar',
     avaDone: 'Done',
+    profile: {
+      open: 'Profile',
+      title: 'Profile',
+      memTitle: 'What Deva remembers about you',
+      memUsage: '{n}/{maxEntries} entries · {used}/{budget} chars',
+      memUsageHint:
+        'Memories are injected into the system prompt every turn. Once full, the model must merge or delete old entries before remembering more.',
+      memBulletHint: 'Double-click to edit',
+      memEmpty: 'No memories yet. Tell Deva "remember…", or click + to add one.',
+      memEdit: 'Edit',
+      memDelete: 'Delete',
+      memDeleteConfirm: 'Delete this memory?\n“{content}”',
+      memAdd: 'Add memory',
+      memAddPlaceholder: 'e.g. I prefer pnpm',
+      memClear: 'Clear all memories',
+      memClearConfirm:
+        'Clear all memories? Deva will forget all your habits and preferences. This cannot be undone.',
+      err: {
+        empty: 'Content cannot be empty',
+        tooLong: 'Each entry is limited to {max} characters — keep it to one sentence',
+        full: 'Memory is full ({entries} entries). Delete or merge old entries first',
+        budget: 'Memory has reached its {budget}-character limit. Trim, merge or delete old entries first',
+        notFound: 'This memory no longer exists (it may have just been deleted); list refreshed',
+        failed: 'Operation failed, please try again'
+      }
+    },
     avaNone: 'None',
     avaSlot: {
       head: 'Hair',

@@ -12,6 +12,7 @@ import { ExtensionsProvider } from './store/extensions'
 import { WorkspaceProvider } from './store/workspace'
 import { ChatProvider } from './store/chat'
 import { TasksProvider } from './store/tasks'
+import { ProfileProvider } from './store/profile'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -24,7 +25,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
                 <WorkspaceProvider>
                   <ChatProvider>
                     <TasksProvider>
-                      <App />
+                      <ProfileProvider>
+                        <App />
+                      </ProfileProvider>
                     </TasksProvider>
                   </ChatProvider>
                 </WorkspaceProvider>

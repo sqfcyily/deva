@@ -108,10 +108,21 @@ body.cf-resizing-y * {
 .cf-navbtn {
   -webkit-app-region: no-drag;
 }
-/* 顶部用户头像与下方导航之间留白 */
+/* 顶部用户头像：可点，打开个人资料面板；与下方导航之间留白 */
 .cf-iconrail__me {
+  -webkit-app-region: no-drag;
   margin-bottom: var(--space-2);
-  cursor: default;
+  padding: 2px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  cursor: pointer;
+  transition: box-shadow 0.12s ease;
+}
+.cf-iconrail__me:hover,
+.cf-iconrail__me:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
 }
 .cf-navbtn {
   position: relative;
@@ -2042,6 +2053,211 @@ body.cf-resizing-y * {
 .cf-avapick__hint {
   color: var(--text-muted);
   font-size: var(--font-sm, 13px);
+}
+/* ---------------------------- 个人资料面板（头像 + 全局记忆标签墙） ---------------------------- */
+/* 头像横向居中，本身就是编辑入口：悬停浮出遮层（与角色头像编辑的上传遮层同款）。 */
+.cf-me__head {
+  display: flex;
+  justify-content: center;
+  padding-block: var(--space-2);
+}
+.cf-me__avatar {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: var(--bg-base, #fff);
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--border);
+  transition: box-shadow 0.12s ease;
+}
+.cf-me__avatar > svg,
+.cf-me__avatar > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.cf-me__avatar:hover,
+.cf-me__avatar:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.cf-me__avatarov {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.cf-me__avatar:hover .cf-me__avatarov,
+.cf-me__avatar:focus-visible .cf-me__avatarov {
+  opacity: 1;
+}
+.cf-me__mem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cf-me__memhead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+.cf-me__memtitle {
+  font-size: 13px;
+  font-weight: 700;
+}
+.cf-me__usage {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+.cf-me__usage.is-warn {
+  color: var(--warning);
+}
+.cf-me__hint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+/* 记忆标签墙：自动换行铺开；悬停浮出遮罩（编辑 / 删除），双击也可原地编辑。 */
+.cf-me__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+}
+.cf-me__tag {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 60px;
+  max-width: 24em;
+  height: 26px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-base, #fff);
+  color: var(--fg);
+  font-size: 12.5px;
+  cursor: default;
+  user-select: none;
+  transition: border-color 0.12s ease;
+}
+.cf-me__tagtext {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cf-me__tag:hover,
+.cf-me__tag:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+/* 悬停遮罩：盖住整枚标签（同头像遮罩的半透明黑），居中浮出编辑 / 删除两钮。 */
+.cf-me__tagov {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: inherit;
+  background: rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.cf-me__tag:hover .cf-me__tagov,
+.cf-me__tag:focus-visible .cf-me__tagov {
+  opacity: 1;
+}
+.cf-me__tagbtn {
+  width: 22px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--info);
+  color: #fff;
+  cursor: pointer;
+  transition: filter 0.12s ease;
+}
+/* 编辑蓝、删除红：随遮罩一同出现，两钮一眼区分；悬停再压暗一档。 */
+.cf-me__tagbtn.is-danger {
+  background: var(--danger);
+}
+.cf-me__tagbtn:hover:not(:disabled) {
+  filter: brightness(0.88);
+}
+.cf-me__tagbtn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.cf-me__tag.is-editing {
+  padding: 0 4px;
+  border-color: var(--accent);
+}
+/* 末尾常驻的「+」：点开原地变追加输入框。 */
+.cf-me__tagadd {
+  justify-content: center;
+  min-width: 0;
+  width: 36px;
+  padding: 0;
+  border-style: dashed;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+}
+.cf-me__tagadd:hover:not(:disabled) {
+  color: var(--accent);
+}
+.cf-me__tagadd:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.cf-me__tagsempty {
+  align-self: center;
+  color: var(--fg-subtle);
+  font-size: 12.5px;
+}
+.cf-me__tagedit {
+  max-width: 100%;
+  height: 20px;
+  padding: 0 8px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+}
+.cf-me__err {
+  color: var(--danger);
+  font-size: 12px;
+}
+.cf-me__actions {
+  align-items: center;
+}
+.cf-me__clear {
+  margin-right: auto;
+  color: var(--danger);
 }
 /* ---- 头像编辑面板：占满编辑区，底部「完成」返回信息表单 ---- */
 .cf-avapanel {

@@ -1,6 +1,11 @@
 import { ipcMain } from 'electron'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import {
+  clearAvatarImage as clearAvatarImageFile,
+  readAvatarImage as readAvatarImageFile,
+  writeAvatarImage as writeAvatarImageFile
+} from './avatar-image'
 import { getConfig, getDevaHome, setConfig } from './config'
 import { DEFAULT_PERSONAS } from './default-personas'
 import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
@@ -81,87 +86,22 @@ function personaFile(id: string): string {
 }
 
 // ── 自定义头像图片（personas/avatars/<id>.<ext>）─────────────────────────────
-//
-// 「多次上传覆盖」= 一个 id 至多一张图：写入前先清掉**所有**扩展名变体，再按来图 MIME 落一个。
-// 格式不固定死 webp，是为了容错——渲染层若在某平台 webp 编码失败可回落 png/jpeg，主进程照收，
-// 读回时按扩展名还原 MIME，不会出现「存的是 png 却谎称 webp」的坏 data URI。
-
-const AVATAR_EXT_MIME: Record<string, string> = {
-  webp: 'image/webp',
-  png: 'image/png',
-  jpg: 'image/jpeg'
-}
-const AVATAR_MIME_EXT: Record<string, string> = {
-  'image/webp': 'webp',
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/jpg': 'jpg'
-}
-/** 解码后字节上限：渲染层已归一到 256×256（正常 <100KB），此处只兜底异常大图。 */
-const AVATAR_MAX_BYTES = 2 * 1024 * 1024
+// 落盘细节（一 id 一图、MIME 白名单、大小兜底）见 avatar-image.ts；此处只加 id 合法性守卫。
 
 function avatarsDir(): string {
   return join(personasDir(), 'avatars')
 }
 
-/** 该 id 现存的头像图片路径（按扩展名优先序取首个命中）；没有则空串。 */
-function avatarImagePath(id: string): string {
-  for (const ext of Object.keys(AVATAR_EXT_MIME)) {
-    const p = join(avatarsDir(), `${id}.${ext}`)
-    if (existsSync(p)) return p
-  }
-  return ''
-}
-
-/** 读成 data URI 交付渲染层（无图 / 读失败 → 空串，回落生成头像）。 */
 function readAvatarImage(id: string): string {
-  if (!isSafeId(id)) return ''
-  const p = avatarImagePath(id)
-  if (!p) return ''
-  const ext = p.slice(p.lastIndexOf('.') + 1)
-  const mime = AVATAR_EXT_MIME[ext]
-  if (!mime) return ''
-  try {
-    return `data:${mime};base64,${readFileSync(p).toString('base64')}`
-  } catch {
-    return ''
-  }
+  return isSafeId(id) ? readAvatarImageFile(avatarsDir(), id) : ''
 }
 
-/** 删掉该 id 的所有头像图片变体（清除 / 覆盖前 / 删角色时调用）。 */
 function clearAvatarImage(id: string): void {
-  if (!isSafeId(id)) return
-  for (const ext of Object.keys(AVATAR_EXT_MIME)) {
-    try {
-      rmSync(join(avatarsDir(), `${id}.${ext}`), { force: true })
-    } catch {
-      /* 忽略：文件可能本就不存在 */
-    }
-  }
+  if (isSafeId(id)) clearAvatarImageFile(avatarsDir(), id)
 }
 
-/** 写入自定义头像（data URI）。成功返回读回的 data URI；参数非法 / 写失败返回空串。 */
 function writeAvatarImage(id: string, dataUri: string): string {
-  if (!isSafeId(id) || typeof dataUri !== 'string') return ''
-  const m = /^data:([a-z]+\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(dataUri.trim())
-  if (!m) return ''
-  const ext = AVATAR_MIME_EXT[m[1].toLowerCase()]
-  if (!ext) return ''
-  let buf: Buffer
-  try {
-    buf = Buffer.from(m[2], 'base64')
-  } catch {
-    return ''
-  }
-  if (!buf.length || buf.length > AVATAR_MAX_BYTES) return ''
-  try {
-    mkdirSync(avatarsDir(), { recursive: true })
-    clearAvatarImage(id) // 先清干净，保证一个 id 只剩一张（换格式重传也不留旧图）
-    writeFileSync(join(avatarsDir(), `${id}.${ext}`), buf)
-  } catch {
-    return ''
-  }
-  return readAvatarImage(id)
+  return isSafeId(id) ? writeAvatarImageFile(avatarsDir(), id, dataUri) : ''
 }
 
 /** 读取 config.json 的 personas.enabled 映射（不存在则空）。 */

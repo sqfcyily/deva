@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'path'
 import { assertInside, isSensitivePath } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
 import { upsertSkill } from './skills'
-import { deleteMemory, formatMemoryLine, listMemories, writeMemory, MEMORY_MAX_CHARS } from './memory'
+import { deleteMemory, formatMemoryLine, listMemories, writeMemory, MEMORY_BUDGET_CHARS, MEMORY_MAX_CHARS } from './memory'
 import { upsertServer, type McpValue } from './mcp-config'
 import type { ToolSpec } from '../providers/types'
 
@@ -236,6 +236,7 @@ export const toolSpecs: ToolSpec[] = [
       '写入一条用户的全局长期记忆：记录用户本人稳定、可跨对话复用的习惯/偏好/纠正（如「用户偏好 pnpm」）。' +
       '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增）。' +
       `内容须是一句简洁的第三人称事实（≤${MEMORY_MAX_CHARS} 字）；不得记录密码/密钥等敏感信息、一次性任务细节或特定项目的约定。` +
+      `记忆总量上限 ${MEMORY_BUDGET_CHARS} 字，写满会被拒绝：此时请带 id 合并/精简相近条目或先 memory_delete 过时条目。` +
       '记忆存于受保护目录，这是写入它的唯一途径（write_file 等工具无法写入）。',
     inputSchema: {
       type: 'object',

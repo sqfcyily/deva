@@ -221,6 +221,33 @@ export interface PersonaRecord {
   enabled: boolean
 }
 
+/** 本机用户资料（与 services/profile.ts 对齐）。 */
+export interface UserProfile {
+  /** 头像 spec（Humation AvatarSpec 的 JSON 字符串；空 → 固定 seed 默认头像）。 */
+  avatar: string
+  /** 自定义头像图片（data URI；空串 = 无）。只读派生字段，改图走 profile.setAvatarImage。 */
+  avatarImage: string
+}
+
+/** 全局记忆（与 services/memory.ts 对齐）。 */
+export interface MemoryEntry {
+  id: string
+  content: string
+  createdAt: number
+  updatedAt: number
+}
+export interface MemorySnapshot {
+  entries: MemoryEntry[]
+  /** 当前总字数（与注入系统提示词同一口径）。 */
+  used: number
+  /** 总字数上限：写入后超出即拒写。 */
+  budget: number
+  maxEntries: number
+  maxChars: number
+}
+export type MemoryErrorCode = 'empty' | 'tooLong' | 'full' | 'budget' | 'notFound' | 'duplicate'
+export type MemoryIpcResult = { ok: true; snapshot: MemorySnapshot } | { ok: false; code: MemoryErrorCode }
+
 /** Agent 提示词新建/更新入参（有 id 覆盖，无 id 新建）。 */
 export interface PersonaUpsertInput {
   id?: string
@@ -593,6 +620,23 @@ const api = {
     remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('skills:remove', id),
     setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke('skills:set-enabled', id, enabled)
+  },
+  /** 本机用户资料（个人资料面板）：头像 spec 存 config.json，图片另存 ~/.deva/profile/。 */
+  profile: {
+    get: (): Promise<UserProfile> => ipcRenderer.invoke('profile:get'),
+    setAvatar: (spec: string): Promise<{ ok: true }> => ipcRenderer.invoke('profile:set-avatar', spec),
+    /** 写入头像图片（data URI）；空串 = 清除。返回读回的 data URI（失败 / 清除为空串）。 */
+    setAvatarImage: (dataUri: string): Promise<string> =>
+      ipcRenderer.invoke('profile:set-avatar-image', dataUri)
+  },
+  /** 全局记忆（~/.deva/memory.json）：查看 / 增改删 / 清空，与模型的 memory_* 工具同一套校验。 */
+  memory: {
+    list: (): Promise<MemorySnapshot> => ipcRenderer.invoke('memory:list'),
+    /** 无 id 新增，有 id 覆盖更新。 */
+    write: (content: string, id?: string): Promise<MemoryIpcResult> =>
+      ipcRenderer.invoke('memory:write', content, id),
+    remove: (id: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:delete', id),
+    clear: (): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:clear')
   },
   /** Agent 提示词（全局 ~/.deva/personas）：列出 / 读取 / 新建更新 / 删除 / 启停。 */
   personas: {

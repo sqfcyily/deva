@@ -10,6 +10,8 @@ import { registerDecisionIpc } from './services/decision'
 import { registerChatIpc } from './services/chat'
 import { registerSkillsIpc } from './services/skills'
 import { ensureSeededPersonas, registerPersonasIpc } from './services/personas'
+import { registerProfileIpc } from './services/profile'
+import { registerMemoryIpc } from './services/memory'
 import {
   autoConnectEnabledServers,
   disconnectAllServers,
@@ -234,6 +236,8 @@ if (!app.requestSingleInstanceLock()) {
   // 按 id 幂等 + 防删除后复活 + 将来新增默认角色可增量补种（守卫位 personas.seeded[id] 入 config）。
   ensureSeededPersonas()
   registerPersonasIpc()
+  registerProfileIpc()
+  registerMemoryIpc()
 
   // MCP 服务（全局 ~/.deva/mcp.json；主进程内起真实客户端，工具命名空间化后并入 Agent 工具表，默认 ask 过闸）
   registerMcpIpc(() => mainWindow)

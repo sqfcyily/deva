@@ -22,7 +22,6 @@ import {
   GitBranch,
   GitCommitHorizontal,
   Image as ImageIcon,
-  ImagePlus,
   Info,
   ListChecks,
   Lock,
@@ -90,15 +89,9 @@ import {
   useViewport
 } from './resizable'
 import {
-  AVATAR_COLORS,
-  AVATAR_SLOTS,
   PersonaFace,
   USER_AVATAR_SEED,
-  isNonePart,
   parseAvatarSpec,
-  partLabel,
-  partPreview,
-  partsForSlot,
   randomizeSpec,
   resolveSpec,
   serializeAvatarSpec,
@@ -113,6 +106,9 @@ import {
   groupBlocks
 } from '../features/chat/blocks'
 import { ModelSettings } from '../features/settings/ModelSettings'
+import { AvatarEditor } from './AvatarEditor'
+import { ProfilePanel } from './ProfilePanel'
+import { useProfile } from '../store/profile'
 
 /**
  * 「对话优先」外壳（已接真实 store）。
@@ -560,11 +556,19 @@ function IconRail({
   onOpenSettings: () => void
 }): React.JSX.Element {
   const { t } = useI18n()
+  const [profileOpen, setProfileOpen] = useState(false)
   return (
     <nav className="cf-iconrail">
-      <div className="cf-iconrail__me" title={`${t('cf.localUser')} · ~/.deva`}>
+      <button
+        type="button"
+        className="cf-iconrail__me"
+        title={t('cf.profile.open')}
+        aria-label={t('cf.profile.open')}
+        onClick={() => setProfileOpen(true)}
+      >
         <Avatar user size={34} />
-      </div>
+      </button>
+      {profileOpen && <ProfilePanel onClose={() => setProfileOpen(false)} />}
       <button
         className={`cf-navbtn${tab === 'chats' ? ' is-active' : ''}`}
         title={t('cf.tabChats')}
@@ -3580,64 +3584,6 @@ function ProfileView({
 }
 
 /* ============================ 角色编辑器（Part G） ============================ */
-// 十六进制 ↔ 颜色槽值互转：Humation colors/background 存不带 `#` 的十六进制；<input type=color> 需带 `#`。
-const toHexInput = (v: string | undefined): string => {
-  const s = (v || '').replace(/^#/, '')
-  return /^[0-9a-fA-F]{6}$/.test(s) ? `#${s}` : '#000000'
-}
-const fromHexInput = (v: string): string => v.replace(/^#/, '').toUpperCase()
-
-/** 自定义头像落盘边长（px）：正方缩略图，够 96px 预览的 2× 屏，又不至于把 data URI 撑大。 */
-const AVATAR_PX = 256
-/** 原图上限：只挡住误选的巨型图；归一后落盘的永远是上面那张 256² 小方图。 */
-const AVATAR_UPLOAD_MAX = 12 * 1024 * 1024
-
-/**
- * 用户选的图 → 居中裁成正方 → 缩到 AVATAR_PX → data URI。
- * 归一在渲染层做（canvas），主进程只管存字节，故无论原图多大 / 什么比例，落盘的都是小方图。
- * blob: 与 data: 均在 index.html 的 img-src 白名单内；本地文件同源，canvas 不会被 taint。
- */
-function fileToAvatarDataUri(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file)
-    const img = new Image()
-    img.onload = (): void => {
-      URL.revokeObjectURL(url)
-      try {
-        const side = Math.min(img.naturalWidth, img.naturalHeight)
-        if (!side) return reject(new Error('empty image'))
-        const canvas = document.createElement('canvas')
-        canvas.width = AVATAR_PX
-        canvas.height = AVATAR_PX
-        const ctx = canvas.getContext('2d')
-        if (!ctx) return reject(new Error('no 2d context'))
-        ctx.drawImage(
-          img,
-          (img.naturalWidth - side) / 2,
-          (img.naturalHeight - side) / 2,
-          side,
-          side,
-          0,
-          0,
-          AVATAR_PX,
-          AVATAR_PX
-        )
-        // 不支持 webp 时 toDataURL 会**静默回落 image/png**——主进程按 MIME 定扩展名，两种都收。
-        const uri = canvas.toDataURL('image/webp', 0.9)
-        if (!uri.startsWith('data:image/')) return reject(new Error('encode failed'))
-        resolve(uri)
-      } catch (err) {
-        reject(err instanceof Error ? err : new Error(String(err)))
-      }
-    }
-    img.onerror = (): void => {
-      URL.revokeObjectURL(url)
-      reject(new Error('decode failed'))
-    }
-    img.src = url
-  })
-}
-
 function PersonaEditor({
   initial,
   onClose
@@ -3647,7 +3593,6 @@ function PersonaEditor({
 }): React.JSX.Element {
   const { t } = useI18n()
   const { providers } = useModels()
-  const toast = useToast()
   const { upsertPersona, setPersonaAvatarImage } = useExtensions()
   const { resolveProposal } = useChat()
   const editing = initial.mode === 'edit' ? initial.persona : null
@@ -3675,60 +3620,14 @@ function PersonaEditor({
   // 自定义头像（用户上传的图，data URI）：非空即盖过上面的 spec 生成头像。编辑态取已存图，
   // 新建 / 名片态恒空。它不进 upsertPersona 入参——落盘要等 upsert 返回 id（见 save）。
   const [avatarImage, setAvatarImage] = useState<string>(editing?.avatarImage ?? '')
-  const fileRef = useRef<HTMLInputElement | null>(null)
-  // 选图：先在渲染层归一成 256×256 方图再交主进程，故无论用户给多大的原图，落盘都是小图。
-  const onPickImage = (e: React.ChangeEvent<HTMLInputElement>): void => {
-    const file = e.target.files?.[0]
-    e.target.value = '' // 清空，否则连选同一个文件不会再触发 change
-    if (!file) return
-    if (file.size > AVATAR_UPLOAD_MAX) {
-      toast.show({ title: t('cf.avaImgTooBig'), variant: 'error' })
-      return
-    }
-    void fileToAvatarDataUri(file)
-      .then(setAvatarImage)
-      .catch(() => toast.show({ title: t('cf.avaImgFailed'), variant: 'error' }))
-  }
-  // 头像编辑面板开关：点击信息表单里的头像缩略图进入，「完成」/「取消」均返回继续编辑其余信息。
+  // 头像编辑面板开关：点击信息表单里的头像缩略图进入。面板自持草稿：「完成」回写这里的
+  // avatar/avatarImage、「取消」/ ✕ 直接收起即丢弃；两者都只切回表单，真正落盘仍走表单底部的保存/接受。
   const [avatarEditing, setAvatarEditing] = useState(false)
-  // 进面板时快照当前头像：「取消」还原快照后返回（丢弃面板内改动），「完成」保留改动返回。
-  // 两者都只切回表单，真正落盘仍走表单底部的保存/接受。
-  const avatarBackup = useRef<{ spec: AvatarSpec; image: string } | null>(null)
-  const openAvatarPanel = (): void => {
-    avatarBackup.current = { spec: avatar, image: avatarImage }
-    setAvatarEditing(true)
-  }
-  const closeAvatarPanel = (revert: boolean): void => {
-    const back = avatarBackup.current
-    if (revert && back) {
-      setAvatar(back.spec)
-      setAvatarImage(back.image)
-    }
-    avatarBackup.current = null
-    setAvatarEditing(false)
-  }
   // 顶部 ✕ / 点击背景：在头像面板时只退回信息表单（丢弃头像改动），否则关闭整个编辑器。
   const dismiss = (): void => {
-    if (avatarEditing) closeAvatarPanel(true)
+    if (avatarEditing) setAvatarEditing(false)
     else onClose()
   }
-  // 各槽位部件缩略图：用中性默认配色一次性生成并 memo（大预览才反映实际配色，故此处不随配色重算）。
-  const slotPreviews = useMemo(
-    () =>
-      AVATAR_SLOTS.map((slot) => ({
-        slot,
-        parts: partsForSlot(slot).map((part) => ({
-          part,
-          uri: isNonePart(part) ? '' : partPreview(part)
-        }))
-      })),
-    []
-  )
-  const setSelection = (slot: string, partId: string): void =>
-    setAvatar((a) => ({ ...a, selections: { ...(a.selections ?? {}), [slot]: partId } }))
-  const setColorSlot = (slot: string, hex: string): void =>
-    setAvatar((a) => ({ ...a, colors: { ...(a.colors ?? {}), [slot]: fromHexInput(hex) } }))
-  const setBackground = (hex: string): void => setAvatar((a) => ({ ...a, background: fromHexInput(hex) }))
 
   // 模型下拉：所有**对话**服务商 × 其模型 → "providerId:modelId"；空 = 跟随默认。
   // 决策模型（purpose==='decision'）不参与对话生成，排除在角色偏好模型之外。
@@ -3815,122 +3714,19 @@ function PersonaEditor({
         </div>
         <div className="cf-editor">
           {avatarEditing ? (
-            /* ===== 头像编辑面板：点击头像进入；改动实时写入 state，「完成」返回信息表单 ===== */
-            <div className="cf-avapanel">
-              <div className="cf-avaedit">
-                <div className="cf-avaedit__side">
-                  {/* 头像本体就是上传入口：悬停浮出遮层，点击直接唤起系统文件选择器。 */}
-                  <button
-                    type="button"
-                    className="cf-avaedit__preview"
-                    aria-label={t('cf.avaImgUpload')}
-                    onClick={() => fileRef.current?.click()}
-                  >
-                    <PersonaFace
-                      seed={avatarSeed}
-                      spec={avatar}
-                      image={avatarImage}
-                      title={name || t('cf.fAvatar')}
-                    />
-                    <span className="cf-avaedit__upload" title={t('cf.avaImgUpload')}>
-                      <ImagePlus size={20} aria-hidden="true" />
-                    </span>
-                  </button>
-                  {/* 用了自定义图时「随机」无从体现，换成「移除」让用户能退回生成头像。 */}
-                  {avatarImage ? (
-                    <button
-                      type="button"
-                      className="cf-btn cf-avaedit__rand"
-                      onClick={() => setAvatarImage('')}
-                    >
-                      {t('cf.avaImgRemove')}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="cf-btn cf-avaedit__rand"
-                      onClick={() => setAvatar(randomizeSpec())}
-                    >
-                      {t('cf.avaRandom')}
-                    </button>
-                  )}
-                  {/* 系统文件选择器由 <input type="file"> 唤起：图只在渲染层解码，不经任何 Agent 工具。 */}
-                  <input
-                    ref={fileRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    hidden
-                    onChange={onPickImage}
-                  />
-                </div>
-
-                <div className="cf-avaedit__main">
-                  {/* 部件：每槽一行横向缩略图；「无」选项渲染为文字块。 */}
-                  {slotPreviews.map(({ slot, parts }) => (
-                    <div key={slot} className="cf-avaedit__group">
-                      <span className="cf-avaedit__glabel">{t(`cf.avaSlot.${slot}`)}</span>
-                      <div className="cf-avaedit__parts">
-                        {parts.map(({ part, uri }) => {
-                          const selected = avatar.selections?.[slot] === part.id
-                          return (
-                            <button
-                              key={part.id}
-                              type="button"
-                              title={partLabel(part)}
-                              aria-pressed={selected}
-                              className={`cf-avaedit__part${selected ? ' is-selected' : ''}`}
-                              onClick={() => setSelection(slot, part.id)}
-                            >
-                              {uri ? (
-                                <img src={uri} alt={partLabel(part)} draggable={false} />
-                              ) : (
-                                <span className="cf-avaedit__none">{t('cf.avaNone')}</span>
-                              )}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  ))}
-
-                  {/* 配色：角色部件配色 + 背景色。 */}
-                  <div className="cf-avaedit__colors">
-                    {AVATAR_COLORS.map((slot) => (
-                      <label key={slot} className="cf-avaedit__swatch">
-                        <input
-                          type="color"
-                          value={toHexInput(avatar.colors?.[slot])}
-                          onChange={(e) => setColorSlot(slot, e.target.value)}
-                        />
-                        <span>{t(`cf.avaColor.${slot}`)}</span>
-                      </label>
-                    ))}
-                    <label className="cf-avaedit__swatch">
-                      <input
-                        type="color"
-                        value={toHexInput(avatar.background)}
-                        onChange={(e) => setBackground(e.target.value)}
-                      />
-                      <span>{t('cf.avaColor.background')}</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              {/* 两者都只收起面板返回表单：「取消」丢弃面板内头像改动、「完成」保留；落盘仍走表单保存/接受。 */}
-              <div className="cf-editor__actions">
-                <button type="button" className="cf-btn" onClick={() => closeAvatarPanel(true)}>
-                  {t('cf.cancel')}
-                </button>
-                <button
-                  type="button"
-                  className="cf-btn is-primary"
-                  onClick={() => closeAvatarPanel(false)}
-                >
-                  {t('cf.avaDone')}
-                </button>
-              </div>
-            </div>
+            /* ===== 头像编辑面板：点击头像进入；「完成」回写并返回信息表单 ===== */
+            <AvatarEditor
+              seed={avatarSeed}
+              initialSpec={avatar}
+              initialImage={avatarImage}
+              title={name}
+              onCancel={() => setAvatarEditing(false)}
+              onDone={(spec, image) => {
+                setAvatar(spec)
+                setAvatarImage(image)
+                setAvatarEditing(false)
+              }}
+            />
           ) : (
             /* ===== 信息表单：头像收成一枚可点缩略图（点击进面板），其余字段照旧 ===== */
             <>
@@ -3941,7 +3737,7 @@ function PersonaEditor({
                   type="button"
                   className="cf-avapick"
                   title={t('cf.avaEdit')}
-                  onClick={openAvatarPanel}
+                  onClick={() => setAvatarEditing(true)}
                 >
                   <span className="cf-avapick__face">
                     <PersonaFace
@@ -4669,7 +4465,7 @@ function Toggle({
 /* ============================ 通用小件 ============================ */
 // 全应用头像（角色 / 人类用户）统一走 Humation：
 //  - 角色：seed=persona.id，叠加其 avatar spec（若有）。
-//  - 用户：固定 seed（USER_AVATAR_SEED）。
+//  - 用户：个人资料里的头像（图片 / spec），未配置回落固定 seed（USER_AVATAR_SEED）。
 // 结构：外层 .cf-ava 作定位框，内层 .cf-ava__face 圆形裁剪头像（无描边）。
 function Avatar({
   persona,
@@ -4683,6 +4479,7 @@ function Avatar({
   /** 忙碌（对话生成中）：头像上叠一道自左向右扫过的高光带，作就地「思考/生成中」指示。 */
   busy?: boolean
 }): React.JSX.Element | null {
+  const profile = useProfile()
   const style = { ...(size ? { '--sz': `${size}px` } : {}) } as React.CSSProperties
   const cls = `cf-ava${busy ? ' is-busy' : ''}${user ? ' is-user' : ''}`
   // 遮层必须排在 .cf-ava__face 之后：同为 inset:0 的绝对定位兄弟，靠文档顺序压在头像之上。
@@ -4695,7 +4492,7 @@ function Avatar({
       </div>
     )
   const seed = user ? USER_AVATAR_SEED : (persona as Persona).id
-  const spec = user ? null : parseAvatarSpec((persona as Persona).avatar)
+  const spec = user ? profile.avatar : parseAvatarSpec((persona as Persona).avatar)
   const title = user
     ? undefined
     : `${(persona as Persona).name} · ${(persona as Persona).desc}${(persona as Persona).model ? ` · ${(persona as Persona).model}` : ''}`
@@ -4705,7 +4502,7 @@ function Avatar({
         <PersonaFace
           seed={seed}
           spec={spec}
-          image={user ? '' : (persona as Persona).avatarImage}
+          image={user ? profile.avatarImage : (persona as Persona).avatarImage}
           title={title}
         />
       </span>
