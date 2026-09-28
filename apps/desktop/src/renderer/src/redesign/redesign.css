@@ -332,16 +332,14 @@
   align-items: baseline;
   gap: var(--space-2);
 }
-/* 上行：角色名。主色号 + 加粗，作为主视觉。 */
-.cf-thread__owner {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* 上行：对话标题。主色号 + 加粗，作为主视觉（醒目显示对话内容）；过长省略，时间不被挤走。 */
+.cf-thread__title {
   min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--fg);
   overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .cf-thread__time {
@@ -350,8 +348,8 @@
   font-size: 11px;
   color: var(--fg-subtle);
 }
-/* 下行：首次对话标题。副色号 + 常规字重，作为次要行。 */
-.cf-thread__title {
+/* 下行：角色名。副色号 + 常规字重，作为次要行。 */
+.cf-thread__owner {
   margin-top: 2px;
   font-size: 11px;
   color: var(--fg-subtle);

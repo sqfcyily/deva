@@ -214,9 +214,19 @@ export function StatusIndicator({
     <div className="chat__status" role="status" aria-live="polite">
       <span className="chat__status-dot" />
       <span>{label}…</span>
-      <span className="chat__status-time">{status.elapsedSec}s</span>
+      <span className="chat__status-time">{formatElapsed(status.elapsedSec)}</span>
     </div>
   )
+}
+
+/** 已用时长 → 时分秒（1h 2m 3s）；高位为 0 的单位省略，秒恒显示（45s / 2m 5s）。 */
+function formatElapsed(sec: number): string {
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h) return `${h}h ${m}m ${s}s`
+  if (m) return `${m}m ${s}s`
+  return `${s}s`
 }
 
 /**

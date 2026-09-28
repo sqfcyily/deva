@@ -1366,9 +1366,9 @@ function ThreadRow({
       {/* 对话中（streaming）→ 头像上一道扫光指示。 */}
       <Avatar persona={owner} size={38} busy={state?.streaming} />
       <div className="cf-thread__main">
-        {/* 上：角色名与时间；下：首次对话标题。挂载目录不在此展示。 */}
+        {/* 上：对话标题与时间（主视觉，醒目显示对话内容）；下：角色名。挂载目录不在此展示。 */}
         <div className="cf-thread__top">
-          <span className="cf-thread__owner">{owner?.name ?? ''}</span>
+          <span className="cf-thread__title">{session.title || t('chat.untitled')}</span>
           {isTask && (
             <span className="cf-thread__badge" title={t('cf.tabTasks')}>
               <AlarmClock size={11} />
@@ -1376,7 +1376,7 @@ function ThreadRow({
           )}
           <span className="cf-thread__time">{rel(session.updatedAt)}</span>
         </div>
-        <div className="cf-thread__title">{session.title || t('chat.untitled')}</div>
+        <div className="cf-thread__owner">{owner?.name ?? ''}</div>
       </div>
     </button>
   )
@@ -3091,6 +3091,29 @@ function Composer({
     })
   }
 
+  // 粘贴图片 / 文档：与「附加文件」同一条链路（主进程授权 → pending 附件条）。
+  // 剪贴板带纯文本时一律按文本粘贴——Word / Excel 复制内容会顺带一张渲染图，不能把它变成附件。
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    const files = Array.from(e.clipboardData.files)
+    if (!files.length || e.clipboardData.getData('text/plain')) return
+    e.preventDefault()
+    if (streaming) return
+    void (async () => {
+      const picked = await Promise.all(
+        files.map(async (f) =>
+          window.deva.fs.pasteAttachment({
+            name: f.name,
+            mime: f.type,
+            size: f.size,
+            // 超过最大附件上限（PDF 20MB）的不读字节，只报体积，主进程据此判「过大」。
+            data: f.size > 20 * 1024 * 1024 ? null : new Uint8Array(await f.arrayBuffer())
+          })
+        )
+      )
+      setPending((prev) => [...prev, ...(picked as Picked[])])
+    })()
+  }
+
   const removePending = (path: string): void =>
     setPending((prev) => prev.filter((p) => p.path !== path))
 
@@ -3221,6 +3244,7 @@ function Composer({
             placeholder={placeholder}
             onChange={autoGrow}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
           />

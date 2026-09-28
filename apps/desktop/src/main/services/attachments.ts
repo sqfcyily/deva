@@ -1,6 +1,8 @@
 import { dialog, ipcMain, type BrowserWindow, type OpenDialogOptions } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import { promises as fs } from 'fs'
-import { basename, extname, resolve } from 'path'
+import { basename, extname, join, resolve } from 'path'
 import type { ContentPart } from '../providers/types'
 
 /**
@@ -61,7 +63,72 @@ function classify(ext: string): AttachmentKind {
 // 本会话内被用户明确选中且合规的绝对路径白名单。
 const allowed = new Set<string>()
 
+/**
+ * 粘贴附件的落盘目录。粘贴来的只有字节、没有路径（截图尤其如此），故由主进程写到这里再走同一套
+ * 白名单——渲染层只交内容、从不交路径，「不能伪造任意路径读盘」的不变式不变。
+ * 白名单是内存态、随重启清空，上次运行留下的文件已无用：注册 IPC 时整目录清掉。
+ * 发送时内容即转成 base64 块进历史，文件只需活到发送前。
+ */
+const PASTE_DIR = join(tmpdir(), 'deva-paste')
+
+/** 统一的类型/体积判定：合规者登记白名单。选择框与粘贴两路共用，限额只此一处。 */
+function inspect(abs: string, size: number): PickedAttachment {
+  const name = basename(abs)
+  const ext = extname(abs).toLowerCase()
+  const kind = classify(ext)
+  let supported = kind !== 'unsupported'
+  let reason: string | undefined
+  if (kind === 'unsupported') reason = '暂不支持的文件类型'
+  else if (kind === 'image' && size > MAX_IMAGE) {
+    supported = false
+    reason = '图片过大（>5MB）'
+  } else if (kind === 'document' && size > MAX_PDF) {
+    supported = false
+    reason = 'PDF 过大（>20MB）'
+  } else if (kind === 'text' && size > MAX_TEXT) {
+    supported = false
+    reason = '文本过大（>512KB）'
+  }
+  if (supported) allowed.add(abs)
+  return { path: abs, name, ext, size, kind, supported, reason }
+}
+
+/** 粘贴文件名：剥掉路径与 Windows 非法字符；截图等无名/通用名（image.png）按时间戳重命名。 */
+function pasteName(raw: string, mime: string): string {
+  const clean = basename(raw || '').replace(/[<>:"/|?*\x00-\x1f]/g, '_').trim()
+  // 「.」「..」会让 join 退回上级目录：与无名同样处理。
+  if (clean && !/^\.+$/.test(clean) && !/^image\.\w+$/i.test(clean)) return clean
+  const ext = extname(clean) || (mime.startsWith('image/') ? `.${mime.slice(6).replace('jpeg', 'jpg')}` : '')
+  // 本地时间（toISOString 是 UTC，文件名里的时刻会与用户所见差时区）。
+  const d = new Date()
+  const p2 = (n: number): string => String(n).padStart(2, '0')
+  const ts = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`
+  return `粘贴-${ts}${ext}`
+}
+
 export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): void {
+  void fs.rm(PASTE_DIR, { recursive: true, force: true }).catch(() => {})
+
+  // 粘贴（截图 / 资源管理器里复制的文件）：渲染层交文件名 + 字节，超 PDF 上限的大文件渲染层不读、
+  // 只交体积（data=null），由此处统一给出「过大」判定，免得几百 MB 过一遍 IPC。
+  ipcMain.handle(
+    'fs:paste-attachment',
+    async (
+      _e,
+      file: { name: string; mime: string; size: number; data: Uint8Array | null }
+    ): Promise<PickedAttachment> => {
+      const name = pasteName(file.name, file.mime || '')
+      // 每次粘贴独占一个子目录：同名文件（如两张 image.png）互不覆盖，名字仍保持原样展示。
+      const abs = join(PASTE_DIR, randomUUID(), name)
+      if (!file.data) return inspect(abs, file.size)
+      const pre = inspect(abs, file.data.byteLength)
+      if (!pre.supported) return pre
+      await fs.mkdir(join(abs, '..'), { recursive: true })
+      await fs.writeFile(abs, file.data)
+      return pre
+    }
+  )
+
   ipcMain.handle('fs:pick-attachments', async (): Promise<PickedAttachment[]> => {
     const win = getWindow()
     const opts: OpenDialogOptions = {
@@ -88,30 +155,13 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
     const out: PickedAttachment[] = []
     for (const p of res.filePaths) {
       const abs = resolve(p)
-      const name = basename(abs)
-      const ext = extname(abs).toLowerCase()
       let size = 0
       try {
         size = (await fs.stat(abs)).size
       } catch {
         /* stat 失败：按 0 处理，读取阶段再兜底 */
       }
-      const kind = classify(ext)
-      let supported = kind !== 'unsupported'
-      let reason: string | undefined
-      if (kind === 'unsupported') reason = '暂不支持的文件类型'
-      else if (kind === 'image' && size > MAX_IMAGE) {
-        supported = false
-        reason = '图片过大（>5MB）'
-      } else if (kind === 'document' && size > MAX_PDF) {
-        supported = false
-        reason = 'PDF 过大（>20MB）'
-      } else if (kind === 'text' && size > MAX_TEXT) {
-        supported = false
-        reason = '文本过大（>512KB）'
-      }
-      if (supported) allowed.add(abs)
-      out.push({ path: abs, name, ext, size, kind, supported, reason })
+      out.push(inspect(abs, size))
     }
     return out
   })
