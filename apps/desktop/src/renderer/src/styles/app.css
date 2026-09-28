@@ -3599,7 +3599,7 @@ button.projmenu__item:disabled {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 44px;
+  height: 144px;
   padding: 0 var(--space-3);
   border-bottom: 1px solid var(--border);
 }
@@ -4295,60 +4295,6 @@ button.projmenu__item:disabled {
 }
 .btn--soft {
   background: var(--bg-elevated);
-}
-
-/* 资源管理器空状态：最近项目历史列表（一键重开，省去每次翻目录） */
-.side-recent {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: var(--space-2) var(--space-2) var(--space-4);
-}
-.side-recent__title {
-  padding: 0 var(--space-2) var(--space-1);
-  color: var(--fg-subtle);
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.side-recent__item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-1) var(--space-2);
-  border: none;
-  background: transparent;
-  border-radius: var(--radius-sm);
-  color: var(--fg);
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-  min-width: 0;
-}
-.side-recent__item:hover {
-  background: var(--bg-hover);
-}
-.side-recent__icon {
-  flex: none;
-  color: var(--fg-subtle);
-}
-.side-recent__name {
-  flex: none;
-  max-width: 42%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.side-recent__path {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-subtle);
-  font-size: 11.5px;
 }
 
 /* ---------- 编辑器：可编辑文本域 + 标签增强 ---------- */

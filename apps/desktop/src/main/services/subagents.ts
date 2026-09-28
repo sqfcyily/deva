@@ -36,7 +36,7 @@ const READONLY_TOOLS = ['read_file', 'list_dir', 'glob', 'grep', 'web_fetch', 'r
  * 任务内容完全由本次调用的 prompt 给出。对标 CC 的 general-purpose。
  */
 export const GENERAL_SUBAGENT: SubagentDef = {
-  name: '通用子智能体',
+  name: 'general-purpose',
   description: '按主智能体现场给定的任务描述，独立完成一项封闭子任务；具备全部工具。',
   tools: '*',
   prompt: ''

@@ -25,9 +25,70 @@
 
 /* ============================ 主体两列 ============================ */
 .cf-body {
+  position: relative; /* 侧栏拖拽手柄的定位锚 */
   display: grid;
-  grid-template-columns: 56px 300px minmax(0, 1fr);
+  /* 第二列（对话面板）宽由 --cf-side 驱动：可拖动，JS 侧已按上下限与窗口宽夹取。 */
+  grid-template-columns: 56px var(--cf-side, 300px) minmax(0, 1fr);
   min-height: 0;
+}
+
+/* ---------------------------- 拖拽调整尺寸手柄 ---------------------------- */
+/* 透明热区压在分隔线上（比线宽，好抓）；悬停/拖动时显一条强调色细线作反馈。 */
+.cf-resizer {
+  position: absolute;
+  z-index: 20;
+  -webkit-app-region: no-drag; /* 图标栏/头部是窗口拖拽区，手柄必须排除，否则按下即拖窗口 */
+  touch-action: none;
+}
+.cf-resizer::after {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cf-resizer:hover::after,
+.cf-resizer.is-active::after {
+  opacity: 1;
+}
+/* 侧栏：竖向热区，中心对齐面板右边框（left 由内联样式给出面板右缘）。 */
+.cf-resizer--x {
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  margin-left: -3px;
+  cursor: col-resize;
+}
+.cf-resizer--x::after {
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+}
+/* 输入框：横向热区，压在 .cf-composer 顶边框上。 */
+.cf-resizer--y {
+  left: 0;
+  right: 0;
+  top: -3px;
+  height: 6px;
+  cursor: row-resize;
+}
+.cf-resizer--y::after {
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 2px;
+}
+/* 拖动中：全局光标保持、禁止选中文字（指针移出手柄也不闪回箭头、不误选消息）。 */
+body.cf-resizing-x,
+body.cf-resizing-x * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.cf-resizing-y,
+body.cf-resizing-y * {
+  cursor: row-resize !important;
+  user-select: none !important;
 }
 
 /* ---------------------------- 最左：图标导航栏 ---------------------------- */
@@ -1177,6 +1238,7 @@
   font-size: 13.5px;
   line-height: 1.5;
   min-height: 44px;
+  overflow-y: auto; /* 对话输入框固定高（内联 height），内容多了框内滚动 */
 }
 .cf-box__bar {
   display: flex;
@@ -2507,4 +2569,22 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 运行历史「展开全部 / 收起」开关：纯文字按钮。 */
+.cf-trun__more {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+  padding: 6px var(--space-3);
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.cf-trun__more:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }

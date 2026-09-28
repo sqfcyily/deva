@@ -906,7 +906,7 @@ function buildSubagentTool(): ToolSpec {
       '不要用它做你自己直接做更快的事：已经知道文件/符号/取值在哪就自己读、自己搜；单点查询、需要与用户交互、以及需要你亲自落笔改动的工作，都不要派发。' +
       '派发之后就采信它的结论，不要再自己把同一件事重做一遍。' +
       '它的结论默认折叠在任务卡里、用户不会主动展开——请在你的回复里转述其中要紧的部分，不要只说一句「已完成」。' +
-      `可派发的子智能体：${list}。省略 agent 即派生通用子智能体。`,
+      `可派发的子智能体：${list}。省略 agent 即派生通用子智能体 ${GENERAL_SUBAGENT.name}。`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1165,7 +1165,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const def = picked ?? GENERAL_SUBAGENT
       const missNote =
         wantedAgent && !picked
-          ? `（没有名为「${wantedAgent}」的子智能体，已改用通用子智能体完成。可选：${subagentSummaries()
+          ? `（没有名为「${wantedAgent}」的子智能体，已改用通用子智能体 ${GENERAL_SUBAGENT.name} 完成。可选：${subagentSummaries()
               .map((x) => x.name)
               .join('、')}。）\n`
           : ''
@@ -2250,9 +2250,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   })
 
   // 用户对「请求挂载工作区」的回应：path=已选目录 / null=暂不挂载。
-  // 与 fs:open-path 同等信任语义——只认真实存在的目录，并（幂等）登记受信根。渲染层走的是
-  // fs.openFolder（系统目录对话框，已 trustRoot），这里只是兜底，不构成新的提权面：渲染层本就
-  // 能直接调 fs:open-path 受信任意目录。拿不到有效目录一律按「暂不挂载」处置。
+  // 只认真实存在的目录，并（幂等）登记受信根。渲染层传来的路径出自 fs.openFolder（系统目录对话框，
+  // 已 trustRoot），这里的 trustRoot 只是兜底。拿不到有效目录一律按「暂不挂载」处置。
   ipcMain.handle('chat:mount-response', (_e, payload: MountResponse): { ok: boolean } => {
     const p = pendingMount.get(payload.key)
     if (!p) return { ok: false }

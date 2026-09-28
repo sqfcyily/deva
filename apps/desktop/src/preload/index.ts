@@ -562,9 +562,6 @@ const api = {
   /** 工作区文件系统：打开文件夹、读目录、读写文件、挑选附件。 */
   fs: {
     openFolder: (): Promise<OpenFolderResult | null> => ipcRenderer.invoke('fs:open-folder'),
-    /** 按已知路径打开（无对话框，登记受信根）：供「记住最近项目」自动重开 / 点击历史项 */
-    openPath: (path: string): Promise<OpenFolderResult | null> =>
-      ipcRenderer.invoke('fs:open-path', path),
     readDir: (path: string): Promise<DirEntry[]> => ipcRenderer.invoke('fs:read-dir', path),
     readFile: (path: string): Promise<ReadFileResult> => ipcRenderer.invoke('fs:read-file', path),
     writeFile: (path: string, content: string): Promise<{ ok: true }> =>

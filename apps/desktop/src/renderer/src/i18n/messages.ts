@@ -20,8 +20,6 @@ const zhCN: MessageTree = {
   },
   titlebar: {
     openWorkspace: '打开项目',
-    recentLabel: '最近项目',
-    removeRecent: '从列表移除',
     openFolder: '打开文件夹…',
     closeProject: '关闭项目',
     search: '搜索',
@@ -39,7 +37,6 @@ const zhCN: MessageTree = {
   explorer: {
     title: '资源管理器',
     empty: '尚未打开项目',
-    recent: '最近项目',
     selectHint: '从左侧选择一个文件查看内容',
     binary: '无法显示二进制文件',
     tooLarge: '文件过大，暂不显示',
@@ -244,7 +241,7 @@ const zhCN: MessageTree = {
     subagent: {
       title: '子智能体任务',
       // 空 agent 名 = 未指定内置子智能体，即回落通用子智能体（见主进程 subagents.ts）。
-      fallback: '通用子智能体',
+      fallback: 'general-purpose',
       task: '任务',
       stepUnit: '步',
       noSteps: '无内部工具调用'
@@ -483,7 +480,9 @@ const zhCN: MessageTree = {
     createTitle: '新建定时任务',
     detailEmpty: '从左侧选择一个任务，查看详情或调整。',
     runHistory: '运行历史',
-    historyEmpty: '尚无运行记录'
+    historyEmpty: '尚无运行记录',
+    historyShowAll: '展开全部（共 {n} 次）',
+    historyCollapse: '收起'
   },
   // 对话优先外壳（chat-first）专用文案。t 只收 key、不插值——含名字/计数/相对时间的动态串在 JS 组。
   cf: {
@@ -511,6 +510,8 @@ const zhCN: MessageTree = {
     viewProfile: '查看资料',
     mountHint: '挂载一个文件夹，让当前对话聚焦其中',
     unmountHint: '卸载文件夹，回到全机通用助手',
+    resizeSidebar: '拖动调整宽度，双击恢复默认',
+    resizeComposer: '拖动调整输入框高度，双击恢复默认',
     mountWorkspace: '挂载工作区',
     // 输入框「/ 指令」联想（技能项的说明取自各自 SKILL.md，不在此处）
     slash: {
@@ -646,8 +647,6 @@ const en: MessageTree = {
   },
   titlebar: {
     openWorkspace: 'Open Project',
-    recentLabel: 'Recent',
-    removeRecent: 'Remove from list',
     openFolder: 'Open Folder…',
     closeProject: 'Close Project',
     search: 'Search',
@@ -665,7 +664,6 @@ const en: MessageTree = {
   explorer: {
     title: 'Explorer',
     empty: 'No project opened',
-    recent: 'Recent Projects',
     selectHint: 'Select a file on the left to view its content',
     binary: 'Binary file not shown',
     tooLarge: 'File too large to display',
@@ -872,7 +870,7 @@ const en: MessageTree = {
     status: { running: 'Running', done: 'Done', failed: 'Failed', denied: 'Denied' },
     subagent: {
       title: 'Subagent task',
-      fallback: 'General sub-agent',
+      fallback: 'general-purpose',
       task: 'Task',
       stepUnit: 'steps',
       noSteps: 'No internal tool calls'
@@ -1117,7 +1115,9 @@ const en: MessageTree = {
     createTitle: 'New task',
     detailEmpty: 'Select a task on the left to view its details or adjust it.',
     runHistory: 'Run history',
-    historyEmpty: 'No runs yet'
+    historyEmpty: 'No runs yet',
+    historyShowAll: 'Show all ({n} runs)',
+    historyCollapse: 'Show less'
   },
   // Chat-first shell strings. t takes a key only; dynamic strings (names/counts/relative time) are composed in JS.
   cf: {
@@ -1145,6 +1145,8 @@ const en: MessageTree = {
     viewProfile: 'View profile',
     mountHint: 'Mount a folder to focus this conversation inside it',
     unmountHint: 'Unmount the folder and return to the whole-machine assistant',
+    resizeSidebar: 'Drag to resize, double-click to reset',
+    resizeComposer: 'Drag to resize the input box, double-click to reset',
     mountWorkspace: 'Mount workspace',
     slash: {
       title: 'Commands',

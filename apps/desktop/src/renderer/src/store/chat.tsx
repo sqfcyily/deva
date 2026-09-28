@@ -314,7 +314,7 @@ interface ChatContextValue {
    * 首发落库后它进入 sessions、本值转为 null，列表项按同 id 无缝接管。无草稿时为 null。
    */
   draftSession: SessionMeta | null
-  /** 挂载（path）/ 卸载（null）当前对话的聚焦工作区；path 须已受信（经 fs.openFolder/openPath）。 */
+  /** 挂载（path）/ 卸载（null）当前对话的聚焦工作区；path 须已受信（经 fs.openFolder）。 */
   mountFocus: (path: string | null) => void
   /**
    * 设置**当前对话**的模型引用 `"providerId:modelId"`（只改当前对话，不动全局默认）；空串 = 回落全局默认。
@@ -1202,7 +1202,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       startFresh(personaId, focusRoot, model)
     }
 
-    // 挂载 / 卸载当前对话的聚焦工作区：只更新覆盖层（path 应已由调用方经 fs.openFolder/openPath 受信），
+    // 挂载 / 卸载当前对话的聚焦工作区：只更新覆盖层（path 应已由调用方经 fs.openFolder 受信），
     // 下次 chat:send 时 ensureSession 据此更新 focusRoot（null = 卸载回全机通用助手）。
     const mountFocus = (path: string | null): void => {
       setBinding(sessionIdRef.current, { focusRoot: path })

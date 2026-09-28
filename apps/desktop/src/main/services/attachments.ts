@@ -1,8 +1,8 @@
 import { dialog, ipcMain, type BrowserWindow, type OpenDialogOptions } from 'electron'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { promises as fs } from 'fs'
-import { basename, extname, join, resolve } from 'path'
+import { basename, dirname, extname, join, resolve } from 'path'
 import type { ContentPart } from '../providers/types'
 
 /**
@@ -71,6 +71,12 @@ const allowed = new Set<string>()
  */
 const PASTE_DIR = join(tmpdir(), 'deva-paste')
 
+/**
+ * 粘贴去重：同一内容（sha256）重复粘贴返回同一条附件（同一路径），渲染层按路径过滤即只留一份。
+ * 过大不读字节的，按「文件名 + 体积」认同一个。随进程存活，与白名单同寿命。
+ */
+const pasted = new Map<string, PickedAttachment>()
+
 /** 统一的类型/体积判定：合规者登记白名单。选择框与粘贴两路共用，限额只此一处。 */
 function inspect(abs: string, size: number): PickedAttachment {
   const name = basename(abs)
@@ -117,14 +123,26 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
       _e,
       file: { name: string; mime: string; size: number; data: Uint8Array | null }
     ): Promise<PickedAttachment> => {
+      const key = file.data
+        ? createHash('sha256').update(file.data).digest('hex')
+        : `big:${file.name}:${file.size}`
+      const hit = pasted.get(key)
+      if (hit) return hit
       const name = pasteName(file.name, file.mime || '')
-      // 每次粘贴独占一个子目录：同名文件（如两张 image.png）互不覆盖，名字仍保持原样展示。
+      // 每份内容独占一个子目录：不同内容的同名文件（如两张 image.png）互不覆盖，名字仍保持原样展示。
       const abs = join(PASTE_DIR, randomUUID(), name)
-      if (!file.data) return inspect(abs, file.size)
-      const pre = inspect(abs, file.data.byteLength)
-      if (!pre.supported) return pre
-      await fs.mkdir(join(abs, '..'), { recursive: true })
-      await fs.writeFile(abs, file.data)
+      const pre = inspect(abs, file.data ? file.data.byteLength : file.size)
+      // 先登记再落盘：同一批里的重复项（并发调用）也拿到同一条。
+      pasted.set(key, pre)
+      if (!file.data || !pre.supported) return pre
+      try {
+        await fs.mkdir(dirname(abs), { recursive: true })
+        await fs.writeFile(abs, file.data)
+      } catch (err) {
+        pasted.delete(key)
+        allowed.delete(abs)
+        throw err
+      }
       return pre
     }
   )

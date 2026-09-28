@@ -80,6 +80,16 @@ import { useDialog } from '../components/DialogProvider'
 import { useToast, type ToastOptions } from '../components/ToastProvider'
 import { Modal } from '../components/Modal'
 import {
+  COMPOSER_DEFAULT,
+  ResizeHandle,
+  SIDEBAR_DEFAULT,
+  clampComposer,
+  clampSidebar,
+  loadLayout,
+  saveLayout,
+  useViewport
+} from './resizable'
+import {
   AVATAR_COLORS,
   AVATAR_SLOTS,
   PersonaFace,
@@ -252,6 +262,12 @@ export function ChatFirstShell(): React.JSX.Element {
   const dialog = useDialog()
 
   const [railTab, setRailTab] = useState<'chats' | 'roster' | 'tasks'>('chats')
+  // 左侧对话面板宽（可拖动）：存的是用户意图值，渲染时按窗口宽再夹取——窗口缩小时自动收窄、放大后复原。
+  const viewport = useViewport()
+  const [sidebarW, setSidebarW] = useState(() => loadLayout().sidebarWidth ?? SIDEBAR_DEFAULT)
+  const sidebarShown = clampSidebar(sidebarW, viewport.w)
+  const sidebarRef = useRef(sidebarShown)
+  sidebarRef.current = sidebarShown
   /**
    * 「角色」tab 当前选中的角色（右侧显示其资料卡）。仅当 railTab==='roster' 时生效——右侧内容整体由
    * railTab 决定，故「消息」tab 与「角色」tab 各自记住自己的右侧（当前对话 / 当前角色），彼此独立、
@@ -432,7 +448,23 @@ export function ChatFirstShell(): React.JSX.Element {
     <div className="cf-shell">
       {/* 无独立标题栏（微信式）：最小化/最大化/关闭用系统原生窗口控件叠加（titleBarOverlay），
           此处不再自绘按钮，避免与原生按钮重影。拖拽交给图标栏与对话头。 */}
-      <div className="cf-body">
+      <div
+        className="cf-body"
+        style={{ '--cf-side': `${sidebarShown}px` } as React.CSSProperties}
+      >
+        {/* 面板右缘拖拽手柄（覆盖在分隔线上，绝对定位不占网格单元）；定时任务 tab 的列表列同宽同享。 */}
+        <ResizeHandle
+          axis="x"
+          value={sidebarShown}
+          title={t('cf.resizeSidebar')}
+          style={{ left: `calc(56px + ${sidebarShown}px)` }}
+          onChange={(v) => setSidebarW(clampSidebar(v, window.innerWidth))}
+          onCommit={() => saveLayout({ sidebarWidth: sidebarRef.current })}
+          onReset={() => {
+            setSidebarW(SIDEBAR_DEFAULT)
+            saveLayout({ sidebarWidth: undefined })
+          }}
+        />
         <IconRail
           tab={railTab}
           onTab={setRailTab}
@@ -1908,6 +1940,9 @@ function TaskRailRow({
   )
 }
 
+/** 任务详情运行历史默认展示的条数（最近 N 次），超出折叠在「展开全部」后。 */
+const HISTORY_PREVIEW = 5
+
 /**
  * 右详情面（对齐角色资料卡 .cf-profile）：展示选中任务的类型/状态、日程与运行信息、任务指令、
  * 运行历史，以及操作（编辑·暂停/恢复·立即运行·删除）。日程人读摘要经 useSchedulePreview 权威求值。
@@ -1944,6 +1979,9 @@ function TaskDetail({
     s === 'ok' ? 'tasks.runOk' : s === 'skipped' ? 'tasks.runSkipped' : 'tasks.runError'
   // 运行历史按时间降序（最近在上）。
   const history = useMemo(() => [...task.runs].reverse(), [task.runs])
+  // 默认只列最近 HISTORY_PREVIEW 次，超出时给「展开全部」开关（组件按 task.id 取 key，切任务即复位收起）。
+  const [historyAll, setHistoryAll] = useState(false)
+  const shownHistory = historyAll ? history : history.slice(0, HISTORY_PREVIEW)
 
   // 任务指令可能很长（占位过多），做成折叠面板：标题行作开关，默认收起（不渲染指令体），点击可展开/再收起。
   const [promptOpen, setPromptOpen] = useState(false)
@@ -2047,7 +2085,7 @@ function TaskDetail({
             {history.length === 0 ? (
               <div className="cf-empty">{t('tasks.historyEmpty')}</div>
             ) : (
-              history.map((run, i) => (
+              shownHistory.map((run, i) => (
                 <div key={i} className="cf-trun">
                   <span className="cf-trun__time">{fmtAbs(run.firedAt, locale)}</span>
                   <span className={`cf-runbadge is-${run.status}`} title={run.error || undefined}>
@@ -2058,6 +2096,18 @@ function TaskDetail({
                   )}
                 </div>
               ))
+            )}
+            {history.length > HISTORY_PREVIEW && (
+              <button
+                type="button"
+                className="cf-trun__more"
+                onClick={() => setHistoryAll((v) => !v)}
+                aria-expanded={historyAll}
+              >
+                {historyAll
+                  ? t('tasks.historyCollapse')
+                  : t('tasks.historyShowAll').replace('{n}', String(history.length))}
+              </button>
             )}
           </div>
         </div>
@@ -2982,6 +3032,13 @@ function Composer({
   const [input, setInput] = useState('')
   const [pending, setPending] = useState<Picked[]>([])
   const taRef = useRef<HTMLTextAreaElement>(null)
+  // 输入框高度：固定高、不随内容长高，内容多了框内滚动；只能靠顶边手柄拖动调整。
+  // 与侧栏同理，存用户意图值、渲染时按窗口高再夹取。
+  const viewport = useViewport()
+  const [composerH, setComposerH] = useState(() => loadLayout().composerHeight ?? COMPOSER_DEFAULT)
+  const boxH = clampComposer(composerH, viewport.h)
+  const boxHRef = useRef(boxH)
+  boxHRef.current = boxH
   /** 「/ 指令」联想：当前高亮项下标（随查询词变化复位）。 */
   const [slashSel, setSlashSel] = useState(0)
   /** Esc 收起联想；任何一次输入改动都会复位，重新键入即可再唤出。 */
@@ -3000,8 +3057,6 @@ function Composer({
       const el = taRef.current
       if (!el) return
       el.focus()
-      el.style.height = 'auto'
-      el.style.height = `${Math.min(el.scrollHeight, 160)}px`
       const end = el.value.length
       el.setSelectionRange(end, end)
     })
@@ -3110,7 +3165,17 @@ function Composer({
           })
         )
       )
-      setPending((prev) => [...prev, ...(picked as Picked[])])
+      // 同一文件多次粘贴只留一份：主进程按内容去重、重复粘贴返回同一路径，此处按路径过滤即可。
+      setPending((prev) => {
+        const seen = new Set(prev.map((p) => p.path))
+        const out = [...prev]
+        for (const p of picked as Picked[]) {
+          if (seen.has(p.path)) continue
+          seen.add(p.path)
+          out.push(p)
+        }
+        return out
+      })
     })()
   }
 
@@ -3123,7 +3188,6 @@ function Composer({
     if ((!text.trim() && atts.length === 0) || streaming) return
     setInput('')
     setPending([])
-    if (taRef.current) taRef.current.style.height = 'auto'
     void onSend(
       text,
       atts.map((p) => ({ path: p.path, name: p.name, kind: p.kind as AttachKind }))
@@ -3165,13 +3229,22 @@ function Composer({
   const autoGrow = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
     setInput(e.target.value)
     setSlashOff(false) // 又动了输入：Esc 收起的联想重新可唤出
-    const el = e.target
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
   }
 
   return (
     <div className="cf-composer">
+      {/* 顶边拖拽手柄：向上拖加高输入框。 */}
+      <ResizeHandle
+        axis="y"
+        value={boxH}
+        title={t('cf.resizeComposer')}
+        onChange={(v) => setComposerH(clampComposer(v, window.innerHeight))}
+        onCommit={() => saveLayout({ composerHeight: boxHRef.current })}
+        onReset={() => {
+          setComposerH(COMPOSER_DEFAULT)
+          saveLayout({ composerHeight: undefined })
+        }}
+      />
       {/* 回到最新：仅当用户上滚离开底部且已有消息时浮现，锚在输入区正上方居中 */}
       {showJump && (
         <button
@@ -3245,6 +3318,7 @@ function Composer({
             onChange={autoGrow}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
+            style={{ height: boxH }}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
           />
