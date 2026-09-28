@@ -15,6 +15,7 @@ import {
   Cog,
   Copy,
   Download,
+  ExternalLink,
   FileText,
   FileCode2,
   FolderOpen,
@@ -981,6 +982,18 @@ function gitErrorToast(
     : { variant: 'error', message: title }
 }
 
+/**
+ * 分支名基础校验（git check-ref-format 的常见规则）：不合规时「创建」按钮置灰，其余细则交给 git 报错。
+ * 拒绝前导 `-` 同时杜绝名字被 git 当成命令行选项。
+ */
+function isValidBranchName(raw: string): boolean {
+  const s = raw.trim()
+  if (!s || s === '@' || /^[-./]/.test(s) || /[/.]$/.test(s) || s.endsWith('.lock')) return false
+  if (s.includes('..') || s.includes('@{') || s.includes('//') || s.includes('/.')) return false
+  // eslint-disable-next-line no-control-regex
+  return !/[\s~^:?*[\\\x00-\x1f\x7f]/.test(s)
+}
+
 interface GitState {
   available: boolean
   status: GitStatus | null
@@ -1038,6 +1051,7 @@ function useGitStatus(root: string | null): GitState {
 function GitWidget({ root }: { root: string }): React.JSX.Element | null {
   const { t, locale } = useI18n()
   const toast = useToast()
+  const dialog = useDialog()
   const { activeModel, hasKey } = useModels()
   const { available, status, busy, refresh } = useGitStatus(root)
 
@@ -1096,13 +1110,33 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
     { label: t('cf.git.switchBranch'), icon: <GitBranch size={14} />, onClick: () => void openBranches() }
   ]
 
-  const branchItems = branches.map((b) => ({
-    label: b.name,
-    icon: b.current ? <Check size={14} /> : <span style={{ width: 14, display: 'inline-block' }} />,
-    disabled: b.current,
-    title: b.current ? t('cf.git.currentBranch') : undefined,
-    onClick: () => void run(() => window.deva.git.checkout(root, b.name), t('cf.git.doneCheckout'))
-  }))
+  // 新建分支：基于当前 HEAD 创建并立即切过去（git checkout -b），未提交的改动随之带到新分支。
+  const createBranch = async (): Promise<void> => {
+    const name = await dialog.prompt({
+      title: t('cf.git.createBranchTitle'),
+      message: t('cf.git.createBranchHint'),
+      label: t('cf.git.newBranchName'),
+      placeholder: 'feature/…',
+      confirmText: t('cf.git.createBranchDo'),
+      validate: isValidBranchName
+    })
+    if (!name) return
+    await run(
+      () => window.deva.git.createBranch(root, name, true),
+      t('cf.git.doneCreateBranch').replace('{name}', name)
+    )
+  }
+
+  const branchItems = [
+    ...branches.map((b) => ({
+      label: b.name,
+      icon: b.current ? <Check size={14} /> : <span style={{ width: 14, display: 'inline-block' }} />,
+      disabled: b.current,
+      title: b.current ? t('cf.git.currentBranch') : undefined,
+      onClick: () => void run(() => window.deva.git.checkout(root, b.name), t('cf.git.doneCheckout'))
+    })),
+    { label: t('cf.git.createBranch'), icon: <Plus size={14} />, onClick: () => void createBranch() }
+  ]
 
   const commitModel: GitGenModel | null =
     activeModel && hasKey(activeModel.provider.id)
@@ -1166,6 +1200,70 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
             void refresh()
           }}
         />
+      )}
+    </>
+  )
+}
+
+/**
+ * 已挂载 chip 的文件夹名按钮：点击向上浮出菜单（同 GitWidget 的 openUp 定位）——复制路径 / 在系统文件管理器中打开。
+ * 刻意不提供「更换文件夹」：换目录会让系统提示词变化、提示缓存整段失效，不鼓励频繁切换；确需更换就点 ✕ 卸载后重新挂载。
+ */
+function WorkspaceMenu({ root }: { root: string }): React.JSX.Element {
+  const { t } = useI18n()
+  const toast = useToast()
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+
+  const openMenu = (): void => {
+    const el = btnRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    setMenu({ x: r.left, y: r.top - 4 })
+  }
+
+  // 优先走原生 clipboard 桥（sandbox 下最稳），失败回退 navigator.clipboard。
+  const copyPath = (): void => {
+    void window.deva.clipboard.writeText(root).catch(() => {
+      void navigator.clipboard?.writeText(root).catch(() => {})
+    })
+  }
+
+  const reveal = (): void => {
+    void window.deva.fs
+      .revealFolder(root)
+      .catch(() => ({ ok: false }))
+      .then((r) => {
+        if (!r.ok) toast.show({ variant: 'error', message: t('cf.ws.revealFailed') })
+      })
+  }
+
+  const platform = window.deva.platform
+  const revealLabel = t(
+    platform === 'win32' ? 'cf.ws.revealWin' : platform === 'darwin' ? 'cf.ws.revealMac' : 'cf.ws.revealOther'
+  )
+
+  const items = [
+    { label: t('cf.ws.copyPath'), icon: <Copy size={14} />, onClick: copyPath },
+    { label: revealLabel, icon: <ExternalLink size={14} />, onClick: reveal }
+  ]
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        className="cf-wschip__main"
+        title={root}
+        aria-label={t('cf.ws.menuHint')}
+        aria-haspopup="menu"
+        onClick={openMenu}
+      >
+        <FolderOpen size={15} />
+        {basename(root)}
+      </button>
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} openUp items={items} onClose={() => setMenu(null)} />
       )}
     </>
   )
@@ -3130,9 +3228,8 @@ function Composer({
   const canSend = Boolean(input.trim()) || supported.length > 0
   const mounted = Boolean(focusRoot)
 
-  // 挂载 / 更换工作区（放在输入区工具条，取代原顶部头部的入口）。
-  // 无论是否已挂载，点击主体都弹出目录选择：选了才更新，取消则保持现状（已挂载时不再自动卸载）。
-  // 卸载改由已挂载态尾随的 ✕ 图标承担，避免「取消对话框＝卸载」的意外语义。
+  // 挂载工作区（放在输入区工具条，取代原顶部头部的入口）：仅未挂载态的 chip 调用，选了才挂载，取消则保持现状。
+  // 已挂载态不提供直接更换（见 WorkspaceMenu），卸载由尾随的 ✕ 图标承担，避免「取消对话框＝卸载」的意外语义。
   const pickWorkspace = (): void => {
     void (async () => {
       const r = await window.deva.fs.openFolder()
@@ -3337,14 +3434,7 @@ function Composer({
             </button>
             {mounted && focusRoot ? (
               <span className="cf-wschip cf-wschip--mounted is-on">
-                <button
-                  type="button"
-                  className="cf-wschip__main"
-                  onClick={pickWorkspace}
-                >
-                  <FolderOpen size={15} />
-                  {`${basename(focusRoot)}`}
-                </button>
+                <WorkspaceMenu root={focusRoot} />
                 <GitWidget root={focusRoot} />
                 <button
                   type="button"

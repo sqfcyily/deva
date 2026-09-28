@@ -1,7 +1,7 @@
-import { dialog, ipcMain, type BrowserWindow, type OpenDialogOptions } from 'electron'
+import { dialog, ipcMain, shell, type BrowserWindow, type OpenDialogOptions } from 'electron'
 import { promises as fs } from 'fs'
 import { basename, join, resolve } from 'path'
-import { assertInside, trustRoot } from './fs-guard'
+import { assertInside, isInsideRoot, trustRoot } from './fs-guard'
 
 /**
  * 工作区文件服务（主进程）。
@@ -48,6 +48,16 @@ export function registerWorkspaceIpc(getWindow: () => BrowserWindow | null): voi
     const dir = resolve(res.filePaths[0])
     trustRoot(dir)
     return { path: dir, name: basename(dir) || dir }
+  })
+
+  // 在系统文件管理器（资源管理器 / 访达）中打开目录。
+  // 只收受信根内的「目录」：shell.openPath 对文件等于双击运行，绝不能让渲染层借此执行任意文件。
+  ipcMain.handle('fs:reveal-folder', async (_e, dirPath: unknown): Promise<{ ok: boolean }> => {
+    if (typeof dirPath !== 'string' || !dirPath || !isInsideRoot(dirPath)) return { ok: false }
+    const stat = await fs.stat(dirPath).catch(() => null)
+    if (!stat?.isDirectory()) return { ok: false }
+    // openPath 成功返回空串，失败返回错误描述
+    return { ok: (await shell.openPath(resolve(dirPath))) === '' }
   })
 
   // 读取目录（单层，懒加载）：目录在前，随后按名排序

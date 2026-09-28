@@ -629,7 +629,7 @@ body.cf-resizing-y * {
   background: var(--bg-hover);
   color: var(--accent);
 }
-/* 已挂载态：容器托管「换目录」主体与「卸载」✕ 两个内联按钮，各自独立 hover。 */
+/* 已挂载态：容器托管「文件夹名」菜单按钮与「卸载」✕ 两个内联按钮，各自独立 hover。 */
 .cf-wschip--mounted {
   padding: 0;
   gap: 0;

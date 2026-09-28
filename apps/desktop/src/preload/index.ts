@@ -589,6 +589,9 @@ const api = {
   /** 工作区文件系统：打开文件夹、读目录、读写文件、挑选附件。 */
   fs: {
     openFolder: (): Promise<OpenFolderResult | null> => ipcRenderer.invoke('fs:open-folder'),
+    /** 在系统文件管理器中打开目录（仅限受信根内的目录，文件一律拒绝） */
+    revealFolder: (path: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('fs:reveal-folder', path),
     readDir: (path: string): Promise<DirEntry[]> => ipcRenderer.invoke('fs:read-dir', path),
     readFile: (path: string): Promise<ReadFileResult> => ipcRenderer.invoke('fs:read-file', path),
     writeFile: (path: string, content: string): Promise<{ ok: true }> =>

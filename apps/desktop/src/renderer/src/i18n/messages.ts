@@ -516,6 +516,15 @@ const zhCN: MessageTree = {
     resizeSidebar: '拖动调整宽度，双击恢复默认',
     resizeComposer: '拖动调整输入框高度，双击恢复默认',
     mountWorkspace: '挂载工作区',
+    // 已挂载 chip 的文件夹名菜单
+    ws: {
+      menuHint: '文件夹操作',
+      copyPath: '复制路径',
+      revealWin: '在资源管理器中打开',
+      revealMac: '在访达中打开',
+      revealOther: '在文件管理器中打开',
+      revealFailed: '无法打开该文件夹'
+    },
     // 输入框「/ 指令」联想（技能项的说明取自各自 SKILL.md，不在此处）
     slash: {
       title: '指令',
@@ -531,6 +540,12 @@ const zhCN: MessageTree = {
       pull: '拉取',
       push: '推送',
       switchBranch: '切换分支',
+      createBranch: '新建分支…',
+      createBranchTitle: '新建分支',
+      newBranchName: '分支名称',
+      createBranchHint: '基于当前 HEAD 创建并切换到新分支，未提交的更改会一并带过去',
+      createBranchDo: '创建',
+      doneCreateBranch: '已新建并切换到分支 {name}',
       commit: '提交',
       refresh: '刷新',
       doneFetch: '已获取远端更新',
@@ -1175,6 +1190,14 @@ const en: MessageTree = {
     resizeSidebar: 'Drag to resize, double-click to reset',
     resizeComposer: 'Drag to resize the input box, double-click to reset',
     mountWorkspace: 'Mount workspace',
+    ws: {
+      menuHint: 'Folder actions',
+      copyPath: 'Copy path',
+      revealWin: 'Open in File Explorer',
+      revealMac: 'Open in Finder',
+      revealOther: 'Open in file manager',
+      revealFailed: "Couldn't open the folder"
+    },
     slash: {
       title: 'Commands',
       compact: 'Compact this conversation — fold earlier turns into a summary',
@@ -1189,6 +1212,12 @@ const en: MessageTree = {
       pull: 'Pull',
       push: 'Push',
       switchBranch: 'Switch branch',
+      createBranch: 'New branch…',
+      createBranchTitle: 'New branch',
+      newBranchName: 'Branch name',
+      createBranchHint: 'Created from the current HEAD and checked out; uncommitted changes come along',
+      createBranchDo: 'Create',
+      doneCreateBranch: 'Created and switched to {name}',
       commit: 'Commit',
       refresh: 'Refresh',
       doneFetch: 'Fetched from remote',
