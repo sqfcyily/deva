@@ -2106,47 +2106,34 @@ body.cf-resizing-y * {
   flex-direction: column;
   gap: var(--space-2);
 }
-.cf-me__memhead {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-3);
+/* 记忆区通栏：用负外边距抵消 .cf-editor 的上 / 左右内边距与到底部操作栏的列间距，
+   上贴标题栏分隔线、下贴操作栏、左右铺满资料面板（错误提示再补回内边距）。 */
+.cf-me__board {
+  margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-5)) calc(-1 * var(--space-4));
 }
-.cf-me__memtitle {
-  font-size: 13px;
-  font-weight: 700;
-}
-.cf-me__usage {
-  margin-left: auto;
-  color: var(--fg-subtle);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  cursor: help;
-}
-.cf-me__usage.is-warn {
-  color: var(--warning);
+.cf-me__board .cf-me__err {
+  padding-inline: var(--space-5);
 }
 .cf-me__hint {
   margin: 0;
   color: var(--fg-muted);
   font-size: 12px;
 }
-/* 记忆标签墙：自动换行铺开；悬停浮出遮罩（编辑 / 删除），双击也可原地编辑。 */
+/* 记忆标签墙：自动换行铺开；悬停时文字后浮现编辑 / 删除，双击也可原地编辑。 */
 .cf-me__tags {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   max-height: 240px;
   overflow-y: auto;
-  padding: var(--space-2);
-  border-radius: var(--radius);
+  padding: var(--space-3) var(--space-5);
   background: var(--bg-inset);
 }
 .cf-me__tag {
   position: relative;
   display: flex;
   align-items: center;
-  min-width: 60px;
-  max-width: 24em;
+  max-width: min(24em, 100%);
   height: 26px;
   padding: 0 12px;
   box-sizing: border-box;
@@ -2170,42 +2157,53 @@ body.cf-resizing-y * {
   outline: none;
   border-color: var(--accent);
 }
-/* 悬停遮罩：盖住整枚标签（同头像遮罩的半透明黑），居中浮出编辑 / 删除两钮。 */
-.cf-me__tagov {
-  position: absolute;
-  inset: 0;
+/* 悬停工具条：portal 到 body、fixed 定位在标签正上方（贴近窗口顶部时改下方），不占标签本身的位置。
+   层级高于模态背景；单钮悬停再染色（编辑蓝、删除红）。 */
+.cf-me__tag.is-hot {
+  border-color: var(--accent);
+}
+.cf-me__tagpop {
+  position: fixed;
+  z-index: 70;
+  translate: -50% -100%;
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border-radius: inherit;
-  background: rgba(0, 0, 0, 0.25);
-  opacity: 0;
-  transition: opacity 0.15s ease;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  animation: cf-me-pop 0.12s ease;
 }
-.cf-me__tag:hover .cf-me__tagov,
-.cf-me__tag:focus-visible .cf-me__tagov {
-  opacity: 1;
+.cf-me__tagpop.is-below {
+  translate: -50% 0;
+}
+@keyframes cf-me-pop {
+  from {
+    opacity: 0;
+  }
 }
 .cf-me__tagbtn {
-  width: 22px;
-  height: 20px;
+  width: 24px;
+  height: 22px;
   display: grid;
   place-items: center;
   padding: 0;
   border: none;
   border-radius: var(--radius-full);
-  background: var(--info);
-  color: #fff;
+  background: transparent;
+  color: var(--fg-subtle);
   cursor: pointer;
-  transition: filter 0.12s ease;
-}
-/* 编辑蓝、删除红：随遮罩一同出现，两钮一眼区分；悬停再压暗一档。 */
-.cf-me__tagbtn.is-danger {
-  background: var(--danger);
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .cf-me__tagbtn:hover:not(:disabled) {
-  filter: brightness(0.88);
+  background: color-mix(in srgb, var(--info) 14%, transparent);
+  color: var(--info);
+}
+.cf-me__tagbtn.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
 }
 .cf-me__tagbtn:disabled {
   cursor: default;
@@ -2215,30 +2213,15 @@ body.cf-resizing-y * {
   padding: 0 4px;
   border-color: var(--accent);
 }
-/* 末尾常驻的「+」：点开原地变追加输入框。 */
-.cf-me__tagadd {
-  justify-content: center;
-  min-width: 0;
-  width: 36px;
-  padding: 0;
-  border-style: dashed;
-  color: var(--fg-muted);
-  cursor: pointer;
-  font: inherit;
-}
-.cf-me__tagadd:hover:not(:disabled) {
-  color: var(--accent);
-}
-.cf-me__tagadd:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
 .cf-me__tagsempty {
   align-self: center;
   color: var(--fg-subtle);
   font-size: 12.5px;
 }
+/* 输入框宽度随内容伸缩，但可被标签上限压缩（min-width:0），超长文字在框内横向滚动而非撑开标签。 */
 .cf-me__tagedit {
+  flex: 1 1 auto;
+  min-width: 0;
   max-width: 100%;
   height: 20px;
   padding: 0 8px;
@@ -2248,12 +2231,86 @@ body.cf-resizing-y * {
   color: var(--fg);
   font: inherit;
 }
+/* 环形布局：头像居中，每页 12 条沿椭圆环绕（槽位坐标由 JS 算，这里只负责居中锚点）。
+   居中用独立的 translate 属性而非 transform —— 翻页动画经 WAAPI 改 transform，两者叠加互不覆盖。 */
+.cf-me__orbit {
+  position: relative;
+  height: 300px;
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+.cf-me__orbit > .cf-me__tag,
+.cf-me__orbitout > .cf-me__tag {
+  position: absolute;
+  translate: -50% -50%;
+  max-width: 10em;
+  z-index: 1;
+}
+.cf-me__orbit > .cf-me__tag:hover,
+.cf-me__orbit > .cf-me__tag:focus-within {
+  z-index: 3;
+}
+/* 编辑中的定宽与位置由 JS 夹紧在舞台内（见 MemoryOrbit slotStyle）。 */
+.cf-me__orbit > .cf-me__tag.is-editing {
+  z-index: 4;
+}
+.cf-me__orbitout {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cf-me__core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  translate: -50% -50%;
+  z-index: 2;
+}
+.cf-me__orbitempty {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-3);
+  translate: -50% 0;
+  width: max-content;
+  max-width: 90%;
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-align: center;
+}
+/* 页码圆点：竖排，贴舞台右侧垂直居中。 */
+.cf-me__pager {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  translate: 0 -50%;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.cf-me__dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--border-strong, var(--border));
+  cursor: pointer;
+  transition: background 0.12s ease, height 0.12s ease;
+}
+.cf-me__dot.is-active {
+  height: 16px;
+  background: var(--accent);
+}
 .cf-me__err {
   color: var(--danger);
   font-size: 12px;
 }
 .cf-me__actions {
   align-items: center;
+  margin-top: 0;
+  padding-top: var(--space-3); /* 操作栏自身内边距：按钮不贴记忆区底色 */
 }
 .cf-me__clear {
   margin-right: auto;
