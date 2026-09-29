@@ -7,7 +7,9 @@ import { registerWorkspaceIpc } from './services/workspace'
 import { registerSecretsIpc } from './services/secrets'
 import { registerProviderIpc } from './services/provider'
 import { registerDecisionIpc } from './services/decision'
-import { registerChatIpc } from './services/chat'
+import { hasActiveTurns, registerChatIpc, settleActiveTurns } from './services/chat'
+import { listSessions } from './services/chat-store'
+import { sweepCheckpoints } from './services/checkpoints'
 import { registerSkillsIpc } from './services/skills'
 import { ensureSeededPersonas, registerPersonasIpc } from './services/personas'
 import { registerProfileIpc } from './services/profile'
@@ -228,6 +230,11 @@ if (!app.requestSingleInstanceLock()) {
   // 会话编排（Agent 主循环：流式 → 工具 → 权限 → 回灌）
   registerChatIpc(() => mainWindow)
 
+  // 检查点清扫（异步不阻塞启动）：删已不存在会话的备份目录、超 30 天的 blob 与残留临时文件
+  void sweepCheckpoints(listSessions().map((m) => m.id)).catch((e) =>
+    console.warn('[checkpoints] 清扫失败：', e)
+  )
+
   // 技能（Skills，全局 ~/.deva/skills/*/SKILL.md；渐进式披露，启用态入 config.json）
   registerSkillsIpc(() => mainWindow)
 
@@ -274,9 +281,23 @@ if (!app.requestSingleInstanceLock()) {
   })
 }
 
-// 退出前断开全部 MCP 连接（清理 stdio 子进程，避免遗留孤儿进程）；并放行真正退出（关窗驻留托盘用）。
-app.on('before-quit', () => {
+// 退出前：有进行中的回合先拦下退出，中止它们并等收尾落盘（最多 3s）后再真正退出——
+// 否则回合的 finally 来不及跑，这一轮已产出的内容会丢。随后断开全部 MCP 连接（清理 stdio
+// 子进程，避免遗留孤儿进程）；并放行真正退出（关窗驻留托盘用）。
+let turnsSettled = false
+let settling = false
+app.on('before-quit', (e) => {
   isQuitting = true
+  if (!turnsSettled && hasActiveTurns()) {
+    e.preventDefault()
+    if (settling) return
+    settling = true
+    void settleActiveTurns(3000).finally(() => {
+      turnsSettled = true
+      app.quit()
+    })
+    return
+  }
   void disconnectAllServers()
 })
 

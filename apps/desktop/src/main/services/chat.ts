@@ -1,6 +1,7 @@
 import { ipcMain, type BrowserWindow } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { resolve as resolvePath } from 'node:path'
+import { dirname, resolve as resolvePath } from 'node:path'
 import { streamChat } from '../providers'
 import type { ContentPart, Message, StopReason, ToolSpec } from '../providers/types'
 import {
@@ -15,7 +16,7 @@ import {
   type ToolResult
 } from './tools'
 import { isDangerousCommand, touchesSensitivePath } from './exec-policy'
-import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
+import { enabledSkillSummaries, loadSkillInstructionsByName, skillsDir } from './skills'
 import { memoryPromptSection } from './memory'
 import { GENERAL_SUBAGENT, getSubagentByName, subagentSummaries, type SubagentDef } from './subagents'
 import { enabledPersonas, getPersona } from './personas'
@@ -28,6 +29,7 @@ import {
   isInsideRoot,
   isProtectedPath,
   isSensitivePath,
+  isSkillsPath,
   trustRoot,
   untrustRoot
 } from './fs-guard'
@@ -43,6 +45,26 @@ import {
   type StoredSession
 } from './chat-store'
 import { ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
+import {
+  applyFiles,
+  buildRestoreNote,
+  createRecorder,
+  enforceCap,
+  gcBlobs,
+  planRewind,
+  pruneCheckpoints,
+  publicPreview,
+  removeSessionCheckpoints,
+  summarizeTurns,
+  undoFiles,
+  type CheckpointRec,
+  type Recorder,
+  type RewindFile,
+  type RewindStatus,
+  type RewindTurnStat,
+  type UndoFile,
+  type WriteSnap
+} from './checkpoints'
 import {
   compactSession,
   isCompactionSummary,
@@ -98,6 +120,17 @@ interface ChatCompactRequest {
   sessionId: string
   model: ChatModelConfig
   workspaceRoot: string | null
+}
+
+/**
+ * 执行回滚（见 chat:rewind-apply）。mode：both=代码与对话 / conversation=仅对话 / code=仅代码。
+ * force = 用户勾选「仍然覆盖」的冲突文件路径——主进程只认重算出的计划里确为冲突的那些。
+ */
+interface ChatRewindApplyRequest {
+  sessionId: string
+  turn: number
+  mode: 'both' | 'conversation' | 'code'
+  force?: string[]
 }
 
 /** 立即建档一条空对话（对话优先外壳：绑定信息随之落库，首发前即持久化）。见 chat:create-session。 */
@@ -187,9 +220,13 @@ type DisplayBlock =
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
   /**
    * 弱化提示气泡：compacted=较早历史已压缩（由 messages 里的摘要标记还原）；
-   * truncated=达输出上限被截断 / empty=通篇无回复（由 StoredNotice 边车还原）。
+   * truncated=达输出上限被截断 / empty=通篇无回复 / restored=仅回滚了代码 / aborted=用户中止了本轮
+   * （由 StoredNotice 边车还原）。
    */
-  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' | 'refused' }
+  | {
+      kind: 'notice'
+      code: 'compacted' | 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
+    }
   /** 请求失败红框：由 StoredNotice 边车还原（原样展示错误文案）。 */
   | { kind: 'error'; message: string }
   /** 角色名片：propose_agent 的提议。status 终态（accepted/rejected）由 StoredSession.proposals 边车持久化。 */
@@ -223,11 +260,10 @@ export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
   | { role: 'assistant'; blocks: DisplayBlock[] }
 
-/** StoredNotice → 展示消息（一条独立的 assistant 气泡，仅含该提示块）。 */
-function noticeToDisplay(nt: StoredNotice): DisplayMessage {
-  if (nt.kind === 'error')
-    return { role: 'assistant', blocks: [{ kind: 'error', message: nt.message ?? '请求失败。' }] }
-  return { role: 'assistant', blocks: [{ kind: 'notice', code: nt.code ?? 'empty' }] }
+/** StoredNotice → 展示块（错误红框 / 弱化提示）。 */
+function noticeToBlock(nt: StoredNotice): DisplayBlock {
+  if (nt.kind === 'error') return { kind: 'error', message: nt.message ?? '请求失败。' }
+  return { kind: 'notice', code: nt.code ?? 'empty' }
 }
 
 /**
@@ -269,8 +305,13 @@ function toDisplayMessages(
     const arr = noticesAfter.get(n)
     if (!arr) return
     for (const nt of arr) {
-      out.push(noticeToDisplay(nt))
-      // 提示气泡自成一条、不含工具卡，其后紧随新用户轮——断开 tool_result 回填链，避免误填。
+      // 与流式同形（渲染层把终态提示追加进本轮 assistant 气泡）：前一条展示消息是 assistant 即并入其末尾，
+      // 不另起气泡（否则重开后多出一个头像，像一条新回复）；本轮无任何 assistant 输出（前一条是用户气泡）
+      // 时才自成一条，同流式那条仅含提示的占位气泡。
+      const prev = out[out.length - 1]
+      if (prev?.role === 'assistant') prev.blocks.push(noticeToBlock(nt))
+      else out.push({ role: 'assistant', blocks: [noticeToBlock(nt)] })
+      // 提示锚在回合末，其后紧随新用户轮——断开 tool_result 回填链，避免误填。
       lastAssistant = null
     }
   }
@@ -467,6 +508,8 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
     s.summaries = {}
     s.plans = {}
     s.autotasks = {}
+    // 检查点记录同样按 toolUseId 归属，随轮一并清空（lastKnown / baselines 描述的是磁盘现状，保留）。
+    s.checkpoints = {}
     s.updatedAt = Date.now()
     return
   }
@@ -504,7 +547,71 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
   s.plans = prune(s.plans)
   // autotasks 边车随名片 tool_use 存活；删除对话轮不删已创建的定时任务本体（任务独立生命周期，经「定时任务」页管理）。
   s.autotasks = prune(s.autotasks)
+  // 被删轮的检查点记录随之丢弃：它们的文件改动留在磁盘上，此后不再能经回滚撤回。
+  s.checkpoints = prune(s.checkpoints)
   s.updatedAt = Date.now()
+}
+
+/** 自愈补上的占位结果正文：回合在工具执行中被打断，工具可能跑了一半，结果未知。 */
+const DANGLING_RESULT = '此工具调用未完成（回合意外中断），结果未知；如有需要请重新执行。'
+
+/**
+ * 修补历史里的悬空 tool_use（有调用、无结果）。服务商要求每个 tool_use 之后紧跟其 tool_result，
+ * 缺一个，此后每次请求都会被 400 拒收，对话就此「坏死」。来源：进程在工具执行中被强退 / 崩溃
+ * （逐步落盘会把「调用已发出、结果未回灌」的中间态写进磁盘）、工具执行抛异常、以及本修复之前
+ * 中止回合留下的旧数据。
+ * 做法：缺的结果补一条占位 tool_result。下一条已是回灌消息就并入其 tool_result 区段（Anthropic
+ * 要求 tool_result 排在最前）；否则紧随其后插一条独立回灌消息——**绝不并入用户文本消息**：
+ * 含 tool_result 的 user 消息在展示层不成气泡，会把用户那句话吞掉。插入使其后消息下标 +1，
+ * notices 边车的 after 锚点同步平移。ask_user / exit_plan 缺边车时记「取消」，免得重开后凭空
+ * 多出一张可交互的卡。
+ * **只能在会话空闲时调用**：进行中的回合里，悬空 tool_use 是「工具正在执行」的正常中间态。
+ * 返回是否有改动（调用方据此决定是否落盘）。
+ */
+function repairDanglingToolUses(s: StoredSession): boolean {
+  let changed = false
+  const msgs = s.messages
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i]
+    if (m.role !== 'assistant' || typeof m.content === 'string') continue
+    const uses = m.content.filter(
+      (p): p is Extract<ContentPart, { type: 'tool_use' }> => p.type === 'tool_use'
+    )
+    if (uses.length === 0) continue
+    const next = msgs[i + 1] as Message | undefined
+    const nextParts = next && next.role === 'user' && typeof next.content !== 'string' ? next.content : null
+    const have = new Set<string>()
+    if (nextParts) for (const p of nextParts) if (p.type === 'tool_result') have.add(p.toolUseId)
+    const missing = uses.filter((u) => !have.has(u.id))
+    if (missing.length === 0) continue
+
+    const fill: ContentPart[] = missing.map((u) => ({
+      type: 'tool_result',
+      toolUseId: u.id,
+      content: DANGLING_RESULT,
+      isError: true
+    }))
+    for (const u of missing) {
+      if (u.name === 'ask_user') (s.asks ??= {})[u.id] ??= { answers: null }
+      else if (u.name === 'exit_plan') (s.plans ??= {})[u.id] ??= { decision: null }
+      else (s.summaries ??= {})[u.id] ??= '未完成'
+    }
+    if (next && nextParts && have.size > 0) {
+      // 已是回灌消息：补在其 tool_result 区段之后、其余部分之前。
+      let cut = 0
+      nextParts.forEach((p, k) => {
+        if (p.type === 'tool_result') cut = k + 1
+      })
+      next.content = [...nextParts.slice(0, cut), ...fill, ...nextParts.slice(cut)]
+    } else {
+      msgs.splice(i + 1, 0, { role: 'user', content: fill })
+      // 锚在该 assistant 之后的提示随之后移，排到补上的回灌消息之后（回灌消息先回填工具卡状态）。
+      if (s.notices?.length)
+        s.notices = s.notices.map((nt) => (nt.after > i ? { ...nt, after: nt.after + 1 } : nt))
+    }
+    changed = true
+  }
+  return changed
 }
 
 /** ask_user 的候选项（description 为可选补充说明）。 */
@@ -759,6 +866,95 @@ const pendingMount = new Map<
  */
 const mountDeclined = new Set<string>()
 
+/**
+ * 正在跑回合的会话（主轮与定时任务都登记）。activeTurns 按 turnId 做键、查不到会话，
+ * 回滚 / 撤销 / blob GC 据此判断「会话忙」而拒绝执行，免得与进行中的回合互相改写。
+ */
+const busySessions = new Set<string>()
+
+/**
+ * 把待决的问答 / 计划审阅 / 挂载请求一律按「取消」解开：给了 turnId 只解该轮的，缺省解全部。
+ * 否则被中止的回合会一直阻塞在 askUser / reviewPlan / requestMount 上，永远走不到收尾落盘。
+ */
+function releasePending(turnId?: string): void {
+  const mine = (p: { turnId: string }): boolean => turnId === undefined || p.turnId === turnId
+  for (const [key, p] of pendingAsk)
+    if (mine(p)) {
+      pendingAsk.delete(key)
+      p.resolve(null)
+    }
+  for (const [key, p] of pendingPlan)
+    if (mine(p)) {
+      pendingPlan.delete(key)
+      p.resolve(null)
+    }
+  // 挂载请求按「未挂载」解开（循环内会先判 aborted 再收尾，不会被误记成用户拒绝）。
+  for (const [key, p] of pendingMount)
+    if (mine(p)) {
+      pendingMount.delete(key)
+      p.resolve(null)
+    }
+}
+
+/** 是否有进行中的回合（对话 / 定时任务 / 手动压缩）。 */
+export function hasActiveTurns(): boolean {
+  return activeTurns.size > 0 || busySessions.size > 0
+}
+
+/**
+ * 退出应用前调用：中止全部进行中的回合并等它们走完收尾（补齐工具结果、记「已中止」、落盘），
+ * 最多等 timeoutMs。不等就退出，回合的 finally 根本来不及跑——这一轮已产出的内容就丢了。
+ * 超时照样返回：逐步落盘已把中止前的每一步写进磁盘，残留的悬空 tool_use 由下次载入时自愈。
+ */
+export async function settleActiveTurns(timeoutMs: number): Promise<void> {
+  if (!hasActiveTurns()) return
+  for (const c of activeTurns.values()) c.abort()
+  releasePending()
+  const deadline = Date.now() + timeoutMs
+  while (hasActiveTurns() && Date.now() < deadline)
+    await new Promise((r) => setTimeout(r, 50))
+}
+
+/**
+ * 上次回滚的撤销快照（内存态，重启即失）：回滚前的文件字节 + 对话相关字段。
+ * 在该会话下一次 chat:send / 手动压缩 / 定时任务触发 / 删除 / 重置时失效——之后撤销会把新内容一并抹掉。
+ */
+interface RewindUndo {
+  files: UndoFile[]
+  state: {
+    messages: Message[]
+    notices: StoredNotice[] | undefined
+    proposals: StoredSession['proposals']
+    asks: StoredSession['asks']
+    summaries: StoredSession['summaries']
+    plans: StoredSession['plans']
+    autotasks: StoredSession['autotasks']
+    checkpoints: Record<string, CheckpointRec[]> | undefined
+    lastKnown: StoredSession['lastKnown']
+    restoreNote: string | undefined
+    lastInputTokens: number | undefined
+  }
+}
+const pendingUndo = new Map<string, RewindUndo>()
+
+/** 每轮的全部 tool_use id（第 k 项 = 第 k 轮，与 turnRanges 同序）：检查点按 toolUseId 归属，据此反查到轮。 */
+function turnToolIds(messages: Message[]): string[][] {
+  return turnRanges(messages).map(({ start, end }) => {
+    const ids: string[] = []
+    for (let i = start; i < end; i++) {
+      const c = messages[i].content
+      if (typeof c !== 'string') for (const p of c) if (p.type === 'tool_use') ids.push(p.id)
+    }
+    return ids
+  })
+}
+
+/** 回收本会话不再被引用的 blob：会话忙或有待撤销的回滚（快照里的记录仍引用旧 blob）时跳过。 */
+function collectBlobs(s: StoredSession): void {
+  if (busySessions.has(s.id) || pendingUndo.has(s.id)) return
+  void gcBlobs(s).catch((e) => console.warn('[checkpoints] GC 失败：', e))
+}
+
 let idCounter = 0
 function genId(prefix: string): string {
   idCounter = (idCounter + 1) % 1_000_000
@@ -806,6 +1002,10 @@ function systemPrompt(
   const loc = workspaceRoot
     ? `当前工作目录：${workspaceRoot}。用户可随时切换工作区——历史消息里出现过的其它目录一律作废，恒以本行为准。`
     : '当前未挂载工作区（全机通用助手）：文件与命令工具照常可用。涉及某个项目的读写与扫描请直接按**相对路径**发起——系统会自动弹出「挂载工作区」卡片请用户一键选定目录，选定后该目录即成为本对话的相对路径基准（不必用文字索要路径，也不必先问「要不要挂载」）；用户若选择「暂不挂载」，再改用绝对路径继续。run_command 的工作目录为用户主目录。不要因「未打开项目」而拒绝执行。'
+  // 技能目录是配置目录里唯一可读写的开口（fs-guard.isSkillsPath）。写实际路径而非 ~/.deva：DEVA_HOME 可覆盖；
+  // 路径进程内恒定，不破坏提示缓存前缀。
+  const skillsRoot = skillsDir()
+  const devaDir = dirname(skillsRoot)
   // ── ① 系统默认提示词：纯规范。开场句仅交代运行环境与「身份/风格见角色设定」，不作任何身份/风格规定。
   const lines = [
     personas.length
@@ -814,7 +1014,7 @@ function systemPrompt(
     `【环境】${loc}`,
     '【路径约定】默认用**相对路径**（相对上面的当前工作目录）：落点始终由应用按当前挂载的工作区解析，你无需记忆基准目录，也不会被历史消息里的旧目录带偏。只有当目标明确在工作区之外时才用绝对路径——用户指名了桌面、主目录、系统某处或另一个项目（`~/` 表示用户主目录）。切勿把历史消息里出现过的绝对路径当作当前工作目录的依据；未挂载工作区时也照常按相对路径发起，由挂载卡片解决基准问题。',
     '【工具使用】先用 read_file / list_dir 了解现状再动手；write_file 会覆盖整个文件，务必先读后写、保留无关内容。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用被安全策略拒绝，回灌结果会写明原因——据此改道或如实说明受限之处，切勿反复重试同一被拒操作。',
-    '【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。唯有三类不可协商的安全底线会被静默拒绝并回灌原因——① 私钥/凭据目录（~/.ssh、~/.aws、~/.gnupg）与本应用配置目录（~/.deva）的读写；② 版本库内部（.git）的写入；③ 明显危险的命令（如 rm -rf）。被拒时请改用其它方式或向用户如实说明，切勿重试。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。',
+    `【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。唯有三类不可协商的安全底线会被静默拒绝并回灌原因——① 私钥/凭据目录（~/.ssh、~/.aws、~/.gnupg）与本应用配置目录（${devaDir}）的读写，唯一例外是其下的技能目录（${skillsRoot}），可正常读写；② 版本库内部（.git）的写入；③ 明显危险的命令（如 rm -rf）。被拒时请改用其它方式或向用户如实说明，切勿重试。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。`,
     '【决策与澄清】当需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时，调用 ask_user 抛出一个或多个问题（每题可给候选项、可单选或多选，界面另有内置「自己输入」入口），用户在同一张卡片里一次性作答后回灌给你再继续；能合理默认就直接做，别为琐碎选择打断用户。注意区分：ask_user 只用于征求决策/澄清；写入与执行本就无需授权，切勿用它去问「是否允许写入/执行」。',
     '【计划先行】遇到非平凡的实现类任务（新功能、跨多文件改动、有多个各有取舍的方案、或需求尚不明确等），先用只读工具（read_file / list_dir / glob / grep / web_fetch）充分调研理解现状——调研面较大时（要翻多个目录、追多条调用链、或需摸清一整套既有约定）可先用 `run_subagent` 派发 `Plan` 子智能体在隔离上下文里完成调研并带回方案要点，再由你综合判断——然后调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件或执行命令**。用户批准后你直接按计划执行、无需再次征求授权（写入/执行照常只受上述安全底线约束）；用户若选择继续完善，请依其反馈调整后再重新提交，在收到新反馈前不要重复调用 exit_plan。琐碎、单点、只读或答疑类任务直接做，不必先出计划。'
   ]
@@ -822,7 +1022,8 @@ function systemPrompt(
     // 渐进式披露：此处只列「名称 + 一句话描述」；当任务匹配时，模型再调用 skill 工具取完整指令。
     lines.push(
       '【技能 Skills】当用户任务匹配下列某项技能时，先调用 `skill` 工具并传入其名称（name）获取该技能的完整操作指令，然后严格据此执行；用户也可用「/技能名」显式触发。',
-      ...skills.map((s) => `  - ${s.name}${s.description ? `：${s.description}` : ''}`)
+      ...skills.map((s) => `  - ${s.name}${s.description ? `：${s.description}` : ''}`),
+      `每个技能是技能目录（${skillsRoot}）下的一个文件夹，入口为 SKILL.md（frontmatter 含 name、description），可附带参考文档/脚本。加载技能时结果会给出该文件夹的绝对路径——正文里的相对路径以它为基准，按需用 read_file 读取。用户要安装或编写多文件技能时，直接在技能目录下建文件夹写入（或下载解压到该处）即可，落盘即自动启用，下一轮起进入上面的清单。`
     )
   }
   // 全局长期记忆（轮开头快照，见 memory.ts）：放在规范块末尾、角色设定之前——记忆是关于用户的数据，
@@ -852,6 +1053,7 @@ function sealedSystemPrompt(
   const loc = workspaceRoot
     ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
     : '本任务无固定工作目录；如需读写文件请使用**绝对路径**。'
+  const skillsRoot = skillsDir()
   const lines = [
     personas.length
       ? '你运行在 Deva 桌面应用中，正在**自动执行一个用户预先设定的定时任务**（无人实时在场）。以下是你必须始终遵守的规范；你的身份、性格与行文风格由后文的「角色设定」决定。'
@@ -859,7 +1061,7 @@ function sealedSystemPrompt(
     `【环境】${loc}`,
     '【任务】按本次指令收集/整理信息或执行操作，给出条理清晰的结果；如需外部信息可使用 web_fetch 等工具。若是提醒类指令，直接给出清晰简洁的提醒正文（用户会通过系统通知看到）。',
     '【自动执行】本次为无人值守的自动执行：你**无法**向用户提问、征求授权或提交计划审阅（ask_user / exit_plan 均不可用，调用它们不会有人回应）。请基于合理默认自主完成任务，一次性给出最终结果，不要反问、不要停下等待确认。',
-    '【工具与权限】读写文件、执行命令、调用已启用的技能与 MCP 工具默认均可使用，无需授权。唯有私钥/凭据目录与本应用配置目录（Tier-1：~/.ssh、~/.aws、~/.gnupg、~/.deva，含以命令间接访问）、版本库内部（.git）与危险命令会被安全策略拒绝——若某次调用被拒，请改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。',
+    `【工具与权限】读写文件、执行命令、调用已启用的技能与 MCP 工具默认均可使用，无需授权。唯有私钥/凭据目录与本应用配置目录（Tier-1：~/.ssh、~/.aws、~/.gnupg、${dirname(skillsRoot)}，含以命令间接访问）、版本库内部（.git）与危险命令会被安全策略拒绝；其下的技能目录（${skillsRoot}）对本任务只读——可用 read_file / glob / grep 读取技能附带的文件，但不可写入，也不可用命令访问。若某次调用被拒，请改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。`,
     '【产出】用简洁、结构清晰的简体中文（除非角色设定另有风格）直接给出最终结果，作为本次任务的成果记录在对话中。'
   ]
   // 全局长期记忆：密封轮只读（写/删工具已从密封工具表剔除），用户习惯同样适用于定时任务的产出。
@@ -996,6 +1198,16 @@ function buildSealedTools(skills: { name: string; description: string }[]): Tool
   return [...builtins, ...(skillTool ? [skillTool] : []), ...getMcpToolSpecs()]
 }
 
+/**
+ * 技能正文前的目录说明（skill 工具与「/技能名」共用）：多文件技能正文里的相对路径只有配上文件夹
+ * 绝对路径才能定位。内置技能不落盘（dir 缺省）→ 空串。
+ */
+function skillDirNote(dir: string | undefined): string {
+  return dir
+    ? `（技能文件夹：${dir}。正文中的相对路径均相对该文件夹；其中的参考文档、脚本、模板请按需用 read_file 读取，不必一次读完。）\n\n`
+    : ''
+}
+
 /** 子智能体系统提示词：固定的隔离/约束说明 + 该子智能体自身的职责正文（prompt）。 */
 function buildSubagentSystem(def: SubagentDef, workspaceRoot: string | null): string {
   const loc = workspaceRoot
@@ -1007,7 +1219,7 @@ function buildSubagentSystem(def: SubagentDef, workspaceRoot: string | null): st
     '请只专注完成这项子任务；完成后用简洁的简体中文直接给出结论/产物，作为交回主智能体的答复，不要反问。',
     '结论要能被主智能体直接使用：给出结论与依据，点名相关文件（**路径写绝对路径**）与必要的代码/取值片段；不要复述过程流水账。',
     '你无法向用户提问（没有 ask_user 工具），也不能再派生其它子智能体；若信息不足，基于合理默认完成，并在结论中说明所做的假设。',
-    '你的工具调用默认直接执行、无需授权；唯有私钥/凭据目录与本应用配置目录（~/.ssh、~/.deva 等，含以命令间接访问）、版本库内部（.git）的写入与危险命令会被安全策略拒绝——被拒时改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。'
+    `你的工具调用默认直接执行、无需授权；唯有私钥/凭据目录与本应用配置目录（~/.ssh、${dirname(skillsDir())} 等，含以命令间接访问）、版本库内部（.git）的写入与危险命令会被安全策略拒绝；其下的技能目录（${skillsDir()}）对你只读——可用 read_file / glob / grep 读取技能附带的文件，但不可写入，也不可用命令访问。被拒时改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。`
   ]
   const body = def.prompt.trim()
   if (body) lines.push('', '你的职责与专长如下：', body)
@@ -1073,11 +1285,25 @@ interface AgentLoopArgs {
    * decision=null 表示取消/中止。仅主轮传入。
    */
   onPlanDecided?: (toolUseId: string, decision: 'approve' | 'keep' | null) => void
+  /**
+   * 文件检查点记录器（供回滚）：写入类工具执行前后、run_command 执行后调用。主轮创建、透传给子轮
+   * （子轮的写入归到父级 run_subagent 的 id，随父轮一起回滚）；定时任务不传（v1 不记录）。
+   */
+  recorder?: Recorder
+  /**
+   * 每落地一步（助手消息 / 工具结果）即回调：调用方据此逐步落盘，而不是等整轮结束才写一次——
+   * 一轮可能跑很久（长命令、多步工具），期间崩溃 / 强退会让这一轮已产出的内容全部丢失。
+   * 仅主轮与定时任务传入；子轮历史是隔离的临时数组，不落盘。
+   */
+  onStep?: () => void
 }
 
 export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   function emit(turnId: string, sessionId: string, event: ChatStreamEvent): void {
-    getWindow()?.webContents.send('chat:event', { turnId, sessionId, event })
+    // 退出收尾期间窗口可能已销毁：此时回合仍在补结果 / 落盘，事件丢掉即可，绝不能因 send 抛错打断收尾。
+    const win = getWindow()
+    if (!win || win.isDestroyed()) return
+    win.webContents.send('chat:event', { turnId, sessionId, event })
   }
 
   /** 抛出一个或多个问题、暂停循环等用户一次性作答（不过权限闸门，恒放行执行）。 */
@@ -1186,6 +1412,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
       let conclusion: string
       let isErr = false
+      let aborted = false
       if (!prompt) {
         conclusion = `派生子智能体「${def.name}」失败：缺少任务描述（prompt）。`
         isErr = true
@@ -1211,14 +1438,22 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             skillSummaries: [],
             agentName: def.name,
             // 嵌套事件据此归入**本次调用**开出的那张 Task 卡（并行时唯一可靠依据）。
-            parentToolId: tc.id
+            parentToolId: tc.id,
+            // 子轮写入归到本次 run_subagent 的 id（见执行点 owner），随父轮一起回滚。
+            recorder: args.recorder
           })
-          isErr = sub.stopReason === 'error'
-          conclusion =
-            sub.text.trim() ||
-            (isErr && sub.errorMessage
-              ? `子智能体「${def.name}」执行失败：${sub.errorMessage}`
-              : '（子智能体未产生文本结论。）')
+          aborted = sub.stopReason === 'aborted'
+          isErr = sub.stopReason === 'error' || aborted
+          const partial = sub.text.trim()
+          // 中止时的 text 只是半截过程输出，不能当成结论交给模型——明确标注「未完成」，免得下一轮
+          // 模型把它当作子任务的正式结果继续推进。
+          conclusion = aborted
+            ? `子智能体「${def.name}」被用户中止，未完成。` +
+              (partial ? `\n中止前的最近输出：\n${partial}` : '')
+            : partial ||
+              (isErr && sub.errorMessage
+                ? `子智能体「${def.name}」执行失败：${sub.errorMessage}`
+                : '（子智能体未产生文本结论。）')
         } catch (e) {
           conclusion = `子智能体「${def.name}」执行出错：${(e as Error)?.message ?? String(e)}`
           isErr = true
@@ -1227,9 +1462,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
       if (missNote) conclusion = missNote + conclusion
 
-      const subSummary = isErr
-        ? `子智能体「${def.name}」未完成`
-        : `子智能体「${def.name}」已完成`
+      const subSummary = aborted
+        ? `子智能体「${def.name}」已中止`
+        : isErr
+          ? `子智能体「${def.name}」未完成`
+          : `子智能体「${def.name}」已完成`
       args.onToolSummary?.(tc.id, subSummary)
       // 父轮（depth 0）事件不盖戳：run_subagent 这张卡本身即 Task 卡的「壳」，
       // 其内部嵌套事件已在递归调用里各自盖了 depth+parent 戳并折叠进来。
@@ -1243,6 +1480,64 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       })
       return { conclusion, isErr }
     }
+
+    /**
+     * 给本步还没有结果的工具调用补占位 tool_result（按原序追加进 resultParts）。
+     * 协议要求每个 tool_use 紧跟其 tool_result：中途中止 / 出错若只把 assistant(tool_use) 落进历史，
+     * 下一次请求会被服务端 400 拒绝，且这条会话此后每次都 400。已并行启动的子任务照常等它
+     * （共用同一控制器，很快因中止而收尾）交回自己的结论；ask_user / exit_plan 记为取消，
+     * 其余工具的卡片定格为「未执行」，与重开后的边车一致。
+     */
+    async function fillUnrun(
+      calls: { id: string; name: string }[],
+      resultParts: ContentPart[],
+      subRuns: Map<string, Promise<{ conclusion: string; isErr: boolean }>>,
+      reason: 'aborted' | 'error'
+    ): Promise<void> {
+      const have = new Set<string>()
+      for (const p of resultParts) if (p.type === 'tool_result') have.add(p.toolUseId)
+      for (const tc of calls) {
+        if (have.has(tc.id)) continue
+        const pendingSub = subRuns.get(tc.id)
+        if (pendingSub) {
+          const sub = await pendingSub.catch(() => ({
+            conclusion: '子智能体未完成（回合中断）。',
+            isErr: true
+          }))
+          resultParts.push({
+            type: 'tool_result',
+            toolUseId: tc.id,
+            content: sub.conclusion,
+            isError: sub.isErr
+          })
+          continue
+        }
+        if (tc.name === 'ask_user') args.onAskAnswered?.(tc.id, null)
+        else if (tc.name === 'exit_plan') args.onPlanDecided?.(tc.id, null)
+        else {
+          const label = reason === 'aborted' ? '未执行（已中止）' : '未执行'
+          args.onToolSummary?.(tc.id, label)
+          emit(turnId, sessionId, {
+            type: 'tool_result',
+            id: tc.id,
+            name: tc.name,
+            summary: label,
+            isError: true,
+            ...(evMeta ?? {})
+          })
+        }
+        resultParts.push({
+          type: 'tool_result',
+          toolUseId: tc.id,
+          content:
+            reason === 'aborted'
+              ? '用户中止了本轮，此工具调用未执行。'
+              : '本轮因错误中断，此工具调用未执行。',
+          isError: true
+        })
+      }
+    }
+
     // 最近一步的助手正文；作为子智能体回传父轮的「结论」（主轮不使用返回值）。
     let finalText = ''
     // 致命错误 / 重连耗尽时的错误文案：随返回值上交，供父轮子智能体结论回落与红框持久化。
@@ -1252,6 +1547,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       let assistantText = ''
       let toolCalls: { id: string; name: string; args: unknown }[] = []
       let stopReason: StopReason = 'end_turn'
+      // 本步被中止 / 出错打断（而非干净结束）：仍落地已收到的部分，见下方提交段。
+      let interrupted: 'aborted' | 'error' | null = null
 
       // 单步流式 + 自动重连：遇可重试网络错误（含空闲僵死）→ 丢弃残缺尾部、退避后重发本步。
       // 无状态中转不支持断点续流，只能整步重发；已完成的前序步骤（工具卡/文本）不受影响。
@@ -1282,13 +1579,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           } else if (ev.type === 'thinking_delta') {
             if (!isSub) emit(turnId, sessionId, { type: 'thinking_delta', text: ev.text })
           } else if (ev.type === 'tool_call') {
-            toolCalls.push({ id: ev.id, name: ev.name, args: ev.args })
+            // 个别网关不给 id：补一个，且事件与消息共用同一个——按 toolUseId 归属的边车 / 检查点
+            // 若遇空 id，会把不同轮的记录串到同一个键上。
+            const id = ev.id || `call_${randomUUID()}`
+            toolCalls.push({ id, name: ev.name, args: ev.args })
             // ask_user / exit_plan 不画通用工具卡：循环走到它们时再发专用 ask_user / plan_review 事件
             //（避免既有工具卡又有问答卡/计划卡）。
             if (ev.name !== 'ask_user' && ev.name !== 'exit_plan')
               emit(turnId, sessionId, {
                 type: 'tool_call',
-                id: ev.id,
+                id,
                 name: ev.name,
                 args: ev.args,
                 ...(evMeta ?? {})
@@ -1324,8 +1624,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           }
         }
 
-        if (controller.signal.aborted) return { text: finalText, stopReason: 'aborted' }
-        if (fatal) return { text: finalText, stopReason: 'error', errorMessage }
+        // 中止 / 致命错误：不再直接 return——那样本步已流出的正文（渲染层早已画出）不进历史，
+        // 重开对话后这一轮凭空消失。跳出重连循环，交给下方提交段落地已收到的部分。
+        if (controller.signal.aborted) {
+          interrupted = 'aborted'
+          break reconnect
+        }
+        if (fatal) {
+          interrupted = 'error'
+          break reconnect
+        }
         if (retryableDrop) {
           if (attempt >= MAX_RECONNECT) {
             errorMessage = `连接多次中断，已重试 ${MAX_RECONNECT} 次仍失败，已停止。`
@@ -1335,7 +1643,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
                 kind: 'network',
                 message: errorMessage
               })
-            return { text: finalText, stopReason: 'error', errorMessage }
+            interrupted = 'error'
+            break reconnect
           }
           if (!isSub)
             emit(turnId, sessionId, {
@@ -1344,7 +1653,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               max: MAX_RECONNECT
             })
           const resumed = await delay(Math.min(1000 * 2 ** attempt, 8000), controller.signal)
-          if (!resumed) return { text: finalText, stopReason: 'aborted' }
+          // 退避期间被中止：stream_reset 尚未发出，渲染层仍显示着这截残缺正文——照样落地，两侧一致。
+          if (!resumed) {
+            interrupted = 'aborted'
+            break reconnect
+          }
           // 通知渲染层丢弃本步已画出的残缺尾部，随后 continue 重发本步。
           // 子轮从未画出任何正文，若照发会误伤主对话里正在写的那段文本。
           if (!isSub) emit(turnId, sessionId, { type: 'stream_reset' })
@@ -1353,7 +1666,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         break // 本步干净结束
       }
 
-      // 落地本轮助手消息（文本 + 工具调用）
+      // 落地本步助手消息（文本 + 工具调用）。被中止 / 出错打断时同样落地已收到的部分。
       const content: ContentPart[] = []
       if (assistantText) content.push({ type: 'text', text: assistantText })
       for (const tc of toolCalls)
@@ -1361,7 +1674,21 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       if (content.length) history.push({ role: 'assistant', content })
       if (assistantText) finalText = assistantText
 
-      if (stopReason === 'aborted' || stopReason === 'error') return { text: finalText, stopReason }
+      const cut: 'aborted' | 'error' | null =
+        interrupted ?? (stopReason === 'aborted' || stopReason === 'error' ? stopReason : null)
+      if (cut) {
+        // 流里已收到完整的 tool_use 却来不及执行：补占位结果，否则历史里留下悬空 tool_use。
+        if (toolCalls.length) {
+          const parts: ContentPart[] = []
+          await fillUnrun(toolCalls, parts, new Map(), cut)
+          history.push({ role: 'user', content: parts })
+        }
+        args.onStep?.()
+        return { text: finalText, stopReason: cut, errorMessage }
+      }
+      // 逐步落盘：此刻若带工具调用，tool_use 暂时悬空（结果还没跑出来）——期间崩溃也不怕，
+      // 下次载入由 repairDanglingToolUses 自愈；换来的是长命令跑到一半强退时，正文不丢。
+      args.onStep?.()
       if (toolCalls.length === 0) return { text: finalText, stopReason }
 
       // 并行派发子任务（对标 Claude Code：同一条消息里的多个子任务真正并发跑）：先把本步全部
@@ -1376,7 +1703,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       // 逐个执行工具（过权限闸门），结果回灌为一条 user 消息
       const resultParts: ContentPart[] = []
       for (const tc of toolCalls) {
-        if (controller.signal.aborted) return { text: finalText, stopReason: 'aborted' }
+        // 中止：跳出而非 return——已跑完的工具结果（含刚被中止的那条命令的输出）要随历史落盘，
+        // 余下未执行的由循环后的 fillUnrun 补占位。直接 return 会把 resultParts 整个丢掉。
+        if (controller.signal.aborted) break
 
         // exit_plan 特判：模型提交计划、暂停循环等用户批准。不过权限闸门、**不授予任何能力**——
         // 批准仅让循环继续（工具集本就完整），此后每个真实工具调用仍照常过同一道权限闸门。
@@ -1457,7 +1786,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           const wanted = typeof a.name === 'string' ? a.name.trim() : ''
           const found = wanted ? loadSkillInstructionsByName(wanted) : null
           const content = found
-            ? `已加载技能「${found.name}」，请严格据此指令完成用户任务：\n\n${found.instructions}`
+            ? `已加载技能「${found.name}」，请严格据此指令完成用户任务：\n\n${skillDirNote(found.dir)}${found.instructions}`
             : `未找到名为「${wanted}」的已启用技能。当前可用技能：${
                 skillSummaries.map((s) => s.name).join('、') || '（无）'
               }。`
@@ -1496,9 +1825,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
         // 权限闸门（纯同步策略，零弹框）：所有工具默认放行，唯有三类不可协商的安全地板**静默拒绝**
         // （不弹窗、不挂起，回灌清晰 tool_result 让模型改道）——
-        //  · edit：Tier-1 敏感目录（凭据/密钥与 ~/.deva）拒绝、Tier-2 版本库内部（.git）拒绝；
-        //          其余目标（含工作区外）一律放行，越界写入仅此次临时受信、finally 撤销。
-        //  · exec：危险命令（rm -rf 等）拒绝；其余放行。
+        //  · edit：Tier-1 敏感目录（凭据/密钥与 ~/.deva，技能目录除外）拒绝、子轮写技能目录拒绝、
+        //          Tier-2 版本库内部（.git）拒绝；其余目标（含工作区外）一律放行，越界写入仅此次临时受信、finally 撤销。
+        //  · exec：危险命令（rm -rf 等）与触及凭据/配置目录的命令拒绝（技能目录仅主轮放行）；其余放行。
         //  · read / mcp：一律放行（read 的 Tier-1 仍由 tools 内 resolveReadPath 兜底拒绝）。
         // 交互轮与密封轮统一到这套策略；密封轮另经 sealedDecision（同源地板 + 排除交互/创建类工具）。
         const cat = toolCategory(tc.name)
@@ -1527,7 +1856,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             ? null
             : await requestMount(turnId, sessionId, mountNeed.tool, mountNeed.path)
           // 中止（chat:abort 会把待决挂载按 null 解开）不算「拒绝」：直接收尾，别污染会话级去重标记。
-          if (controller.signal.aborted) return { text: finalText, stopReason: 'aborted' }
+          if (controller.signal.aborted) break
           if (picked) {
             // 就地生效：ctx 供本轮后续步骤（含本次调用照常执行），session.focusRoot 供后续回合与重开。
             // 渲染层同步更新自己的绑定覆盖层（见 store 的 respondMount），两侧不会在下次 send 打架。
@@ -1566,10 +1895,15 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           const target = writeTargetPath(tc.name, tc.args, ctx.workspaceRoot)
           const abs = target?.abs ?? null
           if (abs && isSensitivePath(abs)) {
-            // Tier-1 硬底：凭据/密钥目录（含本应用 ~/.deva 密钥库），一律静默拒绝。
+            // Tier-1 硬底：凭据/密钥目录（含本应用 ~/.deva 配置库；技能目录除外），一律静默拒绝。
             allowed = false
             policyDenied = true
-            denyContent = `该路径受安全策略保护（凭据/密钥目录），拒绝写入：${abs}。请勿重试。`
+            denyContent = `该路径受安全策略保护（凭据/密钥目录或本应用配置目录），拒绝写入：${abs}。请勿重试。`
+          } else if (abs && depth > 0 && isSkillsPath(abs)) {
+            // 技能目录对 Tier-1 开口，但写技能 = 持久化提示词注入：仅主交互循环可写，子智能体只读。
+            allowed = false
+            policyDenied = true
+            denyContent = `子智能体不可写入技能目录（只读）：${abs}。如需新建或修改技能，请在结论中交由主智能体处理。`
           } else if (abs && isProtectedPath(abs)) {
             // Tier-2 硬底：版本库内部（.git），一律静默拒绝。
             allowed = false
@@ -1594,13 +1928,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             policyDenied = true
             denyContent =
               '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。'
-          } else if (touchesSensitivePath(command)) {
+          } else if (touchesSensitivePath(command, { allowSkills: depth === 0 })) {
             // 文件工具的 Tier-1 硬底对 exec 无效（shell 可直接 cat 私钥），此处按命令文本兜一层。
             // 启发式而非密封：见 exec-policy.touchesSensitivePath 的取舍说明。
+            // 技能目录仅对主轮开口（下载解压多文件技能）；子轮一律拒——命令放行即可写。
             allowed = false
             policyDenied = true
             denyContent =
-              '该命令涉及凭据/密钥路径（如 ~/.ssh、~/.deva），被安全策略拒绝，未执行。请勿重试或变形绕过；确有需要请让用户自行操作。'
+              depth === 0
+                ? `该命令涉及凭据/密钥路径或本应用配置目录（如 ~/.ssh、${dirname(skillsDir())}），被安全策略拒绝，未执行。技能目录（${skillsDir()}）可正常访问，但命令里不能出现 \`..\` 跳出它或引用 DEVA_HOME 变量。请勿重试或变形绕过；确有需要请让用户自行操作。`
+                : `该命令涉及凭据/密钥路径或本应用配置目录（如 ~/.ssh、${dirname(skillsDir())}，含技能目录），被安全策略拒绝，未执行。子智能体读取技能附带文件请改用 read_file / glob / grep。请勿重试或变形绕过。`
           } else {
             allowed = true
           }
@@ -1629,6 +1966,20 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           continue
         }
 
+        // 文件检查点：写入类工具执行前备份原文件、执行后结算；run_command 只记命令文本（影响不可撤销，
+        // 回滚面板据此提示）。子轮的记录归到父级 run_subagent 的 id，随父轮一起回滚。
+        // 记录失败只告警，**绝不影响工具执行**。
+        const recorder = args.recorder
+        const owner = depth > 0 && parentToolId ? parentToolId : tc.id
+        let snap: WriteSnap | null = null
+        if (recorder && cat === 'edit' && !isMcpTool(tc.name)) {
+          try {
+            snap = await recorder.before(tc.name, tc.args, ctx.workspaceRoot)
+          } catch (e) {
+            console.warn('[checkpoints] 备份失败：', e)
+          }
+        }
+
         let res: ToolResult
         try {
           // MCP 工具走连接管理器（callTool + 超时 + 取消，结果恒作数据）；内置工具走本地执行器。
@@ -1638,6 +1989,17 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         } finally {
           // 撤销「仅此次」临时受信根（无论成功/异常）。
           if (oneShotPath) untrustRoot(oneShotPath)
+        }
+        if (recorder) {
+          try {
+            if (snap) await recorder.after(snap, owner)
+            else if (cat === 'exec') {
+              const command = (tc.args as { command?: unknown } | null)?.command
+              if (typeof command === 'string' && command.trim()) recorder.exec(command, owner)
+            }
+          } catch (e) {
+            console.warn('[checkpoints] 记录失败：', e)
+          }
         }
         if (res.summary) args.onToolSummary?.(tc.id, res.summary)
         emit(turnId, sessionId, {
@@ -1657,7 +2019,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           isError: res.isError
         })
       }
+      const abortedHere = controller.signal.aborted
+      if (abortedHere) await fillUnrun(toolCalls, resultParts, subRuns, 'aborted')
       history.push({ role: 'user', content: resultParts })
+      args.onStep?.()
+      if (abortedHere) return { text: finalText, stopReason: 'aborted' }
     }
 
     // 达到步数上限
@@ -1681,6 +2047,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): Promise<void> {
     const controller = new AbortController()
     activeTurns.set(turnId, controller)
+    busySessions.add(sessionId)
     const session = ensureSession(sessionId)
     // 聚焦工作区：本对话若挂载文件夹，用它作有效根（受信/在工作区内判定、终端 cwd、系统提示词聚焦、
     // 权限模式键均据此）；未挂载 → 回落 workspaceRoot（对话优先外壳恒 null，即全机通用助手）。
@@ -1715,6 +2082,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         /* 压缩自身抛错（极少）：忽略，历史未动，本轮照常 */
         console.warn('[compaction] 自动压缩异常：', (e as Error)?.message ?? e)
       }
+      // 被摘要掉的轮已不可选，其检查点记录随之清理（blob 由本轮末的 GC 回收）。
+      pruneCheckpoints(session)
     }
 
     const history = session.messages
@@ -1746,11 +2115,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 镜像渲染层的 error 事件 + appendTerminalNotice：error 只记红框（不再叠空回合提示），
     // max_tokens 记截断，refusal（模型拒绝 / 内容策略拦截）无正文时记「被拒绝」——绝不并进空回合，
     // 否则会把一次拒绝谎报成「上下文接近上限」；自然结束却无可见回复才记空回合；
-    // aborted（用户主动停止）不记。
+    // aborted（用户主动停止）记「已中止」——中止前产出的半截内容已随历史落盘，重开后须看得出
+    // 这一轮是被打断的，而不是模型只答了这么多。
     const recordTurnNotice = (stopReason: StopReason, errorMessage?: string): void => {
       const after = history.length
       const notices = (session.notices ??= [])
       if (stopReason === 'error') notices.push({ after, kind: 'error', message: errorMessage })
+      else if (stopReason === 'aborted') notices.push({ after, kind: 'notice', code: 'aborted' })
       else if (stopReason === 'max_tokens') notices.push({ after, kind: 'notice', code: 'truncated' })
       // 拒绝：模型给了拒绝正文就无须再加提示（正文自己解释了），只在通篇为空时补一条。
       else if (stopReason === 'refusal') {
@@ -1827,7 +2198,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // exit_plan 决定 → plans 边车（按 toolUseId），供重开还原计划卡的已决态。
         onPlanDecided: (id, decision) => {
           ;(session.plans ??= {})[id] = { decision }
-        }
+        },
+        // 文件检查点（供回滚）：同一个记录器透传给子智能体，seq 全局递增。
+        recorder: createRecorder(session),
+        // 逐步落盘：长回合中途崩溃 / 强退，已完成的步骤仍在磁盘上。
+        onStep: () => saveProject(sessionId)
       })
       emit(turnId, sessionId, { type: 'done', stopReason })
       // 终态提示持久化（须在 finally 落盘前执行）：错误红框 / 截断 / 空回合入 notices 边车。
@@ -1847,9 +2222,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         session.lastCacheRead = lastCacheRead
         session.lastCacheWrite = lastCacheWrite
       }
+      // 检查点保留上限：只保留最近若干轮的备份，更早的释放 blob（元信息保留，回滚时如实显示备份缺失）。
+      enforceCap(session, turnToolIds(session.messages))
+      // 兜底：循环抛异常跳出时，历史里可能留着没有结果的 tool_use（正常 / 中止路径已在循环内补齐）。
+      // 落盘前补上，别把一条下一次请求必 400 的会话写进磁盘。
+      repairDanglingToolUses(session)
       // 本轮对 history 的原地改写落盘（一对话一文件：只重写这一条）；更新时间用于左侧列表排序
       session.updatedAt = Date.now()
       saveProject(sessionId)
+      busySessions.delete(sessionId)
+      collectBlobs(session)
     }
   }
 
@@ -1868,6 +2250,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     activeTurns.set(turnId, controller)
     const auth = task.auth
     const sessionId = task.sessionId
+    busySessions.add(sessionId)
+    // 本次触发会改写该会话的消息：此前的回滚快照随之失效（撤销会把这一轮一并抹掉）。
+    pendingUndo.delete(sessionId)
     // 密封任务无固定工作目录：相对路径回落进程 cwd，文件操作应用绝对路径。写入除硬底线外一律放行。
     const effectiveRoot: string | null = null
     const session = ensureSession(sessionId, {
@@ -1881,6 +2266,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const turnModel = resolveModelRefOrNull(auth.modelRef) ?? resolveDefaultModel()
     if (!turnModel) {
       activeTurns.delete(turnId)
+      busySessions.delete(sessionId)
       return {
         stopReason: 'error',
         text: '',
@@ -1894,6 +2280,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       persona && persona.prompt.trim() ? [{ name: persona.name, prompt: persona.prompt }] : []
 
     // 追加本次触发的合成 user 消息（任务指令正文）——每次触发 = 该会话新增一轮。
+    // 先自愈：上一次触发若中途崩溃，历史里可能留着悬空 tool_use，接着追加会让本次请求直接 400。
+    repairDanglingToolUses(session)
     const history = session.messages
     history.push({ role: 'user', content: task.prompt })
 
@@ -1914,6 +2302,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         /* 压缩自身抛错：忽略，历史未动，本轮照常 */
         console.warn('[compaction] 自动压缩异常：', (e as Error)?.message ?? e)
       }
+      pruneCheckpoints(session)
     }
 
     // 密封工具集：除交互/创建类外全量放开（read/write/exec + 已启用技能 skill + 全部已连接 MCP）；
@@ -1946,7 +2335,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           if (n > 0) lastInput = n
           lastCacheRead = read
           lastCacheWrite = write
-        }
+        },
+        onStep: () => saveProject(sessionId)
       })
       emit(turnId, sessionId, { type: 'done', stopReason })
       result = { stopReason, text, errorMessage }
@@ -1962,8 +2352,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         session.lastCacheRead = lastCacheRead
         session.lastCacheWrite = lastCacheWrite
       }
+      repairDanglingToolUses(session)
       session.updatedAt = Date.now()
       saveProject(sessionId)
+      busySessions.delete(sessionId)
     }
     return result
   }
@@ -1985,6 +2377,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 首发绑定 persona / 聚焦工作区 / 本对话模型（ensureSession：personaId 一次性绑定，focusRoot 与 model
     // 可后续更新——model 承载「新建快照角色偏好 + 聊天中切换」，显式提供即落库，仅影响本对话）。
     const session = ensureSession(sessionId, { personaId, focusRoot, model: modelRef })
+    // 发送前自愈：旧版本 / 崩溃遗留的悬空 tool_use 会让这次请求直接 400（此后每次都 400）。
+    // 回合进行中不碰——那时的「悬空」是工具正在执行，不是残缺。
+    if (!busySessions.has(sessionId)) repairDanglingToolUses(session)
     const history = session.messages
 
     // 「/技能名」显式触发：命中已启用技能 → 剥离该 token，把完整正文预置进本条消息（这一轮即生效）。
@@ -1997,7 +2392,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         const rest = slashMatch[2].trim()
         effectiveText =
           `（用户通过 /${loaded.name} 显式激活了技能「${loaded.name}」，请严格据下述指令完成本次任务）\n` +
-          `===== 技能指令：${loaded.name} =====\n${loaded.instructions}\n===== 指令结束 =====` +
+          `===== 技能指令：${loaded.name} =====\n${skillDirNote(loaded.dir)}${loaded.instructions}\n===== 指令结束 =====` +
           (rest ? `\n\n用户补充：${rest}` : '')
       }
     }
@@ -2014,12 +2409,20 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
     const question = effectiveText.trim() || (parts.length ? '请理解并处理上述附件。' : '')
     const questionText = notes.length ? `${question}\n（${notes.join('；')}）` : question
+    // 「仅恢复代码」后的首条消息：把回滚说明作为**第一个**独立 text 块带给模型（展示层只取最后一个
+    // text 块作气泡正文，故用户看不到它），用一次即清。
+    if (session.restoreNote) {
+      parts.unshift({ type: 'text', text: session.restoreNote })
+      session.restoreNote = undefined
+    }
     if (parts.length) {
       parts.push({ type: 'text', text: questionText })
       history.push({ role: 'user', content: parts })
     } else {
       history.push({ role: 'user', content: questionText })
     }
+    // 新消息落进历史后，撤销上次回滚会把它一并抹掉——撤销快照就此失效。
+    pendingUndo.delete(sessionId)
 
     // 首条用户文本派生会话标题
     if (!session.title) session.title = deriveTitle(text) || deriveTitle(questionText)
@@ -2055,6 +2458,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           status = r.status
           message = r.message
           if (status === 'failed') console.warn('[compaction] 手动压缩失败：', message)
+          if (status === 'compacted') {
+            // 被摘要替换掉的轮不再可回滚：丢其检查点记录；撤销快照也随历史改写失效。
+            pruneCheckpoints(session)
+            pendingUndo.delete(sessionId)
+            saveProject(sessionId)
+            collectBlobs(session)
+          }
         }
         emit(turnId, sessionId, { type: 'compacted', scope: 'manual', status, message })
       } catch (e) {
@@ -2107,6 +2517,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     'chat:load-session',
     (_e, sessionId: string, _workspaceRoot: string | null): DisplayMessage[] => {
       const s = getSession(sessionId)
+      // 载入即自愈并落盘：崩溃 / 强退遗留的悬空 tool_use 补成「未完成」，工具卡随之定格而不是永远转圈。
+      // 回合进行中不碰（那时的悬空是工具正在执行）。
+      if (s && !busySessions.has(sessionId) && repairDanglingToolUses(s)) saveProject(sessionId)
       return s
         ? toDisplayMessages(
             s.messages,
@@ -2177,6 +2590,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     'chat:delete-session',
     (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
       deleteStoredSession(sessionId)
+      pendingUndo.delete(sessionId)
+      removeSessionCheckpoints(sessionId)
       return { ok: true }
     }
   )
@@ -2184,27 +2599,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // 中止某一轮：取消流并把该轮的待决问答/计划审阅一律按取消解开
   ipcMain.handle('chat:abort', (_e, turnId: string): { ok: true } => {
     activeTurns.get(turnId)?.abort()
-    // 待决问答按「取消」解开（回灌为「用户取消了本次询问」）。
-    for (const [key, p] of pendingAsk) {
-      if (p.turnId === turnId) {
-        pendingAsk.delete(key)
-        p.resolve(null)
-      }
-    }
-    // 待决计划审阅按「取消」解开（否则中止的回合会一直阻塞在 reviewPlan 上）。
-    for (const [key, p] of pendingPlan) {
-      if (p.turnId === turnId) {
-        pendingPlan.delete(key)
-        p.resolve(null)
-      }
-    }
-    // 待决挂载请求按「未挂载」解开（循环内会先判 aborted 再收尾，不会被误记成用户拒绝）。
-    for (const [key, p] of pendingMount) {
-      if (p.turnId === turnId) {
-        pendingMount.delete(key)
-        p.resolve(null)
-      }
-    }
+    // 待决问答回灌「用户取消了本次询问」，计划审阅记取消，挂载请求按「未挂载」解开。
+    releasePending(turnId)
     return { ok: true }
   })
 
@@ -2217,9 +2613,17 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         s.messages = []
         // 终态提示边车随正文一并清空——否则重置后残留的红框/提示会锚在空历史上。
         s.notices = []
+        // 检查点整套作废（记录 / 磁盘基准 / 待带给模型的回滚说明 / 撤销快照 / blob 目录）。
+        s.checkpoints = {}
+        s.lastKnown = {}
+        s.baselines = {}
+        s.restoreNote = undefined
         s.updatedAt = Date.now()
         saveProject(sessionId)
       }
+      pendingUndo.delete(sessionId)
+      // 会话忙时不删目录（进行中的写入正往里放 blob）；无引用的 blob 由该回合末的 GC 回收。
+      if (!busySessions.has(sessionId)) removeSessionCheckpoints(sessionId)
       return { ok: true }
     }
   )
@@ -2238,7 +2642,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const s = getSession(sessionId)
       if (!s) return []
       deleteTurns(s, Array.isArray(turnIndices) ? turnIndices : [])
+      // 撤销上次回滚会把刚删掉的轮复活，快照就此失效；被删轮的 blob 随之可回收。
+      pendingUndo.delete(sessionId)
       saveProject(sessionId)
+      collectBlobs(s)
       return toDisplayMessages(
         s.messages,
         s.proposals ?? {},
@@ -2248,6 +2655,161 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         s.plans ?? {},
         s.autotasks ?? {}
       )
+    }
+  )
+
+  // ───────── 检查点回滚（对标 Claude Code /rewind）─────────
+  // 只由用户在回滚面板里触发、不经工具闸门，故自守三条：路径只来自记录、链接跳过、敏感路径与 .git 跳过
+  // （见 checkpoints.planRewind）。每次执行都在主进程重算计划，不信任渲染层回传的预览。
+
+  /** 正在执行回滚 / 撤销的会话：防同一会话的两次回滚交错。 */
+  const rewinding = new Set<string>()
+  const displayOf = (s: StoredSession): DisplayMessage[] =>
+    toDisplayMessages(
+      s.messages,
+      s.proposals ?? {},
+      s.notices ?? [],
+      s.asks ?? {},
+      s.summaries ?? {},
+      s.plans ?? {},
+      s.autotasks ?? {}
+    )
+
+  // 回滚面板列表屏：每轮自身的改动量（文件数 / +N −M / 是否跑过命令）+ 能否撤销上次回滚。
+  ipcMain.handle(
+    'chat:rewind-list',
+    (_e, sessionId: string): { turns: RewindTurnStat[]; canUndo: boolean } => {
+      const s = getSession(sessionId)
+      if (!s) return { turns: [], canUndo: false }
+      return { turns: summarizeTurns(s, turnToolIds(s.messages)), canUndo: pendingUndo.has(sessionId) }
+    }
+  )
+
+  // 回滚面板详情屏：回到第 turn 轮之前要动哪些文件（动作 / 状态 / +N −M）与哪些命令的影响撤不回。
+  ipcMain.handle(
+    'chat:rewind-preview',
+    async (
+      _e,
+      sessionId: string,
+      turn: number
+    ): Promise<{ files: RewindFile[]; commands: string[] } | null> => {
+      const s = getSession(sessionId)
+      if (!s) return null
+      const turns = turnToolIds(s.messages)
+      if (!Number.isInteger(turn) || turn < 0 || turn >= turns.length) return null
+      return publicPreview(await planRewind(s, turns.slice(turn).flat(), s.focusRoot ?? null))
+    }
+  )
+
+  // 执行回滚：回到第 turn 轮开始之前。代码类模式恢复文件，对话类模式删掉第 turn 轮起的全部轮。
+  ipcMain.handle(
+    'chat:rewind-apply',
+    async (
+      _e,
+      req: ChatRewindApplyRequest
+    ): Promise<
+      | {
+          ok: true
+          messages: DisplayMessage[]
+          restored: string[]
+          skipped: { rel: string; reason: RewindStatus | 'error' }[]
+        }
+      | { ok: false; error: 'no-session' | 'busy' | 'bad-turn' }
+    > => {
+      const s = getSession(req.sessionId)
+      if (!s) return { ok: false, error: 'no-session' }
+      if (busySessions.has(s.id) || rewinding.has(s.id)) return { ok: false, error: 'busy' }
+      const turns = turnToolIds(s.messages)
+      const k = req.turn
+      if (!Number.isInteger(k) || k < 0 || k >= turns.length) return { ok: false, error: 'bad-turn' }
+      const withCode = req.mode === 'both' || req.mode === 'code'
+      const withConversation = req.mode === 'both' || req.mode === 'conversation'
+
+      rewinding.add(s.id)
+      try {
+        // 撤销快照：deleteTurns 对这些字段一律整体重新赋值（不原地改），故存引用即可；
+        // lastKnown 会被 applyFiles 原地更新，须拷一份。
+        const undo: RewindUndo = {
+          files: [],
+          state: {
+            messages: s.messages,
+            notices: s.notices,
+            proposals: s.proposals,
+            asks: s.asks,
+            summaries: s.summaries,
+            plans: s.plans,
+            autotasks: s.autotasks,
+            checkpoints: s.checkpoints,
+            lastKnown: s.lastKnown ? { ...s.lastKnown } : undefined,
+            restoreNote: s.restoreNote,
+            lastInputTokens: s.lastInputTokens
+          }
+        }
+
+        let restored: string[] = []
+        let skipped: { rel: string; reason: RewindStatus | 'error' }[] = []
+        if (withCode) {
+          const plan = await planRewind(s, turns.slice(k).flat(), s.focusRoot ?? null)
+          const force = new Set((req.force ?? []).filter((p): p is string => typeof p === 'string'))
+          const r = await applyFiles(s, plan, force)
+          restored = r.restored
+          skipped = r.skipped
+          undo.files = r.undo
+        }
+
+        if (withConversation) {
+          deleteTurns(
+            s,
+            Array.from({ length: turns.length - k }, (_, i) => k + i)
+          )
+          // 实测输入量描述的是删轮前的长历史，留着会让下一轮误触发压缩；清掉即回落字符估算。
+          s.lastInputTokens = undefined
+        } else if (restored.length) {
+          // 仅恢复代码：对话还记着被撤销的改动——下一条消息把回滚说明带给模型，并在对话流里留一条提示。
+          const note = buildRestoreNote(restored)
+          s.restoreNote = s.restoreNote ? `${s.restoreNote}\n\n${note}` : note
+          s.notices = [
+            ...(s.notices ?? []),
+            { after: s.messages.length, kind: 'notice', code: 'restored' }
+          ]
+        }
+
+        if (withConversation || restored.length) pendingUndo.set(s.id, undo)
+        s.updatedAt = Date.now()
+        saveProject(s.id)
+        return { ok: true, messages: displayOf(s), restored, skipped }
+      } finally {
+        rewinding.delete(s.id)
+      }
+    }
+  )
+
+  // 撤销上次回滚：文件写回回滚前的字节（只动回滚后未再被改过的），对话状态整体换回快照。
+  ipcMain.handle(
+    'chat:rewind-undo',
+    async (
+      _e,
+      sessionId: string
+    ): Promise<
+      | { ok: true; messages: DisplayMessage[]; restored: string[]; skipped: string[] }
+      | { ok: false; error: 'no-undo' | 'busy' }
+    > => {
+      const s = getSession(sessionId)
+      const undo = pendingUndo.get(sessionId)
+      if (!s || !undo) return { ok: false, error: 'no-undo' }
+      if (busySessions.has(sessionId) || rewinding.has(sessionId)) return { ok: false, error: 'busy' }
+      rewinding.add(sessionId)
+      try {
+        pendingUndo.delete(sessionId)
+        const r = await undoFiles(undo.files)
+        Object.assign(s, undo.state)
+        s.updatedAt = Date.now()
+        saveProject(sessionId)
+        collectBlobs(s)
+        return { ok: true, messages: displayOf(s), restored: r.restored, skipped: r.skipped }
+      } finally {
+        rewinding.delete(sessionId)
+      }
     }
   )
 

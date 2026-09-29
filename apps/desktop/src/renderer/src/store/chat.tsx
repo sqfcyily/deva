@@ -8,7 +8,13 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { TaskCreateInput, ResolveAutotaskResult } from '../../../preload'
+import type {
+  TaskCreateInput,
+  ResolveAutotaskResult,
+  RewindApplyResult,
+  RewindMode,
+  RewindUndoResult
+} from '../../../preload'
 import { useI18n } from '../i18n/i18n'
 import { useModels, findActive } from './models'
 import { useWorkspace } from './workspace'
@@ -155,12 +161,22 @@ export type ChatBlock =
   /**
    * 回合终止 / 上下文压缩提示（非错误，弱化样式）。
    * truncated=达输出长度上限被截断；empty=通篇无可见回复；
-   * compacted=较早历史已压缩为摘要；compact_none=无需压缩；compact_failed=压缩失败历史未动。
+   * compacted=较早历史已压缩为摘要；compact_none=无需压缩；compact_failed=压缩失败历史未动；
+   * restored=用检查点只回滚了代码（对话保留，下一条消息会告诉模型）；
+   * aborted=用户中止了本轮（其上为中止前已产出的内容，重开仍在）。
    * 正文按 code 在渲染层翻译（随语言切换生效，不在 store 里定格文案）。
    */
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'compacted' | 'compact_none' | 'compact_failed'
+      code:
+        | 'truncated'
+        | 'empty'
+        | 'refused'
+        | 'compacted'
+        | 'compact_none'
+        | 'compact_failed'
+        | 'restored'
+        | 'aborted'
       /**
        * 失败原因原文（仅 compact_failed，且只活在本次运行的渲染态）。
        * 压缩失败的成因差别极大——密钥失效、连接中断、模型没吐正文——一律折成同一句
@@ -222,7 +238,10 @@ export interface SessionLiveState {
 type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
-  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' | 'refused' }
+  | {
+      kind: 'notice'
+      code: 'compacted' | 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
+    }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   | {
@@ -306,6 +325,16 @@ interface ChatContextValue {
    * 空集、或该会话正流式生成时为无操作（避免改写正被 Agent 循环原地改写的 messages）。
    */
   deleteTurns: (turnIndices: number[]) => Promise<void>
+  /**
+   * 检查点回滚当前会话：回到第 turn 轮开始之前（mode 见 RewindMode，force = 勾选覆盖的冲突文件）。
+   * 成功后以主进程重建的历史就地替换消息。该会话正流式生成时直接回 busy，不发请求。
+   */
+  rewindApply: (turn: number, mode: RewindMode, force: string[]) => Promise<RewindApplyResult>
+  /**
+   * 撤销某会话的上次回滚（文件与对话一并换回）；缺省为当前会话。撤销入口在 toast 上、比面板活得久，
+   * 期间用户可能已切走，故由调用方钉住回滚时的会话 id，免得撤到别的会话头上。
+   */
+  rewindUndo: (sessionId?: string) => Promise<RewindUndoResult>
   /** 当前对话的绑定（覆盖层优先于已落库真值）：驱动头像 / 工作区 chip / 模型选择器。 */
   currentBinding: { personaId?: string; focusRoot: string | null; model?: string }
   /**
@@ -632,10 +661,13 @@ function hasVisibleAnswer(blocks: ChatBlock[]): boolean {
  * - refusal：模型拒绝作答 / 被服务商内容策略拦截——有拒绝正文就不加提示（正文已自解释），
  *   通篇为空才补一条「被拒绝」。**绝不并入空回合**：那会把拒绝谎报成上下文问题，误导排查；
  * - 自然结束（end_turn/stop）却通篇无可见回复：本轮未产生回复（原因不确定，文案不臆断）；
- * - aborted（用户主动停止）不提示；error（已另有红色错误块）也不重复提示。
+ * - aborted（用户主动停止）：标一条「已中止」——中止前的半截内容会随历史保留，得看得出是被打断的；
+ * - error（已另有红色错误块）不重复提示。
+ * 与主进程 recordTurnNotice 同一套规则，故重开对话后所见一致。
  * 无需补提示时返回原数组引用（updateLastAssistant 据引用相等短路，不触发无谓重渲染）。
  */
 function appendTerminalNotice(blocks: ChatBlock[], stopReason: string): ChatBlock[] {
+  if (stopReason === 'aborted') return [...blocks, { kind: 'notice', code: 'aborted' }]
   if (stopReason === 'max_tokens') return [...blocks, { kind: 'notice', code: 'truncated' }]
   if (stopReason === 'refusal')
     return hasVisibleAnswer(blocks) ? blocks : [...blocks, { kind: 'notice', code: 'refused' }]
@@ -913,11 +945,19 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   // 订阅主进程流事件（挂载一次）。按 payload.sessionId 路由进对应会话的活动态——
   // 不再丢弃「非当前会话」事件：后台那轮照常累积，切回去即见其实时流。
   useEffect(() => {
-    // 从主进程重载某会话并整份替换其 runtime 消息（后台回合完成后的权威回填）。
+    // 本回合内压缩成功过的会话（done 时消费）。
+    const compactedSids = new Set<string>()
+    // 从主进程重载某会话并整份替换其 runtime 消息（后台回合完成 / 本轮压缩过后的权威回填）。
     const reloadIntoRuntime = (sid: string): void => {
       void (async () => {
         const dms = await window.deva.chat.loadSession(sid, projectPathRef.current)
-        if (sessionIdRef.current !== sid) return // 期间切走 → 丢弃过期结果（下次打开自会重载）
+        // 期间本层又起了新一轮（已建脚手架）→ 绝不覆盖其实时内容。
+        if (runtimesRef.current.get(sid)?.streaming) return
+        // 期间切走 → 丢掉陈旧 runtime（selectSession 不重载已缓存的 runtime），下次打开自会从主进程重载。
+        if (sessionIdRef.current !== sid) {
+          dropRuntime(sid)
+          return
+        }
         patchRuntime(sid, (r) => ({
           ...r,
           streaming: false,
@@ -937,7 +977,12 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 主进程内闭环执行），本层从未建脚手架 —— 其内容以主进程 + 磁盘为唯一真源，绝不在此凑合拼装。
       const localStreaming = runtimesRef.current.get(sid)?.streaming === true
 
+      // 本回合压缩成功（自动或 /compact）：主进程历史已改写为「摘要 + 近期轮」，本层气泡却仍是全量，
+      // 两边的轮下标因此错开被压掉的轮数，回滚 / 删轮会落到错的轮上。先记下，done 时以主进程为准重载。
+      if (ev.type === 'compacted' && ev.status === 'compacted') compactedSids.add(sid)
+
       if (ev.type === 'done') {
+        const compacted = compactedSids.delete(sid)
         if (localStreaming) {
           patchRuntime(sid, (r) => ({
             ...r,
@@ -950,6 +995,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
               appendTerminalNotice(b, ev.stopReason)
             )
           }))
+          // 与重开同形：早期气泡当场收成一个摘要气泡。主进程在发 done 后同步补记终态提示并落盘，
+          // 早于本层 loadSession 请求到达，故重载拿到的已含本轮 notices。
+          if (compacted) reloadIntoRuntime(sid)
         } else {
           // 后台回合完成：主进程已落盘。绝不留下 messages:[] 的空壳 runtime 遮蔽已落盘内容
           //（此前正是它令定时任务生成的对话「打开是空的、重启才出现」）。正在查看 → 立刻从主进程
@@ -1318,6 +1366,37 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       setSessions(list)
     }
 
+    // 检查点回滚 / 撤销：与 deleteTurns 同形——主进程改写历史并重建展示气泡，此处就地替换并刷新列表排序。
+    // 已切走但仍有活动态缓存的会话也要替换：selectSession 见缓存即直接呈现、不重载，不换就会显示旧历史。
+    const applyRewound = async (id: string, dms: DisplayMessage[]): Promise<void> => {
+      if (sessionIdRef.current === id || runtimesRef.current.has(id))
+        patchRuntime(id, (r) => ({ ...r, messages: displayToMessages(dms) }))
+      const path = projectPathRef.current
+      const list = await window.deva.chat.listSessions(path)
+      if (projectPathRef.current !== path) return
+      setSessions(list)
+    }
+
+    const rewindApply = async (
+      turn: number,
+      mode: RewindMode,
+      force: string[]
+    ): Promise<RewindApplyResult> => {
+      const id = sessionIdRef.current
+      if (runtimesRef.current.get(id)?.turnId) return { ok: false, error: 'busy' }
+      const res = await window.deva.chat.rewindApply({ sessionId: id, turn, mode, force })
+      if (res.ok) await applyRewound(id, res.messages as DisplayMessage[])
+      return res
+    }
+
+    const rewindUndo = async (sessionId?: string): Promise<RewindUndoResult> => {
+      const id = sessionId ?? sessionIdRef.current
+      if (runtimesRef.current.get(id)?.turnId) return { ok: false, error: 'busy' }
+      const res = await window.deva.chat.rewindUndo(id)
+      if (res.ok) await applyRewound(id, res.messages as DisplayMessage[])
+      return res
+    }
+
     const respondAsk = (key: string, answers: string[]): void => {
       void window.deva.chat.respondAsk({ key, answers })
       patchCardBlocks(sessionIdRef.current, (blocks) =>
@@ -1407,6 +1486,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       deleteSession,
       deleteSessions,
       deleteTurns,
+      rewindApply,
+      rewindUndo,
       currentBinding,
       draftSession,
       mountFocus,

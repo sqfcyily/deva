@@ -122,7 +122,7 @@ export const toolSpecs: ToolSpec[] = [
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
-      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。明显危险的命令（如 rm -rf）会被安全策略直接拒绝，请勿重试。涉及凭据/密钥路径的命令（~/.ssh、~/.aws、~/.gnupg、~/.deva、id_rsa、secrets.json 等）同样会被拒绝——请勿改写形式尝试绕过，确有需要请让用户自行操作。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。明显危险的命令（如 rm -rf）会被安全策略直接拒绝，请勿重试。涉及凭据/密钥路径或本应用配置目录的命令（~/.ssh、~/.aws、~/.gnupg、~/.deva、id_rsa、secrets.json 等）同样会被拒绝——请勿改写形式尝试绕过，确有需要请让用户自行操作；唯一例外是主对话中访问技能目录（~/.deva/skills，实际路径见系统提示词），但命令里不能用 .. 跳出它。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -194,9 +194,10 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'create_skill',
     description:
-      '创建并启用一个新的**技能（Skill）**，写入用户的全局技能目录（~/.deva/skills）。' +
+      '创建并启用一个新的**单文件技能（Skill）**，写入用户的全局技能目录（绝对路径见系统提示词）。' +
       '仅在用户明确想创建技能、且你已收集好要素并向用户复述确认后调用。' +
-      '这是写入受保护目录的唯一途径——**严禁**用 write_file / run_command 去写 SKILL.md（那些工具无法写入该目录）。' +
+      '本工具只写一份 SKILL.md 正文；**多文件技能**（入口文档 + 参考文档/脚本）请改为直接在技能目录下建文件夹，' +
+      '用 write_file 写入 SKILL.md（frontmatter 须含 name 与 description）与各子文件，或用 run_command 下载解压到该处。' +
       '创建后技能自动启用，用户可用 /技能名 触发。',
     inputSchema: {
       type: 'object',
@@ -417,7 +418,7 @@ export function buildPlanTool(): ToolSpec {
  */
 export type ToolCategory = 'read' | 'edit' | 'exec' | 'mcp'
 
-const EDIT_TOOLS = new Set(['write_file', 'edit_file'])
+export const EDIT_TOOLS = new Set(['write_file', 'edit_file'])
 const EXEC_TOOLS = new Set<string>(['run_command']) // 执行类：命令行（受策略层 + 权限闸门约束）
 /**
  * 明确的只读/无副作用内置工具白名单。ask_user / skill / run_subagent 均在循环内「闸门前特判」，
@@ -490,13 +491,15 @@ const EXEC_OUTPUT_MAX = 30_000
 const EXEC_TIMEOUT_DEFAULT = 120_000
 const EXEC_TIMEOUT_MAX = 600_000
 const EXEC_CAPTURE_BYTES = 4 * EXEC_OUTPUT_MAX
+/** 杀树后等 stdio 关闭的宽限期；须短于退出时 settleActiveTurns 的 3s 收尾窗口。 */
+const EXEC_KILL_GRACE_MS = 2000
 /** 遍历时直接跳过、不进入的噪音目录。 */
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', 'dist', 'out', 'build', '.next', 'coverage',
   '.cache', '.turbo', '.output', 'target', '.venv', '__pycache__', '.idea', '.vscode'
 ])
 
-function looksBinary(buf: Buffer): boolean {
+export function looksBinary(buf: Buffer): boolean {
   const n = Math.min(buf.length, 8000)
   for (let i = 0; i < n; i++) if (buf[i] === 0) return true
   return false
@@ -526,7 +529,7 @@ function toAbsPath(root: string | null, p: string): string {
 }
 
 /**
- * 读取类路径解析：把 path 解析为绝对路径，仅拒绝 Tier-1 敏感目录（凭据/密钥）。
+ * 读取类路径解析：把 path 解析为绝对路径，仅拒绝 Tier-1 敏感目录（凭据/密钥与配置库；技能目录已开口）。
  * 刻意不校验受信根——读操作可及任意「非敏感」目录（对标 Claude Code：读不受工作区边界约束）。
  */
 function resolveReadPath(root: string | null, p: unknown): string {
@@ -541,7 +544,8 @@ function resolveReadPath(root: string | null, p: unknown): string {
       '未挂载工作区，相对路径没有基准：请改用绝对路径（~/ 开头的主目录路径亦可）。'
     )
   const abs = toAbsPath(root, p)
-  if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/密钥目录（安全策略），请勿重试。')
+  if (isSensitivePath(abs))
+    throw new Error('拒绝访问：凭据/密钥目录或本应用配置目录（安全策略；技能目录除外），请勿重试。')
   return abs
 }
 
@@ -626,7 +630,8 @@ function resolveReadDir(root: string | null, p: unknown): string {
   if (typeof p === 'string' && p.trim()) return resolveReadPath(root, p)
   if (!root) throw new Error('未打开项目，且未提供 path')
   const abs = resolve(root)
-  if (isSensitivePath(abs)) throw new Error('拒绝访问：凭据/密钥目录（安全策略），请勿重试。')
+  if (isSensitivePath(abs))
+    throw new Error('拒绝访问：凭据/密钥目录或本应用配置目录（安全策略；技能目录除外），请勿重试。')
   return abs
 }
 
@@ -798,6 +803,8 @@ interface ExecOutcome {
   timedOut: boolean
   aborted: boolean
   spawnError?: string
+  /** 已杀树但宽限期内 stdio 仍未关闭（多半有漏网子进程攥着管道），已强行收尾。 */
+  lingering?: boolean
 }
 
 /** 非交互环境：禁分页器、禁 git 凭据提示、禁颜色码，避免命令挂起或污染输出。 */
@@ -805,20 +812,85 @@ function execEnv(): NodeJS.ProcessEnv {
   return { ...process.env, GIT_PAGER: 'cat', PAGER: 'cat', GIT_TERMINAL_PROMPT: '0', NO_COLOR: '1' }
 }
 
-/** 杀掉子进程「整棵树」：win 用 taskkill /T /F，posix 杀进程组（spawn 时 detached 建了组）。 */
-function killTree(child: import('node:child_process').ChildProcess): void {
+/** win + Git Bash 下一次执行的杀树凭据：MSYS bash 路径 + 注入子进程环境的唯一 DEVA_EXEC_TAG。 */
+interface MsysKillTarget {
+  bash: string
+  tag: string
+}
+
+let execSeq = 0
+
+/**
+ * win + Git Bash 杀树脚本（另起一个 MSYS bash 执行，$1 = 目标 tag）。
+ * MSYS 模拟 fork，管道成员之间的 Windows 父进程链是断的（中间层 bash 早已退出），taskkill /T 从启动器
+ * 出发只杀得到启动器本身；npm / tail 等成了孤儿，继续攥着 stdout 管道——超时、中止都「杀了没用」。
+ * 故 spawn 时注入唯一 DEVA_EXEC_TAG（子孙自然继承），此处扫 /proc/<pid>/environ **精确匹配**找回整棵树：
+ * ① 按各进程 winpid 执行 taskkill /T /F，带走 node 等原生进程再 spawn 的原生子孙（那段 Windows 父链完整）；
+ * ② 按 MSYS 进程组（管道成员同组）kill -9 并逐个补刀，兜住扫描之后才 fork 出来的。
+ * pgid ≤ 1 不杀组（kill -- -1 等于杀全部）；taskkill 参数禁用 MSYS 路径转换（否则 /T 会被改写成路径）。
+ */
+const MSYS_KILL_SCRIPT = `tag="DEVA_EXEC_TAG=$1"
+pids= pgs= wins=
+for d in /proc/[0-9]*; do
+  hit=
+  while IFS= read -r -d '' e; do [ "$e" = "$tag" ] && { hit=1; break; }; done < "$d/environ"
+  [ -n "$hit" ] || continue
+  p=\${d#/proc/} pg= w=
+  read -r pg < "$d/pgid"
+  read -r w < "$d/winpid"
+  pids="$pids $p" pgs="$pgs $pg" wins="$wins $w"
+done 2>/dev/null
+set --
+for w in $wins; do case $w in *[!0-9]*) ;; *) set -- "$@" /PID "$w" ;; esac; done
+[ $# -gt 0 ] && MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' taskkill /T /F "$@" >/dev/null 2>&1
+for pg in $pgs; do case $pg in *[!0-9]*) ;; *) [ "$pg" -gt 1 ] && kill -9 -- "-$pg" ;; esac; done 2>/dev/null
+for p in $pids; do kill -9 "$p"; done 2>/dev/null
+exit 0`
+
+/**
+ * 杀掉子进程「整棵树」。posix 杀进程组（spawn 时 detached 建了组）；win 依次：
+ * 有 msys 时先跑 MSYS_KILL_SCRIPT → taskkill /T /F 启动器 → 最后才 child.kill()。
+ * 顺序不能反：先杀启动器会让其子进程的父链断掉，/T 就再也找不到它们（还会报「没有找到进程」）。
+ */
+function killTree(child: import('node:child_process').ChildProcess, msys?: MsysKillTarget): void {
   const pid = child.pid
   if (!pid) return
   if (process.platform === 'win32') {
-    try {
-      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
-    } catch {
-      /* ignore */
+    const finalKill = (): void => {
+      try {
+        child.kill()
+      } catch {
+        /* ignore */
+      }
+    }
+    let tkStarted = false
+    const taskkill = (): void => {
+      if (tkStarted) return // spawn 失败时 error 与 exit 可能先后都来
+      tkStarted = true
+      try {
+        const tk = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+        tk.once('exit', finalKill)
+        tk.once('error', finalKill)
+      } catch {
+        finalKill()
+      }
+    }
+    if (!msys) {
+      taskkill()
+      return
     }
     try {
-      child.kill()
+      const env = { ...process.env }
+      delete env.DEVA_EXEC_TAG // 杀手自己绝不能带目标 tag
+      const k = spawn(
+        msys.bash,
+        ['--noprofile', '--norc', '-c', MSYS_KILL_SCRIPT, 'deva-kill', msys.tag],
+        { env, windowsHide: true, stdio: 'ignore', timeout: 5000 }
+      )
+      k.once('exit', taskkill)
+      k.once('error', taskkill)
     } catch {
-      /* ignore */
+      taskkill()
     }
   } else {
     try {
@@ -835,7 +907,8 @@ function killTree(child: import('node:child_process').ChildProcess): void {
 
 /**
  * 在 cwd 下执行一条命令，合并捕获 stdout+stderr（按到达序），带超时与中止。
- * shell 由 exec-policy.resolveExecShell 决定（优先 Git Bash）；detached（posix）建进程组以便杀树。
+ * shell 由 exec-policy.resolveExecShell 决定（优先 Git Bash）；detached（posix）建进程组以便杀树，
+ * win + Git Bash 则注入 DEVA_EXEC_TAG 供 MSYS 侧杀树。杀树后最多再等 EXEC_KILL_GRACE_MS 即返回。
  */
 function execCapture(
   command: string,
@@ -850,13 +923,19 @@ function execCapture(
     }
     const sh = resolveExecShell()
     const detached = process.platform !== 'win32'
+    // win + Git Bash：注入唯一 tag，供 killTree 在 MSYS 侧精确找回整棵进程树（见 MSYS_KILL_SCRIPT）。
+    const msys: MsysKillTarget | undefined =
+      process.platform === 'win32' && !sh.useShell
+        ? { bash: sh.file, tag: `${process.pid}-${++execSeq}-${Date.now().toString(36)}` }
+        : undefined
+    const env = msys ? { ...execEnv(), DEVA_EXEC_TAG: msys.tag } : execEnv()
     let child: import('node:child_process').ChildProcess
     try {
       child = sh.useShell
-        ? spawn(command, { cwd, env: execEnv(), shell: true, windowsHide: true, detached })
+        ? spawn(command, { cwd, env, shell: true, windowsHide: true, detached })
         : spawn(sh.file, [...sh.args, command], {
             cwd,
-            env: execEnv(),
+            env,
             windowsHide: true,
             detached
           })
@@ -876,7 +955,24 @@ function execCapture(
     let capped = false
     let timedOut = false
     let aborted = false
+    let lingering = false
     let done = false
+    let killing = false
+    let graceTimer: ReturnType<typeof setTimeout> | undefined
+
+    // 杀树只发起一次（暴产出 / 超时 / 中止可能先后触发）。兜底：仍有漏网进程攥着 stdout/stderr 管道
+    // 写端时 close 永不来——宽限期满就主动断开管道、按已知退出码收尾，让工具先返回（状态行注明残留）。
+    const kill = (): void => {
+      if (killing || done) return
+      killing = true
+      killTree(child, msys)
+      graceTimer = setTimeout(() => {
+        lingering = true
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        finish(child.exitCode)
+      }, EXEC_KILL_GRACE_MS)
+    }
 
     const onData = (buf: Buffer): void => {
       if (capped) return
@@ -884,7 +980,7 @@ function execCapture(
       bytes += buf.length
       if (bytes >= EXEC_CAPTURE_BYTES) {
         capped = true
-        killTree(child) // 暴产出：停止追加并杀树
+        kill() // 暴产出：停止追加并杀树
       }
     }
     child.stdout?.on('data', onData)
@@ -892,12 +988,12 @@ function execCapture(
 
     const timer = setTimeout(() => {
       timedOut = true
-      killTree(child)
+      kill()
     }, timeoutMs)
 
     const onAbort = (): void => {
       aborted = true
-      killTree(child)
+      kill()
     }
     signal?.addEventListener('abort', onAbort, { once: true })
 
@@ -905,13 +1001,15 @@ function execCapture(
       if (done) return
       done = true
       clearTimeout(timer)
+      clearTimeout(graceTimer)
       signal?.removeEventListener('abort', onAbort)
       resolvePromise({
         out: Buffer.concat(chunks).toString('utf8'), // 先拼再解码，避免多字节被切断
         code,
         timedOut,
         aborted,
-        spawnError
+        spawnError,
+        lingering
       })
     }
 
@@ -1280,6 +1378,7 @@ export async function executeTool(
         status = `（退出码：${r.code}）`
         summary = `退出码 ${r.code}`
       }
+      if (r.lingering) status += '（有子进程未能确认结束，可能仍在后台运行）'
       const isError = Boolean(r.spawnError) || r.aborted || r.timedOut || r.code !== 0
       // 未挂载工作区时命令在用户主目录执行，失败多半只是「不在项目里」（典型：git 报 not a git
       // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。命令文本里的相对路径无法

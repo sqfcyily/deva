@@ -350,7 +350,9 @@ export function BlockView({
       refused: 'chat.notice.refused',
       compacted: 'chat.notice.compacted',
       compact_none: 'chat.notice.compactNone',
-      compact_failed: 'chat.notice.compactFailed'
+      compact_failed: 'chat.notice.compactFailed',
+      restored: 'chat.notice.restored',
+      aborted: 'chat.notice.aborted'
     }
     return (
       <div className="msg__notice">

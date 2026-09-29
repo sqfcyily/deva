@@ -1,4 +1,4 @@
-import { isProtectedPath, isSensitivePath } from './fs-guard'
+import { isProtectedPath, isSensitivePath, isSkillsPath } from './fs-guard'
 import { isDangerousCommand, touchesSensitivePath } from './exec-policy'
 import { isMcpTool, toolCategory, writeTargetPath } from './tools'
 
@@ -11,9 +11,10 @@ import { isMcpTool, toolCategory, writeTargetPath } from './tools'
  *
  * 安全地板（不可协商，与交互闸门同源）：
  *  · Tier-1 敏感路径（凭据/密钥与本应用 ~/.deva）——文件工具通道永不可读写；
+ *  · 技能目录（Tier-1 唯一开口）——只读：无人值守写技能 = 持久化提示词注入 → 写入拒绝；
  *  · Tier-2 版本库内部（.git）——hooks/config 可提权、对象库写坏不可逆 → 拒绝；
  *  · 危险命令（isDangerousCommand）——恒拒；
- *  · 触及凭据路径的命令（touchesSensitivePath）——恒拒（启发式，补 exec 绕过 Tier-1 的缺口）。
+ *  · 触及凭据/配置目录的命令（touchesSensitivePath，不开技能目录）——恒拒（启发式，补 exec 绕过 Tier-1 的缺口）。
  */
 
 export interface SealedVerdict {
@@ -76,7 +77,13 @@ export function sealedDecision(toolName: string, args: unknown, root: string | n
     if (isSensitivePath(abs))
       return {
         allowed: false,
-        denyContent: `该路径受安全策略保护（凭据/密钥目录），拒绝写入：${abs}。请勿重试。`
+        denyContent: `该路径受安全策略保护（凭据/密钥目录或本应用配置目录），拒绝写入：${abs}。请勿重试。`
+      }
+    // 技能目录：Tier-1 为它开口是为了读多文件技能；定时任务只读，不得改写技能。
+    if (isSkillsPath(abs))
+      return {
+        allowed: false,
+        denyContent: `定时任务不可写入技能目录（只读）：${abs}。如需新建或修改技能，请在结论中说明，由用户在对话中处理。`
       }
     // 安全地板 Tier-2：版本库内部（.git）——写入即可能是 hooks 提权或仓库损坏，一律拒绝。
     if (isProtectedPath(abs))
@@ -102,11 +109,12 @@ export function sealedDecision(toolName: string, args: unknown, root: string | n
           '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。'
       }
     // 安全地板：触及凭据/密钥路径的命令恒拒（文件工具的 Tier-1 对 exec 无效，此处按命令文本兜底）。
+    // 刻意不传 allowSkills：命令一旦放行就能写，技能目录的只读只能靠「命令里不许出现它」。
     if (touchesSensitivePath(command))
       return {
         allowed: false,
         denyContent:
-          '该命令涉及凭据/密钥路径（如 ~/.ssh、~/.deva），被安全策略拒绝，未执行。请勿重试或变形绕过。'
+          '该命令涉及凭据/密钥路径或本应用配置目录（如 ~/.ssh、~/.deva，含技能目录），被安全策略拒绝，未执行。读取技能附带文件请改用 read_file / glob / grep。请勿重试或变形绕过。'
       }
     return { allowed: true, denyContent: '' }
   }

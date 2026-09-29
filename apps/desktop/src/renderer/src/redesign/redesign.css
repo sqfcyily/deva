@@ -756,6 +756,226 @@ body.cf-resizing-y * {
   gap: 8px;
 }
 
+/* ── 检查点回滚面板（复用 Modal + .modal__title / .modal__actions / .btn）；+/− 配色同 git 徽标 ── */
+.cf-rewind__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cf-rewind__hint {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+.cf-rewind__empty {
+  margin: 4px 0;
+  color: var(--fg-subtle);
+  font-size: 12px;
+}
+.cf-rewind__undo {
+  align-self: flex-start;
+}
+.cf-rewind__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  margin: 0 calc(var(--space-2) * -1);
+}
+.cf-rewind__turn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.cf-rewind__turn:hover {
+  background: var(--bg-hover);
+}
+.cf-rewind__idx {
+  flex: none;
+  min-width: 18px;
+  color: var(--fg-subtle);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.cf-rewind__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.cf-rewind__meta {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+.cf-rewind__exec {
+  display: inline-flex;
+  color: var(--warning);
+}
+.cf-rewind__chev {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.cf-rewind__stat {
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.cf-rewind__add {
+  color: var(--success);
+}
+.cf-rewind__del {
+  color: var(--danger);
+}
+.cf-rewind__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: calc(var(--space-2) * -1);
+}
+.cf-rewind__head .btn {
+  gap: 2px;
+}
+.cf-rewind__quote {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-inset);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  word-break: break-word;
+}
+.cf-rewind__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cf-rewind__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.cf-rewind__label--warn {
+  color: var(--warning);
+}
+.cf-rewind__files,
+.cf-rewind__cmds {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(34vh, 260px);
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.cf-rewind__file {
+  padding: 4px 0;
+}
+.cf-rewind__file.is-dim .cf-rewind__path,
+.cf-rewind__file.is-dim .cf-rewind__stat {
+  opacity: 0.55;
+}
+.cf-rewind__fileline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.cf-rewind__badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+.cf-rewind__badge.is-restore {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+.cf-rewind__badge.is-delete {
+  color: var(--danger);
+}
+.cf-rewind__badge.is-create {
+  color: var(--success);
+}
+.cf-rewind__badge.is-skip {
+  color: var(--warning);
+}
+.cf-rewind__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 12px;
+}
+.cf-rewind__changed {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+.cf-rewind__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 2px;
+  padding-left: 2px;
+  color: var(--warning);
+  font-size: 11px;
+}
+.cf-rewind__force {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.cf-rewind__cmds li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
+  font-size: 12px;
+}
+.cf-rewind__actions {
+  flex-wrap: wrap;
+}
+
 /* git 失败 toast 正文：原样呈现命令输出（保留换行、自动折行、等宽），便于读出真实原因。
    最多 5 行，超出部分裁掉并以 … 收尾，不出滚动条（line-clamp 依赖 -webkit-box，Chromium 原生支持）。 */
 .cf-giterr {

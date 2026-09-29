@@ -109,6 +109,7 @@ import {
 import { ModelSettings } from '../features/settings/ModelSettings'
 import { AvatarEditor } from './AvatarEditor'
 import { ProfilePanel } from './ProfilePanel'
+import { RewindModal } from './RewindModal'
 import { useProfile } from '../store/profile'
 
 /**
@@ -122,7 +123,7 @@ import { useProfile } from '../store/profile'
  *  - 动手全内联：复用 features/chat/blocks 的 BlockView / StatusIndicator / deriveActivity 渲染工具/权限/思考/子智能体
  *
  * 安全不变式全程不动：persona 工具白名单只收窄可见性、每次调用仍过同一闸门；聚焦挂载复用 fs.openFolder 的
- * trustRoot；~/.deva 等 Tier-1 永不可写。旧壳（PREVIEW_CHAT_FIRST=false）零回归靠后端 personaId 缺省 gate。
+ * trustRoot；~/.deva 等 Tier-1 永不可写（仅技能目录对主智能体开口）。旧壳（PREVIEW_CHAT_FIRST=false）零回归靠后端 personaId 缺省 gate。
  */
 
 /* ============================ 小工具 ============================ */
@@ -528,7 +529,9 @@ export function ChatFirstShell(): React.JSX.Element {
                 onOpenProposal={openProposal}
                 onOpenAutotask={openAutotask}
                 onDeleteTurns={deleteTurnsWithConfirm}
+                attention={sessionStates[currentSessionId]?.attention ?? false}
                 prefill={composerPrefill}
+                onPrefill={(text) => setComposerPrefill({ text, nonce: Date.now() })}
                 onPrefillConsumed={() => setComposerPrefill(null)}
               />
             )}
@@ -2455,7 +2458,9 @@ function Conversation({
   onOpenProposal,
   onOpenAutotask,
   onDeleteTurns,
+  attention,
   prefill,
+  onPrefill,
   onPrefillConsumed
 }: {
   owner?: Persona
@@ -2477,8 +2482,12 @@ function Conversation({
   onOpenAutotask: (taskId: string) => void
   /** 按「轮」删除选中轮次（含破坏性确认）；返回是否已删（true=退出选择态并清空选择）。 */
   onDeleteTurns: (turnIndices: number[]) => Promise<boolean>
+  /** 当前会话有待用户处理的卡片（问答 / 计划 / 挂载请求）：此时不开回滚面板。 */
+  attention: boolean
   /** 输入框预填（一次性、不发送）；null 表示无待预填。 */
   prefill: { text: string; nonce: number } | null
+  /** 请求预填输入框（回滚恢复对话后把该轮原问题放回去）。 */
+  onPrefill: (text: string) => void
   /** Composer 消费预填后回调，父层据此置空，避免重挂载时复活旧预填。 */
   onPrefillConsumed: () => void
 }): React.JSX.Element {
@@ -2534,6 +2543,25 @@ function Conversation({
     }
     return out
   }, [messages, t])
+
+  // 检查点回滚面板：null=关闭；turn=null 从列表开始，否则直达该轮详情（右键「回到此处」）。
+  // 三个入口（/rewind、双击 Esc、右键）共用 canRewind：流式中或有待处理卡片时一律不开。
+  const [rewind, setRewind] = useState<{ turn: number | null } | null>(null)
+  const canRewind = !streaming && !attention
+  const openRewind = (turn: number | null = null): boolean => {
+    if (!canRewind) return false
+    setRewind({ turn })
+    return true
+  }
+  // 某轮提问原文（不含附件）：面板在回滚前调用，回滚后该轮消息就不在了。
+  const promptOf = (turn: number): string => {
+    let k = -1
+    for (const m of messages) {
+      if (m.role !== 'user') continue
+      if (++k === turn) return m.blocks.map((b) => (b.kind === 'text' ? b.text : '')).join('')
+    }
+    return ''
+  }
 
   // 当前所在轮（高亮）。-1 表示无（无消息时）。滚动中经 rAF 去抖重算，避免每个滚动事件都量 DOM。
   const [activeTurn, setActiveTurn] = useState(-1)
@@ -2670,6 +2698,7 @@ function Conversation({
     setSelecting(false)
     setSelected(new Set())
     setCtxMenu(null)
+    setRewind(null)
     setActiveTurn(-1)
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
@@ -2808,6 +2837,16 @@ function Conversation({
                   }
                 ]
               : []),
+            // 落在某一轮上才给：回到的是「这一轮开始之前」，前言区（压缩摘要等）不算轮。
+            ...(ctxMenu.canDelete && ctxMenu.turn !== null && canRewind
+              ? [
+                  {
+                    label: t('cf.rewind.here'),
+                    icon: <RotateCcw size={14} />,
+                    onClick: () => openRewind(ctxMenu.turn)
+                  }
+                ]
+              : []),
             ...(ctxMenu.canDelete
               ? [
                   {
@@ -2851,8 +2890,20 @@ function Conversation({
           onStop={onStop}
           showJump={!atBottom && messages.length > 0}
           onJump={jumpToLatest}
+          onRewind={() => openRewind()}
           prefill={prefill}
           onPrefillConsumed={onPrefillConsumed}
+        />
+      )}
+
+      {rewind && (
+        <RewindModal
+          sessionId={currentSessionId}
+          turns={tocItems}
+          initialTurn={rewind.turn}
+          promptOf={promptOf}
+          onClose={() => setRewind(null)}
+          onPrefill={onPrefill}
         />
       )}
     </main>
@@ -3088,7 +3139,7 @@ function ConvMessage({
 
 /**
  * 输入框「/ 指令」联想的一个候选项。
- * `command` = 渲染层自有指令（目前仅 /compact，见 store/chat 的手动压缩分支）；
+ * `command` = 渲染层自有指令（/compact 见 store/chat 的手动压缩分支；/rewind 在 Composer.submit 拦截）；
  * `skill` = 已启用技能，由主进程按 `/name` 匹配并把 SKILL.md 正文预置进本轮消息。
  */
 interface SlashCommand {
@@ -3115,6 +3166,7 @@ function Composer({
   onStop,
   showJump,
   onJump,
+  onRewind,
   prefill,
   onPrefillConsumed
 }: {
@@ -3126,6 +3178,8 @@ function Composer({
   onStop: () => void
   showJump: boolean
   onJump: () => void
+  /** 打开检查点回滚面板（/rewind、双击 Esc）；返回 false 表示此刻不可用（未打开）。 */
+  onRewind: () => boolean
   prefill: { text: string; nonce: number } | null
   onPrefillConsumed: () => void
 }): React.JSX.Element {
@@ -3148,6 +3202,8 @@ function Composer({
   /** 输入框是否持有焦点：失焦即收起联想（采纳项走 mousedown+preventDefault，不会触发失焦）。 */
   const [focused, setFocused] = useState(false)
   const slashRef = useRef<HTMLDivElement>(null)
+  /** 上一次「空输入框里按 Esc」的时刻：500ms 内再按一次即打开回滚面板。 */
+  const lastEscRef = useRef(0)
 
   // 预填（不发送）：把父层注入的文本写进输入框，聚焦并将光标移到末尾，交由用户自己发送。
   // nonce 变化触发一次；消费后立即回调置空（父层 prefill→null），guard 防重入与重挂载复活。
@@ -3165,10 +3221,13 @@ function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill?.nonce])
 
-  // 指令表：渲染层自有的 /compact 置顶，其后是已启用技能（停用技能主进程也不认，故一并滤掉）。
-  // 同名技能会被 /compact 遮蔽（渲染层先拦截），按小写名去重、保留先者，不给出点了没反应的候选。
+  // 指令表：渲染层自有的 /compact、/rewind 置顶，其后是已启用技能（停用技能主进程也不认，故一并滤掉）。
+  // 同名技能会被自有指令遮蔽（渲染层先拦截），按小写名去重、保留先者，不给出点了没反应的候选。
   const slashCommands = useMemo<SlashCommand[]>(() => {
-    const out: SlashCommand[] = [{ name: 'compact', desc: t('cf.slash.compact'), kind: 'command' }]
+    const out: SlashCommand[] = [
+      { name: 'compact', desc: t('cf.slash.compact'), kind: 'command' },
+      { name: 'rewind', desc: t('cf.slash.rewind'), kind: 'command' }
+    ]
     const seen = new Set(out.map((c) => c.name.toLowerCase()))
     for (const s of skills) {
       if (!s.enabled) continue
@@ -3287,6 +3346,11 @@ function Composer({
     const text = input
     const atts = pending.filter((p) => p.supported)
     if ((!text.trim() && atts.length === 0) || streaming) return
+    // /rewind 纯渲染层指令：打开回滚面板、不发消息；此刻不可用则原样留在输入框。
+    if (text.trim().toLowerCase() === '/rewind' && atts.length === 0) {
+      if (onRewind()) setInput('')
+      return
+    }
     setInput('')
     setPending([])
     void onSend(
@@ -3320,6 +3384,16 @@ function Composer({
         setSlashOff(true)
         return
       }
+    }
+    // 双击 Esc（仅空输入框、无待发附件时）打开回滚面板；联想浮层开着时 Esc 已在上面被它吃掉。
+    if (e.key === 'Escape' && plain && !input.trim() && pending.length === 0 && !streaming) {
+      const now = Date.now()
+      if (now - lastEscRef.current <= 500) {
+        lastEscRef.current = 0
+        e.preventDefault()
+        onRewind()
+      } else lastEscRef.current = now
+      return
     }
     if (e.key !== 'Enter') return
     if (!plain) return // 交给默认换行
@@ -3380,7 +3454,13 @@ function Composer({
                     }}
                     onMouseEnter={() => setSlashSel(i)}
                   >
-                    {c.kind === 'command' ? <Shrink size={14} /> : <Puzzle size={14} />}
+                    {c.kind === 'skill' ? (
+                      <Puzzle size={14} />
+                    ) : c.name === 'rewind' ? (
+                      <RotateCcw size={14} />
+                    ) : (
+                      <Shrink size={14} />
+                    )}
                     <span className="cf-slash__name">{`/${c.name}`}</span>
                     <span className="cf-slash__desc">{c.desc}</span>
                   </button>

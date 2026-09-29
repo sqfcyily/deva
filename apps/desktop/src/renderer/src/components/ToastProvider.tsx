@@ -18,8 +18,10 @@ export interface ToastOptions {
   title?: string
   message?: ReactNode
   variant?: ToastVariant
-  /** 自动消失毫秒；默认 3500，传 0 则不自动消失（仅手动关闭）。 */
+  /** 自动消失毫秒；默认 3500（带 action 时 8000，留足点击时间），传 0 则不自动消失（仅手动关闭）。 */
   duration?: number
+  /** 行内操作按钮（如「撤销」）：点击后执行 onClick 并关闭该 toast。 */
+  action?: { label: string; onClick: () => void }
 }
 
 interface ToastApi {
@@ -56,7 +58,7 @@ export function ToastProvider({ children }: { children: ReactNode }): React.JSX.
     (opts: ToastOptions): void => {
       const id = ++seq.current
       setItems((prev) => [...prev, { id, ...opts }])
-      const duration = opts.duration ?? 3500
+      const duration = opts.duration ?? (opts.action ? 8000 : 3500)
       if (duration > 0) timers.current.set(id, setTimeout(() => dismiss(id), duration))
     },
     [dismiss]
@@ -114,6 +116,17 @@ function ToastCard({
         {item.title && <div className="toast__title">{item.title}</div>}
         {item.message != null && <div className="toast__msg">{item.message}</div>}
       </div>
+      {item.action && (
+        <button
+          className="toast__action"
+          onClick={() => {
+            item.action?.onClick()
+            onClose()
+          }}
+        >
+          {item.action.label}
+        </button>
+      )}
       <button className="toast__close" title={t('common.close')} onClick={onClose}>
         <X size={15} />
       </button>

@@ -113,7 +113,10 @@ export interface AutotaskDraft {
 export type DisplayBlock =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error'; summary?: string }
-  | { kind: 'notice'; code: 'compacted' | 'truncated' | 'empty' | 'refused' }
+  | {
+      kind: 'notice'
+      code: 'compacted' | 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
+    }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   /**
@@ -142,6 +145,64 @@ export type DisplayBlock =
 export type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] }
   | { role: 'assistant'; blocks: DisplayBlock[] }
+
+/** 回滚列表里每轮自身的改动量（与 services/checkpoints.ts 的 RewindTurnStat 对齐）。 */
+export interface RewindTurnStat {
+  turn: number
+  fileCount: number
+  added: number
+  removed: number
+  /** 含近似 / 二进制 / 过大等无法精确计数的文件。 */
+  approx: boolean
+  hasExec: boolean
+}
+
+/** 回滚对单个文件的动作：写回 / 删除（目标是不存在）/ 重建（现已不存在）/ 无需改动。 */
+export type RewindAction = 'restore' | 'delete' | 'create' | 'none'
+/** ok=可回滚；conflict=回滚点之后被外部改过；link=链接文件跳过；protected=敏感或 .git 路径跳过。 */
+export type RewindStatus = 'ok' | 'conflict' | 'link' | 'blob_missing' | 'too_large' | 'protected'
+
+/** 回滚预览里的一个文件（只有摘要，不含内容；与 services/checkpoints.ts 的 RewindFile 对齐）。 */
+export interface RewindFile {
+  path: string
+  rel: string
+  action: RewindAction
+  status: RewindStatus
+  added?: number
+  removed?: number
+  approx?: boolean
+  binary?: boolean
+}
+
+export interface RewindPreview {
+  files: RewindFile[]
+  /** 目标轮起跑过的命令：其影响无法撤销，仅列出。 */
+  commands: string[]
+}
+
+/** 回滚模式：both=代码与对话 / conversation=仅对话 / code=仅代码。 */
+export type RewindMode = 'both' | 'conversation' | 'code'
+
+export interface RewindApplyRequest {
+  sessionId: string
+  turn: number
+  mode: RewindMode
+  /** 勾选「仍然覆盖」的冲突文件路径（RewindFile.path）。 */
+  force?: string[]
+}
+
+export type RewindApplyResult =
+  | {
+      ok: true
+      messages: DisplayMessage[]
+      restored: string[]
+      skipped: { rel: string; reason: RewindStatus | 'error' }[]
+    }
+  | { ok: false; error: 'no-session' | 'busy' | 'bad-turn' }
+
+export type RewindUndoResult =
+  | { ok: true; messages: DisplayMessage[]; restored: string[]; skipped: string[] }
+  | { ok: false; error: 'no-undo' | 'busy' }
 
 /** ask_user 候选项（与 services/chat.ts 对齐）。 */
 export interface AskOption {
@@ -615,7 +676,7 @@ const api = {
     set: (patch: Record<string, unknown>): Promise<{ ok: true }> =>
       ipcRenderer.invoke('config:set', patch)
   },
-  /** 技能（全局 ~/.deva/skills）：列出 / 读取 / 上传导入 / 删除 / 启停。创建仅经上传或对话（create_skill 工具），无手写落盘。 */
+  /** 技能（全局 ~/.deva/skills）：列出 / 读取 / 上传导入 / 删除 / 启停。渲染层不写技能文件——创建经上传，或经对话（create_skill 工具 / 主智能体直接写技能目录）。 */
   skills: {
     list: (): Promise<SkillRecord[]> => ipcRenderer.invoke('skills:list'),
     get: (id: string): Promise<SkillRecord | null> => ipcRenderer.invoke('skills:get', id),
@@ -751,6 +812,18 @@ const api = {
       turnIndices: number[]
     ): Promise<DisplayMessage[]> =>
       ipcRenderer.invoke('chat:delete-turns', sessionId, workspaceRoot, turnIndices),
+    /** 检查点回滚·列表：每轮的改动量 + 能否撤销上次回滚。 */
+    rewindList: (sessionId: string): Promise<{ turns: RewindTurnStat[]; canUndo: boolean }> =>
+      ipcRenderer.invoke('chat:rewind-list', sessionId),
+    /** 检查点回滚·预览：回到第 turn 轮之前要动的文件与撤不回的命令；会话或轮不存在回 null。 */
+    rewindPreview: (sessionId: string, turn: number): Promise<RewindPreview | null> =>
+      ipcRenderer.invoke('chat:rewind-preview', sessionId, turn),
+    /** 检查点回滚·执行（主进程重算计划，不信任渲染层预览）；返回重建的展示气泡。 */
+    rewindApply: (req: RewindApplyRequest): Promise<RewindApplyResult> =>
+      ipcRenderer.invoke('chat:rewind-apply', req),
+    /** 撤销上次回滚（仅当其后没有新消息 / 压缩 / 删轮）。 */
+    rewindUndo: (sessionId: string): Promise<RewindUndoResult> =>
+      ipcRenderer.invoke('chat:rewind-undo', sessionId),
     /** 落定角色名片终态（接受/拒绝）：持久化 proposals 边车，防重开退回 pending / 重复建角色。 */
     resolveProposal: (
       sessionId: string,

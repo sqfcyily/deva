@@ -19,14 +19,18 @@ import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
  * 设计（对标 Claude Code 的渐进式披露）：
  * - **身份 = 文件夹名（id），显示名 = frontmatter `name`**。文件夹名恒定不改（改显示名只重写 frontmatter），
  *   故重命名不触发目录搬迁，UI 的「id 稳定 / name 可编辑」模型天然成立。
- * - 启用态**不入 SKILL.md**（避免手改正文时误触），集中存 `config.json` 的 `skills.enabled[id]`，默认关。
+ * - 启用态**不入 SKILL.md**（避免手改正文时误触），集中存 `config.json` 的 `skills.enabled[id]`。
+ *   **映射里没有即启用**（`!== false`）：模型用 write_file / 解压直接落盘的技能文件夹无需再开一道开关；
+ *   只有用户在「扩展」页关掉的才显式存 `false` 并保持关闭。
  * - `SKILL.md` = frontmatter（name/description/trigger/allowed-tools）+ 正文（instructions，即完整操作指令）。
  *
  * 运行期（chat.ts 同进程直接调用，无需 IPC）：
  * - `enabledSkillSummaries()`：把「已启用」技能的 name+description 注入系统提示词（便宜的清单段）。
  * - `loadSkillInstructionsByName()`：命中 `skill` 工具或 `/name` 显式触发时，才加载完整正文。
  *
- * 安全：`~/.deva` 在 fs-guard 的敏感硬地板内，Agent 自身文件工具读不到；技能配置由**主进程直读**（符合设计）。
+ * 安全：`~/.deva` 在 fs-guard 的敏感硬地板内，**唯独技能目录开口**（fs-guard.isSkillsPath）——多文件技能
+ * 的子文档须能被 read_file 读到。写入按通道收口：主交互循环可写（create_skill / write_file / 命令解压皆可），
+ * 子智能体与定时任务只读（写技能 = 持久化提示词注入，闸门拒绝）。
  * `allowed-tools` 只作**建议文本**注入，绝不触碰权限闸门（evaluate）——技能不能借此自我提权。
  */
 
@@ -63,13 +67,14 @@ export interface SkillUpsertInput {
   trigger?: string
   allowedTools?: string[]
   instructions?: string
-  /** 可选：一并设置启用态（新建默认关）。 */
+  /** 可选：一并设置启用态（新建默认开）。 */
   enabled?: boolean
 }
 
 /**
  * 内置元技能 `create-skill` 的正文：指导模型引导用户创建自己的技能。
- * 关键约束写进正文——**必须调 `create_skill` 工具落盘，严禁 `write_file`**（`~/.deva` 在敏感硬地板，写不进）。
+ * 单文件技能走 `create_skill`（校验 + 自动启用）；多文件技能直接写进技能目录（Tier-1 对它开口）。
+ * 正文不写死目录路径：它是模块级常量，而路径依赖 DEVA_HOME——绝对路径由系统提示词【技能】段给出。
  */
 const CREATE_SKILL_INSTRUCTIONS = `你正在帮助用户创建一个新的**技能（Skill）**。技能是一份结构化文档（SKILL.md），描述在特定场景下应如何完成某类任务；启用后，其摘要会进入系统提示词，用户输入 \`/技能名\` 或命中场景时加载完整正文。
 
@@ -83,9 +88,21 @@ const CREATE_SKILL_INSTRUCTIONS = `你正在帮助用户创建一个新的**技�
    - \`allowed-tools\`：建议用到的工具清单（**仅提示**，不授予任何权限；每次真实工具调用照常走权限闸）。
    - \`instructions\`：完整操作步骤，用 Markdown 写，这是技能的正文与核心。
 3. **复述草案**：把整理好的要素向用户复述一遍，请其确认或修改。
-4. **落盘**：用户确认后，**调用 \`create_skill\` 工具**写入（参数：name、description、trigger、allowedTools、instructions）。
-   - ⚠️ **严禁用 \`write_file\` 或 \`run_command\` 去写 SKILL.md**——技能目录在受保护路径下，只有 \`create_skill\` 工具能写入。
-5. **告知结果**：创建成功后技能会**自动启用**，告诉用户可以用 \`/技能名\` 触发它，也可在「扩展」页查看。
+4. **落盘**：用户确认后，按技能形态二选一：
+   - **单文件技能**（只有一份正文）：**调用 \`create_skill\` 工具**写入（参数：name、description、trigger、allowedTools、instructions），最省事。
+   - **多文件技能**（入口文档 + 参考文档/脚本/模板）：在技能目录（绝对路径见系统提示词【技能】段）下新建 \`<文件夹名>/\`，用 \`write_file\` 写入 \`SKILL.md\` 与各子文件；用户给了现成的压缩包或仓库时，也可用 \`run_command\` 下载解压到该文件夹。
+     - 文件夹名只用英文字母、数字、\`-\`、\`_\`、\`.\`（字母或数字开头，≤64 字符），否则不会被识别。
+     - \`SKILL.md\` 必须以 frontmatter 开头，至少含 \`name\` 与 \`description\`（\`trigger\`、\`allowed-tools\` 可选），其后是正文：
+       \`\`\`
+       ---
+       name: code-review
+       description: 一句话说明何时该用这个技能
+       ---
+       （正文）
+       \`\`\`
+     - 正文引用子文件请写**相对该文件夹**的路径（如 \`references/api.md\`）；加载技能时会告知文件夹绝对路径，届时用 \`read_file\` 按需读取。
+   - ⚠️ 只能写技能目录本身；配置目录里的其他文件（config.json、secrets.json 等）仍受保护，不要尝试。
+5. **告知结果**：技能落盘即**自动启用**（新文件夹无需另开开关，下一轮对话起进入技能清单），告诉用户可以用 \`/技能名\` 触发它，也可在「扩展」页查看或关闭。
 
 保持简洁友好，一次问清关键信息即可，不要连环追问。`
 
@@ -93,9 +110,10 @@ const CREATE_SKILL_INSTRUCTIONS = `你正在帮助用户创建一个新的**技�
 const BUILTIN_CREATE_SKILL: SkillRecord = {
   id: 'create-skill',
   name: 'create-skill',
-  description: '引导用户从零创建一个新技能：厘清用途、收集要素、确认后调 create_skill 工具落盘并启用。',
+  description:
+    '引导用户从零创建一个新技能：厘清用途、收集要素、确认后落盘并启用（单文件调 create_skill，多文件直接写进技能目录）。',
   trigger: '输入 /create-skill，或表达「帮我做/创建一个技能」时触发。',
-  allowedTools: ['create_skill'],
+  allowedTools: ['create_skill', 'write_file', 'run_command'],
   instructions: CREATE_SKILL_INSTRUCTIONS,
   enabled: true,
   source: 'builtin'
@@ -184,7 +202,11 @@ const IMPORT_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 const IMPORT_MAX_FILES = 200
 const IMPORT_MAX_SINGLE_BYTES = 10 * 1024 * 1024
 
-function skillsDir(): string {
+/**
+ * 技能根目录（绝对路径）。chat.ts 把它写进系统提示词与 skill 工具结果，供模型读写多文件技能；
+ * 进程内恒定（DEVA_HOME 只在启动时读取），不破坏 §4.18 的提示缓存前缀稳定性。
+ */
+export function skillsDir(): string {
   return join(getDevaHome(), 'skills')
 }
 
@@ -265,7 +287,7 @@ export function listSkills(): SkillRecord[] {
     try {
       if (!statSync(join(dir, id)).isDirectory()) continue
       const raw = readFileSync(file, 'utf8')
-      out.push(parseSkill(id, raw, map[id] === true))
+      out.push(parseSkill(id, raw, map[id] !== false))
     } catch {
       /* 无 SKILL.md / 读失败 → 跳过该目录 */
     }
@@ -281,7 +303,7 @@ export function getSkill(id: string): SkillRecord | null {
   if (!isSafeId(id)) return null
   try {
     const raw = readFileSync(skillFile(id), 'utf8')
-    return parseSkill(id, raw, enabledMap()[id] === true)
+    return parseSkill(id, raw, enabledMap()[id] !== false)
   } catch {
     return null
   }
@@ -332,9 +354,9 @@ export function upsertSkill(input: SkillUpsertInput): SkillRecord {
     /* 写失败：返回内存态记录，UI 仍可用（下次可重试） */
   }
 
-  // 启用态：新建默认关；显式传入则以传入为准。
+  // 启用态：新建默认开（与「映射里没有即启用」一致）；显式传入则以传入为准。
   if (typeof input.enabled === 'boolean') setSkillEnabled(id, input.enabled)
-  else if (isNew) setSkillEnabled(id, false)
+  else if (isNew) setSkillEnabled(id, true)
 
   return getSkill(id) ?? {
     id,
@@ -343,7 +365,7 @@ export function upsertSkill(input: SkillUpsertInput): SkillRecord {
     trigger: (input.trigger ?? '').trim(),
     allowedTools: input.allowedTools ?? [],
     instructions: input.instructions ?? '',
-    enabled: input.enabled === true,
+    enabled: input.enabled !== false,
     source: 'custom'
   }
 }
@@ -388,16 +410,22 @@ export function hasEnabledSkills(): boolean {
 /**
  * 按显示名（大小写不敏感）加载**已启用**技能的完整正文。
  * 供 `skill` 工具与 `/name` 显式触发；未命中返回 null。
+ * `dir` = 自定义技能的文件夹绝对路径（内置技能不落盘，无此项）：多文件技能正文里的相对路径
+ * 以它为基准，调用方须一并告知模型，否则子文档无从定位。
  */
 export function loadSkillInstructionsByName(
   name: string
-): { name: string; instructions: string } | null {
+): { name: string; instructions: string; dir?: string } | null {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return null
   for (const s of listSkills()) {
     if (!s.enabled) continue
     if (s.name.toLowerCase() === wanted || s.id.toLowerCase() === wanted) {
-      return { name: s.name, instructions: s.instructions }
+      return {
+        name: s.name,
+        instructions: s.instructions,
+        ...(s.source === 'custom' ? { dir: join(skillsDir(), s.id) } : {})
+      }
     }
   }
   return null
@@ -407,7 +435,8 @@ export function loadSkillInstructionsByName(
 
 /**
  * 校验并落盘一个导入的技能：frontmatter 必须含 `name`；写入 `~/.deva/skills/<id>/SKILL.md`
- * 及（可选）已过守卫的附带文件；成功后**自动启用**。附带文件仅原样保留，运行期只注入 SKILL.md 正文。
+ * 及（可选）已过守卫的附带文件；成功后**自动启用**。运行期只注入 SKILL.md 正文，附带文件由模型
+ * 按需 read_file（技能目录是 Tier-1 的唯一开口，skill 工具结果会给出文件夹绝对路径）。
  */
 function writeImportedSkill(
   rawMd: string,

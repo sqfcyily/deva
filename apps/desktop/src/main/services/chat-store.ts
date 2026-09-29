@@ -1,8 +1,17 @@
 import { createHash } from 'crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from 'fs'
 import { join } from 'path'
 import { getDevaHome } from './config'
 import type { Message } from '../providers/types'
+import type { CheckpointRec } from './checkpoints'
 
 /**
  * 对话持久化（主进程）· 一对话一文件。
@@ -108,6 +117,21 @@ export interface StoredSession {
    * 时无需调整（同 proposals）。见 chat.ts:chat:resolve-autotask。
    */
   autotasks?: Record<string, { status: 'created' | 'dismissed'; taskId?: string }>
+  /**
+   * 文件检查点记录（供回滚），按 toolUseId 记录该次工具调用的写入 / 命令（子智能体的写入归到父级
+   * run_subagent 的 id）。**不存轮下标**：回滚时由 tool_use 所在的轮反查，故压缩 / 删轮后不会错位。
+   * 按轮删除 / 压缩时随 tool_use 一并清理（同 proposals）。见 services/checkpoints.ts。
+   */
+  checkpoints?: Record<string, CheckpointRec[]>
+  /** 路径键 → Deva 最近一次写入或回滚后该文件内容的 hash（null = 不存在）。回滚时据此检测外部改动。 */
+  lastKnown?: Record<string, string | null>
+  /** 路径键 → 本会话第一次动这个文件前的内容 hash（给日后的完整 diff 功能留底）。 */
+  baselines?: Record<string, string | null>
+  /**
+   * 「仅恢复代码」后待告知模型的说明：下一次 chat:send 作为该条用户消息的**首个**独立 text 块注入，
+   * 注入即清空（展示层取最后一个 text 块，故不出现在气泡里）。
+   */
+  restoreNote?: string
 }
 
 /** 回合终态提示（持久化边车项）。见 StoredSession.notices。 */
@@ -118,8 +142,8 @@ export interface StoredNotice {
   kind: 'error' | 'notice'
   /** kind='error' 时的错误文案。 */
   message?: string
-  /** kind='notice' 时的提示码。 */
-  code?: 'truncated' | 'empty' | 'refused'
+  /** kind='notice' 时的提示码（aborted=用户中止了本轮，其前内容为中止前已产出的部分）。 */
+  code?: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
 }
 
 /** 会话元信息（左侧列表用，不含正文）。 */
@@ -222,10 +246,33 @@ function ensureIndex(): Map<string, ChatSessionMeta> {
   return map
 }
 
+/**
+ * 原子写：先写同目录 `<file>.tmp` 再 rename 覆盖。进程在写到一半时被杀（强退 / 断电 / 崩溃）
+ * 最多丢掉这一次的新内容，**绝不会把旧文件截成半截 JSON**——否则 loadSessionFile 解析失败即
+ * 当作「对话不存在」，整条对话凭空消失。
+ * 仅当 rename 失败（Windows 上目标文件被杀毒 / 索引服务短暂占用时可能 EPERM）才回退为直接覆盖写
+ * （与旧行为一致）并清掉残留 tmp；tmp 本身写不进（磁盘满等）则原样抛出——此时再去直写只会把
+ * 旧文件也截断。`.json.tmp` 不以 `.json` 结尾，扫描重建索引时天然被排除。
+ */
+function writeFileAtomic(file: string, data: string): void {
+  const tmp = `${file}.tmp`
+  writeFileSync(tmp, data, 'utf8')
+  try {
+    renameSync(tmp, file)
+  } catch {
+    writeFileSync(file, data, 'utf8')
+    try {
+      rmSync(tmp, { force: true })
+    } catch {
+      /* 清理失败无害：下次写入会覆盖 */
+    }
+  }
+}
+
 function persistIndex(): void {
   if (!indexCache) return
   try {
-    writeFileSync(indexPath(), JSON.stringify([...indexCache.values()], null, 2), 'utf8')
+    writeFileAtomic(indexPath(), JSON.stringify([...indexCache.values()], null, 2))
   } catch {
     /* 索引落盘失败静默：单条对话文件已是真源，下次成功保存即自愈 */
   }
@@ -255,7 +302,7 @@ export function save(id: string): void {
   const s = sessionCache.get(id)
   if (!s) return
   try {
-    writeFileSync(fileForId(id), JSON.stringify(s, null, 2), 'utf8')
+    writeFileAtomic(fileForId(id), JSON.stringify(s, null, 2))
   } catch {
     /* 单条对话落盘失败静默，不影响内存态 */
     return

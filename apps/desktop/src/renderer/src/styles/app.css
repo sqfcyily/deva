@@ -1730,6 +1730,22 @@ textarea {
   background: var(--bg-hover);
   color: var(--fg);
 }
+/* 行内操作（如「撤销」）：文字按钮，与关闭钮同高 */
+.toast__action {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.toast__action:hover {
+  background: var(--accent-tint);
+}
 @keyframes deva-toast-in {
   from {
     opacity: 0;

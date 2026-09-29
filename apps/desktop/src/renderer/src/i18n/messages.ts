@@ -212,7 +212,9 @@ const zhCN: MessageTree = {
       refused: '模型拒绝了本次请求（或被服务商的内容策略拦截），本轮没有返回内容。换种说法或换个模型再试。',
       compacted: '较早的对话已压缩为摘要，以节省上下文。',
       compactNone: '当前对话较短，无需压缩。',
-      compactFailed: '压缩失败，历史保持不变。'
+      compactFailed: '压缩失败，历史保持不变。',
+      restored: '已将代码回滚到较早的检查点，对话保留；下一条消息会告知模型这些文件已恢复。',
+      aborted: '已停止本轮回复，以上为停止前已产出的内容。'
     },
     noModel: '尚未选择模型，请先在「设置 › 模型」添加并启用模型，再从输入框上方的模型选择器中选择。',
     noKey: '该模型尚未配置 API 密钥，请在「设置 › 模型」中填写。',
@@ -529,7 +531,52 @@ const zhCN: MessageTree = {
     slash: {
       title: '指令',
       compact: '压缩当前对话上下文，较早内容折叠为摘要',
+      rewind: '回到之前的检查点，撤回代码和 / 或对话',
       hint: '↑↓ 选择 · Enter 采用 · Esc 关闭'
+    },
+    // 检查点回滚面板（/rewind、双击 Esc、聊天区右键「回到此处」）
+    rewind: {
+      title: '回到检查点',
+      listHint: '选一轮回到它开始之前：这一轮及之后的改动会被撤回。',
+      detailHint: '回到这一轮开始之前',
+      empty: '还没有可以回到的轮次。',
+      loading: '加载中…',
+      undoLast: '撤销上次回滚',
+      back: '返回列表',
+      files: '{n} 个文件',
+      hasExec: '这一轮运行过命令，命令的影响无法撤销',
+      filesHeading: '文件',
+      noFiles: '这一轮起没有记录到文件改动，只能恢复对话。',
+      commandsHeading: '以下命令的影响无法撤销',
+      changed: '已变更',
+      force: '仍然覆盖',
+      action: {
+        restore: '恢复',
+        delete: '删除',
+        create: '重建',
+        none: '无需改动',
+        skip: '跳过'
+      },
+      status: {
+        conflict: '回滚点之后被外部修改过，默认跳过',
+        link: '链接文件（符号链接 / 硬链接），为安全起见不回写',
+        blob_missing: '备份已缺失，无法恢复',
+        too_large: '文件过大，当时没有备份',
+        protected: '受保护路径（密钥目录 / .git），不回写'
+      },
+      both: '恢复代码和对话',
+      conversation: '仅恢复对话',
+      code: '仅恢复代码',
+      done: '已回滚',
+      restoredN: '恢复了 {n} 个文件',
+      skippedN: '{n} 个文件被跳过',
+      undo: '撤销',
+      undone: '已撤销回滚',
+      busy: '对话还在进行，结束后再回滚。',
+      badTurn: '这一轮已经不存在了。',
+      noUndo: '没有可撤销的回滚。',
+      failed: '回滚失败',
+      here: '回到此处'
     },
     git: {
       menuHint: 'Git 操作',
@@ -881,7 +928,10 @@ const en: MessageTree = {
         'The model declined this request (or the provider blocked it by content policy), so nothing came back. Try rephrasing, or switch models.',
       compacted: 'Earlier conversation was compacted into a summary to save context.',
       compactNone: 'This conversation is still short — nothing to compact.',
-      compactFailed: 'Compaction failed; history is unchanged.'
+      compactFailed: 'Compaction failed; history is unchanged.',
+      restored:
+        'Code was rolled back to an earlier checkpoint; the conversation is kept. Your next message will tell the model which files were restored.',
+      aborted: 'Response stopped. Everything above was produced before stopping.'
     },
     noModel:
       'No model selected — add and enable a model under Settings › Models, then pick it from the model selector above the input box.',
@@ -1201,7 +1251,51 @@ const en: MessageTree = {
     slash: {
       title: 'Commands',
       compact: 'Compact this conversation — fold earlier turns into a summary',
+      rewind: 'Go back to an earlier checkpoint — undo code and/or conversation',
       hint: '↑↓ navigate · Enter accept · Esc dismiss'
+    },
+    rewind: {
+      title: 'Rewind to checkpoint',
+      listHint: 'Pick a turn to go back to just before it; changes from that turn onward are undone.',
+      detailHint: 'Go back to just before this turn',
+      empty: 'No turns to go back to yet.',
+      loading: 'Loading…',
+      undoLast: 'Undo last rewind',
+      back: 'Back to list',
+      files: '{n} files',
+      hasExec: 'Commands ran in this turn; their effects can’t be undone',
+      filesHeading: 'Files',
+      noFiles: 'No file changes were recorded from this turn on — only the conversation can be restored.',
+      commandsHeading: 'Effects of these commands can’t be undone',
+      changed: 'changed',
+      force: 'Overwrite anyway',
+      action: {
+        restore: 'Restore',
+        delete: 'Delete',
+        create: 'Recreate',
+        none: 'Unchanged',
+        skip: 'Skip'
+      },
+      status: {
+        conflict: 'Modified outside Deva after the checkpoint — skipped by default',
+        link: 'Linked file (symlink / hard link) — not written back, for safety',
+        blob_missing: 'Backup is missing — can’t be restored',
+        too_large: 'Too large — it wasn’t backed up at the time',
+        protected: 'Protected path (key directory / .git) — not written back'
+      },
+      both: 'Restore code and conversation',
+      conversation: 'Restore conversation only',
+      code: 'Restore code only',
+      done: 'Rewound',
+      restoredN: '{n} files restored',
+      skippedN: '{n} files skipped',
+      undo: 'Undo',
+      undone: 'Rewind undone',
+      busy: 'The conversation is still running — rewind once it finishes.',
+      badTurn: 'That turn no longer exists.',
+      noUndo: 'Nothing to undo.',
+      failed: 'Rewind failed',
+      here: 'Rewind to here'
     },
     git: {
       menuHint: 'Git actions',

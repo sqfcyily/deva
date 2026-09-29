@@ -9,7 +9,8 @@
  * 拆分器故意「过拆」：多拆一段无害（顶多多问一次），漏拆才危险，故取 POSIX 操作符超集。
  */
 import { existsSync } from 'node:fs'
-import { delimiter, dirname, join } from 'node:path'
+import { homedir } from 'node:os'
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { detectShells } from './shells'
 
 /**
@@ -379,8 +380,8 @@ export function isDangerousCommand(command: string): boolean {
  * 这里找的是 token 而非命令结构，整串更保险。
  */
 const SENSITIVE_TOKEN_PATTERNS: RegExp[] = [
-  // 凭据目录与本应用配置目录
-  /(?<![\w.-])\.(?:ssh|aws|gnupg|deva)(?![\w-])/i,
+  // 凭据目录（本应用配置目录 .deva 单列，见 touchesDevaHome——它有技能目录这一开口）
+  /(?<![\w.-])\.(?:ssh|aws|gnupg)(?![\w-])/i,
   // SSH 密钥惯用名（含 .pub 一并挡：公钥本身无害，但读它常是摸私钥的前奏，宁可误伤）
   /(?<![\w-])id_(?:rsa|dsa|ecdsa|ed25519)(?![\w-])/i,
   // 本应用密钥库与 SSH 信任文件
@@ -400,7 +401,88 @@ const SENSITIVE_TOKEN_PATTERNS: RegExp[] = [
  * 要真正密封须把 exec 沙箱化（容器 / 受限用户），非本层职责。
  *
  * 取舍是宁可误伤：命中即拒，模型收到 tool_result 会自行改道；漏放的代价（私钥外泄）不可逆。
+ *
+ * `allowSkills`：为技能目录（`<配置根>/skills`）开口，仅主交互循环传 true——多文件技能的安装
+ * 常是「下载解压到技能目录」。子智能体/定时任务不传，任何配置根 token 一律拒（与文件通道的
+ * 「技能只读」对应：命令一旦放行就能写）。默认保守。
  */
-export function touchesSensitivePath(command: string): boolean {
-  return SENSITIVE_TOKEN_PATTERNS.some((re) => re.test(command))
+export function touchesSensitivePath(command: string, opts: { allowSkills?: boolean } = {}): boolean {
+  if (SENSITIVE_TOKEN_PATTERNS.some((re) => re.test(command))) return true
+  return touchesDevaHome(command, opts.allowSkills === true)
+}
+
+/** 配置根的环境变量引用（`$DEVA_HOME`、`${DEVA_HOME}`、`%DEVA_HOME%`、`$env:DEVA_HOME`）：一律拒。 */
+const DEVA_HOME_VAR = /(?<![\w])DEVA_HOME(?![\w])/i
+
+/**
+ * 作为路径段出现的 `..`（`cd ..`、`skills/../config.json`），不误伤 `...` 与 `HEAD..main`。
+ * 命令提到技能目录时再出现它即拒：挡 `.deva/skills/../config.json`、`cd <skills> && cat ../config.json`。
+ * 会误伤「在技能目录里干完活 `cd ..`」——罕见，且模型改用绝对路径即可。
+ */
+const PARENT_SEGMENT = /(?:^|[\s'"=\\/])\.\.(?=[\\/\s'";|&)]|$)/
+
+interface DevaHomePattern {
+  /** 命令提到配置根（含技能目录）。 */
+  any: RegExp
+  /** 命令提到配置根里技能目录以外的部分。 */
+  outsideSkills: RegExp
+}
+
+function touchesDevaHome(command: string, allowSkills: boolean): boolean {
+  if (DEVA_HOME_VAR.test(command)) return true
+  let mentioned = false
+  for (const p of devaHomePatterns()) {
+    if (!p.any.test(command)) continue
+    if (!allowSkills || p.outsideSkills.test(command)) return true
+    mentioned = true
+  }
+  return mentioned && PARENT_SEGMENT.test(command)
+}
+
+/** 路径段分隔符之后紧跟 `skills` 这一整段（`.deva/skills`、`.deva\\skills\\x`；`skills.bak` 不算）。 */
+const SKILLS_TAIL = String.raw`(?![\\/]+skills(?![\w.-]))`
+
+let DEVA_HOME_PATTERNS: DevaHomePattern[] | null = null
+function devaHomePatterns(): DevaHomePattern[] {
+  if (DEVA_HOME_PATTERNS) return DEVA_HOME_PATTERNS
+  // ① 字面 `.deva` 段：覆盖 `~/.deva`、`$HOME/.deva`、`C:\Users\x\.deva` 等一切写法。
+  const bases = [String.raw`(?<![\w.-])\.deva(?![\w-])`]
+  // ② DEVA_HOME 覆盖到别处时（段名未必叫 .deva），按其真实路径字面匹配。
+  const override = process.env.DEVA_HOME?.trim()
+  if (override) bases.push(...overrideBases(resolve(override)))
+  DEVA_HOME_PATTERNS = bases.map((b) => ({
+    any: new RegExp(b, 'i'),
+    outsideSkills: new RegExp(b + SKILLS_TAIL, 'i')
+  }))
+  return DEVA_HOME_PATTERNS
+}
+
+/**
+ * DEVA_HOME 覆盖目录的字面匹配式：分隔符写作 `[\\/]+`、大小写不敏感；Windows 盘符兼容
+ * `D:`、MSYS 的 `/d`、`/mnt/d`、`/cygdrive/d`；位于用户主目录下时再加 `~`/`$HOME`/`%USERPROFILE%` 前缀写法。
+ */
+function overrideBases(abs: string): string[] {
+  const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const SEP = String.raw`[\\/]+`
+  const END = String.raw`(?![\w.-])`
+  const segs = (p: string): string[] => p.split(/[\\/]+/).filter(Boolean)
+  const out: string[] = []
+
+  const parts = segs(abs)
+  const drive = /^([A-Za-z]):$/.exec(parts[0] ?? '')
+  if (drive) {
+    const d = esc(drive[1])
+    const head = String.raw`(?:${d}:|[\\/](?:mnt[\\/]+|cygdrive[\\/]+)?${d})`
+    out.push(head + parts.slice(1).map((s) => SEP + esc(s)).join('') + END)
+  } else if (parts.length) {
+    out.push(parts.map((s) => SEP + esc(s)).join('') + END)
+  }
+
+  const home = homedir()
+  const rel = relative(home, abs)
+  if (rel && !rel.startsWith('..') && !isAbsolute(rel)) {
+    const head = String.raw`(?:~|\$\{?HOME\}?|%USERPROFILE%|\$env:USERPROFILE)`
+    out.push(head + segs(rel).map((s) => SEP + esc(s)).join('') + END)
+  }
+  return out
 }
