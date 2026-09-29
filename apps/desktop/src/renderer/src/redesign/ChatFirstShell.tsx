@@ -109,6 +109,7 @@ import {
 import { ModelSettings } from '../features/settings/ModelSettings'
 import { AvatarEditor } from './AvatarEditor'
 import { ProfilePanel } from './ProfilePanel'
+import { ProjectMemoryPanel } from './ProjectMemoryPanel'
 import { RewindModal } from './RewindModal'
 import { useProfile } from '../store/profile'
 
@@ -1216,6 +1217,7 @@ function WorkspaceMenu({ root }: { root: string }): React.JSX.Element {
   const { t } = useI18n()
   const toast = useToast()
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [memOpen, setMemOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
 
   const openMenu = (): void => {
@@ -1248,7 +1250,9 @@ function WorkspaceMenu({ root }: { root: string }): React.JSX.Element {
 
   const items = [
     { label: t('cf.ws.copyPath'), icon: <Copy size={14} />, onClick: copyPath },
-    { label: revealLabel, icon: <ExternalLink size={14} />, onClick: reveal }
+    { label: revealLabel, icon: <ExternalLink size={14} />, onClick: reveal },
+    // 项目私有记忆：Deva 在本工作区记下的、只属于用户本人的经验（~/.deva/projects/<key>，不入库）。
+    { label: t('cf.projMem.open'), icon: <Brain size={14} />, onClick: () => setMemOpen(true) }
   ]
 
   return (
@@ -1268,6 +1272,7 @@ function WorkspaceMenu({ root }: { root: string }): React.JSX.Element {
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} openUp items={items} onClose={() => setMenu(null)} />
       )}
+      {memOpen && <ProjectMemoryPanel root={root} onClose={() => setMemOpen(false)} />}
     </>
   )
 }
@@ -3565,7 +3570,7 @@ function Composer({
  * 模型选择器。复用 app.css 的既有类
  * （model-pick / chip / model-pick__backdrop / model-pick__menu），零新增 CSS。
  * 只列「已启用服务商 × 已启用模型」，按服务商分组。
- * 切换时做两件事：① 写当前对话覆盖层（setSessionModel），下一条消息随 modelRef 落库到会话属性，
+ * 切换时做两件事：① 写当前对话覆盖层并立即落库到会话属性（setSessionModel，切了不发重启也不丢），
  * 故同角色的多个对话可各用不同模型；② 把这次选择记为「最近使用模型」（setActiveModel）——本应用不设
  * 显式「默认模型」，最近一次在此切换的模型即充当**新对话未选时的默认**（见 store/models.tsx activeModelId）。
  * 显示的是**本对话生效模型**：本对话已选则显示所选；未选 / 所选模型已被删除 → 回落最近使用模型

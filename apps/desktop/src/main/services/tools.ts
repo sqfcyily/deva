@@ -5,7 +5,18 @@ import { basename, dirname, isAbsolute, join, resolve } from 'path'
 import { assertInside, isSensitivePath } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
 import { upsertSkill } from './skills'
-import { deleteMemory, formatMemoryLine, listMemories, writeMemory, MEMORY_BUDGET_CHARS, MEMORY_MAX_CHARS } from './memory'
+import {
+  deleteMemory,
+  formatMemoryLine,
+  listMemories,
+  scopeKindOfId,
+  writeMemory,
+  GLOBAL_SCOPE,
+  MEMORY_BUDGET_CHARS,
+  MEMORY_MAX_CHARS,
+  PROJECT_MEMORY_BUDGET_CHARS,
+  type MemoryScope
+} from './memory'
 import { upsertServer, type McpValue } from './mcp-config'
 import type { ToolSpec } from '../providers/types'
 
@@ -227,34 +238,48 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'memory_read',
     description:
-      '读取用户的全局长期记忆（跨对话、与项目无关的用户习惯/偏好），返回全部条目及其 id。' +
+      '读取记忆，返回全部条目及其 id：全局记忆（用户本人的习惯/偏好），以及已挂载工作区时的项目私有记忆。' +
       '系统提示词已列出记忆，通常无需调用；仅当提示词里的记忆被截断、或需要确认最新内容再更新/删除时使用。',
     inputSchema: { type: 'object', properties: {} }
   },
   {
     name: 'memory_write',
     description:
-      '写入一条用户的全局长期记忆：记录用户本人稳定、可跨对话复用的习惯/偏好/纠正（如「用户偏好 pnpm」）。' +
-      '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增）。' +
-      `内容须是一句简洁的第三人称事实（≤${MEMORY_MAX_CHARS} 字）；不得记录密码/密钥等敏感信息、一次性任务细节或特定项目的约定。` +
-      `记忆总量上限 ${MEMORY_BUDGET_CHARS} 字，写满会被拒绝：此时请带 id 合并/精简相近条目或先 memory_delete 过时条目。` +
+      '写入一条记忆，分两个作用域（scope）：' +
+      '`global`（新增时的默认）= 用户本人在所有项目都适用的稳定习惯/偏好/纠正（如「用户偏好用 pnpm 而非 npm」）；' +
+      '`project` = 仅在当前工作区有用、只属于用户本人的私有经验（如「本项目 e2e 测试须先启动 mock 服务」），不入版本库，须已挂载工作区；' +
+      '除用户要求外，也可克制地记下你亲自验证过、不显而易见且今后会复用的项目经验（如反复试错才解决的构建/调试坑）。' +
+      '两者都不是用来记通用知识的；团队共享的项目约定应写进 AGENTS.md（仅当用户要求时）。' +
+      '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增），更新时可省略 scope，按 id 前缀自动定位（m_ 为全局，p_ 为项目）。' +
+      `内容须是一句简洁的事实陈述（≤${MEMORY_MAX_CHARS} 字）；不得记录密码/密钥等敏感信息或一次性任务细节。` +
+      `总量上限：全局 ${MEMORY_BUDGET_CHARS} 字、项目 ${PROJECT_MEMORY_BUDGET_CHARS} 字，写满会被拒绝：此时请带 id 合并/精简相近条目或先 memory_delete 过时条目。` +
       '记忆存于受保护目录，这是写入它的唯一途径（write_file 等工具无法写入）。',
     inputSchema: {
       type: 'object',
       properties: {
         content: { type: 'string', description: '要记住的一句话事实。' },
-        id: { type: 'string', description: '可选：要更新的已有记忆 id（如 m_1a2b3c4d）；省略则新增。' }
+        scope: {
+          type: 'string',
+          enum: ['global', 'project'],
+          description:
+            '作用域：global（用户本人的通用偏好）或 project（当前工作区的私有经验）。新增时省略即 global；带 id 更新时省略即按 id 前缀定位。'
+        },
+        id: {
+          type: 'string',
+          description: '可选：要更新的已有记忆 id（如 m_1a2b3c4d / p_1a2b3c4d）；省略则新增。'
+        }
       },
       required: ['content']
     }
   },
   {
     name: 'memory_delete',
-    description: '删除一条用户的全局长期记忆（用户要求忘记、或该记忆已过时/与新偏好矛盾时使用）。',
+    description:
+      '删除一条记忆（用户要求忘记、或该记忆已过时/与新偏好或代码现状矛盾时使用）。按 id 前缀自动定位作用域：m_ 为全局记忆，p_ 为当前工作区的项目私有记忆。',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: '要删除的记忆 id（如 m_1a2b3c4d）。' }
+        id: { type: 'string', description: '要删除的记忆 id（如 m_1a2b3c4d / p_1a2b3c4d）。' }
       },
       required: ['id']
     }
@@ -433,7 +458,7 @@ const READ_TOOLS = new Set([
   'ask_user',
   'skill',
   'run_subagent',
-  // 读全局记忆（主进程直读 ~/.deva/memory.json，无路径入参）；写/删记忆不在此集，落默认分支同 create_skill。
+  // 读记忆（主进程直读 ~/.deva 下的全局 / 项目记忆，无路径入参）；写/删记忆不在此集，落默认分支同 create_skill。
   'memory_read',
   // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「接受」（走渲染层 personas:upsert）。
   'propose_agent',
@@ -1417,20 +1442,53 @@ export async function executeTool(
     }
 
     if (name === 'memory_read') {
-      const entries = listMemories()
-      if (!entries.length) return { content: '（当前尚无记忆）', summary: '0 条' }
-      return { content: entries.map(formatMemoryLine).join('\n'), summary: `${entries.length} 条` }
+      const globals = listMemories(GLOBAL_SCOPE)
+      const out = ['【全局记忆】', ...(globals.length ? globals.map(formatMemoryLine) : ['（当前尚无全局记忆）'])]
+      let total = globals.length
+      if (ctx.workspaceRoot) {
+        const projects = listMemories({ kind: 'project', root: ctx.workspaceRoot })
+        total += projects.length
+        out.push(
+          '',
+          `【项目私有记忆】（${ctx.workspaceRoot}）`,
+          ...(projects.length ? projects.map(formatMemoryLine) : ['（当前项目尚无私有记忆）'])
+        )
+      } else {
+        out.push('', '（未挂载工作区，无项目私有记忆）')
+      }
+      return { content: out.join('\n'), summary: `${total} 条` }
     }
 
     if (name === 'memory_write') {
       const content = typeof a.content === 'string' ? a.content : ''
       const id = typeof a.id === 'string' && a.id.trim() ? a.id.trim() : undefined
+      // 显式给了 scope 就按它；省略时新增默认全局，带 id 更新则按 id 前缀定位（同 memory_delete），
+      // 免得模型更新 p_ 条目时漏写 scope 被默认成 global 而误报不符。
+      const explicit = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
+      const kind = explicit ?? (id ? scopeKindOfId(id) : 'global')
+      if (kind === 'project' && !ctx.workspaceRoot)
+        return {
+          content: id
+            ? `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`
+            : '当前未挂载工作区，无法写入项目私有记忆：请改用 scope="global"（若确属用户本人的通用偏好），或请用户先挂载项目。',
+          summary: '未写入',
+          isError: true
+        }
+      if (id && scopeKindOfId(id) !== kind)
+        return {
+          content: `id ${id} 属于${scopeKindOfId(id) === 'project' ? '项目私有记忆（scope="project"）' : '全局记忆（scope="global"）'}，与所给 scope 不符：更新时可省略 scope，按 id 自动定位；如要换作用域，请删除原条目后在新作用域新增。`,
+          summary: '参数无效',
+          isError: true
+        }
+      const scope: MemoryScope =
+        kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
       // 直调主进程 memory 服务（~/.deva 在 Tier-1 硬地板内，文件工具写不进；本工具即受控开口）。
-      const r = writeMemory(content, id)
+      const r = writeMemory(content, id, scope)
       if (!r.ok) return { content: r.error, summary: '未写入', isError: true }
+      const where = kind === 'project' ? '项目私有记忆' : '长期记忆'
       // 系统提示词本轮已定格：须在结果里讲清新记忆下一轮才出现在提示词中，免得模型误以为写入失败而重试。
       return {
-        content: `${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}（下一轮起出现在系统提示词的长期记忆中）`,
+        content: `${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}（下一轮起出现在系统提示词的${where}中）`,
         summary: r.created ? '已记住' : id ? '已更新' : '已存在'
       }
     }
@@ -1438,7 +1496,12 @@ export async function executeTool(
     if (name === 'memory_delete') {
       const id = typeof a.id === 'string' ? a.id.trim() : ''
       if (!id) return { content: '缺少要删除的记忆 id', summary: '参数无效', isError: true }
-      const removed = deleteMemory(id)
+      const kind = scopeKindOfId(id)
+      if (kind === 'project' && !ctx.workspaceRoot)
+        return { content: `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`, summary: '未找到', isError: true }
+      const scope: MemoryScope =
+        kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
+      const removed = deleteMemory(id, scope)
       if (!removed)
         return { content: `不存在 id 为 ${id} 的记忆（可先用 memory_read 查看）`, summary: '未找到', isError: true }
       return { content: `已删除记忆：${formatMemoryLine(removed)}`, summary: '已删除' }

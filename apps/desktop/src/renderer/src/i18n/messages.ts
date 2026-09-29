@@ -522,6 +522,16 @@ const zhCN: MessageTree = {
       revealOther: '在文件管理器中打开',
       revealFailed: '无法打开该文件夹'
     },
+    // 项目私有记忆面板（工作区菜单打开）
+    projMem: {
+      open: '项目记忆',
+      title: '项目记忆',
+      titleOf: '项目记忆 · {name}',
+      hint: 'Deva 在这个项目里为你记下的私有经验，只在本项目生效；存在本机 ~/.deva 下，不会进入版本库，团队其他人看不到。',
+      empty: '这个项目还没有私有记忆。对话中说「在这个项目里记住……」即可。',
+      clear: '清空项目记忆',
+      clearConfirm: '确定清空这个项目的全部私有记忆吗？此操作不可撤销（全局记忆不受影响）。'
+    },
     // 输入框「/ 指令」联想（技能项的说明取自各自 SKILL.md，不在此处）
     slash: {
       title: '指令',
@@ -680,6 +690,7 @@ const zhCN: MessageTree = {
         full: '记忆已达 {entries} 条上限，请先删除或合并旧条目',
         budget: '记忆总量已达 {budget} 字上限，请先精简、合并或删除旧条目',
         notFound: '该记忆已不存在（可能刚被删除），列表已刷新',
+        duplicate: '已有内容相同的记忆，无需重复保存',
         failed: '操作失败，请重试'
       }
     },
@@ -1233,6 +1244,16 @@ const en: MessageTree = {
       revealOther: 'Open in file manager',
       revealFailed: "Couldn't open the folder"
     },
+    projMem: {
+      open: 'Project memory',
+      title: 'Project memory',
+      titleOf: 'Project memory · {name}',
+      hint: 'Private notes Deva keeps for you in this project. They only apply here, live on this machine under ~/.deva, never enter version control, and are invisible to teammates.',
+      empty: 'No private memories for this project yet. Just say "remember in this project…".',
+      clear: 'Clear project memory',
+      clearConfirm:
+        'Clear all private memories for this project? This cannot be undone (global memories are not affected).'
+    },
     slash: {
       title: 'Commands',
       compact: 'Compact this conversation — fold earlier turns into a summary',
@@ -1393,6 +1414,7 @@ const en: MessageTree = {
         full: 'Memory is full ({entries} entries). Delete or merge old entries first',
         budget: 'Memory has reached its {budget}-character limit. Trim, merge or delete old entries first',
         notFound: 'This memory no longer exists (it may have just been deleted); list refreshed',
+        duplicate: 'An identical memory already exists — no need to save it again',
         failed: 'Operation failed, please try again'
       }
     },

@@ -66,6 +66,12 @@ export interface ChatCreateSessionRequest {
   modelRef?: string
 }
 
+/** 对话输入框切换本对话模型：立即落库（会话尚未建档则不建档，由覆盖层随首发落库）。 */
+export interface ChatSetModelRequest {
+  sessionId: string
+  modelRef: string
+}
+
 /** 附件类型（与 services/attachments.ts 对齐）。 */
 export type AttachmentKind = 'image' | 'document' | 'text' | 'unsupported'
 
@@ -288,7 +294,7 @@ export interface UserProfile {
   avatarImage: string
 }
 
-/** 全局记忆（与 services/memory.ts 对齐）。 */
+/** 记忆条目（全局 / 项目私有共用，与 services/memory.ts 对齐）。 */
 export interface MemoryEntry {
   id: string
   content: string
@@ -690,14 +696,17 @@ const api = {
     setAvatarImage: (dataUri: string): Promise<string> =>
       ipcRenderer.invoke('profile:set-avatar-image', dataUri)
   },
-  /** 全局记忆（~/.deva/memory.json）：查看 / 增改删 / 清空，与模型的 memory_* 工具同一套校验。 */
+  /**
+   * 记忆：查看 / 增改删 / 清空，与模型的 memory_* 工具同一套校验。
+   * 末位可选 root：省略 = 全局记忆（~/.deva/memory.json）；给出 = 该工作区的项目私有记忆（~/.deva/projects/<key>/）。
+   */
   memory: {
-    list: (): Promise<MemorySnapshot> => ipcRenderer.invoke('memory:list'),
+    list: (root?: string): Promise<MemorySnapshot> => ipcRenderer.invoke('memory:list', root),
     /** 无 id 新增，有 id 覆盖更新。 */
-    write: (content: string, id?: string): Promise<MemoryIpcResult> =>
-      ipcRenderer.invoke('memory:write', content, id),
-    remove: (id: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:delete', id),
-    clear: (): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:clear')
+    write: (content: string, id?: string, root?: string): Promise<MemoryIpcResult> =>
+      ipcRenderer.invoke('memory:write', content, id, root),
+    remove: (id: string, root?: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:delete', id, root),
+    clear: (root?: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:clear', root)
   },
   /** Agent 提示词（全局 ~/.deva/personas）：列出 / 读取 / 新建更新 / 删除 / 启停。 */
   personas: {
@@ -787,6 +796,9 @@ const api = {
     /** 立即建档一条空对话（对话优先外壳）：首发前即落盘，重启仍在。 */
     createSession: (req: ChatCreateSessionRequest): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:create-session', req),
+    /** 切换本对话模型并立即落库（不等下一次发送）。 */
+    setModel: (req: ChatSetModelRequest): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('chat:set-model', req),
     abort: (turnId: string): Promise<{ ok: true }> => ipcRenderer.invoke('chat:abort', turnId),
     reset: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:reset', sessionId, workspaceRoot),

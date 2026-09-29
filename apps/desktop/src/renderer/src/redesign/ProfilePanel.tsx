@@ -1,18 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ImagePlus, Pencil, Trash2 } from 'lucide-react'
-import type { MemoryEntry, MemoryErrorCode, MemoryIpcResult, MemorySnapshot } from '../../../preload'
+import type { MemoryEntry } from '../../../preload'
 import { useI18n } from '../i18n/i18n'
-import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
 import { PersonaFace, USER_AVATAR_SEED, resolveSpec } from '../components/humation'
 import { useProfile } from '../store/profile'
 import { AvatarEditor } from './AvatarEditor'
+import { fill, useMemoryEditor, type EditBase, type TagHandlers } from './memory-editor'
 
 /*
  * 个人资料面板（点左上角自己的头像打开）：头像 + Deva 记住的关于你（全局记忆，类用户画像）。
- * 记忆读写全走 memory:* IPC，与模型的 memory_* 工具同一套校验（单条字数 / 条数 / 总字数上限）；
- * 每次操作回带最新快照，直接替换本地列表。面板开着时模型可能在后台写记忆 → 监听对话 done 再拉一次。
+ * 记忆的读写与编辑态见 useMemoryEditor（项目记忆面板共用）。
  * 记忆每条一枚标签：宽时环绕居中头像（每页 12 条，滚轮 / 方向键 / 圆点翻页），窄时退回标签墙；
  * 记忆只由模型在对话中写入，面板仅供查看 / 修改 / 删除（不提供手动追加）；
  * 悬停时标签上方浮出编辑 / 删除（二次确认）小工具条（不占标签本身的位置），双击也可原地编辑。
@@ -22,119 +21,18 @@ import { AvatarEditor } from './AvatarEditor'
 const POP_GAP = 6
 const POP_ROOM = 40
 
-/** 文案占位符替换：`{name}` → vars.name。 */
-const fill = (s: string, vars: Record<string, number | string>): string =>
-  s.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m))
-
 export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.Element {
   const { t } = useI18n()
-  const dialog = useDialog()
   const toast = useToast()
   const profile = useProfile()
 
   const [editingAvatar, setEditingAvatar] = useState(false)
   const [savingAvatar, setSavingAvatar] = useState(false)
 
-  const [mem, setMem] = useState<MemorySnapshot | null>(null)
-  // 行内编辑：同一时刻至多一条；error 按 target（条目 id / clear）区分。
-  const [editId, setEditId] = useState<string | null>(null)
-  const [editText, setEditText] = useState('')
-  const [editBase, setEditBase] = useState<EditBase | null>(null)
-  const [error, setError] = useState<{ target: string; code: MemoryErrorCode } | null>(null)
-  const [pending, setPending] = useState(false)
-
-  const reqRef = useRef(0)
-  const reload = (): void => {
-    const req = ++reqRef.current
-    void window.deva.memory
-      .list()
-      .then((snap) => {
-        if (req === reqRef.current) setMem(snap)
-      })
-      .catch(() => {
-        /* 读失败：保留旧列表 */
-      })
-  }
-  useEffect(() => {
-    reload()
-    // 面板开着时模型可能调用了 memory_write / memory_delete：任一轮结束即刷新（不轮询）。
-    return window.deva.chat.onEvent((p) => {
-      if (p.event.type === 'done') reload()
-    })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  // 所有写操作统一收口：成功替换快照；失败按 target 挂错误码（i18n 在渲染时做）。
-  const run = async (target: string, op: () => Promise<MemoryIpcResult>): Promise<boolean> => {
-    if (pending) return false
-    setPending(true)
-    try {
-      const r = await op()
-      reqRef.current++ // 作废进行中的 reload，免得旧快照覆盖这次结果
-      if (!r.ok) {
-        // 条目已被别处（模型）删掉：该行即将随刷新消失，行内错误无处显示 → 改用 toast 并拉最新列表。
-        if (r.code === 'notFound') {
-          setEditId(null)
-          toast.show({ title: t('cf.profile.err.notFound'), variant: 'error' })
-          reload()
-          return false
-        }
-        setError({ target, code: r.code })
-        return false
-      }
-      setMem(r.snapshot)
-      setError(null)
-      return true
-    } catch {
-      toast.show({ title: t('cf.profile.err.failed'), variant: 'error' })
-      return false
-    } finally {
-      setPending(false)
-    }
-  }
-
-  const startEdit = (e: MemoryEntry, base: EditBase): void => {
-    setEditId(e.id)
-    setEditText(e.content)
-    setEditBase(base)
-    setError(null)
-  }
-  const cancelEdit = (): void => {
-    setEditId(null)
-    setError(null)
-  }
-  const saveEdit = async (): Promise<void> => {
-    if (!editId) return
-    const cur = mem?.entries.find((e) => e.id === editId)
-    if (!cur || editText.trim() === cur.content) return cancelEdit()
-    if (await run(editId, () => window.deva.memory.write(editText, editId))) setEditId(null)
-  }
-  // 删除先二次确认（记忆一旦删掉，Deva 就不再知道这件事）。
-  const remove = async (id: string): Promise<void> => {
-    const hit = mem?.entries.find((e) => e.id === id)
-    if (!hit || pending) return
-    const ok = await dialog.confirm({
-      title: t('cf.profile.memDelete'),
-      message: fill(t('cf.profile.memDeleteConfirm'), { content: hit.content }),
-      confirmText: t('cf.profile.memDelete'),
-      variant: 'danger'
-    })
-    if (!ok) return
-    if (editId === id) setEditId(null)
-    void run(id, () => window.deva.memory.remove(id))
-  }
-  const clearAll = async (): Promise<void> => {
-    const ok = await dialog.confirm({
-      title: t('cf.profile.memClear'),
-      message: t('cf.profile.memClearConfirm'),
-      confirmText: t('cf.profile.memClear'),
-      variant: 'danger'
-    })
-    if (ok) {
-      setEditId(null)
-      void run('clear', () => window.deva.memory.clear())
-    }
-  }
+  const { mem, pending, errorText, handlers, clearAll } = useMemoryEditor({
+    clearTitle: t('cf.profile.memClear'),
+    clearConfirm: t('cf.profile.memClearConfirm')
+  })
 
   const doneAvatar = (spec: Parameters<typeof profile.saveAvatar>[0], image: string): void => {
     setSavingAvatar(true)
@@ -153,14 +51,6 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
     if (editingAvatar) {
       if (!savingAvatar) setEditingAvatar(false)
     } else onClose()
-  }
-  const errText = (target: string): string | null => {
-    if (!error || error.target !== target) return null
-    return fill(t(`cf.profile.err.${error.code}`), {
-      max: mem?.maxChars ?? 0,
-      entries: mem?.maxEntries ?? 0,
-      budget: mem?.budget ?? 0
-    })
   }
 
   const initialSpec = resolveSpec(USER_AVATAR_SEED, profile.avatar)
@@ -214,20 +104,9 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
                     </span>
                   </button>
                 }
-                error={error && <div className="cf-me__err">{errText(error.target)}</div>}
+                error={errorText && <div className="cf-me__err">{errorText}</div>}
                 entries={mem?.entries ?? null}
-                h={{
-                  editId,
-                  editText,
-                  editBase,
-                  maxChars: mem?.maxChars ?? 0,
-                  pending,
-                  onEditText: setEditText,
-                  onStartEdit: startEdit,
-                  onCancelEdit: cancelEdit,
-                  onSaveEdit: () => void saveEdit(),
-                  onDelete: (id) => void remove(id)
-                }}
+                h={handlers}
               />
 
               <div className="cf-editor__actions cf-me__actions">
@@ -235,7 +114,7 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
                   type="button"
                   className="cf-btn cf-me__clear"
                   disabled={pending || !mem?.entries.length}
-                  onClick={() => void clearAll()}
+                  onClick={clearAll}
                 >
                   {t('cf.profile.memClear')}
                 </button>
@@ -252,9 +131,6 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
 }
 
 /* ---------------------------------- 记忆标签 ---------------------------------- */
-
-/** 进入编辑前量下的标签原宽与字体：编辑框从原宽起步，随内容增长（见 editBoxWidth）。 */
-type EditBase = { width: number; font: string }
 
 /** 编辑态标签除文字外的横向占用：标签内边距 4+4、边框 1+1、输入框内边距 8+8，另留 2px 给光标（见 .cf-me__tag.is-editing / .cf-me__tagedit）。 */
 const EDIT_CHROME = 28
@@ -273,20 +149,6 @@ function editBoxWidth(text: string, base: EditBase | null, max: number): number 
     textW = measureCtx.measureText(text).width
   }
   return Math.min(max, Math.max(base.width, Math.ceil(textW) + EDIT_CHROME))
-}
-
-/** 单条标签的编辑 / 删除回调（父级持有编辑态与写操作）。 */
-type TagHandlers = {
-  editId: string | null
-  editText: string
-  editBase: EditBase | null
-  maxChars: number
-  pending: boolean
-  onEditText: (text: string) => void
-  onStartEdit: (e: MemoryEntry, base: EditBase) => void
-  onCancelEdit: () => void
-  onSaveEdit: () => void
-  onDelete: (id: string) => void
 }
 
 /**
@@ -513,12 +375,15 @@ function MemoryBoard({
 }
 
 /** 窄屏：每条一枚标签自动换行铺开。 */
-function MemoryTags({
+export function MemoryTags({
   entries,
-  h
+  h,
+  emptyText
 }: {
   entries: MemoryEntry[]
   h: TagHandlers
+  /** 空列表提示文案；省略用全局记忆的默认文案（项目记忆面板复用时传自己的）。 */
+  emptyText?: string
 }): React.JSX.Element {
   const { t } = useI18n()
   return (
@@ -535,7 +400,7 @@ function MemoryTags({
         />
       ))}
       {entries.length === 0 && (
-        <span className="cf-me__tagsempty">{t('cf.profile.memEmpty')}</span>
+        <span className="cf-me__tagsempty">{emptyText ?? t('cf.profile.memEmpty')}</span>
       )}
     </div>
   )

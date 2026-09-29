@@ -1242,10 +1242,10 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
           attachments: atts.length ? atts.map((a) => a.path) : undefined,
           personaId: binding?.personaId,
           focusRoot: binding?.focusRoot,
-          // 本对话模型（快照固定/只改当前对话）：新建快照的角色偏好、或聊天中切换的值，随首发/每次发送落库。
-          // 缺省（undefined）= 不改会话已存值；上面的 model（activeModel 构建的 ChatModelConfig）恒作主进程
-          // resolveModelRef 的 fallback（全局默认）——故 modelRef 空/删除都安全回落。
-          modelRef: binding?.model
+          // 本对话模型：恒记下这一轮实际使用的模型（上面解析出的生效模型）。发过消息的对话从此都有自己的
+          // 模型，不再隐式跟随全局「最近使用」——否则在别的对话里切换模型会连带改掉它。未发过消息的空对话
+          // 仍跟随最近使用（即新对话默认）。所选模型已被删除时这里记下的是回落后的实际模型。
+          modelRef: `${model.provider.id}:${model.model.id}`
         })
         patchRuntime(sid, (r) => ({ ...r, turnId }))
         // 主进程发送时已惰性建档并落盘：立即刷新左侧，让新会话即时出现并高亮
@@ -1278,10 +1278,16 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       setBinding(sessionIdRef.current, { focusRoot: path })
     }
 
-    // 设置当前对话模型（只改当前对话）：只更新覆盖层（承载尚未落库的选择），下次 chat:send 时随 modelRef
-    // 落库到会话属性。空串 = 显式回落全局默认。不触碰全局 activeModel（那是无偏好对话的兜底默认）。
+    // 设置当前对话模型（只改当前对话）：覆盖层即时置位驱动选择器，同时立即落库到会话属性——不等下一次
+    // 发送，否则切了没发、重启即回到旧模型。尚未建档的惰性会话由主进程跳过，仍随首发的 modelRef 落库。
+    // 不触碰全局 activeModel（那是未选过模型的对话的兜底默认）。
     const setSessionModel = (modelRef: string): void => {
-      setBinding(sessionIdRef.current, { model: modelRef })
+      const sid = sessionIdRef.current
+      setBinding(sid, { model: modelRef })
+      void (async () => {
+        await window.deva.chat.setModel({ sessionId: sid, modelRef })
+        await refreshSessions()
+      })()
     }
 
     const selectSession = (id: string): void => {
