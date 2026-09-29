@@ -5,8 +5,8 @@ import { deflateSync } from 'zlib'
  * 应用 / 托盘图标（运行期生成，无需任何二进制资产文件）。
  *
  * 遵「免装铁律」：只用内置 `zlib` 手写最小 PNG（RGBA 真彩 + alpha），
- * 画一枚指针时钟——切合「定时任务 / 自动任务」主题，也作应用窗口图标。
- * 生成一张 32×32 逻辑像素 PNG 交 `nativeImage`；Windows 托盘会自动缩放到 16px。
+ * 画 Deva 标志（「!」作 D 的竖笔 + 半圆），与安装包图标 build/icon.ico 保持一致。
+ * 生成 32×32 逻辑像素 PNG（附 2x）交 `nativeImage`；Windows 托盘会自动缩放到 16px。
  * 全程纯 JS、零第三方依赖，dev 与打包行为一致（不经 electron-vite `?asset` 资产管线，
  * 免去二进制资产的类型声明与打包路径问题）。
  */
@@ -64,80 +64,69 @@ function encodePng(width: number, height: number, rgba: Uint8Array): Buffer {
   ])
 }
 
-// ── 绘制时钟 ────────────────────────────────────────────────────────────────
+// ── 绘制 Deva 标志（与 build/icon.svg、scripts/gen-icon.mjs 同一几何）──────────
 
 type RGB = [number, number, number]
 
-/** 点到线段的最近距离（画指针用，含端点夹取）。 */
-function distToSegment(
-  px: number,
-  py: number,
-  ax: number,
-  ay: number,
-  bx: number,
-  by: number
-): number {
-  const dx = bx - ax
-  const dy = by - ay
-  const l2 = dx * dx + dy * dy
-  let t = l2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / l2
-  t = Math.max(0, Math.min(1, t))
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+const BG_R = 224 // 底板圆角（1024 画布坐标）
+const C0: RGB = [0x4f, 0x46, 0xe5] // 渐变起点 indigo
+const C1: RGB = [0x7c, 0x3a, 0xed] // 渐变终点 violet
+
+/** 点是否在圆角方形底板内（1024 画布坐标）。 */
+function inBg(x: number, y: number): boolean {
+  const cx = Math.min(Math.max(x, BG_R), 1024 - BG_R)
+  const cy = Math.min(Math.max(y, BG_R), 1024 - BG_R)
+  return (x - cx) ** 2 + (y - cy) ** 2 <= BG_R * BG_R
 }
 
-/** 覆盖度 → 1px 软边抗锯齿（d<0 全覆盖，d>1 无覆盖）。 */
-function aa(d: number): number {
-  return Math.max(0, Math.min(1, 0.5 - d))
+/** 点是否在白色图形内：感叹号（竖线 + 圆点）充当 D 的竖笔，右侧接半圆弧。 */
+function inShape(x: number, y: number): boolean {
+  // 感叹号竖线：胶囊 (333,294)-(333,578)，半径 48
+  const cy = Math.min(Math.max(y, 294), 578)
+  if ((x - 333) ** 2 + (y - cy) ** 2 <= 48 * 48) return true
+  // 感叹号圆点
+  if ((x - 333) ** 2 + (y - 730) ** 2 <= 48 * 48) return true
+  // 弧两端的短横（平头）
+  if (x >= 441 && x <= 473 && (Math.abs(y - 294) <= 48 || Math.abs(y - 730) <= 48)) return true
+  // 右半圆环：圆心 (473,512)，中线半径 218，线宽 96
+  if (x >= 473) {
+    const d = Math.hypot(x - 473, y - 512)
+    if (d >= 170 && d <= 266) return true
+  }
+  return false
 }
 
 /**
- * 生成时钟 RGBA 像素（透明底、靛蓝表盘、白色指针、白色圈边、中心点）。
- * 表盘满圈填充，指针指向约 12 点与 3 点，一眼可辨「时钟 / 定时」。
+ * 生成标志 RGBA 像素：渐变圆角底板 + 白色「!」+ 半圆（D）。
+ * 按解析几何做 ss×ss 超采样抗锯齿，小尺寸（托盘 16/32px）边缘也不发毛。
  */
-function drawClock(size: number): Uint8Array {
+function drawLogo(size: number, ss = 8): Uint8Array {
   const px = new Uint8Array(size * size * 4)
-  const c = (size - 1) / 2
-  const R = size * 0.46 // 外半径
-  const rim = size * 0.055 // 白色圈边宽度
-  const handW = size * 0.05 // 指针半宽
-  const face: RGB = [99, 102, 241] // indigo-500
-  const ink: RGB = [255, 255, 255]
-
-  // 指针端点（从中心指向 12 点与 3 点）
-  const minA: [number, number] = [c, c - R * 0.66]
-  const hourA: [number, number] = [c + R * 0.5, c]
-
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const dist = Math.hypot(x - c, y - c)
-      // 表盘：dist<R 填靛蓝，边缘抗锯齿
-      const discA = aa(dist - R)
-      if (discA <= 0) continue
-
-      let r = face[0]
-      let g = face[1]
-      let b = face[2]
-
-      // 白圈边（环形，位于外沿内侧）
-      const rimA = Math.min(aa(Math.abs(dist - (R - rim)) - rim * 0.5), discA)
-      // 指针 + 中心点（白）
-      const handCover = Math.max(
-        aa(distToSegment(x, y, c, c, minA[0], minA[1]) - handW),
-        aa(distToSegment(x, y, c, c, hourA[0], hourA[1]) - handW),
-        aa(dist - size * 0.08) // 中心圆点
-      )
-      const inkA = Math.min(Math.max(rimA, handCover), discA)
-      if (inkA > 0) {
-        r = Math.round(face[0] * (1 - inkA) + ink[0] * inkA)
-        g = Math.round(face[1] * (1 - inkA) + ink[1] * inkA)
-        b = Math.round(face[2] * (1 - inkA) + ink[2] * inkA)
+  const k = 1024 / size
+  const n = ss * ss
+  for (let py = 0; py < size; py++) {
+    for (let pxl = 0; pxl < size; pxl++) {
+      let bgCov = 0
+      let inkCov = 0
+      for (let sy = 0; sy < ss; sy++) {
+        for (let sx = 0; sx < ss; sx++) {
+          const x = (pxl + (sx + 0.5) / ss) * k
+          const y = (py + (sy + 0.5) / ss) * k
+          if (inBg(x, y)) {
+            bgCov++
+            if (inShape(x, y)) inkCov++
+          }
+        }
       }
-
-      const i = (y * size + x) * 4
-      px[i] = r
-      px[i + 1] = g
-      px[i + 2] = b
-      px[i + 3] = Math.round(discA * 255)
+      if (!bgCov) continue
+      const t = (pxl + py + 1) / (2 * size) // 左上 → 右下对角渐变
+      const a = inkCov / bgCov
+      const i = (py * size + pxl) * 4
+      for (let c = 0; c < 3; c++) {
+        const bg = C0[c] + (C1[c] - C0[c]) * t
+        px[i + c] = Math.round(bg * (1 - a) + 255 * a)
+      }
+      px[i + 3] = Math.round((bgCov / n) * 255)
     }
   }
   return px
@@ -147,14 +136,19 @@ let cached: NativeImage | null = null
 
 /**
  * 取应用 / 托盘图标（首次生成后缓存）。
+ * 基准 32px，另附 2x（64px）表示供高分屏使用。
  * 生成失败（极端环境）返回空 `NativeImage`——Tray 仍可创建，仅无图标，不崩。
  */
 export function getAppIcon(): NativeImage {
   if (cached) return cached
   try {
     const size = 32
-    const png = encodePng(size, size, drawClock(size))
-    cached = nativeImage.createFromBuffer(png)
+    const img = nativeImage.createFromBuffer(encodePng(size, size, drawLogo(size)))
+    img.addRepresentation({
+      scaleFactor: 2,
+      buffer: encodePng(size * 2, size * 2, drawLogo(size * 2, 4))
+    })
+    cached = img
   } catch {
     cached = nativeImage.createEmpty()
   }

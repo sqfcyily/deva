@@ -6,7 +6,6 @@ import { getAppIcon } from './services/tray-icon'
 import { registerWorkspaceIpc } from './services/workspace'
 import { registerSecretsIpc } from './services/secrets'
 import { registerProviderIpc } from './services/provider'
-import { registerDecisionIpc } from './services/decision'
 import { hasActiveTurns, registerChatIpc, settleActiveTurns } from './services/chat'
 import { listSessions } from './services/chat-store'
 import { sweepCheckpoints } from './services/checkpoints'
@@ -221,11 +220,8 @@ if (!app.requestSingleInstanceLock()) {
   // 密钥安全存储（safeStorage 加密，明文永不出主进程）
   registerSecretsIpc()
 
-  // 服务商探针（连通性测试 / 拉取模型清单，复用密钥解密）
+  // 服务商探针（拉取模型清单，复用密钥解密）
   registerProviderIpc()
-
-  // 决策服务（类型化概率决策运行时；决策专属测试连接，与 LLM 协议正交，密钥不出主进程）
-  registerDecisionIpc()
 
   // 会话编排（Agent 主循环：流式 → 工具 → 权限 → 回灌）
   registerChatIpc(() => mainWindow)

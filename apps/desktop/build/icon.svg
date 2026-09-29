@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角方形底板 -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+
+  <g fill="#FFFFFF" transform="translate(-27 -26)">
+    <!-- 感叹号：竖线 = D 的第一笔 -->
+    <rect x="312" y="272" width="96" height="380" rx="48"/>
+    <circle cx="360" cy="756" r="48"/>
+
+    <!-- 半圆：D 的弧 -->
+    <path d="M468 320 H500 A218 218 0 0 1 500 756 H468"
+          fill="none" stroke="#FFFFFF" stroke-width="96" stroke-linejoin="round"/>
+  </g>
+</svg>

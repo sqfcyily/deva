@@ -3,9 +3,9 @@ import { getSecret } from './secrets'
 import { httpError, type ErrorKind, type NormalizedError } from '../providers/types'
 
 /**
- * 服务商探针（主进程）：连通性测试 + 拉取模型清单。
+ * 服务商探针（主进程）：拉取模型清单。
  * 与流式对话共用密钥解密（getSecret，绝不外泄明文）与错误归一化（httpError）。
- * 两个能力都只在主进程发起 HTTP，渲染层只拿到 {ok, kind, message} 结果。
+ * 只在主进程发起 HTTP，渲染层只拿到 {ok, models, kind, message} 结果。
  */
 
 type AdapterKind = 'anthropic' | 'openai' | 'responses'
@@ -14,16 +14,6 @@ interface ProbeConfig {
   adapter: AdapterKind
   providerId: string
   baseURL: string
-  /** 测试连接需要一个具体模型；拉取清单可省略 */
-  model?: string
-}
-
-interface TestResult {
-  ok: boolean
-  kind?: ErrorKind
-  message: string
-  /** 成功时的往返耗时（毫秒） */
-  latencyMs?: number
 }
 
 interface ListModelsResult {
@@ -78,59 +68,6 @@ function extractModelIds(json: unknown): string[] {
 }
 
 export function registerProviderIpc(): void {
-  // 连通性测试：用解密后的密钥对目标发一个最小请求（max_tokens:1），只判成败。
-  ipcMain.handle('provider:test', async (_e, cfg: ProbeConfig): Promise<TestResult> => {
-    const model = cfg.model?.trim()
-    if (!model) return { ok: false, kind: 'invalid_request', message: 'no-model' }
-
-    const apiKey = (await getSecret(cfg.providerId)) ?? ''
-    const base = normalizeBase(cfg.baseURL)
-    const started = Date.now()
-    try {
-      let res: Response
-      if (cfg.adapter === 'anthropic') {
-        res = await fetchWithTimeout(`${base}/v1/messages`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model,
-            max_tokens: 1,
-            messages: [{ role: 'user', content: 'ping' }]
-          })
-        })
-      } else if (cfg.adapter === 'responses') {
-        // Responses API：input 收字符串，max_output_tokens 下限约 16（给 1 会 400）。
-        res = await fetchWithTimeout(`${base}/responses`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({ model, max_output_tokens: 16, input: 'ping', store: false })
-        })
-      } else {
-        res = await fetchWithTimeout(`${base}/chat/completions`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model,
-            max_tokens: 1,
-            messages: [{ role: 'user', content: 'ping' }]
-          })
-        })
-      }
-      const latencyMs = Date.now() - started
-      if (res.ok) return { ok: true, message: 'ok', latencyMs }
-      const text = await res.text().catch(() => '')
-      const err = httpError(res.status, text)
-      return { ok: false, kind: err.kind, message: err.message, latencyMs }
-    } catch (e) {
-      const err = networkError(e)
-      return { ok: false, kind: err.kind, message: err.message }
-    }
-  })
-
   // 拉取模型清单：GET /models（OpenAI 风味）或 /v1/models（Anthropic），失败时 UI 退回手动输入。
   ipcMain.handle('provider:list-models', async (_e, cfg: ProbeConfig): Promise<ListModelsResult> => {
     const apiKey = (await getSecret(cfg.providerId)) ?? ''

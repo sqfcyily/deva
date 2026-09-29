@@ -10,7 +10,7 @@ export interface MessageTree {
 }
 
 const zhCN: MessageTree = {
-  app: { name: 'Deva', tagline: '对话优先的智能体工作台' },
+  app: { name: 'Deva', tagline: '' },
   activity: {
     chat: '对话',
     explorer: '资源管理器',
@@ -332,7 +332,6 @@ const zhCN: MessageTree = {
     apiKeyPlaceholder: '在此填写 API Key',
     apiHost: 'API 地址',
     getKey: '获取密钥',
-    testConn: '测试连接',
     modelList: '模型',
     addModel: '添加模型',
     modelIdPlaceholder: '模型 ID，如 gpt-4o',
@@ -353,11 +352,6 @@ const zhCN: MessageTree = {
     keySaving: '保存中…',
     keySaved: '已保存',
     secretsUnavailable: '当前系统不支持安全加密存储，暂无法保存密钥',
-    testConnTesting: '测试中…',
-    testConnOk: '连接正常',
-    testConnFail: '连接失败',
-    testNeedModel: '请先添加一个模型再测试',
-    testNeedKey: '请先填写并保存 API 密钥',
     adapter: '协议',
     adapterOpenAI: 'OpenAI 兼容',
     adapterResponses: 'OpenAI Responses',
@@ -724,7 +718,7 @@ const zhCN: MessageTree = {
 }
 
 const en: MessageTree = {
-  app: { name: 'Deva', tagline: 'An agentic workbench for developers' },
+  app: { name: 'Deva', tagline: '' },
   activity: {
     chat: 'Chat',
     explorer: 'Explorer',
@@ -1052,7 +1046,6 @@ const en: MessageTree = {
     apiKeyPlaceholder: 'Enter your API key',
     apiHost: 'API Host',
     getKey: 'Get key',
-    testConn: 'Test',
     modelList: 'Models',
     addModel: 'Add model',
     modelIdPlaceholder: 'Model ID, e.g. gpt-4o',
@@ -1073,11 +1066,6 @@ const en: MessageTree = {
     keySaving: 'Saving…',
     keySaved: 'Saved',
     secretsUnavailable: 'Secure encrypted storage is unavailable on this system; keys cannot be saved',
-    testConnTesting: 'Testing…',
-    testConnOk: 'Connected',
-    testConnFail: 'Connection failed',
-    testNeedModel: 'Add a model before testing',
-    testNeedKey: 'Enter and save an API key first',
     adapter: 'Protocol',
     adapterOpenAI: 'OpenAI-compatible',
     adapterResponses: 'OpenAI Responses',

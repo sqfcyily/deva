@@ -3708,22 +3708,6 @@ button.projmenu__item:disabled {
   cursor: pointer;
 }
 
-/* 测试连接结果 */
-.test-result {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: var(--space-2);
-  font-size: 12px;
-  word-break: break-word;
-}
-.test-result--ok {
-  color: var(--success);
-}
-.test-result--fail {
-  color: var(--danger);
-}
-
 /* 添加模型：拉取清单下拉（可搜索 / 手动输入） */
 .model-combo {
   margin-bottom: var(--space-3);

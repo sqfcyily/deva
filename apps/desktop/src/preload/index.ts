@@ -550,14 +550,6 @@ export interface ProbeConfig {
   adapter: 'anthropic' | 'openai' | 'responses'
   providerId: string
   baseURL: string
-  model?: string
-}
-
-export interface ProviderTestResult {
-  ok: boolean
-  kind?: string
-  message: string
-  latencyMs?: number
 }
 
 export interface ProviderListModelsResult {
@@ -565,21 +557,6 @@ export interface ProviderListModelsResult {
   models?: string[]
   kind?: string
   message?: string
-}
-
-/** 决策连接测试「线缆类型」（与 services/decision.ts 对齐；adapter 仅内部值，公共面用通用名 decision）。 */
-export interface DecisionTestConfig {
-  adapter: 'jev'
-  providerId: string
-  baseURL: string
-  threshold: number
-}
-
-export interface DecisionTestResult {
-  ok: boolean
-  kind?: string
-  message: string
-  latencyMs?: number
 }
 
 /** 主进程 → 渲染层的富事件（与 services/chat.ts 的 ChatStreamEvent 对齐）。 */
@@ -774,17 +751,10 @@ const api = {
     list: (): Promise<string[]> => ipcRenderer.invoke('secrets:list'),
     available: (): Promise<boolean> => ipcRenderer.invoke('secrets:available')
   },
-  /** 服务商探针：连通性测试 + 拉取模型清单（均在主进程发起，密钥不出主进程）。 */
+  /** 服务商探针：拉取模型清单（在主进程发起，密钥不出主进程）。 */
   provider: {
-    test: (cfg: ProbeConfig): Promise<ProviderTestResult> =>
-      ipcRenderer.invoke('provider:test', cfg),
     listModels: (cfg: ProbeConfig): Promise<ProviderListModelsResult> =>
       ipcRenderer.invoke('provider:list-models', cfg)
-  },
-  /** 决策服务：决策模型专属连通性测试（与 LLM 协议正交，密钥不出主进程）。 */
-  decision: {
-    test: (cfg: DecisionTestConfig): Promise<DecisionTestResult> =>
-      ipcRenderer.invoke('decision:test', cfg)
   },
   /** 会话：发送、中止、重置、列表/载入/删除、回应权限、订阅流式事件。 */
   chat: {

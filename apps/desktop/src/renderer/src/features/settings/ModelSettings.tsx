@@ -29,10 +29,9 @@ import { Switch } from './Switch'
  * 模型设置页（设置 › 模型）。钻取式（主从抽屉）导航：列表态只列服务商，点进去为配置详情 + 返回。
  * 同一时刻单列，避免把设置弹框撑宽。
  * 支持官方与自定义（OpenAI / Anthropic 兼容）服务：配置密钥 / 协议 / 地址 / 模型清单，设默认模型，
- * 一键测试连通性，并可从服务端拉取模型清单辅助添加（支持手动输入与匹配选择）。
+ * 并可从服务端拉取模型清单辅助添加（支持手动输入与匹配选择）。
  */
 
-type TestStatus = 'idle' | 'testing' | 'ok' | 'fail'
 type FetchStatus = 'idle' | 'loading' | 'done' | 'error'
 
 export function ModelSettings(): React.JSX.Element {
@@ -51,7 +50,6 @@ export function ModelSettings(): React.JSX.Element {
     addCustomProvider,
     applyPreset,
     removeProvider,
-    activeModelId,
     hasKey,
     setApiKey,
     secretsAvailable
@@ -67,15 +65,11 @@ export function ModelSettings(): React.JSX.Element {
   const [keyDraft, setKeyDraft] = useState('')
   // 密钥自动保存的状态指示（替代原「保存」按钮的反馈）
   const [keySaveState, setKeySaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
-  // 输入防抖计时器：边打字边落盘，失焦/回车/测试前立即冲刷
+  // 输入防抖计时器：边打字边落盘，失焦/回车时立即冲刷
   const keyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [nameDraft, setNameDraft] = useState('')
   // 「供应商」下拉的当前选择（仅自定义详情用；套用官方预置的便捷入口，不持久化）
   const [presetSel, setPresetSel] = useState('')
-  const [testState, setTestState] = useState<{ status: TestStatus; message: string }>({
-    status: 'idle',
-    message: ''
-  })
   const [fetchState, setFetchState] = useState<{ status: FetchStatus; list: string[] }>({
     status: 'idle',
     list: []
@@ -94,7 +88,6 @@ export function ModelSettings(): React.JSX.Element {
     setSelectedIds(new Set())
     setNameDraft(selectedProvider?.name ?? '')
     setPresetSel('')
-    setTestState({ status: 'idle', message: '' })
     setFetchState({ status: 'idle', list: [] })
     fetchTokenRef.current++
   }, [selectedProviderId]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -106,14 +99,6 @@ export function ModelSettings(): React.JSX.Element {
     () => seedProviders.find((p) => p.id === selectedProviderId)?.apiHost,
     [selectedProviderId]
   )
-
-  // 测试所用模型：优先最近使用的模型（若属于本服务商），否则首个启用的，再否则第一个
-  const testModelId = useMemo(() => {
-    const p = selectedProvider
-    if (!p) return ''
-    if (activeModelId && activeModelId.startsWith(`${p.id}:`)) return activeModelId.split(':')[1]
-    return (p.models.find((mm) => mm.enabled) ?? p.models[0])?.id ?? ''
-  }, [selectedProvider, activeModelId])
 
   const suggestions = useMemo(() => {
     if (fetchState.status !== 'done') return []
@@ -129,7 +114,7 @@ export function ModelSettings(): React.JSX.Element {
   // 其余官方对话预置藏进编辑页的「供应商」下拉。
   // 决策模型（purpose==='decision'）当前整体隐藏：不进列表、也无新建入口，详情页因而不可达
   //（view 每次挂载都从 'list' 起，不存在被持久化的选中项直接落进决策详情的情况）。
-  // 主进程运行时（services/decision.ts / decision:test）与本文件的决策分支一并保留，
+  // 主进程运行时（services/decision.ts）与本文件的决策分支一并保留，
   // 恢复时改回此处过滤 + 右上角「新增」按钮即可。
   const visibleProviders = providers.filter(
     (p) => (p.purpose ?? 'llm') === 'llm' && (p.enabled || hasKey(p.id) || p.kind === 'custom')
@@ -188,7 +173,6 @@ export function ModelSettings(): React.JSX.Element {
     applyPreset(selectedProvider.id, preset)
     setNameDraft(preset.name)
     setPresetSel(preset.id)
-    setTestState({ status: 'idle', message: '' })
   }
 
   const commitName = (): void => {
@@ -231,74 +215,12 @@ export function ModelSettings(): React.JSX.Element {
 
   const resetHost = (): void => {
     if (selectedProvider && seedHost) updateProvider(selectedProvider.id, { apiHost: seedHost })
-    setTestState({ status: 'idle', message: '' })
   }
 
   const onHostBlur = (): void => {
     if (!selectedProvider) return
     const v = selectedProvider.apiHost.trim().replace(/\/+$/, '')
     if (v !== selectedProvider.apiHost) updateProvider(selectedProvider.id, { apiHost: v })
-  }
-
-  const runTest = async (): Promise<void> => {
-    if (!selectedProvider) return
-    if (!testModelId) {
-      setTestState({ status: 'fail', message: t('models.testNeedModel') })
-      return
-    }
-    // 测试用的是「已保存」的密钥（主进程解密），不是输入框草稿。
-    // 若草稿里有未保存的密钥，先落盘再测；两者皆空时直接给出清晰提示，避免裸 401。
-    const draft = keyDraft.trim()
-    if (!draft && !hasKey(selectedProvider.id)) {
-      setTestState({ status: 'fail', message: t('models.testNeedKey') })
-      return
-    }
-    if (draft) await flushKey(selectedProvider.id)
-    setTestState({ status: 'testing', message: '' })
-    try {
-      const r = await window.deva.provider.test({
-        // 探针仅用于对话模型；此路径下 adapter 必属 LLM 三协议（决策模型无测试按钮）。
-        adapter: selectedProvider.adapter as 'anthropic' | 'openai' | 'responses',
-        providerId: selectedProvider.id,
-        baseURL: selectedProvider.apiHost,
-        model: testModelId
-      })
-      if (r.ok) {
-        setTestState({ status: 'ok', message: r.latencyMs != null ? `${r.latencyMs}ms` : '' })
-      } else {
-        setTestState({ status: 'fail', message: r.message })
-      }
-    } catch (e) {
-      setTestState({ status: 'fail', message: (e as Error)?.message ?? String(e) })
-    }
-  }
-
-  // 决策模型专属连通性测试：走独立运行时（decision:test），不需要模型，只判密钥+地址是否可达。
-  const runDecisionTest = async (): Promise<void> => {
-    if (!selectedProvider) return
-    const draft = keyDraft.trim()
-    if (!draft && !hasKey(selectedProvider.id)) {
-      setTestState({ status: 'fail', message: t('models.testNeedKey') })
-      return
-    }
-    if (draft) await flushKey(selectedProvider.id)
-    setTestState({ status: 'testing', message: '' })
-    try {
-      const r = await window.deva.decision.test({
-        // 此路径下 provider 必为决策模型，adapter 属决策适配器（当前仅 'jev'）。
-        adapter: selectedProvider.adapter as 'jev',
-        providerId: selectedProvider.id,
-        baseURL: selectedProvider.apiHost,
-        threshold: selectedProvider.threshold ?? 0.6
-      })
-      if (r.ok) {
-        setTestState({ status: 'ok', message: r.latencyMs != null ? `${r.latencyMs}ms` : '' })
-      } else {
-        setTestState({ status: 'fail', message: r.message })
-      }
-    } catch (e) {
-      setTestState({ status: 'fail', message: (e as Error)?.message ?? String(e) })
-    }
   }
 
   const startAddModel = (): void => {
@@ -588,7 +510,7 @@ export function ModelSettings(): React.JSX.Element {
             )}
           </div>
 
-          {/* API 地址 + 测试连接 */}
+          {/* API 地址 */}
           <div className="field">
             <label className="field__label">{t('models.apiHost')}</label>
             <div className="field__control">
@@ -596,10 +518,7 @@ export function ModelSettings(): React.JSX.Element {
                 className="input"
                 type="text"
                 value={selectedProvider.apiHost}
-                onChange={(e) => {
-                  updateProvider(selectedProvider.id, { apiHost: e.target.value })
-                  if (testState.status !== 'idle') setTestState({ status: 'idle', message: '' })
-                }}
+                onChange={(e) => updateProvider(selectedProvider.id, { apiHost: e.target.value })}
                 onBlur={onHostBlur}
               />
               {seedHost && selectedProvider.apiHost !== seedHost && (
@@ -607,53 +526,7 @@ export function ModelSettings(): React.JSX.Element {
                   <RotateCcw size={14} />
                 </button>
               )}
-              {/* 连通性测试：对话模型走 provider:test（需模型），决策模型走 decision:test（独立运行时，无需模型） */}
-              {selectedProvider.purpose !== 'decision' ? (
-                <button
-                  className="btn btn--ghost"
-                  disabled={testState.status === 'testing'}
-                  onClick={() => void runTest()}
-                >
-                  {testState.status === 'testing' ? (
-                    <>
-                      <Loader2 size={13} className="icon-spin" />
-                      {t('models.testConnTesting')}
-                    </>
-                  ) : (
-                    t('models.testConn')
-                  )}
-                </button>
-              ) : (
-                <button
-                  className="btn btn--ghost"
-                  disabled={testState.status === 'testing'}
-                  onClick={() => void runDecisionTest()}
-                >
-                  {testState.status === 'testing' ? (
-                    <>
-                      <Loader2 size={13} className="icon-spin" />
-                      {t('models.testConnTesting')}
-                    </>
-                  ) : (
-                    t('models.testConn')
-                  )}
-                </button>
-              )}
             </div>
-            {testState.status === 'ok' && (
-              <div className="test-result test-result--ok">
-                <Check size={13} />
-                {t('models.testConnOk')}
-                {testState.message && ` · ${testState.message}`}
-              </div>
-            )}
-            {testState.status === 'fail' && (
-              <div className="test-result test-result--fail">
-                <AlertTriangle size={13} />
-                {t('models.testConnFail')}
-                {testState.message && ` · ${testState.message}`}
-              </div>
-            )}
           </div>
 
           {/* 触发置信度阈值（仅决策模型）：发起动作的默认置信度门槛 [0,1] */}

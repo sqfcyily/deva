@@ -1,4 +1,3 @@
-import { ipcMain } from 'electron'
 import { getSecret } from './secrets'
 import { httpError, type ErrorKind, type NormalizedError } from '../providers/types'
 
@@ -11,7 +10,7 @@ import { httpError, type ErrorKind, type NormalizedError } from '../providers/ty
  * 只能走到这里。首个适配器为 TypeSafe · Jev（adapter='jev'）；`jev` 仅作内部适配器值，公共面一律用通用名 decision。
  *
  * 密钥复用 secrets.ts 的解密（getSecret，绝不外泄明文），HTTP 只在主进程发起，
- * 渲染层只拿 {ok, kind, message}（测试）或 {ok, outcomes}（决策，供 Phase 3 任务侧内部调用）。
+ * 决策结果 {ok, outcomes} 仅供主进程内部（Phase 3 任务侧）调用，不经 IPC 暴露。
  * 错误归一化复用 providers/types 的 httpError（与服务商探针同一套 kind）。
  */
 
@@ -63,14 +62,6 @@ export interface DecisionConfig {
   threshold: number
   /** 决策模型版本标识（Jev：如 'jev-latest'/'jev-1.13.0'）；缺省用 DEFAULT_JEV_MODEL。 */
   model?: string
-}
-
-/** 测试连接结果（形状对齐服务商探针 provider:test，便于渲染层复用 UI）。 */
-export interface DecisionTestResult {
-  ok: boolean
-  kind?: ErrorKind
-  message: string
-  latencyMs?: number
 }
 
 const TIMEOUT_MS = 15_000
@@ -213,46 +204,4 @@ export async function decide(
     default:
       return { ok: false, outcomes: [], kind: 'invalid_request', message: `unknown adapter` }
   }
-}
-
-/**
- * 决策专属「测试连接」：用一个平凡问题探连通 + 鉴权，只判成败（不消费具体决策结果），
- * 语义对齐服务商探针的 ping。任何 2xx 即视为通。
- */
-async function testJev(cfg: DecisionConfig): Promise<DecisionTestResult> {
-  const apiKey = (await getSecret(cfg.providerId)) ?? ''
-  if (!apiKey) return { ok: false, kind: 'auth', message: 'no-key' }
-  const base = normalizeBase(cfg.baseURL)
-  const started = Date.now()
-  try {
-    const res = await fetchWithTimeout(`${base}/v1/systemone`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        state: 'ping',
-        model: cfg.model ?? DEFAULT_JEV_MODEL,
-        questions: { ping: { type: 'noul', instructions: 'ping' } }
-      })
-    })
-    const latencyMs = Date.now() - started
-    if (res.ok) return { ok: true, message: 'ok', latencyMs }
-    const text = await res.text().catch(() => '')
-    const err = httpError(res.status, text)
-    return { ok: false, kind: err.kind, message: err.message, latencyMs }
-  } catch (e) {
-    const err = networkError(e)
-    return { ok: false, kind: err.kind, message: err.message }
-  }
-}
-
-export function registerDecisionIpc(): void {
-  // 决策专属测试连接：解密密钥对目标发一个最小决策请求，只判成败（明文不出主进程）。
-  ipcMain.handle('decision:test', async (_e, cfg: DecisionConfig): Promise<DecisionTestResult> => {
-    switch (cfg.adapter) {
-      case 'jev':
-        return testJev(cfg)
-      default:
-        return { ok: false, kind: 'invalid_request', message: 'unknown adapter' }
-    }
-  })
 }
