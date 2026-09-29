@@ -1,0 +1,90 @@
+# 推送 v* tag 时打包 Windows / macOS 安装包并发布到 GitHub Release。
+# 发版：改 apps/desktop/package.json 的 version → 提交 → git tag v<version> → git push origin v<version>
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - name: win-x64
+            os: windows-latest
+            args: --win --x64
+          # node-pty 按平台/架构拆包，pnpm 只装本机那份，所以两种芯片各用对应的机器原生打包
+          - name: mac-arm64
+            os: macos-latest
+            args: --mac --arm64
+          - name: mac-x64
+            os: macos-15-intel
+            args: --mac --x64
+    env:
+      # 没有 Apple 开发者证书，跳过钥匙串查找签名身份
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 校验 tag 与 package.json 版本一致
+        shell: bash
+        run: |
+          PKG_VERSION=$(node -p "require('./apps/desktop/package.json').version")
+          if [ "$GITHUB_REF_NAME" != "v$PKG_VERSION" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 apps/desktop/package.json 的版本 v$PKG_VERSION 不一致"
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm build
+
+      - name: 打包
+        working-directory: apps/desktop
+        # 显式 --publish never：CI 环境下 electron-builder 默认会尝试自己发布，发布统一交给下面的 release job
+        run: pnpm exec electron-builder ${{ matrix.args }} --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            apps/desktop/dist/*-setup.exe
+            apps/desktop/dist/*.dmg
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: 创建 GitHub Release
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          # v0.2.0-beta.1 这类带连字符的 tag 标为预发布
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: 输出 Release 链接
+        run: echo "Release：${{ steps.release.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"

@@ -23,6 +23,8 @@ win:
   icon: build/icon.ico
 
 nsis:
+  # 默认名带空格（Deva Setup x.y.z.exe），传到 GitHub Release 会被改成点号，这里统一成连字符
+  artifactName: ${productName}-${version}-setup.${ext}
   oneClick: false
   perMachine: false
   allowElevation: true
@@ -34,7 +36,13 @@ nsis:
 mac:
   target:
     - dmg
+  # 1024×1024 png，electron-builder 自动转 icns
+  icon: build/icon.png
   category: public.app-category.developer-tools
+
+dmg:
+  # 文件名带架构，arm64 / x64 两个包才不会重名
+  artifactName: ${productName}-${version}-${arch}.${ext}
 
 linux:
   target:
