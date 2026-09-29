@@ -128,12 +128,18 @@ export interface AdapterConfig {
   apiKey: string
 }
 
+/** 响应体摘要：折叠空白、限长。中转 / 网关常把真正原因（上游额度用尽、内容拦截等）写在这里。 */
+function bodyHint(body: string): string {
+  const s = body.replace(/\s+/g, ' ').trim().slice(0, 200)
+  return s ? `：${s}` : ''
+}
+
 /** HTTP 状态码 → 归一化错误。 */
 export function httpError(status: number, body: string): NormalizedError {
   if (status === 401 || status === 403)
     return { kind: 'auth', retryable: false, message: `鉴权失败（${status}）：请检查 API 密钥。` }
   if (status === 429)
-    return { kind: 'rate_limit', retryable: true, message: '触发限流（429），请稍后重试。' }
+    return { kind: 'rate_limit', retryable: true, message: `触发限流（429），请稍后重试${bodyHint(body)}` }
   if (status === 400 && /context|token|length|maximum/i.test(body))
     return {
       kind: 'context_length',
@@ -141,7 +147,7 @@ export function httpError(status: number, body: string): NormalizedError {
       message: '对话长度已超出该模型的上下文上限，无法继续。请新建对话，或换用上下文更大的模型后重试。'
     }
   if (status >= 500)
-    return { kind: 'server', retryable: true, message: `服务端错误（${status}）。` }
+    return { kind: 'server', retryable: true, message: `服务端错误（${status}）${bodyHint(body)}` }
   return {
     kind: 'invalid_request',
     retryable: false,

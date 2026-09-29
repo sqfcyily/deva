@@ -1561,6 +1561,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
       // 单步流式 + 自动重连：遇可重试网络错误（含空闲僵死）→ 丢弃残缺尾部、退避后重发本步。
       // 无状态中转不支持断点续流，只能整步重发；已完成的前序步骤（工具卡/文本）不受影响。
+      // 最近一次可重试错误的原文：重连耗尽时随报错展示，否则用户只看到笼统的「连接中断」无从排查。
+      let lastDropReason = ''
       reconnect: for (let attempt = 0; ; attempt++) {
         assistantText = ''
         toolCalls = []
@@ -1615,8 +1617,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             args.onUsage?.(ev.input, ev.cacheRead ?? 0, ev.cacheWrite ?? 0)
           } else if (ev.type === 'error') {
             // 可重试且非用户中止 → 暂不上报，走自动重连；否则作为致命错误立即上报。
-            if (ev.error.retryable && !controller.signal.aborted) retryableDrop = true
-            else {
+            if (ev.error.retryable && !controller.signal.aborted) {
+              retryableDrop = true
+              lastDropReason = ev.error.message
+            } else {
               fatal = true
               errorMessage = ev.error.message
               // 子轮错误由父轮包装成 tool_result 结论回灌、并把 Task 卡定格为 error，
@@ -1645,7 +1649,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         }
         if (retryableDrop) {
           if (attempt >= MAX_RECONNECT) {
-            errorMessage = `连接多次中断，已重试 ${MAX_RECONNECT} 次仍失败，已停止。`
+            errorMessage = `连接多次中断，已重试 ${MAX_RECONNECT} 次仍失败，已停止。${lastDropReason ? `最后一次错误：${lastDropReason}` : ''}`
             if (!isSub)
               emit(turnId, sessionId, {
                 type: 'error',

@@ -16,6 +16,7 @@ import type {
   RewindUndoResult
 } from '../../../preload'
 import { useI18n } from '../i18n/i18n'
+import { useToast } from '../components/ToastProvider'
 import { useModels, findActive } from './models'
 import { useWorkspace } from './workspace'
 
@@ -161,7 +162,7 @@ export type ChatBlock =
   /**
    * 回合终止 / 上下文压缩提示（非错误，弱化样式）。
    * truncated=达输出长度上限被截断；empty=通篇无可见回复；
-   * compacted=较早历史已压缩为摘要；compact_none=无需压缩；compact_failed=压缩失败历史未动；
+   * compacted=较早历史已压缩为摘要；compact_failed=压缩失败历史未动（「无需压缩」走 toast，不进对话流）；
    * restored=用检查点只回滚了代码（对话保留，下一条消息会告诉模型）；
    * aborted=用户中止了本轮（其上为中止前已产出的内容，重开仍在）。
    * 正文按 code 在渲染层翻译（随语言切换生效，不在 store 里定格文案）。
@@ -173,7 +174,6 @@ export type ChatBlock =
         | 'empty'
         | 'refused'
         | 'compacted'
-        | 'compact_none'
         | 'compact_failed'
         | 'restored'
         | 'aborted'
@@ -607,13 +607,9 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       next.push({ kind: 'error', message: ev.message })
       return next
     case 'compacted': {
-      // 压缩结果软提示：compacted=已压缩 / none=无需压缩 / failed=失败（历史未动）。
-      const code =
-        ev.status === 'compacted'
-          ? 'compacted'
-          : ev.status === 'none'
-            ? 'compact_none'
-            : 'compact_failed'
+      // 压缩结果软提示：compacted=已压缩 / failed=失败（历史未动）。none 由事件订阅处改弹 toast，不进气泡。
+      if (ev.status === 'none') return blocks
+      const code = ev.status === 'compacted' ? 'compacted' : 'compact_failed'
       next.push({ kind: 'notice', code, detail: ev.status === 'failed' ? ev.message : undefined })
       return next
     }
@@ -688,6 +684,12 @@ function updateLastAssistant(
   const copy = list.slice()
   copy[copy.length - 1] = { ...last, blocks: nextBlocks }
   return copy
+}
+
+/** 末条是空助手位（如 /compact 预留的）则去掉；否则原样返回。 */
+function dropEmptyAssistantTail(list: ChatMessage[]): ChatMessage[] {
+  const last = list[list.length - 1]
+  return last?.role === 'assistant' && last.blocks.length === 0 ? list.slice(0, -1) : list
 }
 
 /**
@@ -766,8 +768,14 @@ function hasAttention(messages: ChatMessage[]): boolean {
 
 export function ChatProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const { t } = useI18n()
+  const toast = useToast()
   const { activeModel, providers } = useModels()
   const { activeProject } = useWorkspace()
+  // 流事件订阅只挂载一次，经 ref 读当前语言的 t（切语言不必重订阅）。
+  const tRef = useRef(t)
+  useEffect(() => {
+    tRef.current = t
+  }, [t])
 
   const [sessions, setSessions] = useState<SessionMeta[]>([])
   // 初始会话清单是否已载入完成。首次 listSessions resolve 后置 true 并恒保持；
@@ -947,6 +955,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   useEffect(() => {
     // 本回合内压缩成功过的会话（done 时消费）。
     const compactedSids = new Set<string>()
+    // 本回合 /compact 判定无需压缩的会话（done 时消费：撤掉为它预留的空助手位）。
+    const compactNoneSids = new Set<string>()
     // 从主进程重载某会话并整份替换其 runtime 消息（后台回合完成 / 本轮压缩过后的权威回填）。
     const reloadIntoRuntime = (sid: string): void => {
       void (async () => {
@@ -981,19 +991,30 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 两边的轮下标因此错开被压掉的轮数，回滚 / 删轮会落到错的轮上。先记下，done 时以主进程为准重载。
       if (ev.type === 'compacted' && ev.status === 'compacted') compactedSids.add(sid)
 
+      // /compact 无可压（只有手动会发 none）：弹 toast 知会，不进对话流——这条提示本就不落盘，
+      // 做成气泡重启即消失，前后不一致；且它说的是「什么都没发生」，不值得占一轮对话位。
+      if (ev.type === 'compacted' && ev.status === 'none' && localStreaming) {
+        compactNoneSids.add(sid)
+        toast.show({ variant: 'warning', message: tRef.current('chat.notice.compactNone') })
+        return
+      }
+
       if (ev.type === 'done') {
         const compacted = compactedSids.delete(sid)
+        const compactNone = compactNoneSids.delete(sid)
         if (localStreaming) {
           patchRuntime(sid, (r) => ({
             ...r,
             streaming: false,
             turnId: null,
             reconnecting: null,
-            // 先收敛仍未决的交互卡（用户中断时最常见），再据终止原因补「中断说明」：
-            // 截断/空回合给出可见提示，正常回合原样短路。
-            messages: updateLastAssistant(settleOpenCards(r.messages), (b) =>
-              appendTerminalNotice(b, ev.stopReason)
-            )
+            // 无需压缩：撤掉 /compact 预留的空助手位（不补空回合提示）。否则先收敛仍未决的交互卡
+            //（用户中断时最常见），再据终止原因补「中断说明」：截断/空回合给出可见提示，正常回合原样短路。
+            messages: compactNone
+              ? dropEmptyAssistantTail(r.messages)
+              : updateLastAssistant(settleOpenCards(r.messages), (b) =>
+                  appendTerminalNotice(b, ev.stopReason)
+                )
           }))
           // 与重开同形：早期气泡当场收成一个摘要气泡。主进程在发 done 后同步补记终态提示并落盘，
           // 早于本层 loadSession 请求到达，故重载拿到的已含本轮 notices。
@@ -1032,7 +1053,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })
     })
     return unsub
-  }, [refreshSessions, patchRuntime, patchMessages, dropRuntime])
+  }, [refreshSessions, patchRuntime, patchMessages, dropRuntime, toast])
 
   const viewed = runtimes.get(currentSessionId)
   const viewedStreaming = viewed?.streaming ?? false
@@ -1119,7 +1140,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       const model = findActive(providers, sessionModelRef ?? null) ?? activeModel
 
       // 手动 /compact：不加用户气泡（该指令不该留在历史里），只挂一个助手提示位，
-      // 直接请主进程压缩历史；结果经 compacted 事件回到该助手气泡（compacted/none/failed）。
+      // 直接请主进程压缩历史；结果经 compacted 事件回到该助手气泡（compacted/failed），
+      // none 则改弹 toast 并撤掉这个助手位。
       if (body.toLowerCase() === '/compact' && atts.length === 0) {
         if (!model) {
           patchRuntime(sid, (r) => ({

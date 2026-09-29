@@ -39,6 +39,7 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
   // 行内编辑：同一时刻至多一条；error 按 target（条目 id / clear）区分。
   const [editId, setEditId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
+  const [editBase, setEditBase] = useState<EditBase | null>(null)
   const [error, setError] = useState<{ target: string; code: MemoryErrorCode } | null>(null)
   const [pending, setPending] = useState(false)
 
@@ -92,9 +93,10 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
     }
   }
 
-  const startEdit = (e: MemoryEntry): void => {
+  const startEdit = (e: MemoryEntry, base: EditBase): void => {
     setEditId(e.id)
     setEditText(e.content)
+    setEditBase(base)
     setError(null)
   }
   const cancelEdit = (): void => {
@@ -217,6 +219,7 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
                 h={{
                   editId,
                   editText,
+                  editBase,
                   maxChars: mem?.maxChars ?? 0,
                   pending,
                   onEditText: setEditText,
@@ -250,14 +253,37 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
 
 /* ---------------------------------- 记忆标签 ---------------------------------- */
 
+/** 进入编辑前量下的标签原宽与字体：编辑框从原宽起步，随内容增长（见 editBoxWidth）。 */
+type EditBase = { width: number; font: string }
+
+/** 编辑态标签除文字外的横向占用：标签内边距 4+4、边框 1+1、输入框内边距 8+8，另留 2px 给光标（见 .cf-me__tag.is-editing / .cf-me__tagedit）。 */
+const EDIT_CHROME = 28
+let measureCtx: CanvasRenderingContext2D | null = null
+
+/**
+ * 编辑中标签的宽度：不低于进入编辑前的原宽，随输入内容增长，到 max 为止（再长就在框内横向滚动）。
+ * 文字宽度用 canvas 按标签实际字体量，不按字数估——中英文字宽差一倍多，估算会一下子拉得过宽。
+ */
+function editBoxWidth(text: string, base: EditBase | null, max: number): number | undefined {
+  if (!base) return undefined
+  measureCtx ??= document.createElement('canvas').getContext('2d')
+  let textW = 0
+  if (measureCtx) {
+    measureCtx.font = base.font
+    textW = measureCtx.measureText(text).width
+  }
+  return Math.min(max, Math.max(base.width, Math.ceil(textW) + EDIT_CHROME))
+}
+
 /** 单条标签的编辑 / 删除回调（父级持有编辑态与写操作）。 */
 type TagHandlers = {
   editId: string | null
   editText: string
+  editBase: EditBase | null
   maxChars: number
   pending: boolean
   onEditText: (text: string) => void
-  onStartEdit: (e: MemoryEntry) => void
+  onStartEdit: (e: MemoryEntry, base: EditBase) => void
   onCancelEdit: () => void
   onSaveEdit: () => void
   onDelete: (id: string) => void
@@ -318,6 +344,17 @@ function MemoryTag({
   }, [pop])
   useEffect(() => () => window.clearTimeout(hideTimer.current), [])
 
+  // 进入编辑时先量下标签当前的宽度与字体（切成输入框后就量不到了），编辑框据此从原宽起步。
+  const beginEdit = (): void => {
+    const el = tagRef.current
+    if (!el) return
+    const cs = getComputedStyle(el)
+    h.onStartEdit(e, {
+      width: el.offsetWidth,
+      font: `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
+    })
+  }
+
   return (
     <div
       ref={(el) => {
@@ -326,7 +363,7 @@ function MemoryTag({
       }}
       className={`cf-me__tag${isEditing ? ' is-editing' : ''}${pop ? ' is-hot' : ''}`}
       style={style}
-      title={isEditing ? undefined : `${e.content}\n${t('cf.profile.memBulletHint')}`}
+      title={isEditing ? undefined : e.content}
       tabIndex={isEditing ? -1 : 0}
       onMouseEnter={showPop}
       onMouseLeave={hidePop}
@@ -337,13 +374,13 @@ function MemoryTag({
         if (ev.target === ev.currentTarget) hidePop()
       }}
       onDoubleClick={() => {
-        if (!isEditing) h.onStartEdit(e)
+        if (!isEditing) beginEdit()
       }}
       onKeyDown={(ev) => {
         if (isEditing || ev.target !== ev.currentTarget) return
         if (ev.key === 'Enter' || ev.key === 'F2') {
           ev.preventDefault()
-          h.onStartEdit(e)
+          beginEdit()
         } else if (ev.key === 'Delete') {
           ev.preventDefault()
           h.onDelete(e.id)
@@ -356,8 +393,6 @@ function MemoryTag({
           value={h.editText}
           autoFocus
           maxLength={h.maxChars}
-          // 输入框随内容伸缩（CJK 约 1em/字），上限与标签最大宽度一致。
-          style={{ width: `${Math.min(Math.max(h.editText.length, 6) + 1, 24)}em` }}
           onFocus={() => {
             cancelledRef.current = false
           }}
@@ -397,7 +432,7 @@ function MemoryTag({
               onClick={(ev) => {
                 ev.stopPropagation()
                 setPop(null) // 先收起：删除确认框层级低于工具条
-                h.onStartEdit(e)
+                beginEdit()
               }}
               onDoubleClick={(ev) => ev.stopPropagation()}
             >
@@ -489,7 +524,15 @@ function MemoryTags({
   return (
     <div className="cf-me__tags">
       {entries.map((e) => (
-        <MemoryTag key={e.id} entry={e} h={h} />
+        <MemoryTag
+          key={e.id}
+          entry={e}
+          h={h}
+          // 编辑中随内容加宽；上限交给 CSS 的标签 max-width（随容器宽度变）。
+          style={
+            e.id === h.editId ? { width: editBoxWidth(h.editText, h.editBase, Infinity) } : undefined
+          }
+        />
       ))}
       {entries.length === 0 && (
         <span className="cf-me__tagsempty">{t('cf.profile.memEmpty')}</span>
@@ -510,7 +553,7 @@ const ORBIT_RY = 150
 /** 翻页时每条沿轨道转过的角度与时长。 */
 const FLIP_DEG = 32
 const FLIP_MS = 320
-/** 环形里编辑框的定宽上限与距舞台左右边的最小留白（右侧要让出页码圆点）。 */
+/** 环形里编辑框的宽度上限与距舞台左右边的最小留白（右侧要让出页码圆点）。 */
 const EDIT_MAX_W = 260
 const EDIT_EDGE = 28
 
@@ -624,11 +667,13 @@ function MemoryOrbit({
 
   const slotStyle = (i: number, editing = false): React.CSSProperties => {
     const p = slotPoint(SLOT_DEG[i], rx)
-    const top = `calc(50% + ${p.y}px)`
+    // 纵坐标取整：椭圆上的 y 带小数，标签落在半像素上时文字、边框取整会偏上偏下，看着不居中。
+    const top = `calc(50% + ${Math.round(p.y)}px)`
     if (!editing) return { left: `calc(50% + ${p.x}px)`, top }
-    // 编辑中：定宽输入框（长文本在框内横向滚动，不再随内容撑开），中心点向内夹紧，
+    // 编辑中：输入框从标签原宽起步、随内容加宽，到上限后在框内横向滚动；中心点按当前宽度向内夹紧，
     // 保证整框落在舞台内、不压右侧页码圆点 —— 否则两侧槽位的编辑框会被裁掉或撑乱布局。
-    const w = Math.min(EDIT_MAX_W, width - 2 * EDIT_EDGE)
+    const maxW = Math.min(EDIT_MAX_W, width - 2 * EDIT_EDGE)
+    const w = editBoxWidth(h.editText, h.editBase, maxW) ?? maxW
     const cx = Math.min(Math.max(width / 2 + p.x, w / 2 + EDIT_EDGE), width - w / 2 - EDIT_EDGE)
     return { left: `${cx}px`, top, width: `${w}px`, maxWidth: 'none' }
   }

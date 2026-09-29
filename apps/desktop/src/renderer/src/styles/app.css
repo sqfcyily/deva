@@ -1651,11 +1651,15 @@ textarea {
     transform: translateY(0) scale(1);
   }
 }
-/* ---------- 全局 Toast（右下角浮层，知会性反馈，自动消失，非阻断） ---------- */
+/* ---------- 全局 Toast（右上角浮层，知会性反馈，自动消失，非阻断） ----------
+   原在右下角会压住对话输入框（发送钮一侧），故移到右上角；top 让到原生窗口控件叠加区
+   （Windows titleBarOverlay，min/max/close，高 40px，见 main/index.ts）下方，绝不盖住窗口按钮。
+   titlebar-area-height 是 Window Controls Overlay 提供的 env；无叠加区（macOS 红绿灯在左）时回落 --titlebar-h。
+   新条目往下堆叠。 */
 .toast-layer {
   position: fixed;
   right: var(--space-4);
-  bottom: calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
+  top: calc(env(titlebar-area-height, var(--titlebar-h)) + var(--space-2));
   z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
@@ -1682,6 +1686,9 @@ textarea {
 .toast--success {
   border-left-color: var(--success, #2f9e44);
 }
+.toast--warning {
+  border-left-color: var(--warning);
+}
 .toast--error {
   border-left-color: var(--danger);
 }
@@ -1693,6 +1700,9 @@ textarea {
 }
 .toast--success .toast__icon {
   color: var(--success, #2f9e44);
+}
+.toast--warning .toast__icon {
+  color: var(--warning);
 }
 .toast--error .toast__icon {
   color: var(--danger);
@@ -1749,7 +1759,7 @@ textarea {
 @keyframes deva-toast-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(-8px);
   }
   to {
     opacity: 1;

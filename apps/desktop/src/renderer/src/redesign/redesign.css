@@ -2353,8 +2353,11 @@ body.cf-resizing-y * {
   user-select: none;
   transition: border-color 0.12s ease;
 }
+/* 文字行高 = 标签内高（26 − 上下边框），与编辑态输入框同高同行高：两态文字行盒都从内沿起排、基线一致，
+   进入编辑时不再上下跳（原先 span 行盒偏移 3.625px、输入框 3px，小数坐标下各自取整会差出 1 个物理像素）。 */
 .cf-me__tagtext {
   min-width: 0;
+  line-height: 24px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2425,18 +2428,20 @@ body.cf-resizing-y * {
   color: var(--fg-subtle);
   font-size: 12.5px;
 }
-/* 输入框宽度随内容伸缩，但可被标签上限压缩（min-width:0），超长文字在框内横向滚动而非撑开标签。 */
+/* 输入框填满标签（标签宽度由 JS 按内容算，见 editBoxWidth），可被标签上限压缩（min-width:0），
+   超长文字在框内横向滚动而非撑开标签。 */
 .cf-me__tagedit {
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
-  height: 20px;
+  height: 24px;
   padding: 0 8px;
   border: none;
   outline: none;
   background: transparent;
   color: var(--fg);
   font: inherit;
+  line-height: 24px;
 }
 /* 环形布局：头像居中，每页 12 条沿椭圆环绕（槽位坐标由 JS 算，这里只负责居中锚点）。
    居中用独立的 translate 属性而非 transform —— 翻页动画经 WAAPI 改 transform，两者叠加互不覆盖。 */
@@ -2457,7 +2462,7 @@ body.cf-resizing-y * {
 .cf-me__orbit > .cf-me__tag:focus-within {
   z-index: 3;
 }
-/* 编辑中的定宽与位置由 JS 夹紧在舞台内（见 MemoryOrbit slotStyle）。 */
+/* 编辑中的宽度与位置由 JS 算并夹紧在舞台内（见 MemoryOrbit slotStyle）。 */
 .cf-me__orbit > .cf-me__tag.is-editing {
   z-index: 4;
 }
