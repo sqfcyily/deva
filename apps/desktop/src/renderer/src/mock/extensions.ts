@@ -78,7 +78,8 @@ export interface McpServer {
 
 /**
  * Agent 提示词（Persona）：对话优先外壳里的**完整身份**——name/头像/专长/开场白/
- * 偏好模型/工具白名单/提示词。旧壳仅用 name+prompt（叠加注入），新增字段可选、缺省安全。
+ * 偏好模型/提示词。旧壳仅用 name+prompt（叠加注入），新增字段可选、缺省安全。
+ * 无工具白名单：角色不收窄工具，全部工具按需可用。
  */
 export interface Persona {
   id: string
@@ -95,8 +96,6 @@ export interface Persona {
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
   model: string
-  /** 工具白名单（内置 / MCP 名）；空数组 = 全内置（只收窄可见性，不放宽闸门）。 */
-  tools: string[]
   /** 提示词正文（追加进主智能体系统提示词）。 */
   prompt: string
   scope: ExtScope

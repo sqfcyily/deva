@@ -29,8 +29,6 @@ export interface DefaultPersona {
   enabled: boolean
   /** 偏好模型 `"providerId:modelId"`；省略 = 跟随全局默认。 */
   model?: string
-  /** 工具白名单（内置 / MCP 名）；省略 = 允许全部内置工具。 */
-  tools?: string[]
   /** 头像 spec（Humation AvatarSpec JSON）；省略 → 由 id 确定性生成。 */
   avatar?: string
   /** 追加进主智能体系统提示词的正文（性格 / 语气 / 行文风格）。 */

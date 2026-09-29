@@ -18,7 +18,7 @@ import type { StoredSession } from './chat-store'
  * 磁盘现状 ≠ Deva 最后一次写入/恢复后的状态 → 外部改过，默认跳过、由用户勾选才覆盖。
  *
  * 刻意不用影子 git：纯 JS、零外部依赖（免装铁律），且只追踪 Deva 自己写过的文件。run_command 的文件影响
- * 不追踪（只记命令本身，供回滚面板提示「以下命令的影响无法撤销」）。
+ * 不追踪（只记命令本身，供回滚面板提示「运行过 N 条命令，影响无法撤销」）。
  *
  * 存储：`<DEVA_HOME>/data/checkpoints/<会话 id>/<sha256>`。blob 目录在 ~/.deva 下（Tier-1），Agent 工具本就
  * 读写不到；删会话即整目录删除，GC 只在本会话目录内做。

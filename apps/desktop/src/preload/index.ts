@@ -176,7 +176,7 @@ export interface RewindFile {
 
 export interface RewindPreview {
   files: RewindFile[]
-  /** 目标轮起跑过的命令：其影响无法撤销，仅列出。 */
+  /** 目标轮起跑过的命令：其影响无法撤销，面板只提示条数不逐条列出。 */
   commands: string[]
 }
 
@@ -275,8 +275,6 @@ export interface PersonaRecord {
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
   model: string
-  /** 工具白名单（内置 / MCP 名）；空数组 = 全内置（只收窄可见性，不放宽闸门）。 */
-  tools: string[]
   /** 正文 = 追加进主智能体系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -317,7 +315,6 @@ export interface PersonaUpsertInput {
   avatar?: string
   tagline?: string
   model?: string
-  tools?: string[]
   prompt?: string
   enabled?: boolean
 }

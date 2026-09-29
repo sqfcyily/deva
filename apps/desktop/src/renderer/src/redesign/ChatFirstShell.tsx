@@ -122,7 +122,7 @@ import { useProfile } from '../store/profile'
  *  - 工作区可选：头部一个 chip，挂了文件夹就「聚焦中」（focusRoot），没挂就是全机通用助手
  *  - 动手全内联：复用 features/chat/blocks 的 BlockView / StatusIndicator / deriveActivity 渲染工具/权限/思考/子智能体
  *
- * 安全不变式全程不动：persona 工具白名单只收窄可见性、每次调用仍过同一闸门；聚焦挂载复用 fs.openFolder 的
+ * 安全不变式全程不动：角色不收窄工具，每次调用都过同一闸门；聚焦挂载复用 fs.openFolder 的
  * trustRoot；~/.deva 等 Tier-1 永不可写（仅技能目录对主智能体开口）。旧壳（PREVIEW_CHAT_FIRST=false）零回归靠后端 personaId 缺省 gate。
  */
 
@@ -3817,7 +3817,6 @@ function PersonaEditor({
     if (!name.trim() || saving) return
     setSaving(true)
     void (async () => {
-      // tools 不再下发：角色不限制工具，全部工具按需可用（缺省即全内置）。
       const input: PersonaUpsertInput = {
         ...(editing ? { id: editing.id } : {}),
         name: name.trim(),

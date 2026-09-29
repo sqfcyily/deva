@@ -113,7 +113,6 @@ function personaRecToPersona(rec: PersonaRecord): Persona {
     avatarImage: rec.avatarImage ?? '',
     tagline: rec.tagline,
     model: rec.model,
-    tools: rec.tools,
     prompt: rec.prompt,
     scope: 'global',
     source: 'custom',
@@ -130,7 +129,6 @@ function personaToInput(p: Persona): PersonaUpsertInput {
     avatar: p.avatar,
     tagline: p.tagline,
     model: p.model,
-    tools: p.tools,
     prompt: p.prompt,
     enabled: p.enabled
   }
@@ -384,7 +382,6 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
           // avatar 留空 → 由新 id 确定性生成头像；用户可在编辑器改。
           tagline: '',
           model: '',
-          tools: [],
           prompt: '',
           enabled: true
         })

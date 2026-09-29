@@ -863,11 +863,9 @@ body.cf-resizing-y * {
   color: var(--fg);
   font-size: 13px;
   line-height: 1.5;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
   overflow: hidden;
-  word-break: break-word;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cf-rewind__section {
   display: flex;
@@ -885,8 +883,7 @@ body.cf-resizing-y * {
 .cf-rewind__label--warn {
   color: var(--warning);
 }
-.cf-rewind__files,
-.cf-rewind__cmds {
+.cf-rewind__files {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -961,16 +958,6 @@ body.cf-resizing-y * {
   gap: 4px;
   color: var(--fg);
   cursor: pointer;
-}
-.cf-rewind__cmds li {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-inset);
-  font-family: var(--font-mono, ui-monospace, 'Cascadia Code', Consolas, monospace);
-  font-size: 12px;
 }
 .cf-rewind__actions {
   flex-wrap: wrap;

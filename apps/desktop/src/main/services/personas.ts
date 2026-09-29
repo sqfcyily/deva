@@ -8,7 +8,7 @@ import {
 } from './avatar-image'
 import { getConfig, getDevaHome, setConfig } from './config'
 import { DEFAULT_PERSONAS } from './default-personas'
-import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
+import { fmScalar, fmString, parseFrontmatter } from './frontmatter'
 
 /**
  * Agent 提示词（Personas）服务：发现 / 解析 / 读写 `~/.deva/personas/<id>.md`（全局，与项目无关）。
@@ -17,7 +17,7 @@ import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
  * （性格、语气、行文风格、偏好等）。可多条并存、独立启停；**已启用**的会在每轮对话前**追加**进
  * 主智能体系统提示词（见 chat.ts `systemPrompt`）。与 skill/subagent 的启停模型一致（叠加，非单选）。
  *
- * 设计（照 agents.ts 裁剪，但更简单：**无 model、无 tools**）：
+ * 设计（照 agents.ts 裁剪，但更简单：**无 tools**——角色不收窄工具，全部工具按需可用）：
  * - **身份 = 文件名去扩展名（id），显示名 = frontmatter `name`**。文件名恒定不改（改显示名只重写
  *   frontmatter），故重命名不触发文件搬迁，UI 的「id 稳定 / name 可编辑」模型天然成立。
  * - 启用态**不入 .md**，集中存 `config.json` 的 `personas.enabled[id]`，默认关。
@@ -56,8 +56,6 @@ export interface PersonaRecord {
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认（见 model-resolve.ts）。 */
   model: string
-  /** 工具白名单（内置 / MCP 名）；空数组 = 允许全部内置工具（只收窄可见性，不放宽闸门）。 */
-  tools: string[]
   /** .md 正文 = 要追加进系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -71,7 +69,6 @@ export interface PersonaUpsertInput {
   avatar?: string
   tagline?: string
   model?: string
-  tools?: string[]
   prompt?: string
   /** 可选：一并设置启用态（新建默认关）。 */
   enabled?: boolean
@@ -169,7 +166,6 @@ function parsePersona(id: string, raw: string, enabled: boolean, withImage: bool
     avatarImage: withImage ? readAvatarImage(id) : '',
     tagline: fmString(data, 'tagline'),
     model: fmString(data, 'model'),
-    tools: fmArray(data, 'tools'),
     prompt: body.trim(),
     enabled
   }
@@ -232,7 +228,6 @@ function composePersonaMd(input: {
   avatar: string
   tagline: string
   model: string
-  tools: string[]
   prompt: string
 }): string {
   const lines = ['---', `name: ${fmScalar(input.name)}`]
@@ -241,7 +236,6 @@ function composePersonaMd(input: {
   if (input.avatar) lines.push(`avatar: ${fmScalar(input.avatar)}`)
   if (input.tagline) lines.push(`tagline: ${fmScalar(input.tagline)}`)
   if (input.model) lines.push(`model: ${fmScalar(input.model)}`)
-  if (input.tools.length) lines.push(`tools: [${input.tools.map(fmScalar).join(', ')}]`)
   lines.push('---', '', input.prompt.trim(), '')
   return lines.join('\n')
 }
@@ -259,7 +253,6 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
     avatar: (input.avatar ?? '').trim(),
     tagline: (input.tagline ?? '').trim(),
     model: (input.model ?? '').trim(),
-    tools: (input.tools ?? []).filter((t) => typeof t === 'string' && t.trim()),
     prompt: input.prompt ?? ''
   })
 
@@ -284,7 +277,6 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
       avatarImage: readAvatarImage(id),
       tagline: (input.tagline ?? '').trim(),
       model: (input.model ?? '').trim(),
-      tools: input.tools ?? [],
       prompt: input.prompt ?? '',
       enabled: input.enabled === true
     }
@@ -377,7 +369,6 @@ export function ensureSeededPersonas(): void {
       avatar: def.avatar ?? '',
       tagline: def.tagline,
       model: def.model ?? '',
-      tools: def.tools ?? [],
       prompt: def.prompt,
       enabled: def.enabled
     })

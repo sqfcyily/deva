@@ -260,7 +260,7 @@ function Detail({
 }): React.JSX.Element {
   const { t } = useI18n()
   const files = preview?.files ?? []
-  const commands = preview?.commands ?? []
+  const commands = preview?.commands.length ?? 0
   // 全是「无需改动」时仅恢复代码什么也不会做，涉及代码的两个按钮一并收起。
   const codeable = files.some((f) => f.action !== 'none')
 
@@ -273,7 +273,11 @@ function Detail({
         </button>
         <span className="cf-rewind__hint">{t('cf.rewind.detailHint')}</span>
       </div>
-      {text && <blockquote className="cf-rewind__quote">{text}</blockquote>}
+      {text && (
+        <blockquote className="cf-rewind__quote" title={text}>
+          {text}
+        </blockquote>
+      )}
 
       {preview === undefined ? (
         <p className="cf-rewind__empty">{t('cf.rewind.loading')}</p>
@@ -298,19 +302,11 @@ function Detail({
               </ul>
             )}
           </div>
-          {commands.length > 0 && (
-            <div className="cf-rewind__section">
-              <div className="cf-rewind__label cf-rewind__label--warn">
-                <SquareTerminal size={13} />
-                {t('cf.rewind.commandsHeading')}
-              </div>
-              <ul className="cf-rewind__cmds">
-                {commands.map((c, i) => (
-                  <li key={i} title={c}>
-                    {c}
-                  </li>
-                ))}
-              </ul>
+          {/* 命令只给一句提示不逐条列出：一轮常跑几十条，列表会把文件区挤没。 */}
+          {commands > 0 && (
+            <div className="cf-rewind__label cf-rewind__label--warn">
+              <SquareTerminal size={13} />
+              {t('cf.rewind.commandsHint').replace('{n}', String(commands))}
             </div>
           )}
         </>
