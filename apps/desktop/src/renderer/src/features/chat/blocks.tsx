@@ -349,17 +349,13 @@ export function BlockView({
       empty: 'chat.notice.empty',
       refused: 'chat.notice.refused',
       compacted: 'chat.notice.compacted',
-      compact_failed: 'chat.notice.compactFailed',
       restored: 'chat.notice.restored',
       aborted: 'chat.notice.aborted'
     }
     return (
       <div className="msg__notice">
         <Info size={14} />
-        <span>
-          {t(NOTICE_KEY[block.code])}
-          {block.detail ? <span className="msg__notice-detail">{block.detail}</span> : null}
-        </span>
+        <span>{t(NOTICE_KEY[block.code])}</span>
       </div>
     )
   }

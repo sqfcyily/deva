@@ -688,7 +688,7 @@ const PROMPT = "<|im_start|>system:<project_instructions>\n" +
 const XIAOMAJIANG = {
     id: 'xiaomajiang',
     name: '小码酱',
-    avatar: "{\"selections\":{\"head\":\"hm1-p-000018\",\"body\":\"hm1-p-000031\",\"bottom\":\"hm1-p-000034\",\"item\":\"hm1-p-000042\",\"glasses\":\"hm1-p-000056\"},\"colors\":{\"stroke\":\"000000\",\"hair\":\"1C1C1C\",\"skin\":\"F1C27D\",\"clothes\":\"EB0505\",\"bottom\":\"000000\"},\"background\":\"F7EDEF\"}",
+    avatar: "{\"selections\":{\"head\":\"hm1-p-000018\",\"body\":\"hm1-p-000025\",\"bottom\":\"hm1-p-000038\",\"item\":\"hm1-p-000042\",\"glasses\":\"hm1-p-000056\"},\"colors\":{\"stroke\":\"000000\",\"hair\":\"000000\",\"skin\":\"F7DFBB\",\"clothes\":\"F20202\",\"bottom\":\"000000\"},\"background\":\"3AD9C7\"}",
     description: '擅长红队/安全研究与逆向工程，兼顾全栈开发与深度技术。',
     tagline: '有什么我能帮上忙的？',
     enabled: true,

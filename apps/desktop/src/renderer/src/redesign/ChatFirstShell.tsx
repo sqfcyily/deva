@@ -2475,7 +2475,7 @@ function Conversation({
   streamStatus: { elapsedSec: number; reconnecting: { attempt: number; max: number } | null }
   focusRoot: string | null
   onOpenProfile: (id: string) => void
-  onSend: (text: string, attachments?: SendAttachment[]) => Promise<void>
+  onSend: (text: string, attachments?: SendAttachment[]) => Promise<boolean>
   onStop: () => void
   onMount: (path: string | null) => void
   onAsk: (key: string, answers: string[]) => void
@@ -2729,7 +2729,7 @@ function Conversation({
   }
 
   // 发送后必看到自己的消息与回复：无论此刻是否上滚，都恢复贴底跟随。
-  const handleSend = (text: string, attachments?: SendAttachment[]): Promise<void> => {
+  const handleSend = (text: string, attachments?: SendAttachment[]): Promise<boolean> => {
     stickRef.current = true
     setAtBottom(true)
     return onSend(text, attachments)
@@ -3179,7 +3179,7 @@ function Composer({
   streaming: boolean
   focusRoot: string | null
   onMount: (path: string | null) => void
-  onSend: (text: string, attachments?: SendAttachment[]) => Promise<void>
+  onSend: (text: string, attachments?: SendAttachment[]) => Promise<boolean>
   onStop: () => void
   showJump: boolean
   onJump: () => void
@@ -3356,12 +3356,18 @@ function Composer({
       if (onRewind()) setInput('')
       return
     }
+    const prevPending = pending
     setInput('')
     setPending([])
     void onSend(
       text,
       atts.map((p) => ({ path: p.path, name: p.name, kind: p.kind as AttachKind }))
-    )
+    ).then((sent) => {
+      // 未发出（未选模型 / 请求失败，原因已 toast）：把草稿放回——但别覆盖用户在此期间新敲的内容。
+      if (sent) return
+      setInput((cur) => cur || text)
+      setPending((cur) => (cur.length ? cur : prevPending))
+    })
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -4583,7 +4589,7 @@ function AboutPane(): React.JSX.Element {
         </div>
         <div className="cf-about__name">{t('app.name')}</div>
         <div className="cf-about__ver">
-          {t('settings.version')} 0.1.2
+          {t('settings.version')} {__APP_VERSION__}
         </div>
         <p className="cf-about__desc">{t('app.tagline')}</p>
       </div>
@@ -4639,7 +4645,7 @@ function Toggle({
 /* ============================ 通用小件 ============================ */
 // 全应用头像（角色 / 人类用户）统一走 Humation：
 //  - 角色：seed=persona.id，叠加其 avatar spec（若有）。
-//  - 用户：个人资料里的头像（图片 / spec），未配置回落固定 seed（USER_AVATAR_SEED）。
+//  - 用户：个人资料里的头像（图片 / spec；未配置时主进程回默认头像），读到前回落固定 seed（USER_AVATAR_SEED）。
 // 结构：外层 .cf-ava 作定位框，内层 .cf-ava__face 圆形裁剪头像（无描边）。
 function Avatar({
   persona,

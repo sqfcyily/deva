@@ -1370,7 +1370,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
    */
   async function runAgentLoop(
     args: AgentLoopArgs
-  ): Promise<{ text: string; stopReason: StopReason; errorMessage?: string }> {
+  ): Promise<{
+    text: string
+    stopReason: StopReason
+    errorMessage?: string
+    /** 因步数上限停下时的说明（未达上限则无）。 */
+    stepLimit?: string
+  }> {
     const {
       turnId,
       sessionId,
@@ -1458,17 +1464,20 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             recorder: args.recorder
           })
           aborted = sub.stopReason === 'aborted'
-          isErr = sub.stopReason === 'error' || aborted
+          isErr = sub.stopReason === 'error' || aborted || !!sub.stepLimit
           const partial = sub.text.trim()
-          // 中止时的 text 只是半截过程输出，不能当成结论交给模型——明确标注「未完成」，免得下一轮
-          // 模型把它当作子任务的正式结果继续推进。
+          // 中止 / 步数用尽时的 text 只是半截过程输出，不能当成结论交给模型——明确标注「未完成」，
+          // 免得下一轮模型把它当作子任务的正式结果继续推进。
           conclusion = aborted
             ? `子智能体「${def.name}」被用户中止，未完成。` +
               (partial ? `\n中止前的最近输出：\n${partial}` : '')
-            : partial ||
-              (isErr && sub.errorMessage
-                ? `子智能体「${def.name}」执行失败：${sub.errorMessage}`
-                : '（子智能体未产生文本结论。）')
+            : sub.stepLimit
+              ? `子智能体「${def.name}」未完成：${sub.stepLimit}` +
+                (partial ? `\n停止前的最近输出：\n${partial}` : '')
+              : partial ||
+                (isErr && sub.errorMessage
+                  ? `子智能体「${def.name}」执行失败：${sub.errorMessage}`
+                  : '（子智能体未产生文本结论。）')
         } catch (e) {
           conclusion = `子智能体「${def.name}」执行出错：${(e as Error)?.message ?? String(e)}`
           isErr = true
@@ -2053,13 +2062,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       if (abortedHere) return { text: finalText, stopReason: 'aborted' }
     }
 
-    // 达到步数上限
-    emit(turnId, sessionId, {
-      type: 'error',
-      kind: 'server',
-      message: `已达到单轮最大工具步数（${maxSteps}），已停止。`
-    })
-    return { text: finalText, stopReason: 'end_turn' }
+    // 达到步数上限。子轮不发 error 事件：它会在主对话里画一个不落盘的红框（重开即消失），
+    // 改由父轮把 stepLimit 写进 Task 卡摘要与结论（随 summaries 边车 / tool_result 落盘）。
+    const stepLimit = `已达到单轮最大工具步数（${maxSteps}），已停止。`
+    if (!isSub) emit(turnId, sessionId, { type: 'error', kind: 'server', message: stepLimit })
+    return { text: finalText, stopReason: 'end_turn', stepLimit }
   }
 
   /**

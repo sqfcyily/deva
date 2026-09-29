@@ -443,8 +443,7 @@ const zhCN: MessageTree = {
     // 管理面（定时任务标签页）
     paneTitle: '定时任务',
     paneHint: '这些任务按日程自动执行，执行过程中不会打扰你。',
-    paneEmpty:
-      '还没有定时任务。点搜索框旁的「+」手动添加，或在对话里说「每天…」「…点提醒我…」，我会拟一个待你确认。',
+    paneEmpty: '暂无任务',
     groupActive: '进行中',
     groupPaused: '已暂停',
     groupCompleted: '已完成',
@@ -1158,8 +1157,7 @@ const en: MessageTree = {
     // Management pane (Tasks tab)
     paneTitle: 'Tasks',
     paneHint: 'These tasks run automatically on schedule and never interrupt you while running.',
-    paneEmpty:
-      'No tasks yet. Use the + beside the search box to add one, or in a chat say “every day…” or “remind me at…” and I’ll draft one for you to approve.',
+    paneEmpty: 'No tasks',
     groupActive: 'Active',
     groupPaused: 'Paused',
     groupCompleted: 'Completed',

@@ -6,7 +6,7 @@ import { parseAvatarSpec, serializeAvatarSpec, type AvatarSpec } from '../compon
  * ~/.deva/profile/），这里只持渲染用的镜像；启动拉一次，改头像时本地同步更新（左栏与消息气泡即时刷新）。
  */
 interface ProfileContextValue {
-  /** 已存的头像 spec；null = 未配置，回落固定 seed 默认头像。 */
+  /** 头像 spec（未配置时主进程已回默认头像）；null = 尚未读到 / 读失败，回落固定 seed 头像。 */
   avatar: AvatarSpec | null
   /** 自定义头像图片（data URI；空串 = 无）。 */
   avatarImage: string

@@ -1,6 +1,5 @@
 {
   "name": "deva-workspace",
-  "version": "0.1.2",
   "private": true,
   "description": "Deva - 对话优先的智能体工作台",
   "license": "MIT",

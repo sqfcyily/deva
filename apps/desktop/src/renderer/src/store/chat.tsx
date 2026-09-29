@@ -162,27 +162,16 @@ export type ChatBlock =
   /**
    * 回合终止 / 上下文压缩提示（非错误，弱化样式）。
    * truncated=达输出长度上限被截断；empty=通篇无可见回复；
-   * compacted=较早历史已压缩为摘要；compact_failed=压缩失败历史未动（「无需压缩」走 toast，不进对话流）；
+   * compacted=较早历史已压缩为摘要；
    * restored=用检查点只回滚了代码（对话保留，下一条消息会告诉模型）；
    * aborted=用户中止了本轮（其上为中止前已产出的内容，重开仍在）。
    * 正文按 code 在渲染层翻译（随语言切换生效，不在 store 里定格文案）。
+   * 只收主进程会落盘的那几种（与 DisplayBlock 同集）：不落盘的提示（尚未选择模型 / 无需压缩 /
+   * 压缩失败 / 发送失败）一律走 toast——做成气泡重启即消失，前后不一致。
    */
   | {
       kind: 'notice'
-      code:
-        | 'truncated'
-        | 'empty'
-        | 'refused'
-        | 'compacted'
-        | 'compact_failed'
-        | 'restored'
-        | 'aborted'
-      /**
-       * 失败原因原文（仅 compact_failed，且只活在本次运行的渲染态）。
-       * 压缩失败的成因差别极大——密钥失效、连接中断、模型没吐正文——一律折成同一句
-       * 「压缩失败」，用户就无从下手。故把主进程带回的原文一并显示。
-       */
-      detail?: string
+      code: 'truncated' | 'empty' | 'refused' | 'compacted' | 'restored' | 'aborted'
     }
 
 export interface ChatMessage {
@@ -304,7 +293,8 @@ interface ChatContextValue {
   streamStatus: StreamStatus
   /** 各会话的活动态（键=sessionId）：左侧列表据此显示「生成中 / 待处理」角标。 */
   sessionStates: Record<string, SessionLiveState>
-  send: (text: string, attachments?: SendAttachment[]) => Promise<void>
+  /** 返回是否真的发出；false（未选模型 / IPC 失败等，已 toast 提示）时调用方应把草稿放回输入框。 */
+  send: (text: string, attachments?: SendAttachment[]) => Promise<boolean>
   stop: () => void
   /**
    * 新建空会话；对话优先外壳可传 personaId 绑定身份、focusRoot 预设聚焦、model 快照角色偏好模型
@@ -606,13 +596,11 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
     case 'error':
       next.push({ kind: 'error', message: ev.message })
       return next
-    case 'compacted': {
-      // 压缩结果软提示：compacted=已压缩 / failed=失败（历史未动）。none 由事件订阅处改弹 toast，不进气泡。
-      if (ev.status === 'none') return blocks
-      const code = ev.status === 'compacted' ? 'compacted' : 'compact_failed'
-      next.push({ kind: 'notice', code, detail: ev.status === 'failed' ? ev.message : undefined })
+    case 'compacted':
+      // 只有「已压缩」进气泡（主进程落盘了摘要前言，重开同形）；none / failed 由事件订阅处改弹 toast。
+      if (ev.status !== 'compacted') return blocks
+      next.push({ kind: 'notice', code: 'compacted' })
       return next
-    }
     default:
       return blocks
   }
@@ -955,8 +943,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   useEffect(() => {
     // 本回合内压缩成功过的会话（done 时消费）。
     const compactedSids = new Set<string>()
-    // 本回合 /compact 判定无需压缩的会话（done 时消费：撤掉为它预留的空助手位）。
-    const compactNoneSids = new Set<string>()
+    // 本回合 /compact 无需压缩或压缩失败的会话（done 时消费：结果已走 toast，撤掉为它预留的空助手位）。
+    const compactDropSids = new Set<string>()
     // 从主进程重载某会话并整份替换其 runtime 消息（后台回合完成 / 本轮压缩过后的权威回填）。
     const reloadIntoRuntime = (sid: string): void => {
       void (async () => {
@@ -991,26 +979,36 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 两边的轮下标因此错开被压掉的轮数，回滚 / 删轮会落到错的轮上。先记下，done 时以主进程为准重载。
       if (ev.type === 'compacted' && ev.status === 'compacted') compactedSids.add(sid)
 
-      // /compact 无可压（只有手动会发 none）：弹 toast 知会，不进对话流——这条提示本就不落盘，
-      // 做成气泡重启即消失，前后不一致；且它说的是「什么都没发生」，不值得占一轮对话位。
-      if (ev.type === 'compacted' && ev.status === 'none' && localStreaming) {
-        compactNoneSids.add(sid)
-        toast.show({ variant: 'warning', message: tRef.current('chat.notice.compactNone') })
+      // 无可压（只有手动会发 none）/ 压缩失败（自动或手动）：弹 toast 知会，不进对话流——这两条
+      // 主进程都不落盘，做成气泡重启即消失，前后不一致；且历史都没动，不值得占一轮对话位。
+      // 失败原因原文作 toast 正文：成因差别极大（密钥失效、连接中断、模型没吐正文），只说「失败」无从下手。
+      if (ev.type === 'compacted' && ev.status !== 'compacted') {
+        if (!localStreaming) return
+        if (ev.scope === 'manual') compactDropSids.add(sid)
+        if (ev.status === 'none')
+          toast.show({ variant: 'warning', message: tRef.current('chat.notice.compactNone') })
+        else
+          toast.show({
+            variant: 'error',
+            title: tRef.current('chat.notice.compactFailed'),
+            message: ev.message || undefined,
+            duration: ev.message ? 8000 : undefined
+          })
         return
       }
 
       if (ev.type === 'done') {
         const compacted = compactedSids.delete(sid)
-        const compactNone = compactNoneSids.delete(sid)
+        const compactDrop = compactDropSids.delete(sid)
         if (localStreaming) {
           patchRuntime(sid, (r) => ({
             ...r,
             streaming: false,
             turnId: null,
             reconnecting: null,
-            // 无需压缩：撤掉 /compact 预留的空助手位（不补空回合提示）。否则先收敛仍未决的交互卡
-            //（用户中断时最常见），再据终止原因补「中断说明」：截断/空回合给出可见提示，正常回合原样短路。
-            messages: compactNone
+            // /compact 无需压缩 / 失败：撤掉预留的空助手位（结果已 toast，不补空回合提示）。否则先收敛仍未决的
+            // 交互卡（用户中断时最常见），再据终止原因补「中断说明」：截断/空回合给出可见提示，正常回合原样短路。
+            messages: compactDrop
               ? dropEmptyAssistantTail(r.messages)
               : updateLastAssistant(settleOpenCards(r.messages), (b) =>
                   appendTerminalNotice(b, ev.stopReason)
@@ -1123,12 +1121,14 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   }, [currentSessionId, sessions, bindings])
 
   const value = useMemo<ChatContextValue>(() => {
-    const send = async (text: string, attachments?: SendAttachment[]): Promise<void> => {
+    // 返回是否真的发出：false = 未发出（空输入 / 本会话正忙 / 未选模型 / IPC 失败），调用方据此把草稿放回。
+    // 未发出的原因一律走 toast、不进对话流——这些提示主进程不落盘，做成气泡重启即消失，前后不一致。
+    const send = async (text: string, attachments?: SendAttachment[]): Promise<boolean> => {
       const sid = sessionIdRef.current
       const body = text.trim()
       const atts = attachments ?? []
       // 只挡「本会话」正在进行的回合——别的会话流式与否，都不影响此处发送（多对话并行的关键）。
-      if ((!body && atts.length === 0) || runtimesRef.current.get(sid)?.streaming) return
+      if ((!body && atts.length === 0) || runtimesRef.current.get(sid)?.streaming) return false
 
       // 生效模型：优先「本对话已选」——绑定覆盖层的 model（刚在对话里切换、尚未落库）或已落库会话属性的
       // model，均为引用 `"pid:mid"`；解析不到（未选 / 已删除）再回落全局默认 activeModel。
@@ -1139,24 +1139,21 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       const sessionModelRef = ov && ov.model !== undefined ? ov.model : meta?.model
       const model = findActive(providers, sessionModelRef ?? null) ?? activeModel
 
+      // 未选模型：只弹 toast，对话流不动（不加用户气泡、不留红框）。
+      const noModel = (): false => {
+        toast.show({ variant: 'warning', message: t('chat.noModel'), duration: 6000 })
+        return false
+      }
+      const sendFailed = (msg: string): false => {
+        toast.show({ variant: 'error', title: t('chat.error'), message: msg, duration: 8000 })
+        return false
+      }
+
       // 手动 /compact：不加用户气泡（该指令不该留在历史里），只挂一个助手提示位，
-      // 直接请主进程压缩历史；结果经 compacted 事件回到该助手气泡（compacted/failed），
-      // none 则改弹 toast 并撤掉这个助手位。
+      // 直接请主进程压缩历史；压缩成功经 compacted 事件回到该助手气泡，
+      // none / failed 则改弹 toast 并撤掉这个助手位。
       if (body.toLowerCase() === '/compact' && atts.length === 0) {
-        if (!model) {
-          patchRuntime(sid, (r) => ({
-            ...r,
-            messages: [
-              ...r.messages,
-              {
-                id: genId(),
-                role: 'assistant',
-                blocks: [{ kind: 'error', message: t('chat.noModel') }]
-              }
-            ]
-          }))
-          return
-        }
+        if (!model) return noModel()
         patchRuntime(sid, (r) => ({
           ...r,
           messages: [...r.messages, { id: genId(), role: 'assistant', blocks: [] }],
@@ -1179,16 +1176,17 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
           })
           patchRuntime(sid, (r) => ({ ...r, turnId }))
           void refreshSessions()
+          return true
         } catch (e) {
-          const msg = (e as Error)?.message ?? String(e)
+          // 请求没发出去：撤掉预留的空助手位，原因走 toast。
           patchRuntime(sid, (r) => ({
             ...r,
             streaming: false,
             turnId: null,
-            messages: updateLastAssistant(r.messages, (b) => [...b, { kind: 'error', message: msg }])
+            messages: dropEmptyAssistantTail(r.messages)
           }))
+          return sendFailed((e as Error)?.message ?? String(e))
         }
-        return
       }
 
       const blocks: ChatBlock[] = body ? [{ kind: 'text', text: body }] : []
@@ -1199,26 +1197,13 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         attachments: atts.length ? atts.map((a) => ({ name: a.name, kind: a.kind })) : undefined
       }
 
-      if (!model) {
-        patchRuntime(sid, (r) => ({
-          ...r,
-          messages: [
-            ...r.messages,
-            userMsg,
-            {
-              id: genId(),
-              role: 'assistant',
-              blocks: [{ kind: 'error', message: t('chat.noModel') }]
-            }
-          ]
-        }))
-        return
-      }
+      if (!model) return noModel()
 
       // 乐观追加用户气泡 + 空助手位，并置本会话为流式（计时锚点随置流写入，避免首帧秒数为负）。
+      const placeholderId = genId()
       patchRuntime(sid, (r) => ({
         ...r,
-        messages: [...r.messages, userMsg, { id: genId(), role: 'assistant', blocks: [] }],
+        messages: [...r.messages, userMsg, { id: placeholderId, role: 'assistant', blocks: [] }],
         streaming: true,
         turnId: null,
         startedAt: Date.now(),
@@ -1250,14 +1235,17 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         patchRuntime(sid, (r) => ({ ...r, turnId }))
         // 主进程发送时已惰性建档并落盘：立即刷新左侧，让新会话即时出现并高亮
         void refreshSessions()
+        return true
       } catch (e) {
-        const msg = (e as Error)?.message ?? String(e)
+        // 请求没发出去（主进程未收下这轮、也就没落盘）：撤回乐观追加的用户气泡与空助手位，
+        // 原因走 toast，草稿由调用方放回输入框——否则气泡只活到重启，与磁盘不一致。
         patchRuntime(sid, (r) => ({
           ...r,
           streaming: false,
           turnId: null,
-          messages: updateLastAssistant(r.messages, (b) => [...b, { kind: 'error', message: msg }])
+          messages: r.messages.filter((m) => m.id !== userMsg.id && m.id !== placeholderId)
         }))
+        return sendFailed((e as Error)?.message ?? String(e))
       }
     }
 
@@ -1538,6 +1526,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     activeModel,
     providers,
     t,
+    toast,
     startFresh,
     setBinding,
     refreshSessions,

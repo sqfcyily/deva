@@ -1,4 +1,4 @@
-import { ipcMain, type BrowserWindow } from 'electron'
+import { app, ipcMain, type BrowserWindow } from 'electron'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import {
   StdioClientTransport,
@@ -219,7 +219,7 @@ export async function connectServer(id: string): Promise<McpServerView | null> {
 
   try {
     const transport = await buildTransport(cfg)
-    const client = new Client({ name: 'deva', version: '0.1.0' }, { capabilities: {} })
+    const client = new Client({ name: 'deva', version: app.getVersion() }, { capabilities: {} })
     // 意外断开（子进程退出 / 网络掉线）→ 置 error，反注册工具，绝不崩。
     client.onclose = (): void => {
       const cur = runtimes.get(id)
