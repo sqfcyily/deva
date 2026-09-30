@@ -463,6 +463,10 @@ const zhCN: MessageTree = {
     runNowFailed: '无法立即运行',
     runNowStarted: '已开始运行',
     runNowStartedHint: '任务已加入运行队列，完成后可在下方「运行历史」查看结果。',
+    runNowAlreadyRunning: '任务正在运行中',
+    runNowAlreadyRunningHint: '不会重复运行，完成后可在下方「运行历史」查看结果。',
+    runNowAlreadyQueued: '任务已在排队',
+    runNowAlreadyQueuedHint: '前面还有任务在运行，轮到它时会自动开始，不会重复加入。',
     deleteConfirm: '删除后其运行历史一并清除；独占会话仍保留在对话列表，可另行删除。',
     // 管理页（左列表 + 右详情）
     searchPlaceholder: '搜索任务',
@@ -1177,6 +1181,10 @@ const en: MessageTree = {
     runNowFailed: 'Cannot run right now',
     runNowStarted: 'Run started',
     runNowStartedHint: 'The task has been queued; check “Run history” below for the result once it finishes.',
+    runNowAlreadyRunning: 'Already running',
+    runNowAlreadyRunningHint: 'It won’t be run twice; check “Run history” below once it finishes.',
+    runNowAlreadyQueued: 'Already queued',
+    runNowAlreadyQueuedHint: 'Another task is running first. This one starts automatically when its turn comes and won’t be queued again.',
     deleteConfirm:
       'Its run history will also be removed. The dedicated conversation stays in your chat list and can be deleted separately.',
     // Management page (list + detail)

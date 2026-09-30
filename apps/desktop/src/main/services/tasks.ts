@@ -330,8 +330,11 @@ export function previewSchedule(
 
 // ── 可注入运行器（scheduler 装载后接管 run-now / 触发）──────────────────────
 
-/** 立即运行一个任务：由 scheduler 提供实现（enqueue 到串行队列）。 */
-export type TaskRunner = (taskId: string) => void
+/**
+ * 立即运行一个任务：由 scheduler 提供实现（enqueue 到串行队列）。
+ * 返回 'enqueued' 已入队；'running' / 'queued' 表示同一任务正在运行 / 已在排队，本次不重复入队。
+ */
+export type TaskRunner = (taskId: string) => 'enqueued' | 'running' | 'queued'
 let runNowImpl: TaskRunner | null = null
 
 /** scheduler.ts 于 startScheduler 内注入真正的运行器。 */
@@ -367,11 +370,15 @@ export function registerTasksIpc(getWindow: () => BrowserWindow | null): void {
       previewSchedule(schedule, locale === 'en' ? 'en' : 'zh-CN', allowPast === true)
   )
   // 立即运行：委托 scheduler 的串行队列（未装载则优雅降级）。
-  ipcMain.handle('tasks:run-now', (_e, id: string): { ok: boolean; reason?: string } => {
-    if (!runNowImpl) return { ok: false, reason: 'scheduler-not-ready' }
-    const t = getTask(id)
-    if (!t) return { ok: false, reason: 'not-found' }
-    runNowImpl(id)
-    return { ok: true }
-  })
+  // 同一任务已在运行 / 排队时不重复入队，经 already 告知渲染层（仍 ok:true——不是错误，只是无需再跑）。
+  ipcMain.handle(
+    'tasks:run-now',
+    (_e, id: string): { ok: boolean; reason?: string; already?: 'running' | 'queued' } => {
+      if (!runNowImpl) return { ok: false, reason: 'scheduler-not-ready' }
+      const t = getTask(id)
+      if (!t) return { ok: false, reason: 'not-found' }
+      const r = runNowImpl(id)
+      return r === 'enqueued' ? { ok: true } : { ok: true, already: r }
+    }
+  )
 }

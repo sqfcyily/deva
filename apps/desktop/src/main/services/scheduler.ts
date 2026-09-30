@@ -5,7 +5,8 @@ import {
   applyRunResult,
   getTask,
   listTasks,
-  setTaskRunner
+  setTaskRunner,
+  type TaskRunner
 } from './tasks'
 import { runScheduledTask, type ScheduledTurnResult } from './chat'
 import type { TaskRecord, TaskRun, TaskSchedule } from './tasks-types'
@@ -176,12 +177,16 @@ async function fireOnce(id: string, manual: boolean, missed: number): Promise<vo
 
 // ── 串行队列 ──────────────────────────────────────────────────────────────────
 
-/** 入队（去重：已在队列 / 正在跑同 id 则忽略），并驱动队列消费。 */
-function enqueue(id: string, manual: boolean, missed: number): void {
-  if (currentId === id) return
-  if (queue.some((j) => j.id === id)) return
+/**
+ * 入队（去重：已在队列 / 正在跑同 id 则忽略），并驱动队列消费。
+ * @returns 'enqueued' 新入队；'running' 同 id 正在跑；'queued' 同 id 已在队列里等待（后两者本次不入队）。
+ */
+function enqueue(id: string, manual: boolean, missed: number): ReturnType<TaskRunner> {
+  if (currentId === id) return 'running'
+  if (queue.some((j) => j.id === id)) return 'queued'
   queue.push({ id, manual, missed })
   void drain()
+  return 'enqueued'
 }
 
 /** 串行消费队列（一次只跑一个；drain 自身互斥）。 */

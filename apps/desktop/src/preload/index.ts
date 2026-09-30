@@ -924,8 +924,13 @@ const api = {
     remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('tasks:delete', id),
     setStatus: (id: string, status: TaskStatus): Promise<TaskRecord | null> =>
       ipcRenderer.invoke('tasks:set-status', id, status),
-    /** 立即运行（委托调度器串行队列；调度器未就绪则 ok:false）。 */
-    runNow: (id: string): Promise<{ ok: boolean; reason?: string }> =>
+    /**
+     * 立即运行（委托调度器串行队列；调度器未就绪则 ok:false）。
+     * 同一任务已在运行 / 排队时不重复入队，返回 ok:true + already。
+     */
+    runNow: (
+      id: string
+    ): Promise<{ ok: boolean; reason?: string; already?: 'running' | 'queued' }> =>
       ipcRenderer.invoke('tasks:run-now', id),
     /**
      * 校验日程并返回人读摘要 + 下次触发（确认名片实时预览，只读不建任务）。

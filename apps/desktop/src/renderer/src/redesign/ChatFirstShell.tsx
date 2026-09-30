@@ -1776,7 +1776,14 @@ function TasksPane({
   const doRunNow = (task: TaskRecord): void => {
     void (async () => {
       const res = await runNow(task.id)
-      if (res.ok) {
+      if (res.ok && res.already) {
+        // 同一任务已在运行 / 排队：主进程没有重复入队，只知会一下（不是错误）。
+        const running = res.already === 'running'
+        toast.show({
+          title: t(running ? 'tasks.runNowAlreadyRunning' : 'tasks.runNowAlreadyQueued'),
+          message: t(running ? 'tasks.runNowAlreadyRunningHint' : 'tasks.runNowAlreadyQueuedHint')
+        })
+      } else if (res.ok) {
         // ok:true 表示已成功派发进调度器串行队列（非「已完成」）——非阻断 toast 知会「已开始运行」，
         // 实际结果稍后落入运行历史，用户无需点确认。
         toast.show({
