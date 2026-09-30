@@ -127,14 +127,53 @@ export function needsCompaction(
   return used >= window * cfg.triggerRatio
 }
 
+/**
+ * 一轮进行中（Agent 循环两步之间）是否已接近窗口：用量 = 最近一次请求的真实总输入 + 其后新增消息
+ * （助手输出 / 工具结果）的估算。只看上一步读数会低估——工具结果常常很大（读了一个大文件），
+ * 它们不在那次读数里、却要随下一步整个发出去。拿不到真实用量时回退全历史估算。
+ * lastInputAt = 那次请求发出时的历史长度。
+ */
+export function needsCompactionMidTurn(
+  messages: Message[],
+  modelId: string,
+  lastInput: number,
+  lastInputAt: number,
+  cfg: CompactionCfg = compactionConfig()
+): boolean {
+  if (!cfg.enabled) return false
+  const window = windowForModel(modelId, cfg.defaultWindow)
+  const used =
+    lastInput > 0 ? lastInput + estimateTokens(messages.slice(lastInputAt)) : estimateTokens(messages)
+  return used >= window * cfg.triggerRatio
+}
+
 // ── 边界选取 ──────────────────────────────────────────────────────────────────
 function hasToolResult(m: Message): boolean {
   return typeof m.content !== 'string' && m.content.some((p) => p.type === 'tool_result')
 }
 
-/** 真实用户轮：role=user 且不含 tool_result（工具结果回灌消息不算）。 */
+/**
+ * 真实用户轮：role=user 且不含 tool_result（工具结果回灌消息不算），也不是压缩摘要——
+ * 轮中压缩会把摘要放在本轮用户请求之后，摘要若算作轮起点，下次压缩就会把它当成「本轮请求」保留、
+ * 而把真正的请求原文压掉。
+ */
 function isGenuineUserTurn(m: Message): boolean {
-  return m.role === 'user' && !hasToolResult(m)
+  return m.role === 'user' && !hasToolResult(m) && !isCompactionSummary(m)
+}
+
+/** 助手消息是否带工具调用（一轮进行中，除最后一步外的每条助手消息都带）。 */
+function hasToolUse(m: Message): boolean {
+  return (
+    m.role === 'assistant' &&
+    typeof m.content !== 'string' &&
+    m.content.some((p) => p.type === 'tool_use')
+  )
+}
+
+/** 最后一轮（一轮进行中即当前这轮）的起点：最后一条真实用户消息的下标，没有则 -1。 */
+export function lastTurnStart(messages: Message[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) if (isGenuineUserTurn(messages[i])) return i
+  return -1
 }
 
 const MIN_COMPACT_MESSAGES = 4
@@ -168,6 +207,42 @@ export function pickBoundary(messages: Message[], keepTokens: number): number {
   }
   if (boundary < MIN_COMPACT_MESSAGES) return -1 // 无合适边界，或可压段过短，不值得
   return boundary
+}
+
+/**
+ * 轮内切点（仅轮中压缩用）：当前这轮自身已大到 pickBoundary 找不到边界时（它只在真实用户轮上切，
+ * 而进行中的这轮从头到尾只有一条），改在本轮内部切。从末尾累加到 keepTokens，再吸附到一条带工具调用的
+ * 助手消息——以它起头的尾部，其每个 tool_use 的结果都在尾部内，配对不会被切开。
+ * 返回 cut：(start, cut) 是本轮已完成、待并入摘要的步骤；至少要压掉一整步才值得，否则 -1。
+ */
+function pickInTurnCut(messages: Message[], start: number, keepTokens: number): number {
+  const n = messages.length
+  let acc = 0
+  let idx = -1
+  for (let i = n - 1; i > start; i--) {
+    acc += messageTokens(messages[i])
+    if (acc >= keepTokens) {
+      idx = i
+      break
+    }
+  }
+  if (idx < 0) return -1 // 本轮到目前为止也不大：该压的是此前的轮，那是 pickBoundary 的事
+
+  let cut = -1
+  for (let i = idx; i < n; i++)
+    if (hasToolUse(messages[i])) {
+      cut = i
+      break
+    }
+  // 最后一条工具结果自己就超过保留量（比如刚读了个大文件）：退到最后一步，尾部只留这一步。
+  if (cut < 0)
+    for (let i = idx - 1; i > start; i--)
+      if (hasToolUse(messages[i])) {
+        cut = i
+        break
+      }
+  // start 是用户请求，start+1 / start+2 是第一步的助手消息与工具结果：cut 至少落在第二步上。
+  return cut >= start + 3 ? cut : -1
 }
 
 // ── 转录与摘要 ────────────────────────────────────────────────────────────────
@@ -277,13 +352,20 @@ async function summarize(
   model: CompactModelConfig,
   transcript: string,
   locale: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  midTurn = false
 ): Promise<string> {
   const zh = locale !== 'en'
   const system = zh ? SUMMARY_SYSTEM_ZH : SUMMARY_SYSTEM_EN
+  // 轮中压缩：最后那条用户请求还在执行，摘要要能让助手接着做下去，而不只是回顾。
+  const midTurnHint = !midTurn
+    ? ''
+    : zh
+      ? '注意：记录里最后一条用户请求仍在执行中。请重点保留围绕它已经完成的步骤、查到的关键信息、改过的文件与下一步要做什么。\n\n'
+      : 'Note: the last user request in this transcript is still being worked on. Focus on the steps already completed for it, key findings, files changed, and what to do next.\n\n'
   const userText = zh
-    ? `以下是需要压缩的对话记录，请据此产出摘要：\n\n${transcript}`
-    : `Here is the conversation to compact. Produce the summary accordingly:\n\n${transcript}`
+    ? `${midTurnHint}以下是需要压缩的对话记录，请据此产出摘要：\n\n${transcript}`
+    : `${midTurnHint}Here is the conversation to compact. Produce the summary accordingly:\n\n${transcript}`
 
   let lastReason = '摘要请求未能完成'
 
@@ -353,6 +435,36 @@ async function summarize(
   }
 }
 
+/**
+ * 轮内切时迁移检查点记录：被并入摘要的那几步，其 tool_use 已从历史里消失，而回滚按「这一轮起的全部
+ * tool_use id」查记录——不迁走，事后回滚这一轮就会漏掉这几步改过的文件（恢复到一个中间状态）。
+ * 挪到尾部第一个 tool_use 名下（同一轮），回滚按 seq 取最早记录，归到哪个 id 下不影响结果。
+ */
+function moveCheckpoints(session: StoredSession, removed: Message[], tail: Message[]): void {
+  const cps = session.checkpoints
+  if (!cps) return
+  let anchor = ''
+  for (const m of tail) {
+    if (typeof m.content === 'string') continue
+    const p = m.content.find((x) => x.type === 'tool_use')
+    if (p && p.type === 'tool_use') {
+      anchor = p.id
+      break
+    }
+  }
+  if (!anchor) return
+  const moved: NonNullable<StoredSession['checkpoints']>[string] = []
+  for (const m of removed) {
+    if (typeof m.content === 'string') continue
+    for (const p of m.content)
+      if (p.type === 'tool_use' && cps[p.id]) {
+        moved.push(...cps[p.id])
+        delete cps[p.id]
+      }
+  }
+  if (moved.length) cps[anchor] = [...moved, ...(cps[anchor] ?? [])]
+}
+
 // 保留尾部目标 ≈ 窗口的 30%（压缩后仍有充足近期上下文）。
 const KEEP_RATIO = 0.3
 const KEEP_TOKENS_MIN = 2000
@@ -360,28 +472,46 @@ const KEEP_TOKENS_MIN = 2000
 /**
  * 压缩一个会话：选边界 → 转录待压段 → 一次性摘要 → 用 [摘要消息, ...尾部] 替换 messages 并落盘。
  * 成功 'compacted'；无可压 'none'；摘要失败 'failed'（历史保持不变）。
+ * **就地改写** session.messages（不重新赋值）：轮中压缩时 Agent 循环正拿着这个数组往里追加。
  */
 export async function compactSession(args: {
   session: StoredSession
   model: CompactModelConfig
   signal: AbortSignal
+  /**
+   * 一轮进行中调用（Agent 循环两步之间）。先照常只压此前的轮；本轮自身已大到装不下时，
+   * 改为在本轮内部切：保留本轮用户请求原文 + 近期步骤，其间已完成的步骤并入摘要，
+   * 布局为 [本轮请求, 摘要, ...近期步骤]。
+   */
+  midTurn?: boolean
 }): Promise<{ status: CompactStatus; message?: string }> {
   const { session, model, signal } = args
   const cfg = compactionConfig()
   const locale = String(getConfig().locale ?? 'zh-CN')
   const window = windowForModel(model.model, cfg.defaultWindow)
   const keepTokens = Math.max(KEEP_TOKENS_MIN, Math.round(window * KEEP_RATIO))
+  const msgs = session.messages
 
-  const boundary = pickBoundary(session.messages, keepTokens)
+  let boundary = pickBoundary(msgs, keepTokens)
+  // 轮内切时原样保留的本轮用户请求下标（-1 = 普通压缩，不保留）
+  let keepHead = -1
+  if (boundary < 0 && args.midTurn) {
+    const start = lastTurnStart(msgs)
+    const cut = start < 0 ? -1 : pickInTurnCut(msgs, start, keepTokens)
+    if (cut > 0) {
+      boundary = cut
+      keepHead = start
+    }
+  }
   if (boundary < 0) return { status: 'none' }
 
-  const toSummarize = session.messages.slice(0, boundary)
-  const tail = session.messages.slice(boundary)
+  const toSummarize = msgs.slice(0, boundary)
+  const tail = msgs.slice(boundary)
   const transcript = buildTranscript(toSummarize, locale)
 
   let summary = ''
   try {
-    summary = await summarize(model, transcript, locale, signal)
+    summary = await summarize(model, transcript, locale, signal, keepHead >= 0)
   } catch (e) {
     // 失败原因原样带回（鉴权 / 断流 / 超时 / 无正文）：调用方会连同提示一起展示给用户。
     // 历史在此之前一个字都没动，返回即安全收场。
@@ -392,18 +522,29 @@ export async function compactSession(args: {
   if (!summary) return { status: 'failed', message: '模型没有返回摘要正文' }
 
   const zh = locale !== 'en'
-  const header = zh
-    ? '以下是此前对话的摘要（为节省上下文，较早的消息已压缩）。请在此基础上继续。'
-    : 'The following is a summary of the earlier conversation (older messages were compacted to save context). Continue from here.'
+  const header =
+    keepHead >= 0
+      ? zh
+        ? '以下是此前对话以及本轮任务已完成部分的摘要（为节省上下文，较早的消息已压缩）。上面那条是用户本轮的原始请求，任务仍在进行中：请在此基础上接着做，不要从头再来，也不要重复已经完成的步骤。'
+        : "The following summarizes the earlier conversation and the work already done on the current task (older messages were compacted to save context). The message above is the user's original request for this turn, and the task is still in progress: continue from here — do not start over or repeat steps already completed."
+      : zh
+        ? '以下是此前对话的摘要（为节省上下文，较早的消息已压缩）。请在此基础上继续。'
+        : 'The following is a summary of the earlier conversation (older messages were compacted to save context). Continue from here.'
   const summaryMsg: Message = { role: 'user', content: `${COMPACT_MARKER}\n${header}\n\n${summary}` }
+  // 轮内切：本轮请求原样留在最前（附件一并保留），摘要紧随其后。两条 user 连着，发送前由
+  // normalizeMessages 合并；摘要不算轮起点，故本轮在轮下标上仍是同一轮。
+  const head = keepHead >= 0 ? [msgs[keepHead]] : []
 
-  session.messages = [summaryMsg, ...tail]
+  if (keepHead >= 0) moveCheckpoints(session, msgs.slice(keepHead + 1, boundary), tail)
+
+  msgs.splice(0, msgs.length, ...head, summaryMsg, ...tail)
   // 终态提示边车随历史重排：锚在被压缩区（after <= boundary）的一并丢弃（其上下文已成摘要，
-  // 不重建早期气泡）；锚在保留段的按新布局平移——摘要占新 0 号位，故 after -= boundary - 1。
+  // 不重建早期气泡）；锚在保留段的按新布局平移——尾部前面现在是 [head..., 摘要]，故 after -= boundary - offset。
+  const offset = head.length + 1
   if (session.notices?.length)
     session.notices = session.notices
       .filter((nt) => nt.after > boundary)
-      .map((nt) => ({ ...nt, after: nt.after - boundary + 1 }))
+      .map((nt) => ({ ...nt, after: nt.after - boundary + offset }))
   session.lastInputTokens = undefined // 历史已缩短，旧计数失效
   session.updatedAt = Date.now()
   saveProject(session.id)

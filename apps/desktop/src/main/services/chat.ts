@@ -69,8 +69,11 @@ import {
 import {
   compactSession,
   isCompactionSummary,
+  lastTurnStart,
   needsCompaction,
+  needsCompactionMidTurn,
   stripMarker,
+  type CompactModelConfig,
   type CompactStatus
 } from './compaction'
 
@@ -1311,6 +1314,13 @@ interface AgentLoopArgs {
    * 仅主轮与定时任务传入；子轮历史是隔离的临时数组，不落盘。
    */
   onStep?: () => void
+  /**
+   * 一轮进行中的上下文压缩（对标 Claude Code：每次请求模型前都检查，长任务跑到一半也会自动压，
+   * 不必等到下一轮开头——一轮里连跑几十步工具，那时早已撑爆窗口）。循环从第 2 步起、每步请求前
+   * 判定接近窗口即调用；实现方须**就地**改写 history（不得重新赋值），返回是否真的压缩了。
+   * 仅主轮与定时任务传入；子轮历史是隔离的临时数组，且有步数上限。
+   */
+  compact?: () => Promise<boolean>
 }
 
 export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
@@ -1566,8 +1576,23 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     let finalText = ''
     // 致命错误 / 重连耗尽时的错误文案：随返回值上交，供父轮子智能体结论回落与红框持久化。
     let errorMessage: string | undefined
+    // 最近一次请求的真实总输入 token，及该请求发出时的历史长度：供轮中压缩判定
+    // （之后追加的助手输出 / 工具结果不在读数里，由判定函数另行估算补上）。
+    let usedInput = 0
+    let usedAt = 0
 
     for (let step = 0; step < maxSteps; step++) {
+      // 轮中压缩：第 2 步起每步请求前检查（第 1 步之前调用方已在轮开头查过）。此刻上一步的工具
+      // 结果已全部回灌（并行子智能体也已等齐），历史里没有悬空的 tool_use，可以安全改写。
+      if (
+        step > 0 &&
+        args.compact &&
+        !controller.signal.aborted &&
+        needsCompactionMidTurn(history, model.model, usedInput, usedAt) &&
+        (await args.compact())
+      )
+        usedInput = 0 // 历史已改写，旧读数作废：回退估算，直到本步拿到新读数
+
       let assistantText = ''
       let toolCalls: { id: string; name: string; args: unknown }[] = []
       let stopReason: StopReason = 'end_turn'
@@ -1629,6 +1654,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
                 cacheRead: ev.cacheRead,
                 cacheWrite: ev.cacheWrite
               })
+            // 流式中本步助手消息尚未追加，history.length 即本次请求发出时的长度。
+            if (ev.input > 0) {
+              usedInput = ev.input
+              usedAt = history.length
+            }
             args.onUsage?.(ev.input, ev.cacheRead ?? 0, ev.cacheWrite ?? 0)
           } else if (ev.type === 'error') {
             // 可重试且非用户中止 → 暂不上报，走自动重连；否则作为致命错误立即上报。
@@ -2070,6 +2100,49 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   /**
+   * 轮中压缩钩子（AgentLoopArgs.compact）：主轮与定时任务共用。compactSession 就地改写
+   * session.messages，循环手里的 history 仍有效。
+   *  · 无可压（none）静默返回——判定便宜，下一步照常再查；
+   *  · 失败：发事件供渲染层弱提示 + 记日志，且本轮不再尝试（每步都重试摘要会反复白付费用、拖慢每一步）；
+   *  · 中止：什么都不发，交给循环自己收尾。
+   * 成功后清理被摘要掉的检查点，并回调 onCompacted 供调用方复位本轮的用量读数 / 轮起点。
+   */
+  function midTurnCompactor(
+    turnId: string,
+    sessionId: string,
+    session: StoredSession,
+    model: CompactModelConfig,
+    controller: AbortController,
+    onCompacted: () => void
+  ): () => Promise<boolean> {
+    let gaveUp = false
+    return async () => {
+      if (gaveUp) return false
+      try {
+        const r = await compactSession({ session, model, signal: controller.signal, midTurn: true })
+        if (r.status === 'none') return false
+        if (r.status === 'failed') {
+          if (controller.signal.aborted) return false
+          emit(turnId, sessionId, { type: 'compacted', scope: 'auto', status: r.status, message: r.message })
+          console.warn('[compaction] 轮中自动压缩失败：', r.message)
+          gaveUp = true
+          return false
+        }
+        emit(turnId, sessionId, { type: 'compacted', scope: 'auto', status: r.status })
+        // 被摘要掉的轮已不可选，其检查点记录随之清理（轮内切时本轮的记录已迁到尾部，不受影响）。
+        pruneCheckpoints(session)
+        onCompacted()
+        return true
+      } catch (e) {
+        /* 压缩自身抛错（极少）：历史未动，本轮照常，且不再尝试 */
+        console.warn('[compaction] 轮中自动压缩异常：', (e as Error)?.message ?? e)
+        gaveUp = true
+        return false
+      }
+    }
+  }
+
+  /**
    * 主轮（depth 0）薄封装：建控制器/上下文、定格技能快照、调 runAgentLoop，
    * 由本封装发终态 `done`（嵌套子轮不发 done），并在 finally 落盘。
    */
@@ -2097,8 +2170,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const persona = session.personaId ? getPersona(session.personaId) : null
     const turnModel = resolveModelRef(session.model, config)
 
-    // 自动压缩：接近上下文窗口时，先把较早历史摘要替换，再进入本轮。
-    // 必须在捕获 history 之前做——compactSession 会重赋 session.messages（否则 history 成悬空旧引用）。
+    // 自动压缩：接近上下文窗口时，先把较早历史摘要替换，再进入本轮（一轮进行中另有逐步检查，见 compact）。
     // 失败 / 无需压缩都发事件供渲染层弱提示，且绝不阻断本轮（宁可这一轮不压也要照常回答）。
     if (!controller.signal.aborted && needsCompaction(session, turnModel.model)) {
       try {
@@ -2120,9 +2192,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       pruneCheckpoints(session)
     }
 
+    // compactSession 就地改写 messages，轮中压缩后 history 依然是同一个数组。
     const history = session.messages
-    // 本轮起点（压缩之后捕获——compactSession 已重赋 messages）：用于判定本轮是否产出可见回复。
-    const turnStart = history.length
+    // 本轮起点：用于判定本轮是否产出可见回复。轮中压缩会重排历史，届时重新定位（见 compact）。
+    let turnStart = history.length
     // 本轮真实输入 token（用于压缩触发判定）：runAgentLoop 每收到一次 usage 即回调，取最后一次。
     let lastInput = 0
     // 本轮提示缓存命中 / 写入量（纯观测，不参与判定），同样取最后一次。
@@ -2238,7 +2311,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // 文件检查点（供回滚）：同一个记录器透传给子智能体，seq 全局递增。
         recorder: createRecorder(session),
         // 逐步落盘：长回合中途崩溃 / 强退，已完成的步骤仍在磁盘上。
-        onStep: () => saveProject(sessionId)
+        onStep: () => saveProject(sessionId),
+        // 轮中压缩：旧读数作废（别让 finally 把压缩前的大数存成下轮触发依据）；本轮请求在历史里的位置变了，
+        // 轮起点改为它之后（被并入摘要的步骤无论如何都带工具调用，不影响「是否产出可见回复」的判定）。
+        compact: midTurnCompactor(turnId, sessionId, session, turnModel, controller, () => {
+          lastInput = 0
+          turnStart = lastTurnStart(history) + 1
+        })
       })
       emit(turnId, sessionId, { type: 'done', stopReason })
       // 终态提示持久化（须在 finally 落盘前执行）：错误红框 / 截断 / 空回合入 notices 边车。
@@ -2322,6 +2401,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     history.push({ role: 'user', content: task.prompt })
 
     // 自动压缩：任务多次触发累积于同一会话，接近窗口即先摘要替换早期历史（失败/无需都不阻断本轮）。
+    // history 已在上面捕获——compactSession 就地改写 messages，这个引用压缩后依然有效。
     if (!controller.signal.aborted && needsCompaction(session, turnModel.model)) {
       try {
         const r = await compactSession({ session, model: turnModel, signal: controller.signal })
@@ -2372,7 +2452,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           lastCacheRead = read
           lastCacheWrite = write
         },
-        onStep: () => saveProject(sessionId)
+        onStep: () => saveProject(sessionId),
+        compact: midTurnCompactor(turnId, sessionId, session, turnModel, controller, () => {
+          lastInput = 0
+        })
       })
       emit(turnId, sessionId, { type: 'done', stopReason })
       result = { stopReason, text, errorMessage }
