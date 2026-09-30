@@ -67,7 +67,9 @@ import {
   type WriteSnap
 } from './checkpoints'
 import {
+  AUTO_MARKER,
   compactSession,
+  isAutoNudge,
   isCompactionSummary,
   lastTurnStart,
   needsCompaction,
@@ -419,6 +421,10 @@ function toDisplayMessages(
       return
     }
 
+    // 引擎注入的自愈引导（截断续写 / 空回合追问）：不是用户说的话，不成气泡，也不断开合并链——
+    // 其后的助手续写并入同一个气泡，看起来就是一次连贯的回复。
+    if (isAutoNudge(m)) return
+
     if (typeof m.content === 'string') {
       out.push({ role: 'user', text: m.content, attachments: [] })
       // 真实用户轮：断开 assistant 合并链，其后的 assistant 段另起新气泡（新头像）。
@@ -476,6 +482,7 @@ function toDisplayMessages(
 function isTurnStart(m: Message): boolean {
   if (m.role !== 'user') return false
   if (isCompactionSummary(m)) return false
+  if (isAutoNudge(m)) return false
   if (typeof m.content === 'string') return true
   return !m.content.some((p) => p.type === 'tool_result')
 }
@@ -822,6 +829,12 @@ export type ChatStreamEvent =
   | { type: 'reconnecting'; attempt: number; max: number }
   /** 重连前置：丢弃本步骤已画出的残缺尾部，随后重新流式（无法无缝续传，只能重发本步）。 */
   | { type: 'stream_reset' }
+  /**
+   * 引擎正在自愈（transient，同 reconnecting 一样显示为状态横幅，任何真实内容到达即收起）：
+   * truncated=输出撞上长度上限，已引导模型续写 / 拆小；empty=上一步无任何输出，已追问；
+   * context=上下文超限，已压缩后重试；output_limit=输出预算超出模型允许范围，已降档重发。
+   */
+  | { type: 'auto_retry'; reason: AutoRetryReason; attempt: number; max: number }
   | { type: 'error'; kind: string; message: string }
   /**
    * 上下文压缩结果（自动或手动 /compact）。渲染层据此在助手气泡追加软提示块；
@@ -840,15 +853,58 @@ const MAX_STEPS = Infinity
  * 60 步对「大范围检索 / 专项分析」这类目标用途实际等同于无上限（原先的 15 步才是真正的瓶颈）。
  */
 const SUBAGENT_MAX_STEPS = 60
-/** 单个步骤因可重试网络错误自动重连的最大次数。 */
-const MAX_RECONNECT = 3
+/**
+ * 单个步骤因可重试错误（断网 / 空闲僵死 / 429 / 5xx）自动重连的最大次数。退避 1s→2s→4s… 封顶
+ * RECONNECT_MAX_DELAY_MS，服务端给了 retry-after 则以它为准（同样封顶）。合计约 1.5 分钟的耐心，
+ * 足以扛过网关抖动与短时限流，而不必让用户回来发「继续」。
+ */
+const MAX_RECONNECT = 6
+const RECONNECT_MAX_DELAY_MS = 30_000
+
+export type AutoRetryReason = 'truncated' | 'empty' | 'context' | 'output_limit'
+
+/**
+ * 每步输出预算（max_tokens）。旧的固定 8192 对带思考的新模型太小：思考吃光预算、一字未出就撞限，
+ * 回合戛然而止（sess_muje1nu3_a 即此例）。Claude 系给宽裕值；其余维持原先的适配器默认，
+ * 以免撞上不认大预算的网关。某模型拒绝该预算（400 output_limit）则进程内记住，降回保守值。
+ */
+const OUTPUT_BUDGET_WIDE = 32_000
+const OUTPUT_BUDGET_SAFE = 8192
+const outputBudgetDowngraded = new Set<string>()
+function outputBudget(model: { providerId: string; model: string }): number | undefined {
+  const key = `${model.providerId}:${model.model}`
+  if (outputBudgetDowngraded.has(key)) return OUTPUT_BUDGET_SAFE
+  return /claude/i.test(model.model) ? OUTPUT_BUDGET_WIDE : undefined
+}
+
+/**
+ * 一步以 max_tokens 收尾且**没有工具调用**（只有思考 / 半截正文）时，注入引导让模型接着做，而不是
+ * 交还用户等「继续」。hadText 区分两种症状，给出不同的纠偏：没写出东西 → 少想、直接动手；
+ * 写了半截 → 从断点续写。
+ */
+function truncatedNudge(hadText: boolean): string {
+  return hadText
+    ? `${AUTO_MARKER}
+（系统自动续写）你上一条回复因达到单次输出长度上限被截断。请从断点处直接接着写，` +
+        '不要重复已写出的内容；如果剩余内容仍很长，改为写入文件并分段（write_file + append）。'
+    : `${AUTO_MARKER}
+（系统自动续写）你上一步把单次输出额度全部耗在了思考上，没有产出任何正文或工具调用，` +
+        '被截断了。请减少思考、直接行动：先做最小的一步（调用工具或给出简短回复），' +
+        '大段内容写入文件并分段（write_file + append）。'
+}
+
+/** 本轮自然结束却没有任何可见输出时的追问（每轮最多一次）。 */
+const EMPTY_NUDGE =
+  `${AUTO_MARKER}
+（系统自动追问）你上一步没有输出任何内容就结束了。请继续完成用户的任务；` +
+  '如果任务已经完成，请简要告诉用户结果；如果确实需要用户决定，请用 ask_user 提问。'
 
 /**
  * 工具参数撞上输出上限被截断（适配器报 tool_call_truncated）：连续这么多步都截断就停下，交回
  * 「已截断」提示。前几次记成失败的工具调用、回灌「请分段写」，模型拆小后自然接着做；一直拆不小
  * （比如每次都在长篇思考上耗光预算）则不再空转。主轮步数不设上限，这道闸必须有。
  */
-const MAX_TRUNCATED_STREAK = 3
+const MAX_TRUNCATED_STREAK = 4
 /** 写进被截断调用 tool_use 里的标记：展示层据此一律画成普通工具卡（它不是能被答复的问答 / 计划 / 名片）。 */
 const TRUNCATED_FLAG = '__truncated'
 
@@ -1623,8 +1679,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // （之后追加的助手输出 / 工具结果不在读数里，由判定函数另行估算补上）。
     let usedInput = 0
     let usedAt = 0
-    // 连续有工具调用被输出上限截断的步数（见 MAX_TRUNCATED_STREAK）。
+    // 连续被输出上限截断的步数（见 MAX_TRUNCATED_STREAK）：工具参数截断与「只思考 / 半截正文」截断共用。
     let truncatedStreak = 0
+    // 本轮已因上下文超限强制压缩重试过（每轮至多一次：压完仍超限说明单步就装不下，再试无益）。
+    let contextRetried = false
+    // 本轮已追问过一次空回合（至多一次，仍为空才交还用户并显示「空回合」）。
+    let emptyNudged = false
+    // 本次循环是否已产出过可见内容（正文或工具调用）：空回合追问只针对「从头到尾什么都没有」。
+    let producedVisible = false
 
     for (let step = 0; step < maxSteps; step++) {
       // 轮中压缩：第 2 步起每步请求前检查（第 1 步之前调用方已在轮开头查过）。此刻上一步的工具
@@ -1649,12 +1711,17 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       // 无状态中转不支持断点续流，只能整步重发；已完成的前序步骤（工具卡/文本）不受影响。
       // 最近一次可重试错误的原文：重连耗尽时随报错展示，否则用户只看到笼统的「连接中断」无从排查。
       let lastDropReason = ''
+      // 服务端建议的等待（retry-after），仅对紧随其后的那次退避生效。
+      let retryAfterMs: number | undefined
       reconnect: for (let attempt = 0; ; attempt++) {
         assistantText = ''
         toolCalls = []
         stopReason = 'end_turn'
         let retryableDrop = false
         let fatal = false
+        // 不可重试错误先扣下、不立即画红框：其中几类引擎能自愈（输出预算降档、上下文压缩后重发），
+        // 流结束后再定夺；自愈不了才上报。
+        let fatalErr: { kind: string; message: string } | null = null
 
         for await (const ev of streamChat(
           { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
@@ -1664,6 +1731,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             messages: history,
             tools,
             signal: controller.signal,
+            maxTokens: outputBudget(model),
             // 工具循环每步都要把 system + tools + 全量历史整个重发一遍，是提示缓存最典型的受益者
             // （Anthropic 才需显式断点；OpenAI/DeepSeek 自动命中，此开关对它们无作用）。
             // 子智能体同样走这里：其 system/tools 与主轮不同，自成一套缓存条目，各缓各的。
@@ -1724,17 +1792,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             if (ev.error.retryable && !controller.signal.aborted) {
               retryableDrop = true
               lastDropReason = ev.error.message
+              retryAfterMs = ev.error.retryAfterMs
             } else {
               fatal = true
-              errorMessage = ev.error.message
-              // 子轮错误由父轮包装成 tool_result 结论回灌、并把 Task 卡定格为 error，
-              // 不在主对话流里再画一个红框。
-              if (!isSub)
-                emit(turnId, sessionId, {
-                  type: 'error',
-                  kind: ev.error.kind,
-                  message: ev.error.message
-                })
+              fatalErr = { kind: ev.error.kind, message: ev.error.message }
             }
           } else if (ev.type === 'done') {
             stopReason = ev.stopReason
@@ -1747,7 +1808,39 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           interrupted = 'aborted'
           break reconnect
         }
-        if (fatal) {
+        if (fatal && fatalErr) {
+          // 自愈①：输出预算超出该模型允许范围 → 记住并降回保守值，重发本步（不计入重连次数）。
+          const key = `${model.providerId}:${model.model}`
+          if (fatalErr.kind === 'output_limit' && !outputBudgetDowngraded.has(key)) {
+            outputBudgetDowngraded.add(key)
+            console.warn('[chat] 输出预算被拒，降档重发：', fatalErr.message)
+            if (!isSub) {
+              emit(turnId, sessionId, { type: 'auto_retry', reason: 'output_limit', attempt: 1, max: 1 })
+              emit(turnId, sessionId, { type: 'stream_reset' })
+            }
+            attempt--
+            continue reconnect
+          }
+          // 自愈②：上下文超限 → 强制做一次轮中压缩（绕过阈值判定），成功则重发本步。
+          // （Anthropic 的「input + max_tokens 超出上下文」也报 max_tokens：降档后仍被拒即归入此类。）
+          if (
+            (fatalErr.kind === 'context_length' || fatalErr.kind === 'output_limit') &&
+            args.compact &&
+            !contextRetried
+          ) {
+            contextRetried = true
+            if (!isSub) emit(turnId, sessionId, { type: 'auto_retry', reason: 'context', attempt: 1, max: 1 })
+            if (await args.compact()) {
+              usedInput = 0
+              if (!isSub) emit(turnId, sessionId, { type: 'stream_reset' })
+              attempt--
+              continue reconnect
+            }
+          }
+          errorMessage = fatalErr.message
+          // 子轮错误由父轮包装成 tool_result 结论回灌、并把 Task 卡定格为 error，
+          // 不在主对话流里再画一个红框。
+          if (!isSub) emit(turnId, sessionId, { type: 'error', kind: fatalErr.kind, message: fatalErr.message })
           interrupted = 'error'
           break reconnect
         }
@@ -1769,7 +1862,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               attempt: attempt + 1,
               max: MAX_RECONNECT
             })
-          const resumed = await delay(Math.min(1000 * 2 ** attempt, 8000), controller.signal)
+          const backoff = retryAfterMs ?? 1000 * 2 ** attempt
+          retryAfterMs = undefined
+          const resumed = await delay(Math.min(backoff, RECONNECT_MAX_DELAY_MS), controller.signal)
           // 退避期间被中止：stream_reset 尚未发出，渲染层仍显示着这截残缺正文——照样落地，两侧一致。
           if (!resumed) {
             interrupted = 'aborted'
@@ -1805,8 +1900,36 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       }
       // 逐步落盘：此刻若带工具调用，tool_use 暂时悬空（结果还没跑出来）——期间崩溃也不怕，
       // 下次载入由 repairDanglingToolUses 自愈；换来的是长命令跑到一半强退时，正文不丢。
+      const stepVisible = assistantText.trim() !== '' || toolCalls.length > 0
+      if (stepVisible) producedVisible = true
       args.onStep?.()
-      if (toolCalls.length === 0) return { text: finalText, stopReason }
+      if (toolCalls.length === 0) {
+        // 自愈③：输出撞上长度上限、本步却没有工具调用（只思考 / 正文写到一半）——不交还用户等
+        // 「继续」，注入引导让模型续写或拆小，与工具参数截断共用连续计数，连续失败才兜底收场。
+        if (stopReason === 'max_tokens') {
+          truncatedStreak++
+          if (truncatedStreak >= MAX_TRUNCATED_STREAK) return { text: finalText, stopReason }
+          history.push({ role: 'user', content: truncatedNudge(assistantText.trim() !== '') })
+          if (!isSub)
+            emit(turnId, sessionId, {
+              type: 'auto_retry',
+              reason: 'truncated',
+              attempt: truncatedStreak,
+              max: MAX_TRUNCATED_STREAK - 1
+            })
+          args.onStep?.()
+          continue
+        }
+        // 自愈④：自然结束却从头到尾没有任何可见输出 → 追问一次；仍为空才交还用户（显示「空回合」）。
+        if ((stopReason === 'end_turn' || stopReason === 'stop') && !producedVisible && !emptyNudged) {
+          emptyNudged = true
+          history.push({ role: 'user', content: EMPTY_NUDGE })
+          if (!isSub) emit(turnId, sessionId, { type: 'auto_retry', reason: 'empty', attempt: 1, max: 1 })
+          args.onStep?.()
+          continue
+        }
+        return { text: finalText, stopReason }
+      }
       truncatedStreak = toolCalls.some((tc) => tc.truncated !== undefined) ? truncatedStreak + 1 : 0
 
       // 并行派发子任务（对标 Claude Code：同一条消息里的多个子任务真正并发跑）：先把本步全部

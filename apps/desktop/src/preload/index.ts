@@ -595,6 +595,8 @@ export type ChatStreamEvent =
   /** 用量。input 为总提示 token（含缓存命中/写入）；cacheRead/cacheWrite 供观测缓存是否生效。 */
   | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   | { type: 'reconnecting'; attempt: number; max: number }
+  /** 引擎自愈中（截断续写 / 空回合追问 / 上下文压缩重试 / 输出预算降档），显示为状态横幅。 */
+  | { type: 'auto_retry'; reason: 'truncated' | 'empty' | 'context' | 'output_limit'; attempt: number; max: number }
   | { type: 'stream_reset' }
   | { type: 'error'; kind: string; message: string }
   /** 上下文压缩结果（自动或手动 /compact）。 */

@@ -46,8 +46,20 @@ function mapContent(content: string | ContentPart[]): unknown {
   })
 }
 
+/**
+ * 相邻同角色消息合并为一条（块按原序拼接）。引擎的自愈引导（见 chat.ts 的 AUTO_MARKER）可能紧跟在
+ * 工具结果或另一条 user 消息之后；协议虽容忍连续同角色，合并后更稳妥，且不改变语义。
+ * 无相邻同角色时产出与改造前逐字节一致。
+ */
 function mapMessages(messages: Message[]): unknown[] {
-  return messages.map((m) => ({ role: m.role, content: mapContent(m.content) }))
+  const out: { role: Message['role']; content: unknown[] }[] = []
+  for (const m of messages) {
+    const content = mapContent(m.content) as unknown[]
+    const prev = out[out.length - 1]
+    if (prev && prev.role === m.role) prev.content = [...prev.content, ...content]
+    else out.push({ role: m.role, content })
+  }
+  return out
 }
 
 /**
@@ -153,7 +165,7 @@ export async function* streamAnthropic(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    yield { type: 'error', error: httpError(res.status, text) }
+    yield { type: 'error', error: httpError(res.status, text, res.headers.get('retry-after')) }
     yield { type: 'done', stopReason: 'error' }
     return
   }

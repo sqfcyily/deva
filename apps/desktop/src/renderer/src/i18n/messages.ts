@@ -202,7 +202,7 @@ const zhCN: MessageTree = {
     emptyHint: '描述任务，Deva 会读写项目文件、按需请求授权来完成。',
     error: '出错了',
     notice: {
-      truncated: '回复已达输出长度上限被截断，可发送「继续」让我接着写。',
+      truncated: '回复多次撞上输出长度上限，自动续写仍未完成，已停下。可发送「继续」，或让我把内容拆小、分段写入文件。',
       empty: '本轮模型没有返回任何内容。可换种说法重试或换个模型；若这轮对话已经很长，也可以新建对话或先压缩上下文。',
       refused: '模型拒绝了本次请求（或被服务商的内容策略拦截），本轮没有返回内容。换种说法或换个模型再试。',
       compacted: '较早的对话已压缩为摘要，以节省上下文。',
@@ -265,7 +265,11 @@ const zhCN: MessageTree = {
       awaitingAnswer: '等待你的选择（在上方问答卡选择或输入）',
       awaitingPlan: '等待你批准计划（在上方计划卡选择）',
       awaitingMount: '等待你挂载工作区（在上方卡片选择）',
-      reconnecting: '连接中断，正在重连'
+      reconnecting: '连接中断，正在重连',
+      autoTruncated: '输出超长被截断，正在自动续写',
+      autoEmpty: '上一步没有输出，正在自动重试',
+      autoContext: '上下文超限，正在压缩后重试',
+      autoOutputLimit: '输出上限不被模型接受，已降档重试'
     },
     ask: {
       title: '请你决定',
@@ -914,7 +918,7 @@ const en: MessageTree = {
     emptyHint: 'Describe a task; Deva reads and writes project files, asking permission as needed.',
     error: 'Something went wrong',
     notice: {
-      truncated: 'Reply cut off at the output length limit — send “continue” and I’ll pick up where I left off.',
+      truncated: 'Replies kept hitting the output length limit and automatic continuation didn’t finish, so I stopped. Send “continue”, or ask me to split the work into smaller pieces.',
       empty:
         'The model returned nothing this turn. Try rephrasing or another model; if this chat has grown long, start a new one or compact the context first.',
       refused:
@@ -979,7 +983,11 @@ const en: MessageTree = {
       awaitingAnswer: 'Waiting for your choice (pick or type in the card above)',
       awaitingPlan: 'Waiting for you to approve the plan (choose in the card above)',
       awaitingMount: 'Waiting for you to mount a workspace (choose in the card above)',
-      reconnecting: 'Connection lost, reconnecting'
+      reconnecting: 'Connection lost, reconnecting',
+      autoTruncated: 'Output hit the length limit, continuing automatically',
+      autoEmpty: 'Previous step produced nothing, retrying automatically',
+      autoContext: 'Context too long, compacting and retrying',
+      autoOutputLimit: 'Output budget rejected by the model, retrying with a smaller one'
     },
     ask: {
       title: 'Your call',

@@ -25,6 +25,12 @@ export interface CompactModelConfig {
 /** 摘要消息的标记前缀：极不可能被用户键入；重开时据此识别摘要消息并特殊渲染。 */
 export const COMPACT_MARKER = '⟦deva:compaction⟧'
 
+/**
+ * 引擎自愈引导消息的标记前缀（输出被截断后续写、空回合追问等）。这类 user 消息由主进程注入，
+ * 不是用户说的话：不算一轮起点、不渲染成用户气泡、不进压缩转录。
+ */
+export const AUTO_MARKER = '⟦deva:auto⟧'
+
 export type CompactStatus = 'compacted' | 'none' | 'failed'
 
 interface CompactionCfg {
@@ -158,7 +164,7 @@ function hasToolResult(m: Message): boolean {
  * 而把真正的请求原文压掉。
  */
 function isGenuineUserTurn(m: Message): boolean {
-  return m.role === 'user' && !hasToolResult(m) && !isCompactionSummary(m)
+  return m.role === 'user' && !hasToolResult(m) && !isCompactionSummary(m) && !isAutoNudge(m)
 }
 
 /** 助手消息是否带工具调用（一轮进行中，除最后一步外的每条助手消息都带）。 */
@@ -259,6 +265,7 @@ export function buildTranscript(messages: Message[], locale: string): string {
   const clip = (s: string, max: number): string => (s.length > max ? s.slice(0, max) + '…' : s)
 
   for (const m of messages) {
+    if (isAutoNudge(m)) continue
     const label = m.role === 'user' ? U : A
     if (typeof m.content === 'string') {
       if (m.content.trim()) lines.push(`${label}: ${m.content}`)
@@ -560,4 +567,9 @@ export function isCompactionSummary(m: Message): boolean {
 export function stripMarker(content: string): string {
   if (!content.startsWith(COMPACT_MARKER)) return content
   return content.slice(COMPACT_MARKER.length).replace(/^\n+/, '')
+}
+
+/** 该消息是否为引擎注入的自愈引导（见 AUTO_MARKER）。 */
+export function isAutoNudge(m: Message): boolean {
+  return m.role === 'user' && typeof m.content === 'string' && m.content.startsWith(AUTO_MARKER)
 }

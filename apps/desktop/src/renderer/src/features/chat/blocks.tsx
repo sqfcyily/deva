@@ -165,12 +165,24 @@ export function StatusIndicator({
 
   // 连接中断、正在自动重连：真实信号，给出停止入口（用户可放弃重连）。
   if (status.reconnecting) {
-    const { attempt, max } = status.reconnecting
+    const { attempt, max, reason } = status.reconnecting
+    // 断流重连带进度；引擎自愈（截断续写 / 空回合追问 / 压缩重试）只在多次尝试时显示进度。
+    const label =
+      reason === 'truncated'
+        ? t('chat.work.autoTruncated')
+        : reason === 'empty'
+          ? t('chat.work.autoEmpty')
+          : reason === 'context'
+            ? t('chat.work.autoContext')
+            : reason === 'output_limit'
+              ? t('chat.work.autoOutputLimit')
+              : t('chat.work.reconnecting')
     return (
       <div className="chat__status is-reconnecting" role="status" aria-live="polite">
         <Loader2 size={14} className="spin" />
         <span>
-          {t('chat.work.reconnecting')} ({attempt}/{max})
+          {label}
+          {max > 1 ? ` (${attempt}/${max})` : ''}
         </span>
         <button type="button" className="chat__status-stop" onClick={onStop}>
           {t('chat.stop')}

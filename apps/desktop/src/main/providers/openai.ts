@@ -165,7 +165,7 @@ export async function* streamOpenAI(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    yield { type: 'error', error: httpError(res.status, text) }
+    yield { type: 'error', error: httpError(res.status, text, res.headers.get('retry-after')) }
     yield { type: 'done', stopReason: 'error' }
     return
   }

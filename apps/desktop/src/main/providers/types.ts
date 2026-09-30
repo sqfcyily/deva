@@ -103,6 +103,8 @@ export type ErrorKind =
   | 'context_length'
   | 'network'
   | 'invalid_request'
+  /** max_tokens 超出模型允许的输出上限：引擎会自动降档重发。 */
+  | 'output_limit'
   | 'server'
   | 'aborted'
   | 'unknown'
@@ -111,6 +113,8 @@ export interface NormalizedError {
   kind: ErrorKind
   retryable: boolean
   message: string
+  /** 服务端建议的重试等待（毫秒，来自 retry-after 头）；缺省由调用方按指数退避自定。 */
+  retryAfterMs?: number
 }
 
 /** 统一流式事件——Agent 引擎只消费这套。 */
@@ -180,12 +184,40 @@ function bodyHint(body: string): string {
   return s ? `：${s}` : ''
 }
 
-/** HTTP 状态码 → 归一化错误。 */
-export function httpError(status: number, body: string): NormalizedError {
+/** 解析 retry-after 头（秒数或 HTTP 日期）→ 毫秒；无效返回 undefined。 */
+function parseRetryAfter(v: string | null | undefined): number | undefined {
+  if (!v) return undefined
+  const sec = Number(v)
+  if (Number.isFinite(sec) && sec >= 0) return Math.round(sec * 1000)
+  const at = Date.parse(v)
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now())
+}
+
+/**
+ * 请求被拒是否因为 max_tokens / max_output_tokens 超出该模型允许的输出上限（中转 / 老模型常见）。
+ * 引擎据此把输出预算降回保守值重发，而不是整轮报错。
+ */
+export function isOutputLimitRejection(status: number, body: string): boolean {
+  return status === 400 && /max_(output_)?tokens/i.test(body)
+}
+
+/** HTTP 状态码 → 归一化错误。retryAfter 为响应头 retry-after 原值（可选）。 */
+export function httpError(status: number, body: string, retryAfter?: string | null): NormalizedError {
+  if (isOutputLimitRejection(status, body))
+    return {
+      kind: 'output_limit',
+      retryable: false,
+      message: `请求的输出上限超出该模型允许范围（${status}）${bodyHint(body)}`
+    }
   if (status === 401 || status === 403)
     return { kind: 'auth', retryable: false, message: `鉴权失败（${status}）：请检查 API 密钥。` }
   if (status === 429)
-    return { kind: 'rate_limit', retryable: true, message: `触发限流（429），请稍后重试${bodyHint(body)}` }
+    return {
+      kind: 'rate_limit',
+      retryable: true,
+      message: `触发限流（429），请稍后重试${bodyHint(body)}`,
+      retryAfterMs: parseRetryAfter(retryAfter)
+    }
   if (status === 400 && /context|token|length|maximum/i.test(body))
     return {
       kind: 'context_length',
@@ -193,7 +225,12 @@ export function httpError(status: number, body: string): NormalizedError {
       message: '对话长度已超出该模型的上下文上限，无法继续。请新建对话，或换用上下文更大的模型后重试。'
     }
   if (status >= 500)
-    return { kind: 'server', retryable: true, message: `服务端错误（${status}）${bodyHint(body)}` }
+    return {
+      kind: 'server',
+      retryable: true,
+      message: `服务端错误（${status}）${bodyHint(body)}`,
+      retryAfterMs: parseRetryAfter(retryAfter)
+    }
   return {
     kind: 'invalid_request',
     retryable: false,

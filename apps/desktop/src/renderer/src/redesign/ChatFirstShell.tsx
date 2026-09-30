@@ -69,6 +69,7 @@ import {
   type AttachKind,
   type ChatBlock,
   type ChatMessage,
+  type RecoveryStatus,
   type SendAttachment,
   type SessionMeta
 } from '../store/chat'
@@ -2479,7 +2480,7 @@ function Conversation({
   currentSessionId: string
   messages: ChatMessage[]
   streaming: boolean
-  streamStatus: { elapsedSec: number; reconnecting: { attempt: number; max: number } | null }
+  streamStatus: { elapsedSec: number; reconnecting: RecoveryStatus | null }
   focusRoot: string | null
   onOpenProfile: (id: string) => void
   onSend: (text: string, attachments?: SendAttachment[]) => Promise<boolean>

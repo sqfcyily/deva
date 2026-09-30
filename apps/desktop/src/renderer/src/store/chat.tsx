@@ -210,7 +210,7 @@ export interface SendAttachment {
  */
 export interface StreamStatus {
   elapsedSec: number
-  reconnecting: { attempt: number; max: number } | null
+  reconnecting: RecoveryStatus | null
 }
 
 /**
@@ -274,6 +274,7 @@ type StreamEvent =
   | { type: 'mount_request'; key: string; tool: string; path: string }
   | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   | { type: 'reconnecting'; attempt: number; max: number }
+  | { type: 'auto_retry'; reason: 'truncated' | 'empty' | 'context' | 'output_limit'; attempt: number; max: number }
   | { type: 'stream_reset' }
   | { type: 'error'; kind: string; message: string }
   | {
@@ -373,6 +374,15 @@ interface ChatContextValue {
 const ChatContext = createContext<ChatContextValue | null>(null)
 
 /** 空闲态的流式状态（归零）。 */
+/**
+ * 状态横幅的恢复态：reason 缺省 / 'reconnect' = 断流重连；其余为引擎自愈（见主进程 auto_retry 事件）。
+ */
+export interface RecoveryStatus {
+  attempt: number
+  max: number
+  reason?: 'reconnect' | 'truncated' | 'empty' | 'context' | 'output_limit'
+}
+
 const IDLE_STATUS: StreamStatus = { elapsedSec: 0, reconnecting: null }
 
 let seq = 0
@@ -727,7 +737,7 @@ interface SessionRuntime {
   /** 计时锚点：本轮开始时刻（供「已用秒数」）。 */
   startedAt: number
   /** 主进程 reconnecting 事件驱动的真实重连态（非猜测）；null=未在重连。 */
-  reconnecting: { attempt: number; max: number } | null
+  reconnecting: RecoveryStatus | null
 }
 
 /** 空活动态（共享冻结常量作 patch 种子；任何真实变更都返回新对象，绝不原地改）。 */
@@ -1035,6 +1045,14 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 主进程真实信号：断流后正在自动重连（展示"连接中断，正在重连"横幅）。
       if (ev.type === 'reconnecting') {
         patchRuntime(sid, (r) => ({ ...r, reconnecting: { attempt: ev.attempt, max: ev.max } }))
+        return
+      }
+      // 引擎自愈（截断续写 / 空回合追问 / 压缩重试）：同一条状态横幅，文案按 reason 区分。
+      if (ev.type === 'auto_retry') {
+        patchRuntime(sid, (r) => ({
+          ...r,
+          reconnecting: { attempt: ev.attempt, max: ev.max, reason: ev.reason }
+        }))
         return
       }
       // 重连即将重跑当前步骤：丢弃这一步已画出的残缺尾部，避免重复内容。
