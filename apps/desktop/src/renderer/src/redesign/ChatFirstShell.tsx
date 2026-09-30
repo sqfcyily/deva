@@ -4001,13 +4001,9 @@ function Settings({ onClose }: { onClose: () => void }): React.JSX.Element {
     { id: 'about', icon: <Info size={15} />, label: t('settings.about') }
   ]
   return (
-    <div className="cf-modal__backdrop" onClick={onClose}>
-      <div
-        className="cf-modal"
-        role="dialog"
-        aria-label={t('cf.settings')}
-        onClick={(e) => e.stopPropagation()}
-      >
+    // 遮罩层不响应点击：设置弹框只能通过右上角关闭按钮手动关闭，避免误触丢失上下文
+    <div className="cf-modal__backdrop">
+      <div className="cf-modal" role="dialog" aria-label={t('cf.settings')}>
         <div className="cf-modal__head">
           <span className="cf-modal__title">{t('cf.settings')}</span>
           <button className="cf-modal__close" title={t('common.close')} onClick={onClose}>

@@ -2151,6 +2151,11 @@ textarea {
   padding: 1px var(--space-2);
   border-radius: var(--radius-full);
 }
+/* 已批准：成功绿，与继续完善 / 已取消的灰色区分开。 */
+.msg__plan-badge--approved {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
 /* 计划正文复用 Markdown 渲染；限制首末元素外边距避免撑高卡片。 */
 .msg__plan-body {
   color: var(--fg);

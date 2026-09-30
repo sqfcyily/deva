@@ -458,7 +458,11 @@ function PlanReviewCard({
         <ClipboardList size={14} />
         <span className="msg__plan-title">{t('chat.plan.cardTitle')}</span>
         {decided && (
-          <span className="msg__plan-badge">
+          <span
+            className={
+              decided === 'approve' ? 'msg__plan-badge msg__plan-badge--approved' : 'msg__plan-badge'
+            }
+          >
             {decided === 'approve'
               ? t('chat.plan.approved')
               : decided === 'keep'

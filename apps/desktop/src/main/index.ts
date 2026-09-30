@@ -61,8 +61,30 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
+  // 首显兜底：show:false 时窗口只靠 ready-to-show 显示，一旦该事件没触发（渲染层加载失败 / 崩溃 /
+  // 部分 Windows 机器上首帧迟迟不来），窗口会一直隐藏，而托盘照常建好——表现为「启动后只在托盘」。
+  // 故 ready-to-show / did-finish-load / 加载失败 / 渲染进程退出 / 超时 任一先到即显示（仅一次）。
+  const win = mainWindow
+  let shown = false
+  const revealOnce = (reason: string): void => {
+    if (shown || win.isDestroyed()) return
+    shown = true
+    if (reason !== 'ready-to-show') console.warn(`[window] 首显兜底触发：${reason}`)
+    win.show()
+  }
+  win.once('ready-to-show', () => revealOnce('ready-to-show'))
+  win.webContents.once('did-finish-load', () => revealOnce('did-finish-load'))
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.error(`[window] 页面加载失败 ${code} ${desc} ${url}`)
+    revealOnce('did-fail-load')
+  })
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error('[window] 渲染进程退出：', details.reason)
+    revealOnce('render-process-gone')
+  })
+  setTimeout(() => revealOnce('timeout'), 5000)
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
   })
 
   // 关窗驻留托盘：调度器在窗口隐藏时照常触发（关窗 ≠ 退出）。
@@ -124,7 +146,7 @@ function createWindow(): void {
 
 /** 显示 / 唤起主窗口（不存在则重建；隐藏 / 最小化则恢复并聚焦）。 */
 function showMainWindow(): void {
-  if (!mainWindow) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow()
     return
   }
@@ -182,11 +204,11 @@ function createTray(): void {
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
+  // 再次双击图标：无论既有窗口是隐藏在托盘、最小化还是已被销毁，都要把界面唤起来。
+  // 窗口尚未建好（仍在 whenReady 初始化中）时跳过，createWindow 随后会自行首显。
   app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    if (!mainWindow.isVisible()) mainWindow.show()
-    mainWindow.focus()
+    if (!app.isReady()) return
+    showMainWindow()
   })
 
   app.whenReady().then(() => {
