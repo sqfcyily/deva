@@ -336,14 +336,16 @@ function toDisplayMessages(
         if (p.type === 'text' && p.text) blocks.push({ kind: 'text', text: p.text })
         else if (p.type === 'tool_use') {
           // propose_agent 铸成角色名片（惰性提议）；ask_user 铸成提问卡（含答复回填）；其余工具照常铸工具卡。
-          if (p.name === 'propose_agent')
+          // 被输出上限截断的调用一律是普通工具卡（与流式一致）：它参数残缺、从未执行，不是能答复的卡。
+          const kind = (p.input as Record<string, unknown> | null)?.[TRUNCATED_FLAG] === true ? '' : p.name
+          if (kind === 'propose_agent')
             blocks.push({
               kind: 'agentcard',
               id: p.id,
               draft: normalizeAgentDraft(p.input),
               status: proposals[p.id] ?? 'pending'
             })
-          else if (p.name === 'create_task')
+          else if (kind === 'create_task')
             blocks.push({
               kind: 'autotaskcard',
               id: p.id,
@@ -351,7 +353,7 @@ function toDisplayMessages(
               status: autotasks[p.id]?.status ?? 'pending',
               taskId: autotasks[p.id]?.taskId
             })
-          else if (p.name === 'ask_user')
+          else if (kind === 'ask_user')
             blocks.push({
               kind: 'ask',
               id: p.id,
@@ -360,7 +362,7 @@ function toDisplayMessages(
               // 逐题回落「未作答」；两者皆无（真正未答复）→ undefined，重开后仍是可交互卡。
               answers: asks[p.id] ? asks[p.id].answers : resultIds.has(p.id) ? [] : undefined
             })
-          else if (p.name === 'exit_plan')
+          else if (kind === 'exit_plan')
             blocks.push({
               kind: 'plan',
               id: p.id,
@@ -841,6 +843,47 @@ const SUBAGENT_MAX_STEPS = 60
 /** 单个步骤因可重试网络错误自动重连的最大次数。 */
 const MAX_RECONNECT = 3
 
+/**
+ * 工具参数撞上输出上限被截断（适配器报 tool_call_truncated）：连续这么多步都截断就停下，交回
+ * 「已截断」提示。前几次记成失败的工具调用、回灌「请分段写」，模型拆小后自然接着做；一直拆不小
+ * （比如每次都在长篇思考上耗光预算）则不再空转。主轮步数不设上限，这道闸必须有。
+ */
+const MAX_TRUNCATED_STREAK = 3
+/** 写进被截断调用 tool_use 里的标记：展示层据此一律画成普通工具卡（它不是能被答复的问答 / 计划 / 名片）。 */
+const TRUNCATED_FLAG = '__truncated'
+
+/**
+ * 被截断调用在历史里的 input：残缺参数不可执行，也不值得每步重发——只留能捞出的目标路径
+ * （path 通常是第一个字段，截断多发生在其后的大段内容里）与截断标记。
+ */
+function truncatedCallInput(partialArgs: string): Record<string, unknown> {
+  const m = /"path"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(partialArgs)
+  let path: string | undefined
+  if (m)
+    try {
+      path = JSON.parse(`"${m[1]}"`) as string
+    } catch {
+      /* 转义残缺：不带路径 */
+    }
+  return { ...(path ? { path } : {}), [TRUNCATED_FLAG]: true }
+}
+
+/**
+ * 被截断调用的回灌结果：讲清「没执行、没改动」，并给一个模型能照做的尺度——按它这次写到的字符数
+ * 折半（连续第二次截断再折成三分之一），它数不准 token，但能估字符与行数。
+ */
+function truncatedCallResult(name: string, partialChars: number, streak: number): string {
+  const limit = Math.max(1000, Math.floor(partialChars / (streak + 1) / 100) * 100)
+  const again = streak > 1 ? `这已是连续第 ${streak} 次截断，请把每段切得更小。` : ''
+  return (
+    `输出长度超限：本次 ${name} 调用的参数写到约 ${partialChars} 字符时达到单次回复的输出上限，被截断，` +
+    `未执行，没有产生任何改动。${again}请分段完成，每段控制在约 ${limit} 字符以内：` +
+    (name === 'write_file'
+      ? '先用 write_file 写入开头一部分，再用 append: true 分次追加其余部分。'
+      : '把内容拆成多次较小的调用依次完成。')
+  )
+}
+
 /** 可被取消打断的睡眠：正常到点 resolve(true)，signal 触发则 resolve(false)。 */
 function delay(ms: number, signal: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
@@ -1024,7 +1067,7 @@ function systemPrompt(
       : '你是 Deva，一个运行在用户桌面上的 AI 助手，可通过工具读取/写入文件、执行命令、加载技能等来完成用户请求。以下是你在本应用内必须始终遵守的规范。',
     `【环境】${loc}`,
     '【路径约定】默认用**相对路径**（相对上面的当前工作目录）：落点始终由应用按当前挂载的工作区解析，你无需记忆基准目录，也不会被历史消息里的旧目录带偏。只有当目标明确在工作区之外时才用绝对路径——用户指名了桌面、主目录、系统某处或另一个项目（`~/` 表示用户主目录）。切勿把历史消息里出现过的绝对路径当作当前工作目录的依据；未挂载工作区时也照常按相对路径发起，由挂载卡片解决基准问题。',
-    '【工具使用】先用 read_file / list_dir 了解现状再动手；write_file 会覆盖整个文件，务必先读后写、保留无关内容。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用被安全策略拒绝，回灌结果会写明原因——据此改道或如实说明受限之处，切勿反复重试同一被拒操作。',
+    '【工具使用】先用 read_file / list_dir 了解现状再动手；write_file 会覆盖整个文件，务必先读后写、保留无关内容。单次回复有输出长度上限：大文件按 write_file 的说明分段写入；完整文档、长篇代码这类很长的产出宜写入文件分段完成，而不是在一条回复里整篇输出。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用被安全策略拒绝，回灌结果会写明原因——据此改道或如实说明受限之处，切勿反复重试同一被拒操作。',
     `【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。唯有三类不可协商的安全底线会被静默拒绝并回灌原因——① 私钥/凭据目录（~/.ssh、~/.aws、~/.gnupg）与本应用配置目录（${devaDir}）的读写，唯一例外是其下的技能目录（${skillsRoot}），可正常读写；② 版本库内部（.git）的写入；③ 明显危险的命令（如 rm -rf）。被拒时请改用其它方式或向用户如实说明，切勿重试。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。`,
     '【决策与澄清】当需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时，调用 ask_user 抛出一个或多个问题（每题可给候选项、可单选或多选，界面另有内置「自己输入」入口），用户在同一张卡片里一次性作答后回灌给你再继续；能合理默认就直接做，别为琐碎选择打断用户。注意区分：ask_user 只用于征求决策/澄清；写入与执行本就无需授权，切勿用它去问「是否允许写入/执行」。',
     '【计划先行】遇到非平凡的实现类任务（新功能、跨多文件改动、有多个各有取舍的方案、或需求尚不明确等），先用只读工具（read_file / list_dir / glob / grep / web_fetch）充分调研理解现状——调研面较大时（要翻多个目录、追多条调用链、或需摸清一整套既有约定）可先用 `run_subagent` 派发 `Plan` 子智能体在隔离上下文里完成调研并带回方案要点，再由你综合判断——然后调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件或执行命令**。用户批准后你直接按计划执行、无需再次征求授权（写入/执行照常只受上述安全底线约束）；用户若选择继续完善，请依其反馈调整后再重新提交，在收到新反馈前不要重复调用 exit_plan。琐碎、单点、只读或答疑类任务直接做，不必先出计划。'
@@ -1580,6 +1623,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // （之后追加的助手输出 / 工具结果不在读数里，由判定函数另行估算补上）。
     let usedInput = 0
     let usedAt = 0
+    // 连续有工具调用被输出上限截断的步数（见 MAX_TRUNCATED_STREAK）。
+    let truncatedStreak = 0
 
     for (let step = 0; step < maxSteps; step++) {
       // 轮中压缩：第 2 步起每步请求前检查（第 1 步之前调用方已在轮开头查过）。此刻上一步的工具
@@ -1594,7 +1639,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         usedInput = 0 // 历史已改写，旧读数作废：回退估算，直到本步拿到新读数
 
       let assistantText = ''
-      let toolCalls: { id: string; name: string; args: unknown }[] = []
+      // truncated = 参数被输出上限截断时已写出的字符数：这种调用只记录、不执行（见下方工具循环）。
+      let toolCalls: { id: string; name: string; args: unknown; truncated?: number }[] = []
       let stopReason: StopReason = 'end_turn'
       // 本步被中止 / 出错打断（而非干净结束）：仍落地已收到的部分，见下方提交段。
       let interrupted: 'aborted' | 'error' | null = null
@@ -1644,6 +1690,19 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
                 args: ev.args,
                 ...(evMeta ?? {})
               })
+          } else if (ev.type === 'tool_call_truncated') {
+            // 参数写到一半撞上输出上限：记成一次调用（进历史、画普通工具卡——哪怕是 ask_user /
+            // exit_plan，它们也没法被答复），由工具循环直接回灌「请分段写」，绝不执行。
+            const id = ev.id || `call_${randomUUID()}`
+            const input = truncatedCallInput(ev.partialArgs)
+            toolCalls.push({ id, name: ev.name, args: input, truncated: ev.partialArgs.length })
+            emit(turnId, sessionId, {
+              type: 'tool_call',
+              id,
+              name: ev.name,
+              args: input,
+              ...(evMeta ?? {})
+            })
           } else if (ev.type === 'usage') {
             // 子轮用量不代表主对话的上下文占用，不喂渲染层的上下文计量。
             if (!isSub)
@@ -1748,6 +1807,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       // 下次载入由 repairDanglingToolUses 自愈；换来的是长命令跑到一半强退时，正文不丢。
       args.onStep?.()
       if (toolCalls.length === 0) return { text: finalText, stopReason }
+      truncatedStreak = toolCalls.some((tc) => tc.truncated !== undefined) ? truncatedStreak + 1 : 0
 
       // 并行派发子任务（对标 Claude Code：同一条消息里的多个子任务真正并发跑）：先把本步全部
       // run_subagent 一次性启动，其余工具仍按原序串行。每个子任务在**自己完成的那一刻**定格
@@ -1756,7 +1816,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const subRuns = new Map<string, Promise<{ conclusion: string; isErr: boolean }>>()
       if (allowSubagents)
         for (const tc of toolCalls)
-          if (tc.name === 'run_subagent') subRuns.set(tc.id, runSubagentCall(tc))
+          if (tc.name === 'run_subagent' && tc.truncated === undefined)
+            subRuns.set(tc.id, runSubagentCall(tc))
 
       // 逐个执行工具（过权限闸门），结果回灌为一条 user 消息
       const resultParts: ContentPart[] = []
@@ -1764,6 +1825,27 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // 中止：跳出而非 return——已跑完的工具结果（含刚被中止的那条命令的输出）要随历史落盘，
         // 余下未执行的由循环后的 fillUnrun 补占位。直接 return 会把 resultParts 整个丢掉。
         if (controller.signal.aborted) break
+
+        // 被输出上限截断的调用：参数残缺，不过闸门、不执行，回灌失败结果让模型分段重来。
+        if (tc.truncated !== undefined) {
+          const label = '输出超长，未执行'
+          args.onToolSummary?.(tc.id, label)
+          emit(turnId, sessionId, {
+            type: 'tool_result',
+            id: tc.id,
+            name: tc.name,
+            summary: label,
+            isError: true,
+            ...(evMeta ?? {})
+          })
+          resultParts.push({
+            type: 'tool_result',
+            toolUseId: tc.id,
+            content: truncatedCallResult(tc.name, tc.truncated, truncatedStreak),
+            isError: true
+          })
+          continue
+        }
 
         // exit_plan 特判：模型提交计划、暂停循环等用户批准。不过权限闸门、**不授予任何能力**——
         // 批准仅让循环继续（工具集本就完整），此后每个真实工具调用仍照常过同一道权限闸门。
@@ -2091,6 +2173,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       history.push({ role: 'user', content: resultParts })
       args.onStep?.()
       if (abortedHere) return { text: finalText, stopReason: 'aborted' }
+      // 连续截断到上限：失败结果已回灌（历史里没有悬空调用），就此收场，渲染层照常显示「已截断」。
+      if (truncatedStreak >= MAX_TRUNCATED_STREAK) return { text: finalText, stopReason: 'max_tokens' }
     }
 
     // 达到步数上限。子轮不发 error 事件：它会在主对话里画一个不落盘的红框（重开即消失），

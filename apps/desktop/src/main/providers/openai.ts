@@ -1,6 +1,8 @@
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
+  parseToolArgs,
+  settleBrokenCalls,
   toolImagesNote,
   type AdapterConfig,
   type ContentPart,
@@ -177,17 +179,16 @@ export async function* streamOpenAI(
 
   const flushCalls = function* (): Generator<StreamEvent> {
     const indices = [...calls.keys()].sort((a, b) => a - b)
+    const broken: { id: string; name: string; raw: string }[] = []
     for (const i of indices) {
       const c = calls.get(i)!
-      let args: unknown = {}
-      try {
-        args = c.args ? JSON.parse(c.args) : {}
-      } catch {
-        args = {}
-      }
-      yield { type: 'tool_call', id: c.id, name: c.name, args }
+      const args = parseToolArgs(c.args)
+      if (args === undefined) broken.push({ id: c.id, name: c.name, raw: c.args })
+      else yield { type: 'tool_call', id: c.id, name: c.name, args }
     }
     calls.clear()
+    // flush 时 stopReason 已定（finish_reason 到达后，或流末兜底改写之后）。
+    yield* settleBrokenCalls(broken, stopReason)
   }
 
   try {
@@ -287,9 +288,10 @@ export async function* streamOpenAI(
     return
   }
 
-  // 兜底：有残留未 flush 的工具调用（个别实现不带 finish_reason）
+  // 残留未 flush 的工具调用：finish_reason=length（截在参数中途——照实上报截断，不改写成 tool_use），
+  // 或个别实现根本不带 finish_reason（兜底按工具调用收尾）。
   if (calls.size) {
-    stopReason = 'tool_use'
+    if (stopReason !== 'max_tokens') stopReason = 'tool_use'
     yield* flushCalls()
   }
 

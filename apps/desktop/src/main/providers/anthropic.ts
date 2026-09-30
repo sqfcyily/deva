@@ -1,6 +1,8 @@
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
+  parseToolArgs,
+  settleBrokenCalls,
   type AdapterConfig,
   type ContentPart,
   type GenerateRequest,
@@ -158,6 +160,8 @@ export async function* streamAnthropic(
 
   // index -> 正在累积的 tool_use 块
   const toolBlocks = new Map<number, { id: string; name: string; json: string }>()
+  /** 参数 JSON 解析失败的工具块，流结束后按 stop_reason 定性（见 settleBrokenCalls）。 */
+  const broken: { id: string; name: string; raw: string }[] = []
   /** 未命中缓存的输入余量（Anthropic 的 input_tokens 语义），**不是**总量。 */
   let uncachedInput = 0
   let cacheWrite = 0
@@ -214,14 +218,11 @@ export async function* streamAnthropic(
         const index = evt.index as number
         const blk = toolBlocks.get(index)
         if (blk) {
-          let args: unknown = {}
-          try {
-            args = blk.json ? JSON.parse(blk.json) : {}
-          } catch {
-            args = {}
-          }
-          yield { type: 'tool_call', id: blk.id, name: blk.name, args }
           toolBlocks.delete(index)
+          const args = parseToolArgs(blk.json)
+          // 解析不了先扣下：stop_reason 在块结束之后才到，届时再定性是不是被输出上限截断。
+          if (args === undefined) broken.push({ id: blk.id, name: blk.name, raw: blk.json })
+          else yield { type: 'tool_call', id: blk.id, name: blk.name, args }
         }
       } else if (type === 'message_delta') {
         const delta = evt.delta as { stop_reason?: string }
@@ -246,6 +247,11 @@ export async function* streamAnthropic(
     yield { type: 'done', stopReason: 'error' }
     return
   }
+
+  // 截断时连块结束都没等到的工具块也算残缺；非截断的不完整收尾（异常断流）维持旧行为：不交出。
+  if (stopReason === 'max_tokens')
+    for (const blk of toolBlocks.values()) broken.push({ id: blk.id, name: blk.name, raw: blk.json })
+  yield* settleBrokenCalls(broken, stopReason)
 
   // 归一成「总提示 token」：未命中余量 + 缓存写入 + 缓存命中。
   // 未用提示缓存时后两项恒为 0，与旧行为逐字节一致；日后加了断点，压缩触发判定也不会因此失真。

@@ -1,6 +1,8 @@
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
+  parseToolArgs,
+  settleBrokenCalls,
   toolImagesNote,
   type AdapterConfig,
   type ContentPart,
@@ -161,6 +163,8 @@ export async function* streamResponses(
 
   // output item id -> 累积中的函数调用
   const calls = new Map<string, PendingCall>()
+  /** 参数 JSON 解析失败的调用，流结束后按截断与否定性（见 settleBrokenCalls）。 */
+  const broken: { id: string; name: string; raw: string }[] = []
   let stopReason: StopReason = 'end_turn'
   let sawTool = false
   let inputTokens = 0
@@ -230,15 +234,14 @@ export async function* streamResponses(
           const name = item.name ?? acc?.name ?? ''
           // done 事件里的 arguments 为权威全量；缺失时回落流式累积。
           const rawArgs = typeof item.arguments === 'string' ? item.arguments : (acc?.args ?? '')
-          let parsed: unknown = {}
-          try {
-            parsed = rawArgs ? JSON.parse(rawArgs) : {}
-          } catch {
-            parsed = {}
-          }
           if (item.id) calls.delete(item.id)
-          sawTool = true
-          yield { type: 'tool_call', id: callId, name, args: parsed }
+          const parsed = parseToolArgs(rawArgs)
+          // 解析不了先扣下：截断原因（response.incomplete）在其后才到，届时再定性。
+          if (parsed === undefined) broken.push({ id: callId, name, raw: rawArgs })
+          else {
+            sawTool = true
+            yield { type: 'tool_call', id: callId, name, args: parsed }
+          }
         }
       } else if (type === 'response.completed') {
         takeUsage(evt)
@@ -277,8 +280,15 @@ export async function* streamResponses(
     return
   }
 
-  // 有完整工具调用即让主循环继续（覆盖 max_tokens：仅在工具调用完整收尾时才置 tool_use）。
-  if (sawTool) stopReason = 'tool_use'
+  // 残缺的调用：截断时连 output_item.done 都没等到的也算上；非截断（坏 JSON）维持旧行为按 {} 交出。
+  if (stopReason === 'max_tokens')
+    for (const c of calls.values()) broken.push({ id: c.callId, name: c.name, raw: c.args })
+  else if (broken.length) sawTool = true
+  yield* settleBrokenCalls(broken, stopReason)
+
+  // 有工具调用即按 tool_use 收尾——但不覆盖 max_tokens：截断须如实上报（带着工具调用时
+  // 主循环本来就会继续，不靠这个 stopReason）。
+  if (sawTool && stopReason !== 'max_tokens') stopReason = 'tool_use'
 
   if (inputTokens || outputTokens)
     yield { type: 'usage', input: inputTokens, output: outputTokens, cacheRead }

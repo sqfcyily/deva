@@ -102,12 +102,16 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'write_file',
     description:
-      '把内容写入文件（覆盖式，不存在则创建）。多用于新建文件；改动既有文件请优先用 edit_file。凭据/密钥目录与版本库内部（.git）会被安全策略拒绝，其余位置直接写入、无需授权。',
+      '把内容写入文件（覆盖式，不存在则创建）。多用于新建文件；改动既有文件请优先用 edit_file。单次写入内容较多（约 300 行以上）时请分段：先写入开头一部分，再用 append: true 分次追加其余部分——单次回复有输出长度上限，一次写太多会被截断、整次调用作废。凭据/密钥目录与版本库内部（.git）会被安全策略拒绝，其余位置直接写入、无需授权。',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '文件路径，相对项目根或绝对路径' },
-        content: { type: 'string', description: '要写入的完整文本内容' }
+        content: { type: 'string', description: '要写入的文本内容（覆盖时为完整内容，追加时为本段内容）' },
+        append: {
+          type: 'boolean',
+          description: '为 true 时把 content 追加到文件末尾（不存在则创建），用于分段写入大文件。默认 false（覆盖）。'
+        }
       },
       required: ['path', 'content']
     }
@@ -1310,8 +1314,13 @@ export async function executeTool(
     if (name === 'write_file') {
       const abs = resolveWritePath(ctx.workspaceRoot, a.path)
       const content = typeof a.content === 'string' ? a.content : ''
+      const bytes = Buffer.byteLength(content, 'utf8')
+      if (a.append === true) {
+        await fs.appendFile(abs, content, 'utf8')
+        return { content: `已追加 ${bytes} 字节`, summary: '已追加' }
+      }
       await fs.writeFile(abs, content, 'utf8')
-      return { content: `已写入 ${Buffer.byteLength(content, 'utf8')} 字节`, summary: '已写入' }
+      return { content: `已写入 ${bytes} 字节`, summary: '已写入' }
     }
 
     if (name === 'edit_file') {

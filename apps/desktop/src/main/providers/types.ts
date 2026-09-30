@@ -119,6 +119,11 @@ export type StreamEvent =
   | { type: 'thinking_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; args: unknown }
   /**
+   * 参数写到一半就撞上输出上限（stopReason=max_tokens）的工具调用：参数原文残缺、不可执行。
+   * 循环把它记成一次失败的工具调用，回灌「请分段写」（见 chat.ts runAgentLoop）。
+   */
+  | { type: 'tool_call_truncated'; id: string; name: string; partialArgs: string }
+  /**
    * 用量。input = 本次请求的**总提示 token**（已含缓存命中/写入部分）。
    * 注意 Anthropic 协议的 input_tokens 只是「未命中缓存的余量」，适配器已在此把三段相加归一，
    * 保证跨服务商语义一致——上下文压缩的触发判定依赖它，不会因日后开启提示缓存而失真。
@@ -141,6 +146,32 @@ export interface AdapterConfig {
 export function toolImagesNote(images: ImagePart[]): string {
   const names = images.map((i) => i.name).filter(Boolean).join('、')
   return `[以下 ${images.length} 张图片是上方工具结果的附件${names ? `：${names}` : ''}]`
+}
+
+/** 解析工具参数 JSON：空串视为无参数 `{}`；解析失败返回 undefined（多半是被输出上限截在了中途）。 */
+export function parseToolArgs(raw: string): unknown {
+  if (!raw) return {}
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 参数没能完整解析的工具调用收尾（三个适配器共用）。因输出上限截断（stopReason=max_tokens）时
+ * 如实上报为 tool_call_truncated——此前这类调用被当成参数为 `{}` 的完整调用交出去执行（报参数缺失），
+ * 截断本身反被掩盖。其余情况（模型给了坏 JSON，极少见）维持旧行为按 `{}` 交出，让工具报错、模型自行纠正。
+ */
+export function* settleBrokenCalls(
+  broken: { id: string; name: string; raw: string }[],
+  stopReason: StopReason
+): Generator<StreamEvent> {
+  for (const c of broken) {
+    if (stopReason === 'max_tokens')
+      yield { type: 'tool_call_truncated', id: c.id, name: c.name, partialArgs: c.raw }
+    else yield { type: 'tool_call', id: c.id, name: c.name, args: {} }
+  }
 }
 
 /** 响应体摘要：折叠空白、限长。中转 / 网关常把真正原因（上游额度用尽、内容拦截等）写在这里。 */
