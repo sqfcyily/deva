@@ -33,6 +33,20 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: Deva
 
+# MSI 供企业部署（组策略 / Intune / msiexec 静默装）用；默认 --win 只出 nsis，要 MSI 走 build:win:msi 或显式 --win msi。
+# 注意 MSI 只继承 win 段、不读 nsis 段，所以安装选项要在这里再写一遍
+msi:
+  artifactName: ${productName}-${version}.${ext}
+  # 升级码决定新版能否原地替换旧版，一旦发出去就不能再改；这里钉死成 electron-builder 按 appId 派生的默认值，
+  # 免得以后改 appId / productName 时悄悄换掉，导致新旧两版并存
+  upgradeCode: C4A1F9D9-7483-513E-A3A9-7D90BCAFF6AF
+  # 向导式安装：可选「仅当前用户 / 所有用户」与安装目录，与 nsis 行为对齐
+  oneClick: false
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Deva
+
 mac:
   target:
     - dmg

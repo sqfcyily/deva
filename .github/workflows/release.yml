@@ -1,4 +1,4 @@
-# 推送 v* tag 时打包 Windows / macOS 安装包并发布到 GitHub Release。
+# 推送 v* tag 时打包 Windows（exe + msi）/ macOS 安装包并发布到 GitHub Release。
 # 发版：改 apps/desktop/package.json 的 version → 提交 → git tag v<version> → git push origin v<version>
 name: Release
 
@@ -19,7 +19,8 @@ jobs:
         include:
           - name: win-x64
             os: windows-latest
-            args: --win --x64
+            # nsis 给个人用户双击装，msi 给企业部署；同一台机器一次出两个包
+            args: --win nsis msi --x64
           # node-pty 按平台/架构拆包，pnpm 只装本机那份，所以两种芯片各用对应的机器原生打包
           - name: mac-arm64
             os: macos-latest
@@ -63,6 +64,7 @@ jobs:
           name: ${{ matrix.name }}
           path: |
             apps/desktop/dist/*-setup.exe
+            apps/desktop/dist/*.msi
             apps/desktop/dist/*.dmg
           if-no-files-found: error
 

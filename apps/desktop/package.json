@@ -13,6 +13,7 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "build:win": "electron-vite build && electron-builder --win",
+    "build:win:msi": "electron-vite build && electron-builder --win msi",
     "build:mac": "electron-vite build && electron-builder --mac",
     "build:linux": "electron-vite build && electron-builder --linux"
   },

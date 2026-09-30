@@ -13,6 +13,7 @@
     "start": "pnpm --filter @deva/desktop start",
     "typecheck": "pnpm --filter @deva/desktop typecheck",
     "package:win": "pnpm --filter @deva/desktop build:win",
+    "package:win:msi": "pnpm --filter @deva/desktop build:win:msi",
     "package:mac": "pnpm --filter @deva/desktop build:mac",
     "package:linux": "pnpm --filter @deva/desktop build:linux"
   },
