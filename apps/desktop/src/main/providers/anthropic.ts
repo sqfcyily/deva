@@ -4,6 +4,7 @@ import {
   type AdapterConfig,
   type ContentPart,
   type GenerateRequest,
+  type ImagePart,
   type Message,
   type StopReason,
   type StreamEvent
@@ -14,17 +15,17 @@ import {
  * 端点：POST {baseURL}/v1/messages（stream:true）。
  */
 
+function imageBlock(p: ImagePart): unknown {
+  return { type: 'image', source: { type: 'base64', media_type: p.mediaType, data: p.data } }
+}
+
 function mapContent(content: string | ContentPart[]): unknown {
   if (typeof content === 'string') return [{ type: 'text', text: content }]
   return content.map((p) => {
     if (p.type === 'text') return { type: 'text', text: p.text }
     if (p.type === 'tool_use')
       return { type: 'tool_use', id: p.id, name: p.name, input: p.input ?? {} }
-    if (p.type === 'image')
-      return {
-        type: 'image',
-        source: { type: 'base64', media_type: p.mediaType, data: p.data }
-      }
+    if (p.type === 'image') return imageBlock(p)
     if (p.type === 'document')
       return {
         type: 'document',
@@ -33,7 +34,11 @@ function mapContent(content: string | ContentPart[]): unknown {
     return {
       type: 'tool_result',
       tool_use_id: p.toolUseId,
-      content: p.content,
+      // 带图时 content 改为块数组（文字说明在前、图片随后），协议原生支持；
+      // 不带图时照旧发字符串，请求体与改造前逐字节一致。
+      content: p.images?.length
+        ? [...(p.content ? [{ type: 'text', text: p.content }] : []), ...p.images.map(imageBlock)]
+        : p.content,
       is_error: p.isError ?? false
     }
   })

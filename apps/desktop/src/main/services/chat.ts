@@ -2082,7 +2082,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           // mountNote 仅在本次调用触发了挂载时非空：告诉模型相对路径基准已变（本轮系统提示词定格在
           // 「未挂载」，不这样讲清楚它会继续按未挂载的指引走）。
           content: mountNote + res.content,
-          isError: res.isError
+          isError: res.isError,
+          ...(res.images?.length ? { images: res.images } : {})
         })
       }
       const abortedHere = controller.signal.aborted

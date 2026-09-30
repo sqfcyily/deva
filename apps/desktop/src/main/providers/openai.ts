@@ -1,9 +1,11 @@
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
+  toolImagesNote,
   type AdapterConfig,
   type ContentPart,
   type GenerateRequest,
+  type ImagePart,
   type Message,
   type StopReason,
   type StreamEvent
@@ -29,6 +31,10 @@ interface OpenAIMessage {
     type: 'function'
     function: { name: string; arguments: string }
   }[]
+}
+
+function imageUrlPart(p: ImagePart): OpenAIContentPart {
+  return { type: 'image_url', image_url: { url: `data:${p.mediaType};base64,${p.data}` } }
 }
 
 /** 把归一化消息展开成 OpenAI 消息序列（一条 assistant 的工具结果会裂成多条 tool 消息）。 */
@@ -69,13 +75,18 @@ function mapMessages(system: string | undefined, messages: Message[]): OpenAIMes
     const images: OpenAIContentPart[] = []
     for (const p of m.content) {
       if (p.type === 'text') texts.push(p.text)
-      else if (p.type === 'image')
-        images.push({ type: 'image_url', image_url: { url: `data:${p.mediaType};base64,${p.data}` } })
+      else if (p.type === 'image') images.push(imageUrlPart(p))
       else if (p.type === 'document')
         // OpenAI Chat 无原生 PDF 通道：降级为文字说明，避免上下文断裂
         texts.push(`[附加文档：${p.name ?? '未命名'}（当前模型不支持直接读取其内容）]`)
-      else if (p.type === 'tool_result')
+      else if (p.type === 'tool_result') {
         out.push({ role: 'tool', tool_call_id: p.toolUseId, content: p.content })
+        // tool 消息只收文本：工具返回的图片改挂到紧随这些 tool 消息之后的 user 消息里（下方统一出口）。
+        if (p.images?.length) {
+          texts.push(toolImagesNote(p.images))
+          for (const img of p.images) images.push(imageUrlPart(img))
+        }
+      }
     }
     if (images.length) {
       const parts: OpenAIContentPart[] = []

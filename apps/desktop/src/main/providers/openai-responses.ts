@@ -1,6 +1,7 @@
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
+  toolImagesNote,
   type AdapterConfig,
   type ContentPart,
   type GenerateRequest,
@@ -73,9 +74,15 @@ function mapInput(messages: Message[]): ResponsesInputItem[] {
     // user 消息：先落工具结果（独立项），再把文本/图片/PDF 并成一条 user 消息。
     const parts: ResponsesContentPart[] = []
     for (const p of m.content) {
-      if (p.type === 'tool_result')
+      if (p.type === 'tool_result') {
         out.push({ type: 'function_call_output', call_id: p.toolUseId, output: p.content })
-      else if (p.type === 'text') parts.push({ type: 'input_text', text: p.text })
+        // output 按字符串发（块数组形式并非所有网关都认）；工具返回的图片与 Chat 适配器同样挪进随后的 user 消息。
+        if (p.images?.length) {
+          parts.push({ type: 'input_text', text: toolImagesNote(p.images) })
+          for (const img of p.images)
+            parts.push({ type: 'input_image', image_url: `data:${img.mediaType};base64,${img.data}` })
+        }
+      } else if (p.type === 'text') parts.push({ type: 'input_text', text: p.text })
       else if (p.type === 'image')
         parts.push({ type: 'input_image', image_url: `data:${p.mediaType};base64,${p.data}` })
       else if (p.type === 'document')

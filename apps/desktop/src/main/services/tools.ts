@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, promises as fs, type Dirent } from 'fs'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'path'
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'path'
 import { assertInside, isSensitivePath } from './fs-guard'
 import { isDangerousCommand, resolveExecShell } from './exec-policy'
 import { upsertSkill } from './skills'
@@ -18,7 +18,14 @@ import {
   type MemoryScope
 } from './memory'
 import { upsertServer, type McpValue } from './mcp-config'
-import type { ToolSpec } from '../providers/types'
+import {
+  MAX_IMAGE_SOURCE_BYTES,
+  formatBytes,
+  prepareImage,
+  sniffImageMime,
+  type ImageMime
+} from './image-read'
+import type { ImagePart, ToolSpec } from '../providers/types'
 
 /**
  * Agent 工具集。工具名遵循 ^[a-zA-Z0-9_-]{1,64}$（各家 API 均不允许点号），
@@ -31,7 +38,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'read_file',
     description:
-      '读取工作区内一个文本文件。默认返回带行号的完整内容（便于定位与后续精确编辑）；可选 offset（起始行，1 起）/ limit（行数）分段读取大文件。path 可相对项目根或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。',
+      '读取工作区内一个文本文件。默认返回带行号的完整内容（便于定位与后续精确编辑）；可选 offset（起始行，1 起）/ limit（行数）分段读取大文件。path 可相对项目根或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -500,9 +507,13 @@ export interface ToolResult {
   content: string
   summary: string
   isError?: boolean
+  /** 随结果附带的图片（原样进 ToolResultPart.images）；content 仍须有一句文字说明。 */
+  images?: ImagePart[]
 }
 
 const MAX_READ_BYTES = 2 * 1024 * 1024
+/** read_file 按扩展名预判为图片的文件放宽体积门槛（读入后会缩放），最终以魔数为准。 */
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
 /** 搜索类护栏：目录遍历文件数上限 / glob 返回上限 / grep 匹配行上限。 */
 const WALK_MAX = 20_000
 const GLOB_RESULT_MAX = 500
@@ -1043,6 +1054,21 @@ function execCapture(
   })
 }
 
+/** read_file 的图片分支：整形（必要时缩放）后作为图片块返回，content 只留一句文字说明。 */
+function readImageResult(buf: Buffer, mime: ImageMime, abs: string): ToolResult {
+  const img = prepareImage(buf, mime, basename(abs))
+  if (!img.ok) return { content: `（${img.reason}）`, summary: '图片无法发送', isError: true }
+  const dims = img.width && img.height ? `${img.width}×${img.height}` : ''
+  const sent = img.resized
+    ? `，已缩放为 ${img.sentWidth}×${img.sentHeight}（${formatBytes(img.sentBytes)}）发送`
+    : ''
+  return {
+    content: `[图片] ${abs}（${mime}${dims ? `，${dims}` : ''}，${formatBytes(buf.length)}${sent}）。图片内容已随本结果附上。`,
+    summary: dims ? `图片 ${dims}` : '图片',
+    images: [img.part]
+  }
+}
+
 export async function executeTool(
   name: string,
   args: unknown,
@@ -1053,13 +1079,25 @@ export async function executeTool(
     if (name === 'read_file') {
       const abs = resolveReadPath(ctx.workspaceRoot, a.path)
       const stat = await fs.stat(abs)
-      if (stat.size > MAX_READ_BYTES)
+      const imageExt = IMAGE_EXT.has(extname(abs).toLowerCase())
+      if (imageExt && stat.size > MAX_IMAGE_SOURCE_BYTES)
+        return {
+          content: `（图片超过 ${formatBytes(MAX_IMAGE_SOURCE_BYTES)}，未加载）`,
+          summary: '图片过大',
+          isError: true
+        }
+      if (!imageExt && stat.size > MAX_READ_BYTES)
         return {
           content: '（文件超过 2MB，未加载；可用 offset/limit 分段，或用 grep 定位）',
           summary: '文件过大',
           isError: true
         }
       const buf = await fs.readFile(abs)
+      // 图片按魔数认（扩展名只用来放宽上面的体积门槛）：以图片块随结果返回，模型直接用视觉看。
+      const mime = sniffImageMime(buf)
+      if (mime) return readImageResult(buf, mime, abs)
+      if (stat.size > MAX_READ_BYTES)
+        return { content: '（文件超过 2MB，未加载）', summary: '文件过大', isError: true }
       if (looksBinary(buf))
         return { content: '（疑似二进制文件，未加载）', summary: '二进制', isError: true }
       if (buf.length === 0) return { content: '（空文件）', summary: '0 行' }

@@ -8,7 +8,8 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Tool } from '@modelcontextprotocol/sdk/types.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
-import type { ToolSpec } from '../providers/types'
+import type { ImagePart, ToolSpec } from '../providers/types'
+import { prepareImage, sniffImageMime } from './image-read'
 import type { ToolResult } from './tools'
 import { registerMcpToolNames, unregisterMcpToolNames } from './tools'
 import {
@@ -33,7 +34,7 @@ import { hasSecret, setSecret } from './secrets'
  * 默认走 `ask` 权限闸门（tools.ts 的 `toolCategory` 已把注册过的 MCP 名归为 `mcp` 类）。
  *
  * 安全铁律：
- * - **结果恒作数据**：`tool_result` 一律当惰性文本回灌，不解析其中任何控制信号（防提示注入）。
+ * - **结果恒作数据**：`tool_result` 一律当惰性数据（文本，外加图片块）回灌，不解析其中任何控制信号（防提示注入）。
  * - **失败降级绝不崩主进程**：ENOENT / 超时 / 鉴权失败 → `status='error'` + 明确中文 `lastError`。
  * - 子进程 spawn、密钥解密只在此层发生；命名空间名强制 `^[A-Za-z0-9_-]{1,64}$`（各家 API 通用约束）。
  */
@@ -326,17 +327,40 @@ interface RawCallResult {
   isError?: boolean
 }
 
-/** 展平 MCP 的 content[]（文本拼接；非文本内容以占位符表示）；文本上限 TEXT_CAP。 */
+/** 单次 MCP 结果最多附带的图片数（防止失控的服务一次塞满上下文）。 */
+const MAX_RESULT_IMAGES = 8
+
+/** MCP 图片块 → 可发送的 ImagePart；无数据 / 不认得 / 超限只给占位说明。 */
+function mcpImage(block: Record<string, unknown>): { part?: ImagePart; note: string } {
+  const declared = typeof block.mimeType === 'string' ? block.mimeType : 'image'
+  if (typeof block.data !== 'string') return { note: `[图片内容：${declared}，无数据，已省略]` }
+  const buf = Buffer.from(block.data, 'base64')
+  // 以魔数为准：服务声明的 mimeType 与字节不符时，照发会被服务商 400。
+  const mime = sniffImageMime(buf)
+  if (!mime) return { note: `[图片内容：${declared}，格式不受支持，已省略]` }
+  const img = prepareImage(buf, mime)
+  if (!img.ok) return { note: `[图片内容：${declared}，${img.reason}，已省略]` }
+  return { part: img.part, note: `[图片：${mime}，已随本结果附上]` }
+}
+
+/** 展平 MCP 的 content[]（文本拼接；图片随结果附上，其余非文本内容以占位符表示）；文本上限 TEXT_CAP。 */
 function flattenResult(result: RawCallResult): ToolResult {
   const parts: string[] = []
+  const images: ImagePart[] = []
   if (Array.isArray(result.content)) {
     for (const b of result.content) {
       if (!b || typeof b !== 'object') continue
       const block = b as Record<string, unknown>
       if (block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
-      else if (block.type === 'image')
-        parts.push(`[图片内容：${(block.mimeType as string) ?? 'image'}，已省略]`)
-      else if (block.type === 'audio') parts.push('[音频内容，已省略]')
+      else if (block.type === 'image') {
+        if (images.length >= MAX_RESULT_IMAGES) {
+          parts.push(`[图片内容：超过单次 ${MAX_RESULT_IMAGES} 张上限，已省略]`)
+          continue
+        }
+        const { part, note } = mcpImage(block)
+        if (part) images.push(part)
+        parts.push(note)
+      } else if (block.type === 'audio') parts.push('[音频内容，已省略]')
       else if (block.type === 'resource_link') parts.push(`[资源链接：${(block.uri as string) ?? ''}]`)
       else if (block.type === 'resource') {
         const r = block.resource as { text?: unknown; uri?: unknown } | undefined
@@ -355,7 +379,8 @@ function flattenResult(result: RawCallResult): ToolResult {
   return {
     content: text + (cut ? `\n…（内容过长已截断，上限 ${TEXT_CAP} 字符）` : ''),
     summary: isError ? '返回错误' : parts.length ? `${parts.length} 段内容` : '已返回',
-    isError
+    isError,
+    ...(images.length ? { images } : {})
   }
 }
 

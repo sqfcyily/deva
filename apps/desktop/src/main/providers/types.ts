@@ -20,6 +20,12 @@ export interface ToolResultPart {
   toolUseId: string
   content: string
   isError?: boolean
+  /**
+   * 工具返回的图片（read_file 读图、MCP 图片块）。与 content 分列而非把 content 改成块数组：
+   * 历史重建 / 压缩摘要 / 边车等处都把 content 当字符串读，分列后它们原样可用，只有适配器与
+   * token 估算需要认识这个字段。content 里应留一句文字说明（图片是什么、从哪来）。
+   */
+  images?: ImagePart[]
 }
 /** 图片附件（base64）。Anthropic → image 块；OpenAI → image_url(data URI)。 */
 export interface ImagePart {
@@ -126,6 +132,15 @@ export type StreamEvent =
 export interface AdapterConfig {
   baseURL: string
   apiKey: string
+}
+
+/**
+ * 工具结果图片的引子。OpenAI 两套协议的工具结果只收文本，图片只能挪进随后的 user 消息——
+ * 用这句讲明它们属于上方工具结果，免得模型当成用户新发来的图。
+ */
+export function toolImagesNote(images: ImagePart[]): string {
+  const names = images.map((i) => i.name).filter(Boolean).join('、')
+  return `[以下 ${images.length} 张图片是上方工具结果的附件${names ? `：${names}` : ''}]`
 }
 
 /** 响应体摘要：折叠空白、限长。中转 / 网关常把真正原因（上游额度用尽、内容拦截等）写在这里。 */

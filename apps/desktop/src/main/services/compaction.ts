@@ -88,7 +88,7 @@ function partTokens(p: ContentPart): number {
     case 'tool_use':
       return JSON.stringify(p.input ?? {}).length / CHARS_PER_TOKEN + 8
     case 'tool_result':
-      return p.content.length / CHARS_PER_TOKEN + 8
+      return p.content.length / CHARS_PER_TOKEN + 8 + (p.images?.length ?? 0) * IMAGE_TOKENS
     case 'image':
       return IMAGE_TOKENS
     case 'document':
