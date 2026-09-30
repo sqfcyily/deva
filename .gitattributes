@@ -1,0 +1,3 @@
+# 行尾统一为 LF：仓库内早已全是 LF，这里让各机器检出时也保持 LF，不受本机 core.autocrlf 影响。
+# 若将来加入必须用 CRLF 的 Windows 脚本，在此单独声明，例如：*.bat text eol=crlf
+* text=auto eol=lf
