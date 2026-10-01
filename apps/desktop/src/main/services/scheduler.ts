@@ -9,6 +9,7 @@ import {
   type TaskRunner
 } from './tasks'
 import { runScheduledTask, type ScheduledTurnResult } from './chat'
+import { publishAppNotice } from './chat-bus'
 import type { TaskRecord, TaskRun, TaskSchedule } from './tasks-types'
 
 /**
@@ -94,6 +95,8 @@ function firstLine(text: string): string {
  * 点击 → 聚焦窗口，并（若给了 sessionId）推 `tasks:navigate` 让渲染层打开该任务的独占会话。
  */
 function notify(title: string, body: string, sessionId?: string): void {
+  // 远程通道（飞书等）经总线同步推送到手机；与系统通知互不影响。
+  publishAppNotice({ title: title || 'Deva', body, sessionId })
   try {
     if (!Notification.isSupported()) return
     const n = new Notification({ title: title || 'Deva', body })

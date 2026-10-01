@@ -39,6 +39,7 @@ import {
   Search,
   ShieldCheck,
   Shrink,
+  Bot,
   Sparkles,
   Square,
   Trash2,
@@ -46,6 +47,7 @@ import {
   Users,
   X
 } from 'lucide-react'
+import { BotsPane } from './BotsPane'
 import './redesign.css'
 import type { McpKV, McpServer, McpStatus, Persona } from '../mock/extensions'
 import type {
@@ -235,6 +237,9 @@ type EditorState =
   | { mode: 'propose'; draft: AgentDraft; toolId: string }
 
 /* ============================ 顶层外壳 ============================ */
+/** 图标栏的 tab：对话 / 角色 / 定时任务 / 机器人。 */
+type RailTab = 'chats' | 'roster' | 'tasks' | 'bots'
+
 export function ChatFirstShell(): React.JSX.Element {
   const {
     sessions,
@@ -261,7 +266,7 @@ export function ChatFirstShell(): React.JSX.Element {
   const { t, locale } = useI18n()
   const dialog = useDialog()
 
-  const [railTab, setRailTab] = useState<'chats' | 'roster' | 'tasks'>('chats')
+  const [railTab, setRailTab] = useState<RailTab>('chats')
   // 左侧对话面板宽（可拖动）：存的是用户意图值，渲染时按窗口宽再夹取——窗口缩小时自动收窄、放大后复原。
   const viewport = useViewport()
   const [sidebarW, setSidebarW] = useState(() => loadLayout().sidebarWidth ?? SIDEBAR_DEFAULT)
@@ -470,7 +475,10 @@ export function ChatFirstShell(): React.JSX.Element {
           onTab={setRailTab}
           onOpenSettings={() => setSettingsOpen(true)}
         />
-        {railTab === 'tasks' ? (
+        {railTab === 'bots' ? (
+          // 「机器人」tab：同定时任务，占满列表列 + 右侧内容（机器人列表 + 详情）。
+          <BotsPane />
+        ) : railTab === 'tasks' ? (
           // 「定时任务」tab：占满列表列 + 右侧内容的整块空间，作独立管理面（列表 + 每行操作）。
           // 与「消息 / 角色」正交——不渲染 Rail 列表列，故 Rail 的 tab 只会拿到 'chats' | 'roster'。
           <TasksPane
@@ -557,8 +565,8 @@ function IconRail({
   onTab,
   onOpenSettings
 }: {
-  tab: 'chats' | 'roster' | 'tasks'
-  onTab: (t: 'chats' | 'roster' | 'tasks') => void
+  tab: RailTab
+  onTab: (t: RailTab) => void
   onOpenSettings: () => void
 }): React.JSX.Element {
   const { t } = useI18n()
@@ -603,6 +611,15 @@ function IconRail({
         <AlarmClock size={20} />
       </button>
       <div className="cf-spacer" />
+      <button
+        className={`cf-navbtn${tab === 'bots' ? ' is-active' : ''}`}
+        title={t('bots.title')}
+        aria-label={t('bots.title')}
+        aria-current={tab === 'bots'}
+        onClick={() => onTab('bots')}
+      >
+        <Bot size={20} />
+      </button>
       <button
         className="cf-navbtn"
         title={t('cf.settings')}

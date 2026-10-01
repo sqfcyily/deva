@@ -1,4 +1,5 @@
 import { ipcMain, type BrowserWindow } from 'electron'
+import { onChatEvent, publishChatEvent } from './chat-bus'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { dirname, resolve as resolvePath } from 'node:path'
@@ -88,14 +89,14 @@ import {
 
 type AdapterKind = 'anthropic' | 'openai' | 'responses'
 
-interface ChatModelConfig {
+export interface ChatModelConfig {
   adapter: AdapterKind
   providerId: string
   baseURL: string
   model: string
 }
 
-interface ChatSendRequest {
+export interface ChatSendRequest {
   sessionId: string
   text: string
   model: ChatModelConfig
@@ -634,13 +635,13 @@ function repairDanglingToolUses(s: StoredSession): boolean {
 }
 
 /** ask_user 的候选项（description 为可选补充说明）。 */
-interface AskOption {
+export interface AskOption {
   label: string
   description?: string
 }
 
 /** ask_user 的单个问题：题干 + 候选项 + 是否多选 + 是否必答。 */
-interface AskQuestion {
+export interface AskQuestion {
   question: string
   options: AskOption[]
   /** true=多选（可勾多项）；false=单选。 */
@@ -649,20 +650,20 @@ interface AskQuestion {
   required: boolean
 }
 
-interface AskResponse {
+export interface AskResponse {
   key: string
   /** 用户对每个问题的答复（answers[i] 对应 questions[i]，选中项或自由输入）；null 表示取消/中止。 */
   answers: string[] | null
 }
 
 /** 用户对 exit_plan 计划审阅的决定：approve=批准并执行 / keep=继续完善。 */
-interface PlanResponse {
+export interface PlanResponse {
   key: string
   decision: 'approve' | 'keep'
 }
 
 /** 用户对「请求挂载工作区」的回应：path=已选目录（渲染层已经 fs.openFolder 受信）；null=暂不挂载。 */
-interface MountResponse {
+export interface MountResponse {
   key: string
   path: string | null
 }
@@ -841,6 +842,30 @@ export type ChatStreamEvent =
    * status: compacted=已压缩 / none=无需压缩 / failed=失败（历史未动）。
    */
   | { type: 'compacted'; scope: 'auto' | 'manual'; status: CompactStatus; message?: string }
+  /**
+   * 某张交互卡（问答 / 计划审阅 / 挂载请求）已被答复——不论答复来自桌面还是远程通道（飞书等）。
+   * 同一张卡可能同时显示在多端：先到的答复生效，其余端据此把卡收成已决态，免得留下点了没反应的卡。
+   * 回合中止时的批量取消不发此事件（各端在 done 时自行收敛）。
+   */
+  | {
+      type: 'interaction_resolved'
+      key: string
+      kind: 'ask' | 'plan' | 'mount'
+      answers?: string[] | null
+      decision?: 'approve' | 'keep' | null
+      path?: string | null
+    }
+  /**
+   * 角色名片 / 定时任务确认名片已决议（桌面或手机端）。不属于任何回合（名片在回合结束后仍可操作），
+   * 故以空 turnId 发出；各端按 sessionId + toolUseId 把同一张名片收成终态。
+   */
+  | {
+      type: 'card_resolved'
+      card: 'agent' | 'autotask'
+      toolUseId: string
+      status: 'accepted' | 'rejected' | 'created' | 'dismissed'
+      taskId?: string
+    }
   | { type: 'done'; stopReason: StopReason }
 
 // 主对话单轮工具步数上限：Infinity = 不设上限，一直循环到模型不再调用工具为止（对标 Claude Code 的
@@ -957,16 +982,19 @@ function delay(ms: number, signal: AbortSignal): Promise<boolean> {
 
 const activeTurns = new Map<string, AbortController>()
 /** 待用户答复的 ask_user 询问（键 → resolve + 所属轮次）；answers 为 null 表示取消/中止。 */
-const pendingAsk = new Map<string, { resolve: (answers: string[] | null) => void; turnId: string }>()
+const pendingAsk = new Map<
+  string,
+  { resolve: (answers: string[] | null) => void; turnId: string; sessionId: string }
+>()
 /** 待用户批准的 exit_plan 计划审阅（键 → resolve + 所属轮次）；null 表示取消/中止。 */
 const pendingPlan = new Map<
   string,
-  { resolve: (decision: 'approve' | 'keep' | null) => void; turnId: string }
+  { resolve: (decision: 'approve' | 'keep' | null) => void; turnId: string; sessionId: string }
 >()
 /** 待用户处理的「请求挂载工作区」（键 → resolve + 所属轮次）；null 表示暂不挂载/取消/中止。 */
 const pendingMount = new Map<
   string,
-  { resolve: (path: string | null) => void; turnId: string }
+  { resolve: (path: string | null) => void; turnId: string; sessionId: string }
 >()
 /**
  * 已明确拒绝过挂载的会话（内存态，随重启清空）。会话级去重：用户点过一次「暂不挂载」后，
@@ -1090,6 +1118,33 @@ export function runScheduledTask(task: TaskRecord): Promise<ScheduledTurnResult>
   if (!scheduledRunner)
     return Promise.reject(new Error('chat runtime 尚未就绪（registerChatIpc 未运行）'))
   return scheduledRunner(task)
+}
+
+/**
+ * 会话编排的对外入口（模块级桥接，同 scheduledRunner）：桌面 IPC 处理器与远程通道调用的是同一组函数，
+ * 故手机端发起的回合、作答的问答卡，与桌面端走完全相同的路径（落盘 / 检查点 / 权限闸门一致）。
+ */
+export interface ChatRuntime {
+  send(req: ChatSendRequest): Promise<{ turnId: string }>
+  abort(turnId: string): void
+  answerAsk(r: AskResponse): boolean
+  decidePlan(r: PlanResponse): boolean
+  answerMount(r: MountResponse): boolean
+  /** 角色名片终态（接受时角色本体由调用方先行创建）。 */
+  resolveProposal(sessionId: string, toolUseId: string, status: 'accepted' | 'rejected'): boolean
+  /** 定时任务确认名片：create 即授权建任务，dismiss 忽略。 */
+  resolveAutotask(
+    sessionId: string,
+    toolUseId: string,
+    action: 'create' | 'dismiss',
+    input?: TaskCreateInput
+  ): ResolveAutotaskResult
+  /** 会话是否正有回合在跑（对话 / 定时任务）。 */
+  isBusy(sessionId: string): boolean
+}
+let chatRuntime: ChatRuntime | null = null
+export function getChatRuntime(): ChatRuntime | null {
+  return chatRuntime
 }
 
 /**
@@ -1423,11 +1478,16 @@ interface AgentLoopArgs {
 }
 
 export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
-  function emit(turnId: string, sessionId: string, event: ChatStreamEvent): void {
-    // 退出收尾期间窗口可能已销毁：此时回合仍在补结果 / 落盘，事件丢掉即可，绝不能因 send 抛错打断收尾。
+  // 渲染层只是总线的一个订阅者（远程通道是另一个，见 remote/hub.ts）。
+  // 退出收尾期间窗口可能已销毁：此时回合仍在补结果 / 落盘，事件丢掉即可，绝不能因 send 抛错打断收尾。
+  onChatEvent((p) => {
     const win = getWindow()
     if (!win || win.isDestroyed()) return
-    win.webContents.send('chat:event', { turnId, sessionId, event })
+    win.webContents.send('chat:event', p)
+  })
+
+  function emit(turnId: string, sessionId: string, event: ChatStreamEvent): void {
+    publishChatEvent({ turnId, sessionId, event })
   }
 
   /** 抛出一个或多个问题、暂停循环等用户一次性作答（不过权限闸门，恒放行执行）。 */
@@ -1438,7 +1498,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): Promise<string[] | null> {
     const key = genId('ask')
     emit(turnId, sessionId, { type: 'ask_user', key, questions })
-    return new Promise((resolve) => pendingAsk.set(key, { resolve, turnId }))
+    return new Promise((resolve) => pendingAsk.set(key, { resolve, turnId, sessionId }))
   }
 
   /**
@@ -1452,7 +1512,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): Promise<'approve' | 'keep' | null> {
     const key = genId('plan')
     emit(turnId, sessionId, { type: 'plan_review', key, plan })
-    return new Promise((resolve) => pendingPlan.set(key, { resolve, turnId }))
+    return new Promise((resolve) => pendingPlan.set(key, { resolve, turnId, sessionId }))
   }
 
   /**
@@ -1468,7 +1528,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): Promise<string | null> {
     const key = genId('mount')
     emit(turnId, sessionId, { type: 'mount_request', key, tool, path })
-    return new Promise((resolve) => pendingMount.set(key, { resolve, turnId }))
+    return new Promise((resolve) => pendingMount.set(key, { resolve, turnId, sessionId }))
   }
 
   /**
@@ -2689,8 +2749,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // 挂上模块级桥接，供 scheduler.ts 经 runScheduledTask 跨模块直调（registerChatIpc 运行即就绪）。
   scheduledRunner = runScheduledTurn
 
-  // 发送用户消息 → 启动一轮（fire-and-forget），返回 turnId
-  ipcMain.handle('chat:send', async (_e, payload: ChatSendRequest): Promise<{ turnId: string }> => {
+  /**
+   * 发送用户消息 → 启动一轮（fire-and-forget），返回 turnId。桌面（chat:send）与远程通道共用此入口。
+   * 同一会话同时只能有一轮：两轮并发会交错改写同一份 messages。桌面层本就不会在流式中再发，
+   * 这道闸主要拦「手机端正在跑、桌面又发了一条」（或反过来）——抛错由调用方转成提示。
+   */
+  async function sendMessage(payload: ChatSendRequest): Promise<{ turnId: string }> {
+    const busyError = (): Error => new Error('这个对话正在进行中（可能由手机端或定时任务发起），请等它结束后再发。')
+    if (busySessions.has(payload.sessionId)) throw busyError()
     const {
       sessionId,
       text,
@@ -2734,6 +2800,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         if (note) notes.push(note)
       }
     }
+    // 读附件期间另一端可能抢先起了一轮：落历史前再确认一次。
+    if (busySessions.has(sessionId)) throw busyError()
     const question = effectiveText.trim() || (parts.length ? '请理解并处理上述附件。' : '')
     const questionText = notes.length ? `${question}\n（${notes.join('；')}）` : question
     // 「仅恢复代码」后的首条消息：把回滚说明作为**第一个**独立 text 块带给模型（展示层只取最后一个
@@ -2759,7 +2827,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const turnId = genId('turn')
     void runTurn(sessionId, turnId, model, workspaceRoot)
     return { turnId }
-  })
+  }
+
+  ipcMain.handle('chat:send', (_e, payload: ChatSendRequest) => sendMessage(payload))
 
   /* 说明：persona 绑定与聚焦工作区都已由 ensureSession 落在 session 上，runTurn 内直接读取 —— 见其实现。 */
 
@@ -2874,15 +2944,21 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
   // 持久化角色名片的终态（接受/拒绝）。名片本体随 Message[] 存活，但终态无处落，
   // 故用 StoredSession.proposals 边车按 toolUseId 记录——重开不再退回 pending、不会重复建角色。
+  // 桌面与手机端（remote/hub.ts）共用；决议后广播 card_resolved，另一端据此把名片收成终态。
+  function resolveProposal(sessionId: string, toolUseId: string, status: 'accepted' | 'rejected'): boolean {
+    const s = getSession(sessionId)
+    if (!s) return false
+    s.proposals = { ...s.proposals, [toolUseId]: status }
+    saveProject(sessionId)
+    emit('', sessionId, { type: 'card_resolved', card: 'agent', toolUseId, status })
+    return true
+  }
+
   ipcMain.handle(
     'chat:resolve-proposal',
-    (_e, sessionId: string, toolUseId: string, status: 'accepted' | 'rejected'): { ok: boolean } => {
-      const s = getSession(sessionId)
-      if (!s) return { ok: false }
-      s.proposals = { ...s.proposals, [toolUseId]: status }
-      saveProject(sessionId)
-      return { ok: true }
-    }
+    (_e, sessionId: string, toolUseId: string, status: 'accepted' | 'rejected'): { ok: boolean } => ({
+      ok: resolveProposal(sessionId, toolUseId, status)
+    })
   )
 
   // 定时任务确认名片的决议——**唯一的授权时刻**（对标 chat:resolve-proposal，但兼建任务本体）。
@@ -2890,6 +2966,43 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   //         边车 {created, taskId} 并存会话；失败不落边车（名片留待用户修正后重试）。
   // dismiss：记 {dismissed}，名片转紧凑「已忽略」态，不建任何任务。
   // 幂等：同名片重复 create 直接回已建任务（防双提交造双任务）。任务本体持久化于主进程 tasks.json（渲染层写不进）。
+  function resolveAutotask(
+    sessionId: string,
+    toolUseId: string,
+    action: 'create' | 'dismiss',
+    taskInput?: TaskCreateInput
+  ): ResolveAutotaskResult {
+    const s = getSession(sessionId)
+    if (!s) return { ok: false, error: 'no-session' }
+
+    // 幂等：已创建过则回既有 taskId，绝不重复建任务。
+    const prior = s.autotasks?.[toolUseId]
+    if (prior?.status === 'created' && prior.taskId)
+      return { ok: true, status: 'created', taskId: prior.taskId }
+
+    if (action === 'dismiss') {
+      s.autotasks = { ...s.autotasks, [toolUseId]: { status: 'dismissed' } }
+      saveProject(sessionId)
+      emit('', sessionId, { type: 'card_resolved', card: 'autotask', toolUseId, status: 'dismissed' })
+      return { ok: true, status: 'dismissed' }
+    }
+
+    // action === 'create'
+    if (!taskInput || typeof taskInput !== 'object') return { ok: false, error: 'no-input' }
+    const res: CreateTaskResult = createTask(taskInput)
+    if (!res.ok) return { ok: false, error: res.error }
+    s.autotasks = { ...s.autotasks, [toolUseId]: { status: 'created', taskId: res.task.id } }
+    saveProject(sessionId)
+    emit('', sessionId, {
+      type: 'card_resolved',
+      card: 'autotask',
+      toolUseId,
+      status: 'created',
+      taskId: res.task.id
+    })
+    return { ok: true, status: 'created', taskId: res.task.id }
+  }
+
   ipcMain.handle(
     'chat:resolve-autotask',
     (
@@ -2898,29 +3011,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       toolUseId: string,
       action: 'create' | 'dismiss',
       taskInput?: TaskCreateInput
-    ): ResolveAutotaskResult => {
-      const s = getSession(sessionId)
-      if (!s) return { ok: false, error: 'no-session' }
-
-      // 幂等：已创建过则回既有 taskId，绝不重复建任务。
-      const prior = s.autotasks?.[toolUseId]
-      if (prior?.status === 'created' && prior.taskId)
-        return { ok: true, status: 'created', taskId: prior.taskId }
-
-      if (action === 'dismiss') {
-        s.autotasks = { ...s.autotasks, [toolUseId]: { status: 'dismissed' } }
-        saveProject(sessionId)
-        return { ok: true, status: 'dismissed' }
-      }
-
-      // action === 'create'
-      if (!taskInput || typeof taskInput !== 'object') return { ok: false, error: 'no-input' }
-      const res: CreateTaskResult = createTask(taskInput)
-      if (!res.ok) return { ok: false, error: res.error }
-      s.autotasks = { ...s.autotasks, [toolUseId]: { status: 'created', taskId: res.task.id } }
-      saveProject(sessionId)
-      return { ok: true, status: 'created', taskId: res.task.id }
-    }
+    ): ResolveAutotaskResult => resolveAutotask(sessionId, toolUseId, action, taskInput)
   )
 
   // 删除某会话（含会话级授权）。id 全局唯一 → 按 id 删。
@@ -2935,10 +3026,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   )
 
   // 中止某一轮：取消流并把该轮的待决问答/计划审阅一律按取消解开
-  ipcMain.handle('chat:abort', (_e, turnId: string): { ok: true } => {
+  function abortTurn(turnId: string): void {
     activeTurns.get(turnId)?.abort()
     // 待决问答回灌「用户取消了本次询问」，计划审阅记取消，挂载请求按「未挂载」解开。
     releasePending(turnId)
+  }
+
+  ipcMain.handle('chat:abort', (_e, turnId: string): { ok: true } => {
+    abortTurn(turnId)
     return { ok: true }
   })
 
@@ -3153,28 +3248,54 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
   // 用户对权限请求的答复
   // 用户对 ask_user 询问的答复（每题的选中项标签或自由输入；null 视为取消）
-  ipcMain.handle('chat:ask-response', (_e, payload: AskResponse): { ok: boolean } => {
+  // 三类答复：先到者生效（键随即删除，后到的一律 false），并广播 interaction_resolved 让其余端收卡。
+  function answerAsk(payload: AskResponse): boolean {
     const p = pendingAsk.get(payload.key)
-    if (!p) return { ok: false }
+    if (!p) return false
     pendingAsk.delete(payload.key)
     p.resolve(payload.answers)
-    return { ok: true }
-  })
+    emit(p.turnId, p.sessionId, {
+      type: 'interaction_resolved',
+      key: payload.key,
+      kind: 'ask',
+      answers: payload.answers
+    })
+    return true
+  }
 
-  ipcMain.handle('chat:plan-response', (_e, payload: PlanResponse): { ok: boolean } => {
+  function decidePlan(payload: PlanResponse): boolean {
     const p = pendingPlan.get(payload.key)
-    if (!p) return { ok: false }
+    if (!p) return false
     pendingPlan.delete(payload.key)
     p.resolve(payload.decision)
-    return { ok: true }
-  })
+    emit(p.turnId, p.sessionId, {
+      type: 'interaction_resolved',
+      key: payload.key,
+      kind: 'plan',
+      decision: payload.decision
+    })
+    return true
+  }
+
+  ipcMain.handle('chat:ask-response', (_e, payload: AskResponse): { ok: boolean } => ({
+    ok: answerAsk(payload)
+  }))
+
+  ipcMain.handle('chat:plan-response', (_e, payload: PlanResponse): { ok: boolean } => ({
+    ok: decidePlan(payload)
+  }))
+
+  ipcMain.handle('chat:mount-response', (_e, payload: MountResponse): { ok: boolean } => ({
+    ok: answerMount(payload)
+  }))
 
   // 用户对「请求挂载工作区」的回应：path=已选目录 / null=暂不挂载。
   // 只认真实存在的目录，并（幂等）登记受信根。渲染层传来的路径出自 fs.openFolder（系统目录对话框，
   // 已 trustRoot），这里的 trustRoot 只是兜底。拿不到有效目录一律按「暂不挂载」处置。
-  ipcMain.handle('chat:mount-response', (_e, payload: MountResponse): { ok: boolean } => {
+  // 远程通道只会传 null（目录只能在桌面的系统对话框里选，手机端无从提供可信路径）。
+  function answerMount(payload: MountResponse): boolean {
     const p = pendingMount.get(payload.key)
-    if (!p) return { ok: false }
+    if (!p) return false
     pendingMount.delete(payload.key)
     const raw = typeof payload.path === 'string' ? payload.path.trim() : ''
     let dir: string | null = null
@@ -3190,6 +3311,19 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       }
     }
     p.resolve(dir)
-    return { ok: true }
-  })
+    emit(p.turnId, p.sessionId, { type: 'interaction_resolved', key: payload.key, kind: 'mount', path: dir })
+    return true
+  }
+
+  // 挂上模块级桥接，供远程通道（remote/hub.ts）跨模块直调——与桌面 IPC 走同一套入口。
+  chatRuntime = {
+    send: sendMessage,
+    abort: abortTurn,
+    answerAsk,
+    decidePlan,
+    answerMount,
+    resolveProposal,
+    resolveAutotask,
+    isBusy: (sessionId) => busySessions.has(sessionId)
+  }
 }

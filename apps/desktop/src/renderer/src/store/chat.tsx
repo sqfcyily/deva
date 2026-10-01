@@ -283,7 +283,57 @@ type StreamEvent =
       status: 'compacted' | 'none' | 'failed'
       message?: string
     }
+  | {
+      type: 'interaction_resolved'
+      key: string
+      kind: 'ask' | 'plan' | 'mount'
+      answers?: string[] | null
+      decision?: 'approve' | 'keep' | null
+      path?: string | null
+    }
+  | {
+      type: 'card_resolved'
+      card: 'agent' | 'autotask'
+      toolUseId: string
+      status: 'accepted' | 'rejected' | 'created' | 'dismissed'
+      taskId?: string
+    }
   | { type: 'done'; stopReason: string }
+
+/**
+ * 交互卡已在别处答复（手机端 / 本层自己的答复回执）：把同 key 的卡收成已决态。
+ * 已是终态的卡原样返回（本层先行乐观落了态，或已收敛过），未命中的块保持引用不变。
+ */
+function resolveCard(
+  blocks: ChatBlock[],
+  ev: Extract<StreamEvent, { type: 'interaction_resolved' }>
+): ChatBlock[] {
+  return blocks.map((b) => {
+    if (ev.kind === 'ask' && b.kind === 'ask' && b.key === ev.key && !b.answers)
+      return { ...b, answers: ev.answers ?? [] }
+    if (ev.kind === 'plan' && b.kind === 'plan' && b.key === ev.key && !b.decided)
+      return { ...b, decided: ev.decision ?? ('cancelled' as const) }
+    if (ev.kind === 'mount' && b.kind === 'mount' && b.key === ev.key && !b.decided)
+      return { ...b, decided: ev.path ? ('mounted' as const) : ('skipped' as const), root: ev.path ?? undefined }
+    return b
+  })
+}
+
+/** 名片已在别处决议（手机端 / 本层自己的回执）：把同 id 的待决名片收成终态，已是终态的不动。 */
+function resolveProposalCard(
+  blocks: ChatBlock[],
+  ev: Extract<StreamEvent, { type: 'card_resolved' }>
+): ChatBlock[] {
+  return blocks.map((b) => {
+    if (b.kind === 'autotaskcard' && b.id === ev.toolUseId && b.status === 'pending')
+      return ev.status === 'created' || ev.status === 'dismissed'
+        ? { ...b, status: ev.status, taskId: ev.taskId }
+        : b
+    if (b.kind === 'agentcard' && b.id === ev.toolUseId && b.status === 'pending')
+      return ev.status === 'accepted' || ev.status === 'rejected' ? { ...b, status: ev.status } : b
+    return b
+  })
+}
 
 interface ChatContextValue {
   sessions: SessionMeta[]
@@ -985,6 +1035,13 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 主进程内闭环执行），本层从未建脚手架 —— 其内容以主进程 + 磁盘为唯一真源，绝不在此凑合拼装。
       const localStreaming = runtimesRef.current.get(sid)?.streaming === true
 
+      // 名片决议不属于回合（名片在回合结束后仍可操作）：只要本层缓存着该会话就就地收敛；
+      // 没缓存的不必管——下次打开从磁盘重载，边车里已是终态。
+      if (ev.type === 'card_resolved') {
+        if (runtimesRef.current.has(sid)) patchCardBlocks(sid, (blocks) => resolveProposalCard(blocks, ev))
+        return
+      }
+
       // 本回合压缩成功（自动或 /compact）：主进程历史已改写为「摘要 + 近期轮」，本层气泡却仍是全量，
       // 两边的轮下标因此错开被压掉的轮数，回滚 / 删轮会落到错的轮上。先记下，done 时以主进程为准重载。
       if (ev.type === 'compacted' && ev.status === 'compacted') compactedSids.add(sid)
@@ -1061,6 +1118,11 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         return
       }
       if (ev.type === 'usage') return
+      // 交互卡在手机端被答复：卡可能不在末条助手消息里，按 key 全量查找收敛。
+      if (ev.type === 'interaction_resolved') {
+        patchCardBlocks(sid, (blocks) => resolveCard(blocks, ev))
+        return
+      }
       // 内容事件：并入消息；若正处于重连横幅则收起（任何真实内容到达即视为"已恢复"）。
       patchRuntime(sid, (r) => {
         const messages = updateLastAssistant(r.messages, (blocks) => reduceBlocks(blocks, ev))
@@ -1069,7 +1131,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })
     })
     return unsub
-  }, [refreshSessions, patchRuntime, patchMessages, dropRuntime, toast])
+  }, [refreshSessions, patchRuntime, patchMessages, patchCardBlocks, dropRuntime, toast])
 
   const viewed = runtimes.get(currentSessionId)
   const viewedStreaming = viewed?.streaming ?? false

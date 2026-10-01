@@ -606,7 +606,46 @@ export type ChatStreamEvent =
       status: 'compacted' | 'none' | 'failed'
       message?: string
     }
+  /** 某张交互卡已被答复（可能来自手机端）：渲染层据此把同 key 的卡收成已决态。 */
+  | {
+      type: 'interaction_resolved'
+      key: string
+      kind: 'ask' | 'plan' | 'mount'
+      answers?: string[] | null
+      decision?: 'approve' | 'keep' | null
+      path?: string | null
+    }
+  /** 角色名片 / 定时任务名片已决议（可能来自手机端）；不属于任何回合，turnId 为空串。 */
+  | {
+      type: 'card_resolved'
+      card: 'agent' | 'autotask'
+      toolUseId: string
+      status: 'accepted' | 'rejected' | 'created' | 'dismissed'
+      taskId?: string
+    }
   | { type: 'done'; stopReason: string }
+
+/** IM 机器人（远程通道）状态，与 services/remote/index.ts 的 BotView / ScanEvent 对齐。 */
+export type BotPlatform = 'feishu'
+export type BotReplyMode = 'stream' | 'final'
+export interface BotView {
+  id: string
+  platform: BotPlatform
+  name: string
+  region?: 'cn' | 'intl'
+  enabled: boolean
+  state: 'off' | 'connecting' | 'connected' | 'error'
+  error?: string
+  replyMode: BotReplyMode
+  users: { id: string; name?: string; pairedAt: number }[]
+}
+export interface RemoteState {
+  bots: BotView[]
+}
+export type BotScanEvent =
+  | { scanId: string; status: 'done'; botId: string }
+  | { scanId: string; status: 'denied' | 'expired' | 'cancelled' }
+  | { scanId: string; status: 'error'; error: string }
 
 export interface ChatEventPayload {
   turnId: string
@@ -970,6 +1009,38 @@ const api = {
     readText: (): Promise<string> => ipcRenderer.invoke('clipboard:read-text'),
     writeText: (text: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('clipboard:write-text', text)
+  },
+  /** 远程通道 / 手机端（飞书等 IM 机器人）。密钥只写不读。 */
+  remote: {
+    getState: (): Promise<RemoteState> => ipcRenderer.invoke('remote:get-state'),
+    /** 开始扫码创建机器人：返回二维码（data URL）；结果经 onScan 推回。 */
+    scanStart: (
+      platform: BotPlatform
+    ): Promise<
+      | { ok: true; scanId: string; qr: string; userCode?: string; expiresAt: number }
+      | { ok: false; error: string }
+    > => ipcRenderer.invoke('remote:scan-start', platform),
+    scanCancel: (scanId: string): Promise<{ ok: true }> => ipcRenderer.invoke('remote:scan-cancel', scanId),
+    setEnabled: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('remote:set-enabled', id, enabled),
+    setReplyMode: (id: string, mode: BotReplyMode): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('remote:set-reply-mode', id, mode),
+    deleteBot: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('remote:delete-bot', id),
+    pairCode: (id: string): Promise<{ code: string; expiresAt: number }> =>
+      ipcRenderer.invoke('remote:pair-code', id),
+    pairCancel: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('remote:pair-cancel', id),
+    removeUser: (id: string, userId: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('remote:remove-user', id, userId),
+    onChanged: (cb: (state: RemoteState) => void): (() => void) => {
+      const listener = (_e: unknown, state: RemoteState): void => cb(state)
+      ipcRenderer.on('remote:changed', listener)
+      return () => ipcRenderer.removeListener('remote:changed', listener)
+    },
+    onScan: (cb: (ev: BotScanEvent) => void): (() => void) => {
+      const listener = (_e: unknown, ev: BotScanEvent): void => cb(ev)
+      ipcRenderer.on('remote:scan', listener)
+      return () => ipcRenderer.removeListener('remote:scan', listener)
+    }
   }
 }
 

@@ -24,6 +24,7 @@ import { registerGitIpc } from './services/git'
 import { registerClipboardIpc } from './services/clipboard'
 import { registerTasksIpc } from './services/tasks'
 import { startScheduler } from './services/scheduler'
+import { registerRemoteIpc, stopAllChannels } from './services/remote'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -248,6 +249,9 @@ if (!app.requestSingleInstanceLock()) {
   // 会话编排（Agent 主循环：流式 → 工具 → 权限 → 回灌）
   registerChatIpc(() => mainWindow)
 
+  // 远程通道 / 手机端（飞书等 IM 机器人；默认关闭，需在设置里开启并配对）。订阅会话总线，须在 chat 之后。
+  registerRemoteIpc(() => mainWindow)
+
   // 检查点清扫（异步不阻塞启动）：删已不存在会话的备份目录、超 30 天的 blob 与残留临时文件
   void sweepCheckpoints(listSessions().map((m) => m.id)).catch((e) =>
     console.warn('[checkpoints] 清扫失败：', e)
@@ -317,6 +321,7 @@ app.on('before-quit', (e) => {
     return
   }
   void disconnectAllServers()
+  void stopAllChannels()
 })
 
 // 全部窗口关闭即退出（非 macOS）。注意：关窗驻留托盘时窗口仅隐藏而未销毁，本事件不会触发；

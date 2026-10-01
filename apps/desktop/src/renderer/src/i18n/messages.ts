@@ -305,6 +305,56 @@ const zhCN: MessageTree = {
     },
     md: { copy: '复制', copied: '已复制' }
   },
+  bots: {
+    title: '机器人',
+    search: '搜索机器人',
+    add: '添加机器人',
+    addTitle: '添加{p}机器人',
+    listEmpty: '还没有机器人，点上方的 + 添加。',
+    detailEmpty: '在左侧选择一个机器人查看详情。',
+    paneHint: '把聊天工具接入 Deva，在手机上继续对话。',
+    unnamed: '未命名机器人',
+    platform: { feishu: '飞书', telegram: 'Telegram' },
+    region: { cn: '中国', intl: '国际' },
+    state: { off: '未启用', connecting: '连接中', connected: '已连接', error: '连接失败' },
+    enable: '启用',
+    failed: '操作失败',
+    soon: '即将支持',
+    scanRefresh: '刷新',
+    scanLead: '用飞书扫码，并在手机上确认创建应用。',
+    scanWaiting: '等待扫码确认…（{s} 秒后过期）',
+    scanLoading: '正在获取二维码…',
+    scanRetry: '重新获取二维码',
+    scanNote: '扫码的飞书账号会自动成为这个机器人的主人，创建完成后机器人会主动给你发消息。电脑上的 Deva 需要保持运行（关窗驻留托盘即可）。',
+    scan: {
+      denied: '已在手机上取消授权。',
+      expired: '二维码已过期。'
+    },
+    users: '可以使用的账号',
+    usersHint: '只有这些账号能通过机器人和 Deva 对话。',
+    usersEmpty: '还没有账号。',
+    owner: '主人',
+    invite: '邀请其他账号',
+    inviteHint: '让对方在飞书里私聊这个机器人，发送：',
+    inviteExpires: '{s} 后失效',
+    inviteRegen: '重新生成',
+    inviteCancel: '取消邀请',
+    removeUser: '移除',
+    removeUserConfirm: '移除后，这个账号将无法再通过机器人操作 Deva。',
+    replyMode: '回复方式',
+    replyModeOpt: { stream: '流式卡片', final: '仅最终结果' },
+    replyModeHint: {
+      stream: '回复和工具调用实时更新在同一张卡片里。',
+      final: '只在需要你决定和回复完成时更新，消息更少。'
+    },
+    usage: '在手机上怎么用',
+    usageText:
+      '直接发消息就是在当前对话里继续聊。指令：/new 新建对话、/list 最近对话、/use 序号 切换、/stop 停止、/status 当前对话、/help 帮助。计划审批、提问、定时任务完成通知都会以卡片形式发给你。',
+    security:
+      '安全提示：能使用机器人的账号可以让 Deva 在这台电脑上读写文件、运行命令，权限和你在电脑上使用时一样。机器人只响应私聊，群聊消息一律忽略。',
+    delete: '删除机器人',
+    deleteConfirm: '删除后机器人将断开连接，手机上无法再使用。飞书开放平台上的应用不会被删除，可自行在开放平台删除。'
+  },
   settings: {
     title: '设置',
     appearance: '外观',
@@ -1024,6 +1074,56 @@ const en: MessageTree = {
       doneHint: 'Workspace mounted: '
     },
     md: { copy: 'Copy', copied: 'Copied' }
+  },
+  bots: {
+    title: 'Bots',
+    search: 'Search bots',
+    add: 'Add bot',
+    addTitle: 'Add a {p} bot',
+    listEmpty: 'No bots yet. Use + above to add one.',
+    detailEmpty: 'Select a bot on the left to see its details.',
+    paneHint: 'Connect a chat app to Deva and keep chatting from your phone.',
+    unnamed: 'Unnamed bot',
+    platform: { feishu: 'Feishu', telegram: 'Telegram' },
+    region: { cn: 'China', intl: 'Intl' },
+    state: { off: 'Off', connecting: 'Connecting', connected: 'Connected', error: 'Connection failed' },
+    enable: 'Enable',
+    failed: 'Operation failed',
+    soon: 'Coming soon',
+    scanRefresh: 'Refresh',
+    scanLead: 'Scan with Feishu and confirm creating the app on your phone.',
+    scanWaiting: 'Waiting for confirmation… (expires in {s}s)',
+    scanLoading: 'Getting QR code…',
+    scanRetry: 'Get a new QR code',
+    scanNote: 'The account that scans becomes the owner of the bot, and the bot will message you once it is ready. Deva must stay running on this computer (keeping it in the tray is enough).',
+    scan: {
+      denied: 'Authorization was declined on the phone.',
+      expired: 'The QR code has expired.'
+    },
+    users: 'Allowed accounts',
+    usersHint: 'Only these accounts can talk to Deva through the bot.',
+    usersEmpty: 'No accounts yet.',
+    owner: 'Owner',
+    invite: 'Invite another account',
+    inviteHint: 'Ask them to send this to the bot in a direct chat:',
+    inviteExpires: 'Expires in {s}',
+    inviteRegen: 'Regenerate',
+    inviteCancel: 'Cancel invite',
+    removeUser: 'Remove',
+    removeUserConfirm: 'This account will no longer be able to control Deva through the bot.',
+    replyMode: 'Replies',
+    replyModeOpt: { stream: 'Streaming card', final: 'Final result only' },
+    replyModeHint: {
+      stream: 'The reply and tool calls update live in a single card.',
+      final: 'Only updates when your decision is needed and when the reply is done.'
+    },
+    usage: 'Using it on your phone',
+    usageText:
+      'Just send a message to continue the current conversation. Commands: /new, /list, /use <n>, /stop, /status, /help. Plan reviews, questions and scheduled-task results arrive as cards.',
+    security:
+      'Security note: allowed accounts can make Deva read and write files and run commands on this computer, with the same permissions you have here. The bot only answers direct messages; group chats are ignored.',
+    delete: 'Delete bot',
+    deleteConfirm: 'The bot will be disconnected and stop working on your phone. The app on the Feishu Open Platform is not deleted; you can remove it there yourself.'
   },
   settings: {
     title: 'Settings',

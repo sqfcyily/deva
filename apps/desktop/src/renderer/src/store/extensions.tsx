@@ -311,6 +311,19 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       .catch(() => {})
   }, [])
 
+  // 手机端接受了角色名片：角色由主进程直接建好，本层花名册随之重拉（桌面自己接受时也会收到，重拉无害）。
+  useEffect(
+    () =>
+      window.deva?.chat?.onEvent((p) => {
+        if (p.event.type === 'card_resolved' && p.event.card === 'agent' && p.event.status === 'accepted')
+          void window.deva.personas
+            .list()
+            .then((l) => setPersonas(l.map(personaRecToPersona)))
+            .catch(() => {})
+      }),
+    []
+  )
+
   const setterFor = (kind: ExtKind): React.Dispatch<React.SetStateAction<AnyExt[]>> => {
     if (kind === 'skill') return setSkills as React.Dispatch<React.SetStateAction<AnyExt[]>>
     if (kind === 'mcp') return setMcp as React.Dispatch<React.SetStateAction<AnyExt[]>>

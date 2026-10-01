@@ -3073,3 +3073,297 @@ body.cf-resizing-y * {
   background: var(--bg-hover);
   color: var(--fg);
 }
+
+/* ============================ 机器人 tab（IM 远程通道） ============================ */
+/* 左列表行：复用 .cf-trow，图标位换成平台标识；副行为状态点 + 平台 + 区域。 */
+.bots-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.bots-addmenu__item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.bots-addmenu__item:disabled:hover {
+  background: transparent;
+}
+
+.bots-logo {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: #fff;
+  font-weight: 700;
+  line-height: 1;
+}
+/* 内置品牌图标：原图自带配色，不加底色、不裁圆角。 */
+.bots-logo--img {
+  border-radius: 0;
+  object-fit: contain;
+}
+.bots-logo--telegram {
+  background: #2aabee;
+}
+.bots-tag {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--fg-subtle);
+}
+.bots-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-subtle);
+}
+.bots-dot--connected {
+  background: var(--success);
+}
+.bots-dot--connecting {
+  background: var(--accent);
+}
+.bots-dot--error {
+  background: var(--danger);
+}
+
+/* 右详情：与任务 / 角色详情同宽的居中信息列。 */
+.bots-detail {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--space-6);
+}
+.bots-detail__head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.bots-detail__title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.bots-detail__name {
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bots-detail__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.bots-detail__state.is-connected {
+  color: var(--success);
+}
+.bots-detail__state.is-error {
+  color: var(--danger);
+}
+.bots-detail__sep {
+  color: var(--fg-subtle);
+}
+
+.bots-card {
+  margin-bottom: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+}
+.bots-card__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.bots-card__label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.bots-card__hint {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--fg-subtle);
+}
+.bots-card__empty {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.bots-usage {
+  margin: 6px 0 0;
+}
+.bots-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+.bots-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.bots-btn:hover {
+  background: var(--bg-hover);
+}
+
+/* 扫码弹框 */
+.cf-modal.bots-scanmodal {
+  max-width: 520px;
+  height: auto;
+}
+.bots-scanmodal__body {
+  padding: 4px 18px 18px;
+}
+.bots-scan {
+  display: flex;
+  gap: 16px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-inset);
+}
+.bots-scan__qr {
+  flex: none;
+  width: 168px;
+  height: 168px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+.bots-scan__qr img {
+  width: 156px;
+  height: 156px;
+  image-rendering: pixelated;
+}
+.bots-scan__placeholder {
+  color: #bbb;
+}
+.bots-scan__side {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.bots-scan__lead {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.bots-scan__code {
+  align-self: stretch;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+.bots-scan__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.bots-scan__status.is-error {
+  color: var(--danger);
+}
+.bots-spin {
+  animation: bots-spin 1s linear infinite;
+}
+@keyframes bots-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.bots-pair {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 10px;
+}
+.bots-pair__code {
+  padding: 6px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+.bots-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.bots-user + .bots-user {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.bots-user__id {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bots-user__at {
+  flex: 1;
+  color: var(--fg-subtle);
+}
+.bots-warn {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.bots-delete {
+  color: var(--danger);
+}
+.bots-pair__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
