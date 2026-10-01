@@ -1,117 +1,87 @@
+import * as lark from '@larksuiteoapi/node-sdk'
+
 /**
- * 飞书扫码创建机器人（设备授权式的应用注册）。
+ * 飞书扫码创建机器人：官方 SDK 的 registerApp（OAuth 2.0 设备授权，RFC 8628）。
+ * 文档：https://open.larkoffice.com/document/mcp_open_tools/integrating-agents-with-feishu/scan-to-create-an-app-in-one-click-nodejs
  *
- * 流程与飞书官方 OpenClaw 接入工具（@larksuite/openclaw-lark-tools）一致：
- *   init  → 确认支持 client_secret 方式
- *   begin → 拿到二维码链接（verification_uri_complete）与 device_code
- *   poll  → 用户在飞书 App 里扫码确认后，返回新应用的 App ID / Secret 与扫码人的 open_id
- * 创建出的是「个人智能体」类型的自建应用，机器人能力与消息事件（长连接）已预先配好，用户不必去开放平台。
- *
- * 注意：此接口未见公开文档（官方工具在用），返回字段以官方工具的用法为准；出错时把原始错误交给界面。
+ * 扫码 → 在飞书 App 的确认页里创建应用 → 拿到 App ID / Secret 与扫码人的 open_id。
+ * 飞书 / Lark（国际版）租户由 SDK 自动切换域名；取消、过期也由 SDK 统一处理。
  */
 
-const BASE = {
-  feishu: 'https://accounts.feishu.cn',
-  lark: 'https://accounts.larksuite.com'
-} as const
-
-type Domain = keyof typeof BASE
-
-async function call(domain: Domain, form: Record<string, string>): Promise<Record<string, unknown>> {
-  const res = await fetch(`${BASE[domain]}/oauth/v1/app/registration`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(form).toString(),
-    signal: AbortSignal.timeout(10_000)
-  })
-  // 轮询中的「还没扫 / 慢一点」也走非 2xx，错误信息在 JSON 里，统一按 JSON 读。
-  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>
-  if (!res.ok && typeof data.error !== 'string') throw new Error(`HTTP ${res.status}`)
-  return data
+/** 确认页预填的应用信息（用户仍可在页面上修改）。{user} 由飞书替换为扫码人的名字。 */
+const APP_PRESET = {
+  name: '{user}的 Deva',
+  desc: '在飞书里和电脑上的 Deva 对话：查看回复、审批计划、接收定时任务结果。'
 }
 
-export interface ScanBegin {
-  deviceCode: string
-  /** 二维码内容（飞书 App 扫码打开的链接）。 */
-  url: string
-  /** 用户码（部分版本返回，展示给用户核对）。 */
-  userCode?: string
-  intervalSec: number
-  expiresAt: number
-}
-
-export async function beginFeishuScan(): Promise<ScanBegin> {
-  const init = await call('feishu', { action: 'init' })
-  const methods = Array.isArray(init.supported_auth_methods) ? init.supported_auth_methods : []
-  if (!methods.includes('client_secret')) throw new Error('飞书暂不支持这种创建方式，请稍后再试。')
-  const r = await call('feishu', {
-    action: 'begin',
-    archetype: 'PersonalAgent',
-    auth_method: 'client_secret',
-    request_user_info: 'open_id'
-  })
-  const uri = typeof r.verification_uri_complete === 'string' ? r.verification_uri_complete : ''
-  const deviceCode = typeof r.device_code === 'string' ? r.device_code : ''
-  if (!uri || !deviceCode) throw new Error(`飞书没有返回二维码（${String(r.error ?? '未知错误')}）`)
-  const url = new URL(uri)
-  url.searchParams.set('from', 'onboard')
-  const expireIn = typeof r.expire_in === 'number' ? r.expire_in : 600
-  return {
-    deviceCode,
-    url: url.toString(),
-    userCode: typeof r.user_code === 'string' ? r.user_code : undefined,
-    intervalSec: typeof r.interval === 'number' && r.interval > 0 ? r.interval : 5,
-    expiresAt: Date.now() + expireIn * 1000
-  }
+/**
+ * 在平台默认模板之上追加的配置：显式声明 Deva 依赖的消息事件与卡片回调，
+ * 免得默认模板哪天不再包含它们（只能追加，平台未开放时整段被忽略、走默认流程）。
+ */
+const APP_ADDONS = {
+  events: { items: { tenant: ['im.message.receive_v1'] } },
+  callbacks: { items: ['card.action.trigger'] }
 }
 
 export type ScanOutcome =
-  | { kind: 'done'; appId: string; appSecret: string; openId?: string; domain: Domain }
+  | { kind: 'done'; appId: string; appSecret: string; openId?: string; domain: 'feishu' | 'lark' }
   | { kind: 'denied' }
   | { kind: 'expired' }
   | { kind: 'cancelled' }
   | { kind: 'error'; message: string }
 
-/** 轮询直到用户确认 / 拒绝 / 过期 / 被取消。 */
-export async function waitFeishuScan(begin: ScanBegin, isCancelled: () => boolean): Promise<ScanOutcome> {
-  let domain: Domain = 'feishu'
-  let interval = begin.intervalSec
-  const sleep = async (sec: number): Promise<void> => {
-    const until = Date.now() + sec * 1000
-    while (Date.now() < until && !isCancelled()) await new Promise((r) => setTimeout(r, 250))
-  }
-  while (Date.now() < begin.expiresAt) {
-    await sleep(interval)
-    if (isCancelled()) return { kind: 'cancelled' }
-    let r: Record<string, unknown>
-    try {
-      r = await call(domain, { action: 'poll', device_code: begin.deviceCode })
-    } catch {
-      continue // 网络抖动：下一轮再问
-    }
-    const user = (r.user_info && typeof r.user_info === 'object' ? r.user_info : {}) as Record<string, unknown>
-    // Lark（国际版）租户：换到国际域名重新取结果。
-    if (user.tenant_brand === 'lark' && domain === 'feishu') {
-      domain = 'lark'
-      continue
-    }
-    if (typeof r.client_id === 'string' && typeof r.client_secret === 'string')
-      return {
+export interface FeishuScan {
+  /** 二维码内容（飞书 App 扫码打开的链接）。 */
+  url: string
+  expiresAt: number
+  /** 扫码结果（永不 reject）。 */
+  outcome: Promise<ScanOutcome>
+  cancel(): void
+}
+
+/** 开始一次扫码：二维码就绪即返回；拿不到二维码则抛错。 */
+export async function startFeishuScan(): Promise<FeishuScan> {
+  const ac = new AbortController()
+  let onReady!: (info: { url: string; expireIn: number }) => void
+  const ready = new Promise<{ url: string; expireIn: number }>((r) => (onReady = r))
+
+  const outcome: Promise<ScanOutcome> = lark
+    .registerApp({
+      source: 'deva',
+      signal: ac.signal,
+      // 只新建：避免扫码人误选已有应用（其配置之后会被 Deva 的连接方式覆盖）。
+      createOnly: true,
+      appPreset: APP_PRESET,
+      addons: APP_ADDONS,
+      onQRCodeReady: onReady
+    })
+    .then(
+      (r): ScanOutcome => ({
         kind: 'done',
         appId: r.client_id,
         appSecret: r.client_secret,
-        openId: typeof user.open_id === 'string' ? user.open_id : undefined,
-        domain
+        openId: r.user_info?.open_id,
+        domain: r.user_info?.tenant_brand === 'lark' ? 'lark' : 'feishu'
+      }),
+      (e: { code?: string; message?: string; description?: string }): ScanOutcome => {
+        if (e?.code === 'access_denied') return { kind: 'denied' }
+        if (e?.code === 'expired_token') return { kind: 'expired' }
+        if (e?.code === 'abort') return { kind: 'cancelled' }
+        return { kind: 'error', message: e?.description || e?.message || String(e) }
       }
-    const err = typeof r.error === 'string' ? r.error : ''
-    if (err === 'authorization_pending' || !err) continue
-    if (err === 'slow_down') {
-      interval += 5
-      continue
-    }
-    if (err === 'access_denied') return { kind: 'denied' }
-    if (err === 'expired_token') return { kind: 'expired' }
-    return { kind: 'error', message: `${err}${r.error_description ? `：${String(r.error_description)}` : ''}` }
+    )
+
+  // 二维码就绪前就结束了（多为网络错误）：把原因抛给界面。
+  const info = await Promise.race([
+    ready,
+    outcome.then((o) => {
+      throw new Error(o.kind === 'error' ? o.message : '飞书没有返回二维码')
+    })
+  ])
+  return {
+    url: info.url,
+    expiresAt: Date.now() + info.expireIn * 1000,
+    outcome,
+    cancel: () => ac.abort()
   }
-  return { kind: 'expired' }
 }

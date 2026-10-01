@@ -3,7 +3,7 @@ import { randomInt } from 'node:crypto'
 import QRCode from 'qrcode'
 import { deleteSecret, getSecret, setSecret } from '../secrets'
 import { FeishuAdapter, fetchFeishuBotName } from './feishu'
-import { beginFeishuScan, waitFeishuScan } from './feishu-onboard'
+import { startFeishuScan } from './feishu-onboard'
 import {
   cancelPairCode,
   channelState,
@@ -82,10 +82,8 @@ async function launch(id: ChannelId): Promise<string | null> {
 
 // ───────── 扫码创建 ─────────
 
-interface Scan {
-  cancelled: boolean
-}
-const scans = new Map<string, Scan>()
+/** 进行中的扫码（scanId → 取消函数）。 */
+const scans = new Map<string, () => void>()
 
 export type ScanEvent =
   | { scanId: string; status: 'done'; botId: string }
@@ -119,17 +117,16 @@ export function registerRemoteIpc(getWindow: () => BrowserWindow | null): void {
       | { ok: false; error: string }
     > => {
       if (platform !== 'feishu') return { ok: false, error: '暂不支持这个平台。' }
-      let begin
+      let scan
       try {
-        begin = await beginFeishuScan()
+        scan = await startFeishuScan()
       } catch (e) {
         return { ok: false, error: `获取二维码失败：${(e as Error)?.message ?? e}` }
       }
       const scanId = genId('scan')
-      const scan: Scan = { cancelled: false }
-      scans.set(scanId, scan)
+      scans.set(scanId, scan.cancel)
       void (async () => {
-        const r = await waitFeishuScan(begin, () => scan.cancelled)
+        const r = await scan.outcome
         scans.delete(scanId)
         if (r.kind !== 'done') {
           send('remote:scan', r.kind === 'error' ? { scanId, status: 'error', error: r.message } : { scanId, status: r.kind })
@@ -145,7 +142,7 @@ export function registerRemoteIpc(getWindow: () => BrowserWindow | null): void {
         addBot({
           id: botId,
           platform: 'feishu',
-          name: name || '飞书机器人',
+          name: name || 'Deva',
           enabled: true,
           createdAt: Date.now(),
           replyMode: 'stream',
@@ -162,16 +159,14 @@ export function registerRemoteIpc(getWindow: () => BrowserWindow | null): void {
       return {
         ok: true,
         scanId,
-        qr: await QRCode.toDataURL(begin.url, { margin: 1, width: 360 }),
-        userCode: begin.userCode,
-        expiresAt: begin.expiresAt
+        qr: await QRCode.toDataURL(scan.url, { margin: 1, width: 360 }),
+        expiresAt: scan.expiresAt
       }
     }
   )
 
   ipcMain.handle('remote:scan-cancel', (_e, scanId: string): { ok: true } => {
-    const s = scans.get(scanId)
-    if (s) s.cancelled = true
+    scans.get(scanId)?.()
     return { ok: true }
   })
 
