@@ -454,6 +454,7 @@ function MountRequestCard({
  * 未决态可交互；decided 为终态、只读展示（重开对话按 plans 边车复原）。其中 cancelled = 这次审阅已随
  * 回合结束（中断 / 历史回填），主进程已无人接应——只展示不给按钮，免得留下点不动的「僵尸卡」。
  * onPlan 缺省 → 只读。
+ * 已决态默认**收起**正文（只留标题行 + 计划首行摘要），点标题行展开/收起，免得长计划在批准后继续占满对话。
  */
 function PlanReviewCard({
   block,
@@ -464,11 +465,41 @@ function PlanReviewCard({
 }): React.JSX.Element {
   const { t } = useI18n()
   const decided = block.decided
+  const [open, setOpen] = useState(false)
+  const showBody = !decided || open
+  // 收起态摘要：计划正文首个非空行，剥掉 Markdown 标题 / 列表 / 强调标记。
+  const summary = decided
+    ? (block.plan.split('\n').find((l) => l.trim()) ?? '')
+        .replace(/^\s*(#+|[-*+]|\d+[.)])\s*/, '')
+        .replace(/[*_`]/g, '')
+        .trim()
+    : ''
   return (
     <div className={decided ? 'msg__plan is-decided' : 'msg__plan'}>
-      <div className="msg__plan-head">
+      <div
+        className={decided ? 'msg__plan-head is-toggle' : 'msg__plan-head'}
+        role={decided ? 'button' : undefined}
+        tabIndex={decided ? 0 : undefined}
+        aria-expanded={decided ? open : undefined}
+        title={decided ? (open ? t('chat.plan.collapse') : t('chat.plan.expand')) : undefined}
+        onClick={decided ? () => setOpen((v) => !v) : undefined}
+        onKeyDown={
+          decided
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setOpen((v) => !v)
+                }
+              }
+            : undefined
+        }
+      >
+        {decided && (
+          <ChevronRight size={14} className={open ? 'msg__plan-caret is-open' : 'msg__plan-caret'} />
+        )}
         <ClipboardList size={14} />
         <span className="msg__plan-title">{t('chat.plan.cardTitle')}</span>
+        {decided && !open && summary && <span className="msg__plan-summary">{summary}</span>}
         {decided && (
           <span
             className={
@@ -483,9 +514,11 @@ function PlanReviewCard({
           </span>
         )}
       </div>
-      <div className="msg__plan-body">
-        <Markdown text={block.plan} />
-      </div>
+      {showBody && (
+        <div className="msg__plan-body">
+          <Markdown text={block.plan} />
+        </div>
+      )}
       {!decided && onPlan && (
         <div className="msg__plan-actions">
           <button

@@ -290,7 +290,9 @@ const zhCN: MessageTree = {
       keep: '继续完善',
       approved: '已批准',
       kept: '继续完善',
-      cancelled: '已取消'
+      cancelled: '已取消',
+      expand: '展开计划',
+      collapse: '收起计划'
     },
     mount: {
       cardTitle: '需要挂载工作区',
@@ -447,7 +449,9 @@ const zhCN: MessageTree = {
   // 定时任务 / 自动任务（确认名片 + 管理页）。执行零交互，一切授权在创建名片一次性议定。
   tasks: {
     cardTitle: '定时任务',
-    cardHint: '核对并授权后创建。任务将按日程自动执行，执行过程中不再打扰你——请在此确认它能用哪些能力。',
+    cardHint: '创建后按日程自动运行，执行中不会再打扰你。',
+    edit: '编辑',
+    collapse: '收起',
     fTitle: '标题',
     fTitlePlaceholder: '留空则自动取指令开头',
     fPrompt: '任务指令',
@@ -636,7 +640,7 @@ const zhCN: MessageTree = {
       createBranch: '新建分支…',
       createBranchTitle: '新建分支',
       newBranchName: '分支名称',
-      createBranchHint: '基于当前 HEAD 创建并切换到新分支，未提交的更改会一并带过去',
+      createBranchHint: '基于当前 HEAD 创建并切换到新分支',
       createBranchDo: '创建',
       doneCreateBranch: '已新建并切换到分支 {name}',
       commit: '提交',
@@ -1048,7 +1052,9 @@ const en: MessageTree = {
       keep: 'Keep planning',
       approved: 'Approved',
       kept: 'Kept planning',
-      cancelled: 'Cancelled'
+      cancelled: 'Cancelled',
+      expand: 'Show plan',
+      collapse: 'Hide plan'
     },
     mount: {
       cardTitle: 'Workspace needed',
@@ -1208,8 +1214,9 @@ const en: MessageTree = {
   // Scheduled / automated tasks (confirm card + manager). Execution is zero-interaction; all authority is settled in the create card.
   tasks: {
     cardTitle: 'Scheduled task',
-    cardHint:
-      'Review and authorize, then create. The task runs on its schedule without interrupting you — confirm here which capabilities it may use.',
+    cardHint: 'Runs on its schedule once created, without interrupting you.',
+    edit: 'Edit',
+    collapse: 'Collapse',
     fTitle: 'Title',
     fTitlePlaceholder: 'Leave blank to derive from the prompt',
     fPrompt: 'Task prompt',
@@ -1397,7 +1404,7 @@ const en: MessageTree = {
       createBranch: 'New branch…',
       createBranchTitle: 'New branch',
       newBranchName: 'Branch name',
-      createBranchHint: 'Created from the current HEAD and checked out; uncommitted changes come along',
+      createBranchHint: 'Created from the current HEAD and checked out',
       createBranchDo: 'Create',
       doneCreateBranch: 'Created and switched to {name}',
       commit: 'Commit',

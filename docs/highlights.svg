@@ -1,0 +1,331 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" width="960" height="540" font-family="'PingFang SC','Microsoft YaHei','Noto Sans CJK SC','Noto Sans SC',sans-serif">
+  <title>Deva 亮点演示：对话、多角色、子代理、代码回退、定时任务、手机回复</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6D28D9"/>
+      <stop offset="1" stop-color="#4F46E5"/>
+    </linearGradient>
+    <clipPath id="win"><rect x="40" y="36" width="880" height="404" rx="14"/></clipPath>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#1E1B4B" flood-opacity="0.35"/>
+    </filter>
+    <filter id="pop" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#111827" flood-opacity="0.18"/>
+    </filter>
+    <style>
+      text { dominant-baseline: auto; }
+      .mono { font-family: Consolas, 'SF Mono', Menlo, monospace; }
+      .sc, .hl, .pg, .a, .b, .c, .d, .e, .f1, .f2, .f3, .k1, .k2, .k3 {
+        animation-duration: 36s; animation-iteration-count: infinite;
+        animation-fill-mode: both; animation-timing-function: ease-out; animation-delay: 0s;
+      }
+      .sc, .hl { animation-name: show; }
+      .a { animation-name: inA; } .b { animation-name: inB; } .c { animation-name: inC; }
+      .d { animation-name: inD; } .e { animation-name: inE; }
+      .f1, .f2, .f3, .pg { transform-box: fill-box; transform-origin: 0 50%; animation-timing-function: linear; }
+      .f1 { animation-name: f1; } .f2 { animation-name: f2; } .f3 { animation-name: f3; }
+      .k1 { animation-name: k1; } .k2 { animation-name: k2; } .k3 { animation-name: k3; }
+      .pg { animation-name: pg; }
+      .s2, .s2 *, .t2, .t2 * { animation-delay: 6s; }
+      .s3, .s3 *, .t3, .t3 * { animation-delay: 12s; }
+      .s4, .s4 *, .t4, .t4 * { animation-delay: 18s; }
+      .s5, .s5 *, .t5, .t5 * { animation-delay: 24s; }
+      .s6, .s6 *, .t6, .t6 * { animation-delay: 30s; }
+      @keyframes show { 0% { opacity: 0; } 1% { opacity: 1; } 15.6% { opacity: 1; } 16.6%, 100% { opacity: 0; } }
+      @keyframes inA { 0%, 1% { opacity: 0; transform: translateY(8px); } 2.5%, 100% { opacity: 1; transform: translateY(0); } }
+      @keyframes inB { 0%, 3.5% { opacity: 0; transform: translateY(8px); } 5%, 100% { opacity: 1; transform: translateY(0); } }
+      @keyframes inC { 0%, 6% { opacity: 0; transform: translateY(8px); } 7.5%, 100% { opacity: 1; transform: translateY(0); } }
+      @keyframes inD { 0%, 9.5% { opacity: 0; transform: translateY(8px); } 11%, 100% { opacity: 1; transform: translateY(0); } }
+      @keyframes inE { 0%, 12% { opacity: 0; transform: translateY(8px); } 13.5%, 100% { opacity: 1; transform: translateY(0); } }
+      @keyframes f1 { 0%, 5% { transform: scaleX(0); } 7.5%, 100% { transform: scaleX(1); } }
+      @keyframes f2 { 0%, 5% { transform: scaleX(0); } 9%, 100% { transform: scaleX(1); } }
+      @keyframes f3 { 0%, 5% { transform: scaleX(0); } 10.5%, 100% { transform: scaleX(1); } }
+      @keyframes k1 { 0%, 7.5% { opacity: 0; } 8.3%, 100% { opacity: 1; } }
+      @keyframes k2 { 0%, 9% { opacity: 0; } 9.8%, 100% { opacity: 1; } }
+      @keyframes k3 { 0%, 10.5% { opacity: 0; } 11.3%, 100% { opacity: 1; } }
+      @keyframes pg { 0% { transform: scaleX(0); } 16.6%, 100% { transform: scaleX(1); } }
+      @media (prefers-reduced-motion: reduce) {
+        .sc, .hl, .pg, .a, .b, .c, .d, .e, .f1, .f2, .f3, .k1, .k2, .k3 { animation-duration: 120s; }
+      }
+    </style>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="960" height="540" rx="20" fill="url(#bg)"/>
+
+  <!-- 窗口框架 -->
+  <rect x="40" y="36" width="880" height="404" rx="14" fill="#FFFFFF" filter="url(#shadow)"/>
+  <g clip-path="url(#win)">
+    <rect x="40" y="36" width="880" height="32" fill="#F9FAFB"/>
+    <rect x="40" y="68" width="56" height="372" fill="#F5F3FF"/>
+    <line x1="40" y1="68" x2="920" y2="68" stroke="#EDE9FE"/>
+    <line x1="96" y1="104" x2="920" y2="104" stroke="#F3F4F6"/>
+  </g>
+  <circle cx="62" cy="52" r="5" fill="#F87171"/>
+  <circle cx="80" cy="52" r="5" fill="#FBBF24"/>
+  <circle cx="98" cy="52" r="5" fill="#34D399"/>
+  <text x="480" y="56" text-anchor="middle" font-size="12" fill="#6B7280">Deva</text>
+
+  <!-- 左侧角色栏 -->
+  <circle cx="68" cy="100" r="19" fill="none" stroke="#6D28D9" stroke-width="2"/>
+  <circle cx="68" cy="100" r="15" fill="#6D28D9"/>
+  <text x="68" y="105" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">D</text>
+  <circle cx="68" cy="144" r="15" fill="#DB2777"/>
+  <text x="68" y="149" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">码</text>
+
+  <!-- 输入框 -->
+  <rect x="116" y="396" width="784" height="32" rx="8" fill="#FFFFFF" stroke="#E5E7EB"/>
+  <text x="132" y="417" font-size="12" fill="#9CA3AF">给 Deva 发消息，或输入 / 调用命令</text>
+
+  <!-- 场景 1：All in Chat -->
+  <g class="sc s1">
+    <text x="116" y="91" font-size="14" font-weight="700" fill="#111827">All in Chat · 聊天、建技能、接 MCP，都在对话里</text>
+    <g class="a">
+      <rect x="680" y="120" width="220" height="34" rx="12" fill="#6D28D9"/>
+      <text x="886" y="142" text-anchor="end" font-size="13" fill="#FFFFFF">怎么让 Python 列表按日期排序？</text>
+    </g>
+    <g class="b">
+      <circle cx="128" cy="180" r="12" fill="#6D28D9"/>
+      <text x="128" y="184" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">D</text>
+      <rect x="152" y="166" width="270" height="54" rx="12" fill="#F3F4F6"/>
+      <text x="166" y="187" font-size="13" fill="#111827">用 <tspan class="mono" font-size="12">sort</tspan> 的 <tspan class="mono" font-size="12">key</tspan> 参数就行：</text>
+      <text x="166" y="208" class="mono" font-size="12" fill="#6D28D9">items.sort(key=lambda x: x.date)</text>
+    </g>
+    <g class="c">
+      <rect x="596" y="232" width="304" height="34" rx="12" fill="#6D28D9"/>
+      <text x="886" y="254" text-anchor="end" font-size="13" fill="#FFFFFF">把「中文注释」做成技能，再接个 GitHub MCP</text>
+    </g>
+    <g class="d">
+      <circle cx="128" cy="292" r="12" fill="#6D28D9"/>
+      <text x="128" y="296" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">D</text>
+      <rect x="152" y="278" width="300" height="96" rx="10" fill="#FFFFFF" stroke="#DDD6FE"/>
+      <rect x="166" y="290" width="40" height="20" rx="6" fill="#EDE9FE"/>
+      <text x="186" y="304" text-anchor="middle" font-size="11" font-weight="700" fill="#6D28D9">技能</text>
+      <text x="216" y="305" class="mono" font-size="13" font-weight="700" fill="#111827">/zh-comment</text>
+      <text x="166" y="334" font-size="12" fill="#6B7280">写代码时统一用中文注释</text>
+      <rect x="366" y="340" width="74" height="24" rx="6" fill="#6D28D9"/>
+      <text x="403" y="356" text-anchor="middle" font-size="12" fill="#FFFFFF">确认添加</text>
+    </g>
+    <g class="e">
+      <rect x="464" y="278" width="300" height="96" rx="10" fill="#FFFFFF" stroke="#C7D2FE"/>
+      <rect x="478" y="290" width="44" height="20" rx="6" fill="#E0E7FF"/>
+      <text x="500" y="304" text-anchor="middle" font-size="11" font-weight="700" fill="#4F46E5">MCP</text>
+      <text x="532" y="305" class="mono" font-size="13" font-weight="700" fill="#111827">github</text>
+      <text x="478" y="334" font-size="12" fill="#6B7280">仓库、Issue、PR 都能直接操作</text>
+      <circle cx="483" cy="355" r="4" fill="#10B981"/>
+      <text x="494" y="359" font-size="12" fill="#059669">已连接 · 26 个工具</text>
+    </g>
+  </g>
+
+  <!-- 场景 2：多角色 -->
+  <g class="sc s2">
+    <text x="116" y="91" font-size="14" font-weight="700" fill="#111827">多角色 · 各有所长</text>
+    <g class="a">
+      <rect x="116" y="120" width="230" height="112" rx="12" fill="#FFFFFF" stroke="#DDD6FE"/>
+      <circle cx="146" cy="152" r="16" fill="#6D28D9"/>
+      <text x="146" y="157" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">D</text>
+      <text x="172" y="157" font-size="14" font-weight="700" fill="#111827">Deva</text>
+      <text x="132" y="192" font-size="12" fill="#374151">全能工作助手</text>
+      <text x="132" y="212" font-size="12" fill="#6B7280">编程 · 写作 · 查资料 · 跑命令</text>
+      <rect x="360" y="120" width="230" height="112" rx="12" fill="#FFFFFF" stroke="#FBCFE8"/>
+      <circle cx="390" cy="152" r="16" fill="#DB2777"/>
+      <text x="390" y="157" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">码</text>
+      <text x="416" y="157" font-size="14" font-weight="700" fill="#111827">小码酱</text>
+      <text x="376" y="192" font-size="12" fill="#374151">安全研究 / 逆向工程</text>
+      <text x="376" y="212" font-size="12" fill="#6B7280">硬核技术宅风格</text>
+    </g>
+    <g class="b">
+      <rect x="636" y="248" width="264" height="34" rx="12" fill="#6D28D9"/>
+      <text x="886" y="270" text-anchor="end" font-size="13" fill="#FFFFFF">帮我建一个写周报的角色，语气正式一点</text>
+    </g>
+    <g class="c">
+      <rect x="604" y="120" width="230" height="112" rx="12" fill="#FFFBEB" stroke="#FCD34D"/>
+      <circle cx="634" cy="152" r="16" fill="#D97706"/>
+      <text x="634" y="157" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">周</text>
+      <text x="660" y="157" font-size="14" font-weight="700" fill="#111827">周报助手</text>
+      <rect x="784" y="140" width="36" height="20" rx="10" fill="#059669"/>
+      <text x="802" y="154" text-anchor="middle" font-size="11" fill="#FFFFFF">新</text>
+      <text x="620" y="192" font-size="12" fill="#374151">语气正式 · 条理清晰</text>
+      <text x="620" y="212" font-size="12" fill="#6B7280">擅长写周报、做总结</text>
+      <circle cx="68" cy="188" r="15" fill="#D97706"/>
+      <text x="68" y="193" text-anchor="middle" font-size="12" font-weight="700" fill="#FFFFFF">周</text>
+    </g>
+    <g class="d">
+      <circle cx="128" cy="313" r="12" fill="#6D28D9"/>
+      <text x="128" y="317" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">D</text>
+      <rect x="152" y="298" width="240" height="34" rx="12" fill="#F3F4F6"/>
+      <text x="166" y="320" font-size="13" fill="#111827">角色名片已生成，确认后即可使用</text>
+    </g>
+  </g>
+
+  <!-- 场景 3：子代理 -->
+  <g class="sc s3">
+    <text x="116" y="91" font-size="14" font-weight="700" fill="#111827">子代理 · 自动派发多 Agent 并行</text>
+    <g class="a">
+      <rect x="674" y="120" width="226" height="34" rx="12" fill="#6D28D9"/>
+      <text x="886" y="142" text-anchor="end" font-size="13" fill="#FFFFFF">梳理鉴权模块，顺便出个改造方案</text>
+    </g>
+    <g class="b">
+      <circle cx="128" cy="183" r="12" fill="#6D28D9"/>
+      <text x="128" y="187" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">D</text>
+      <text x="152" y="188" font-size="13" fill="#111827">拆成 3 个子任务，自动派发子代理并行处理：</text>
+      <rect x="152" y="202" width="240" height="92" rx="10" fill="#FFFFFF" stroke="#DDD6FE"/>
+      <rect x="166" y="216" width="64" height="20" rx="6" fill="#EDE9FE"/>
+      <text x="198" y="230" text-anchor="middle" font-size="11" font-weight="700" fill="#6D28D9">Explore</text>
+      <text x="166" y="258" font-size="13" fill="#111827">检索鉴权相关文件</text>
+      <rect x="166" y="272" width="164" height="6" rx="3" fill="#E5E7EB"/>
+      <rect class="f1" x="166" y="272" width="164" height="6" rx="3" fill="#7C3AED"/>
+      <text class="k1" x="378" y="279" text-anchor="end" font-size="12" fill="#059669">完成 ✓</text>
+      <rect x="404" y="202" width="240" height="92" rx="10" fill="#FFFFFF" stroke="#DDD6FE"/>
+      <rect x="418" y="216" width="64" height="20" rx="6" fill="#EDE9FE"/>
+      <text x="450" y="230" text-anchor="middle" font-size="11" font-weight="700" fill="#6D28D9">Explore</text>
+      <text x="418" y="258" font-size="13" fill="#111827">定位 token 校验逻辑</text>
+      <rect x="418" y="272" width="164" height="6" rx="3" fill="#E5E7EB"/>
+      <rect class="f2" x="418" y="272" width="164" height="6" rx="3" fill="#7C3AED"/>
+      <text class="k2" x="630" y="279" text-anchor="end" font-size="12" fill="#059669">完成 ✓</text>
+      <rect x="656" y="202" width="240" height="92" rx="10" fill="#FFFFFF" stroke="#DDD6FE"/>
+      <rect x="670" y="216" width="44" height="20" rx="6" fill="#E0E7FF"/>
+      <text x="692" y="230" text-anchor="middle" font-size="11" font-weight="700" fill="#4F46E5">Plan</text>
+      <text x="670" y="258" font-size="13" fill="#111827">调研并写出改造方案</text>
+      <rect x="670" y="272" width="164" height="6" rx="3" fill="#E5E7EB"/>
+      <rect class="f3" x="670" y="272" width="164" height="6" rx="3" fill="#4F46E5"/>
+      <text class="k3" x="882" y="279" text-anchor="end" font-size="12" fill="#059669">完成 ✓</text>
+    </g>
+    <g class="e">
+      <rect x="152" y="308" width="390" height="34" rx="12" fill="#F3F4F6"/>
+      <text x="166" y="330" font-size="13" fill="#111827">汇总：鉴权入口共 5 处，改造方案已整理好，等你批准</text>
+    </g>
+  </g>
+
+  <!-- 场景 4：代码回退 -->
+  <g class="sc s4">
+    <text x="116" y="91" font-size="14" font-weight="700" fill="#111827"><tspan class="mono">/rewind</tspan> · 回到哪一轮之前？</text>
+    <g class="a">
+      <rect x="116" y="118" width="440" height="150" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+    </g>
+    <g class="b">
+      <rect x="124" y="172" width="424" height="40" rx="8" fill="#EDE9FE" stroke="#A78BFA"/>
+    </g>
+    <g class="a">
+      <text x="140" y="151" font-size="13" fill="#111827">第 3 轮 · 重构 <tspan class="mono" font-size="12">login.ts</tspan></text>
+      <text x="536" y="151" text-anchor="end" class="mono" font-size="12" fill="#6B7280">+18 −42</text>
+      <text x="140" y="197" font-size="13" fill="#111827">第 2 轮 · 加上 token 刷新</text>
+      <text x="536" y="197" text-anchor="end" class="mono" font-size="12" fill="#6B7280">+36 −4</text>
+      <text x="140" y="243" font-size="13" fill="#111827">第 1 轮 · 读取鉴权模块</text>
+      <text x="536" y="243" text-anchor="end" font-size="12" fill="#6B7280">只读</text>
+    </g>
+    <g class="c">
+      <rect x="576" y="118" width="324" height="150" rx="12" fill="#FFFFFF" stroke="#E5E7EB"/>
+      <text x="592" y="146" font-size="13" font-weight="700" fill="#111827">恢复什么？</text>
+      <circle cx="598" cy="174" r="6" fill="none" stroke="#9CA3AF" stroke-width="1.5"/>
+      <text x="614" y="179" font-size="13" fill="#374151">只恢复代码</text>
+      <circle cx="598" cy="204" r="6" fill="none" stroke="#9CA3AF" stroke-width="1.5"/>
+      <text x="614" y="209" font-size="13" fill="#374151">只恢复对话</text>
+      <rect x="584" y="220" width="308" height="34" rx="8" fill="#F5F3FF"/>
+      <circle cx="598" cy="237" r="6" fill="none" stroke="#6D28D9" stroke-width="1.5"/>
+      <circle cx="598" cy="237" r="3" fill="#6D28D9"/>
+      <text x="614" y="242" font-size="13" font-weight="700" fill="#6D28D9">代码和对话都恢复</text>
+    </g>
+    <g class="d">
+      <rect x="116" y="284" width="784" height="44" rx="10" fill="#ECFDF5" stroke="#A7F3D0"/>
+      <text x="136" y="311" font-size="13" fill="#047857">✓ 已回到第 2 轮之前，<tspan class="mono" font-size="12">login.ts</tspan> 等 3 个文件已还原</text>
+      <text x="884" y="311" text-anchor="end" font-size="13" font-weight="700" fill="#6D28D9">撤销</text>
+    </g>
+  </g>
+
+  <!-- 场景 5：定时任务 -->
+  <g class="sc s5">
+    <text x="116" y="91" font-size="14" font-weight="700" fill="#111827">定时任务 · 一句话就建好</text>
+    <g class="a">
+      <rect x="646" y="120" width="254" height="34" rx="12" fill="#6D28D9"/>
+      <text x="886" y="142" text-anchor="end" font-size="13" fill="#FFFFFF">每天早上 9 点把昨天的提交整理成日报</text>
+    </g>
+    <g class="b">
+      <circle cx="128" cy="186" r="12" fill="#6D28D9"/>
+      <text x="128" y="190" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">D</text>
+      <rect x="152" y="172" width="360" height="128" rx="10" fill="#FFFFFF" stroke="#DDD6FE"/>
+      <text x="168" y="198" font-size="14" font-weight="700" fill="#111827">新建定时任务</text>
+      <text x="168" y="224" font-size="12" fill="#9CA3AF">名称</text>
+      <text x="212" y="224" font-size="13" fill="#111827">日报整理</text>
+      <text x="168" y="248" font-size="12" fill="#9CA3AF">日程</text>
+      <text x="212" y="248" font-size="13" fill="#111827">每天 09:00</text>
+      <text x="168" y="272" font-size="12" fill="#9CA3AF">角色</text>
+      <text x="212" y="272" font-size="13" fill="#111827">Deva · 跟随当前模型</text>
+      <rect x="420" y="262" width="78" height="26" rx="6" fill="#6D28D9"/>
+      <text x="459" y="279" text-anchor="middle" font-size="12" fill="#FFFFFF">确认创建</text>
+    </g>
+    <g class="c">
+      <rect x="152" y="314" width="240" height="34" rx="12" fill="#F3F4F6"/>
+      <text x="166" y="336" font-size="13" fill="#111827">已创建，明早 9:00 自动运行</text>
+    </g>
+    <g class="d">
+      <rect x="588" y="186" width="308" height="76" rx="12" fill="#FFFFFF" stroke="#E5E7EB" filter="url(#pop)"/>
+      <rect x="604" y="202" width="28" height="28" rx="7" fill="#6D28D9"/>
+      <text x="618" y="221" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">D</text>
+      <text x="644" y="214" font-size="13" font-weight="700" fill="#111827">定时任务已完成</text>
+      <text x="884" y="214" text-anchor="end" font-size="11" fill="#9CA3AF">09:00</text>
+      <text x="644" y="238" font-size="12" fill="#6B7280">日报整理：昨天 12 次提交已汇总</text>
+    </g>
+  </g>
+
+  <!-- 场景 6：手机回复 -->
+  <g class="sc s6">
+    <text x="116" y="91" font-size="14" font-weight="700" fill="#111827">手机回复 · 飞书里接着聊</text>
+    <rect x="716" y="110" width="172" height="280" rx="22" fill="#111827"/>
+    <rect x="724" y="118" width="156" height="264" rx="16" fill="#F9FAFB"/>
+    <text x="802" y="140" text-anchor="middle" font-size="12" font-weight="700" fill="#111827">Deva 机器人</text>
+    <line x1="724" y1="150" x2="880" y2="150" stroke="#E5E7EB"/>
+    <g class="a">
+      <rect x="762" y="162" width="108" height="28" rx="10" fill="#3370FF"/>
+      <text x="860" y="181" text-anchor="end" font-size="12" fill="#FFFFFF">帮我跑一下测试</text>
+    </g>
+    <g class="b">
+      <rect x="572" y="120" width="118" height="34" rx="12" fill="#6D28D9"/>
+      <text x="676" y="142" text-anchor="end" font-size="13" fill="#FFFFFF">帮我跑一下测试</text>
+      <rect x="502" y="128" width="60" height="18" rx="9" fill="#DBEAFE"/>
+      <text x="532" y="141" text-anchor="middle" font-size="11" fill="#1D4ED8">来自飞书</text>
+    </g>
+    <g class="c">
+      <circle cx="128" cy="186" r="12" fill="#6D28D9"/>
+      <text x="128" y="190" text-anchor="middle" font-size="11" font-weight="700" fill="#FFFFFF">D</text>
+      <rect x="152" y="172" width="360" height="58" rx="8" fill="#111827"/>
+      <text x="168" y="196" class="mono" font-size="12" fill="#A7F3D0">$ pnpm test</text>
+      <text x="168" y="217" class="mono" font-size="12" fill="#9CA3AF">✓ 42 passed (3.2s)</text>
+    </g>
+    <g class="d">
+      <rect x="152" y="244" width="220" height="34" rx="12" fill="#F3F4F6"/>
+      <text x="166" y="266" font-size="13" fill="#111827">测试全部通过 42/42 ✓</text>
+      <rect x="734" y="200" width="128" height="46" rx="10" fill="#FFFFFF" stroke="#E5E7EB"/>
+      <text x="746" y="219" font-size="12" fill="#111827">测试全部通过</text>
+      <text x="746" y="236" font-size="12" fill="#111827">42/42 ✓</text>
+      <text x="802" y="368" text-anchor="middle" font-size="10" fill="#9CA3AF">电脑上的对话已同步</text>
+    </g>
+  </g>
+
+  <!-- 底部标签条 -->
+  <g font-size="13" text-anchor="middle">
+    <g fill="#FFFFFF" fill-opacity="0.14">
+      <rect x="52" y="458" width="136" height="34" rx="17"/>
+      <rect x="196" y="458" width="136" height="34" rx="17"/>
+      <rect x="340" y="458" width="136" height="34" rx="17"/>
+      <rect x="484" y="458" width="136" height="34" rx="17"/>
+      <rect x="628" y="458" width="136" height="34" rx="17"/>
+      <rect x="772" y="458" width="136" height="34" rx="17"/>
+    </g>
+    <g fill="#FFFFFF" fill-opacity="0.8">
+      <text x="120" y="480">All in Chat</text>
+      <text x="264" y="480">多角色</text>
+      <text x="408" y="480">子代理</text>
+      <text x="552" y="480">代码回退</text>
+      <text x="696" y="480">定时任务</text>
+      <text x="840" y="480">手机回复</text>
+    </g>
+    <g class="hl t1"><rect x="52" y="458" width="136" height="34" rx="17" fill="#FFFFFF"/><text x="120" y="480" font-weight="700" fill="#6D28D9">All in Chat</text><rect class="pg" x="72" y="486" width="96" height="2" rx="1" fill="#C4B5FD"/></g>
+    <g class="hl t2"><rect x="196" y="458" width="136" height="34" rx="17" fill="#FFFFFF"/><text x="264" y="480" font-weight="700" fill="#6D28D9">多角色</text><rect class="pg" x="216" y="486" width="96" height="2" rx="1" fill="#C4B5FD"/></g>
+    <g class="hl t3"><rect x="340" y="458" width="136" height="34" rx="17" fill="#FFFFFF"/><text x="408" y="480" font-weight="700" fill="#6D28D9">子代理</text><rect class="pg" x="360" y="486" width="96" height="2" rx="1" fill="#C4B5FD"/></g>
+    <g class="hl t4"><rect x="484" y="458" width="136" height="34" rx="17" fill="#FFFFFF"/><text x="552" y="480" font-weight="700" fill="#6D28D9">代码回退</text><rect class="pg" x="504" y="486" width="96" height="2" rx="1" fill="#C4B5FD"/></g>
+    <g class="hl t5"><rect x="628" y="458" width="136" height="34" rx="17" fill="#FFFFFF"/><text x="696" y="480" font-weight="700" fill="#6D28D9">定时任务</text><rect class="pg" x="648" y="486" width="96" height="2" rx="1" fill="#C4B5FD"/></g>
+    <g class="hl t6"><rect x="772" y="458" width="136" height="34" rx="17" fill="#FFFFFF"/><text x="840" y="480" font-weight="700" fill="#6D28D9">手机回复</text><rect class="pg" x="792" y="486" width="96" height="2" rx="1" fill="#C4B5FD"/></g>
+  </g>
+  <text x="480" y="522" text-anchor="middle" font-size="12" fill="#FFFFFF" fill-opacity="0.7">Deva · 对话优先的桌面 AI 助手</text>
+</svg>

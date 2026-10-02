@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarClock, Check, AlertTriangle } from 'lucide-react'
+import { CalendarClock, Check, AlertTriangle, Pencil, ChevronUp } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useChat, type ChatBlock } from '../../store/chat'
+import { useExtensions } from '../../store/extensions'
+import { useModels } from '../../store/models'
 import type { TaskCreateInput, TaskSchedule, PreviewScheduleResult, TaskRecord } from '../../../../preload'
 import { ScheduleEditor } from './ScheduleEditor'
 import { TaskModelSelect, TaskPersonaSelect } from './TaskPickers'
@@ -14,7 +16,8 @@ import { TaskModelSelect, TaskPersonaSelect } from './TaskPickers'
  * 工具全放行（含 skill/mcp）、通知固定开启，唯凭据/密钥目录与版本库内部 .git与危险命令由密封策略静默拒绝——
  * 故名片不再有类型/写入根/工具白名单/通知开关。
  *
- * pending → 完整编辑表单；created/dismissed → 紧凑终态（编辑器卸载，表单态自然丢弃）。
+ * pending → 默认**摘要卡**（标题 + 日程/下次/角色/模型一行 + 指令单行省略，一键创建）；点「编辑」原地展开
+ * 完整编辑表单，日程无效 / 指令为空 / 创建失败时自动展开。created/dismissed → 紧凑终态（编辑器卸载，表单态自然丢弃）。
  * 日程一栏整块交给 ./ScheduleEditor（与任务编辑弹窗共用同一控件，cron 反解/拼装再下沉 ./schedule 单一真源）。
  */
 
@@ -121,7 +124,7 @@ function TaskTerminalCard({
   )
 }
 
-/** 待决态：完整可编辑授权信封。 */
+/** 待决态：摘要卡 ⇄ 完整可编辑授权信封（表单态在本组件，收起不丢改动）。 */
 function TaskEditor({
   block
 }: {
@@ -129,6 +132,8 @@ function TaskEditor({
 }): React.JSX.Element {
   const { t, locale } = useI18n()
   const { resolveAutotask, currentBinding } = useChat()
+  const { personas } = useExtensions()
+  const { providers } = useModels()
 
   const { draft } = block
 
@@ -141,6 +146,24 @@ function TaskEditor({
 
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // 摘要 / 展开编辑：指令为空的草稿直接展开（摘要态无从补全）。
+  const [editing, setEditing] = useState(() => !draft.prompt.trim())
+
+  // 摘要态不挂 TaskPersonaSelect，故在此复刻其「null → 首个已启用角色」兜底，保证任务始终带具体角色。
+  const enabledPersonas = useMemo(() => personas.filter((p) => p.enabled), [personas])
+  useEffect(() => {
+    if (personaId == null && enabledPersonas.length > 0) setPersonaId(enabledPersonas[0].id)
+  }, [personaId, enabledPersonas])
+  const personaName =
+    enabledPersonas.find((p) => p.id === personaId)?.name ?? t('tasks.personaNone')
+  const modelName = useMemo(() => {
+    const idx = modelRef ? modelRef.indexOf(':') : -1
+    if (!modelRef || idx <= 0) return t('tasks.modelDefault')
+    const prov = providers.find((x) => x.id === modelRef.slice(0, idx))
+    return (
+      prov?.models.find((m) => m.id === modelRef.slice(idx + 1))?.name ?? t('tasks.modelDefault')
+    )
+  }, [modelRef, providers, t])
 
   // 创建时捕获的时区：草稿带则用（模型建议），否则本地时区。
   const tz = useMemo(
@@ -176,8 +199,24 @@ function TaskEditor({
       ? t('tasks.previewNever')
       : new Date(ms).toLocaleString(locale === 'zh-CN' ? 'zh-CN' : 'en-US')
 
+  // 摘要行用短格式（月/日 时:分），完整格式留给展开态的预览条。
+  const nextShort = (ms: number | null): string =>
+    ms == null
+      ? t('tasks.previewNever')
+      : new Date(ms).toLocaleString(locale === 'zh-CN' ? 'zh-CN' : 'en-US', {
+          month: 'numeric',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })
+
   const scheduleInvalid = preview != null && !preview.ok
   const canConfirm = !busy && prompt.trim().length > 0 && !scheduleInvalid
+
+  // 草稿日程无效 / 创建失败：自动展开到编辑态，问题字段直接可见可改。
+  useEffect(() => {
+    if (scheduleInvalid || err) setEditing(true)
+  }, [scheduleInvalid, err])
 
   const confirm = async (): Promise<void> => {
     if (!canConfirm) return
@@ -205,6 +244,47 @@ function TaskEditor({
     setBusy(false)
   }
 
+  const actions = (
+    <div className="autotaskcard__actions">
+      <button className="btn btn--sm" disabled={busy} onClick={dismiss}>
+        {t('tasks.dismiss')}
+      </button>
+      <button className="btn btn--primary btn--sm" disabled={!canConfirm} onClick={confirm}>
+        <Check size={13} /> {t('tasks.confirm')}
+      </button>
+    </div>
+  )
+
+  if (!editing) {
+    const meta = [
+      preview && preview.ok
+        ? `${preview.description} · ${t('tasks.previewNext')} ${nextShort(preview.nextRunAt)}`
+        : '…',
+      personaName,
+      modelName
+    ].join(' · ')
+    return (
+      <div className="autotaskcard autotaskcard--summary">
+        <span className="autotaskcard__head-icon">
+          <CalendarClock size={15} />
+        </span>
+        <div className="autotaskcard__sum-body">
+          <div className="autotaskcard__sum-title">{title.trim() || t('tasks.cardTitle')}</div>
+          <div className="autotaskcard__sum-meta">{meta}</div>
+          <div className="autotaskcard__sum-prompt" title={prompt}>
+            {prompt}
+          </div>
+        </div>
+        <div className="autotaskcard__sum-side">
+          <button className="btn btn--ghost btn--sm" disabled={busy} onClick={() => setEditing(true)}>
+            <Pencil size={12} /> {t('tasks.edit')}
+          </button>
+          {actions}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="autotaskcard autotaskcard--edit">
       <div className="autotaskcard__head">
@@ -212,6 +292,13 @@ function TaskEditor({
           <CalendarClock size={15} />
         </span>
         {t('tasks.cardTitle')}
+        <button
+          className="btn btn--ghost btn--sm autotaskcard__collapse"
+          disabled={busy}
+          onClick={() => setEditing(false)}
+        >
+          <ChevronUp size={13} /> {t('tasks.collapse')}
+        </button>
       </div>
       <div className="autotaskcard__hint">{t('tasks.cardHint')}</div>
 
@@ -229,7 +316,8 @@ function TaskEditor({
       {/* 日程 */}
       <div className="autotaskcard__field">
         <span className="autotaskcard__label">{t('tasks.fSchedule')}</span>
-        <ScheduleEditor initial={draft.schedule} tz={tz} onChange={setSchedule} />
+        {/* 收起再展开会重挂编辑器：以当前日程为初值，保留已做的改动。 */}
+        <ScheduleEditor initial={schedule} tz={tz} onChange={setSchedule} />
 
         {/* 日程预览：人读摘要 + 下次触发；无效即时提示。 */}
         <div className={`autotaskcard__preview${scheduleInvalid ? ' is-invalid' : ''}`}>
@@ -272,14 +360,7 @@ function TaskEditor({
         </div>
       )}
 
-      <div className="autotaskcard__actions">
-        <button className="btn btn--sm" disabled={busy} onClick={dismiss}>
-          {t('tasks.dismiss')}
-        </button>
-        <button className="btn btn--primary btn--sm" disabled={!canConfirm} onClick={confirm}>
-          <Check size={13} /> {t('tasks.confirm')}
-        </button>
-      </div>
+      {actions}
     </div>
   )
 }

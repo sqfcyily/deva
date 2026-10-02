@@ -2140,6 +2140,30 @@ textarea {
 }
 .msg__plan-title {
   color: var(--fg);
+  flex-shrink: 0;
+}
+/* 已决态标题行可点：展开 / 收起计划正文；收起时标题行即卡片末元素，去掉下边距。 */
+.msg__plan-head.is-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.msg__plan-head:last-child {
+  margin-bottom: 0;
+}
+.msg__plan-caret {
+  transition: transform 0.15s ease;
+}
+.msg__plan-caret.is-open {
+  transform: rotate(90deg);
+}
+.msg__plan-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--fg-muted);
 }
 /* 状态徽标（已批准 / 继续完善）：右对齐、弱化观感。 */
 .msg__plan-badge {
@@ -4617,6 +4641,55 @@ select.sched__ctl {
   justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-4);
+}
+/* pending 摘要态：图标 + 三行（标题 / 日程·下次·角色·模型 / 指令单行省略）+ 右侧操作。 */
+.autotaskcard--summary {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.autotaskcard--summary .autotaskcard__head-icon {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.autotaskcard__sum-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.autotaskcard__sum-title {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.autotaskcard__sum-meta {
+  color: var(--accent);
+  font-size: 12px;
+}
+.autotaskcard__sum-prompt {
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.autotaskcard__sum-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.autotaskcard__sum-side .autotaskcard__actions {
+  margin-top: 0;
+}
+.autotaskcard__collapse {
+  margin-left: auto;
+  font-weight: 400;
 }
 /* created / dismissed：紧凑终态行（编辑器已卸载）。 */
 .autotaskcard--created,
