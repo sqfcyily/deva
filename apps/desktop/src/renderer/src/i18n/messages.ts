@@ -573,16 +573,6 @@ const zhCN: MessageTree = {
       revealOther: '在文件管理器中打开',
       revealFailed: '无法打开该文件夹'
     },
-    // 项目私有记忆面板（工作区菜单打开）
-    projMem: {
-      open: '项目记忆',
-      title: '项目记忆',
-      titleOf: '项目记忆 · {name}',
-      hint: 'Deva 在这个项目里为你记下的私有经验，只在本项目生效；存在本机 ~/.deva 下，不会进入版本库，团队其他人看不到。',
-      empty: '这个项目还没有私有记忆。对话中说「在这个项目里记住……」即可。',
-      clear: '清空项目记忆',
-      clearConfirm: '确定清空这个项目的全部私有记忆吗？此操作不可撤销（全局记忆不受影响）。'
-    },
     // 输入框「/ 指令」联想（技能项的说明取自各自 SKILL.md，不在此处）
     slash: {
       title: '指令',
@@ -1345,16 +1335,6 @@ const en: MessageTree = {
       revealMac: 'Open in Finder',
       revealOther: 'Open in file manager',
       revealFailed: "Couldn't open the folder"
-    },
-    projMem: {
-      open: 'Project memory',
-      title: 'Project memory',
-      titleOf: 'Project memory · {name}',
-      hint: 'Private notes Deva keeps for you in this project. They only apply here, live on this machine under ~/.deva, never enter version control, and are invisible to teammates.',
-      empty: 'No private memories for this project yet. Just say "remember in this project…".',
-      clear: 'Clear project memory',
-      clearConfirm:
-        'Clear all private memories for this project? This cannot be undone (global memories are not affected).'
     },
     slash: {
       title: 'Commands',

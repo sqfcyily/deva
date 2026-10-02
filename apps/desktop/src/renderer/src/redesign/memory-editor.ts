@@ -5,7 +5,7 @@ import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
 
 /*
- * 记忆标签墙的编辑逻辑，个人资料面板（全局记忆）与项目记忆面板（root = 该工作区）共用。
+ * 记忆标签墙的编辑逻辑，个人资料面板（全局记忆）使用。
  * 读写全走 memory:* IPC（root 省略即全局），与模型的 memory_* 工具同一套校验（单条字数 / 条数 / 总字数上限）；
  * 每次写操作回带最新快照，直接替换本地列表。面板开着时模型可能在后台写记忆 → 监听对话 done 再拉一次（不轮询）。
  */

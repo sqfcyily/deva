@@ -11,7 +11,7 @@ import { fill, useMemoryEditor, type EditBase, type TagHandlers } from './memory
 
 /*
  * 个人资料面板（点左上角自己的头像打开）：头像 + Deva 记住的关于你（全局记忆，类用户画像）。
- * 记忆的读写与编辑态见 useMemoryEditor（项目记忆面板共用）。
+ * 记忆的读写与编辑态见 useMemoryEditor。
  * 记忆每条一枚标签：宽时环绕居中头像（每页 12 条，滚轮 / 方向键 / 圆点翻页），窄时退回标签墙；
  * 记忆只由模型在对话中写入，面板仅供查看 / 修改 / 删除（不提供手动追加）；
  * 悬停时标签上方浮出编辑 / 删除（二次确认）小工具条（不占标签本身的位置），双击也可原地编辑。
@@ -382,7 +382,7 @@ export function MemoryTags({
 }: {
   entries: MemoryEntry[]
   h: TagHandlers
-  /** 空列表提示文案；省略用全局记忆的默认文案（项目记忆面板复用时传自己的）。 */
+  /** 空列表提示文案；省略用全局记忆的默认文案。 */
   emptyText?: string
 }): React.JSX.Element {
   const { t } = useI18n()

@@ -102,7 +102,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'write_file',
     description:
-      '把内容写入文件（覆盖式，不存在则创建）。多用于新建文件；改动既有文件请优先用 edit_file。单次写入内容较多（约 300 行以上）时请分段：先写入开头一部分，再用 append: true 分次追加其余部分——单次回复有输出长度上限，一次写太多会被截断、整次调用作废。凭据/密钥目录与版本库内部（.git）会被安全策略拒绝，其余位置直接写入、无需授权。',
+      '把内容写入文件（覆盖式，不存在则创建；父目录不存在会自动创建）。多用于新建文件；改动既有文件请优先用 edit_file。单次写入内容较多（约 300 行以上）时请分段：先写入开头一部分，再用 append: true 分次追加其余部分——单次回复有输出长度上限，一次写太多会被截断、整次调用作废。凭据/密钥目录与版本库内部（.git）会被安全策略拒绝，其余位置直接写入、无需授权。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1315,6 +1315,8 @@ export async function executeTool(
       const abs = resolveWritePath(ctx.workspaceRoot, a.path)
       const content = typeof a.content === 'string' ? a.content : ''
       const bytes = Buffer.byteLength(content, 'utf8')
+      // 父目录不存在时先自动创建，免得模型还得先 run_command mkdir。
+      await fs.mkdir(dirname(abs), { recursive: true })
       if (a.append === true) {
         await fs.appendFile(abs, content, 'utf8')
         return { content: `已追加 ${bytes} 字节`, summary: '已追加' }

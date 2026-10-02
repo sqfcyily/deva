@@ -112,7 +112,6 @@ import {
 import { ModelSettings } from '../features/settings/ModelSettings'
 import { AvatarEditor } from './AvatarEditor'
 import { ProfilePanel } from './ProfilePanel'
-import { ProjectMemoryPanel } from './ProjectMemoryPanel'
 import { RewindModal } from './RewindModal'
 import { useProfile } from '../store/profile'
 
@@ -1235,7 +1234,6 @@ function WorkspaceMenu({ root }: { root: string }): React.JSX.Element {
   const { t } = useI18n()
   const toast = useToast()
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const [memOpen, setMemOpen] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
 
   const openMenu = (): void => {
@@ -1268,9 +1266,7 @@ function WorkspaceMenu({ root }: { root: string }): React.JSX.Element {
 
   const items = [
     { label: t('cf.ws.copyPath'), icon: <Copy size={14} />, onClick: copyPath },
-    { label: revealLabel, icon: <ExternalLink size={14} />, onClick: reveal },
-    // 项目私有记忆：Deva 在本工作区记下的、只属于用户本人的经验（~/.deva/projects/<key>，不入库）。
-    { label: t('cf.projMem.open'), icon: <Brain size={14} />, onClick: () => setMemOpen(true) }
+    { label: revealLabel, icon: <ExternalLink size={14} />, onClick: reveal }
   ]
 
   return (
@@ -1290,7 +1286,6 @@ function WorkspaceMenu({ root }: { root: string }): React.JSX.Element {
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} openUp items={items} onClose={() => setMenu(null)} />
       )}
-      {memOpen && <ProjectMemoryPanel root={root} onClose={() => setMemOpen(false)} />}
     </>
   )
 }
