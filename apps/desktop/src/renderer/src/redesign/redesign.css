@@ -549,6 +549,33 @@ body.cf-resizing-y * {
     left: 120%;
   }
 }
+
+/* 待你处理 / 有新消息：头像右上角一枚静态红点。 */
+.cf-ava__dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--bg-panel);
+  pointer-events: none;
+}
+
+/* 图标栏「对话」按钮上的提示点：其他对话有待处理 / 新消息时显示红点。 */
+.cf-navbtn__dot {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--bg-inset);
+  pointer-events: none;
+}
+
 /* 减动效：停动画，但把光带停在头像中间当静态高光——否则它停在 left:-60% 整个看不见，
    忙碌状态就彻底没了指示。 */
 @media (prefers-reduced-motion: reduce) {

@@ -73,6 +73,7 @@ import {
   type ChatMessage,
   type RecoveryStatus,
   type SendAttachment,
+  type SessionLiveState,
   type SessionMeta
 } from '../store/chat'
 import { useExtensions } from '../store/extensions'
@@ -266,6 +267,14 @@ export function ChatFirstShell(): React.JSX.Element {
   const dialog = useDialog()
 
   const [railTab, setRailTab] = useState<RailTab>('chats')
+  // 图标栏「对话」按钮的红点：其他对话有新消息或待你处理时亮起（与头像红点同口径）。
+  const chatAlert = useMemo(
+    () =>
+      Object.entries(sessionStates).some(
+        ([id, st]) => id !== currentSessionId && (st.unread || st.attention)
+      ),
+    [sessionStates, currentSessionId]
+  )
   // 左侧对话面板宽（可拖动）：存的是用户意图值，渲染时按窗口宽再夹取——窗口缩小时自动收窄、放大后复原。
   const viewport = useViewport()
   const [sidebarW, setSidebarW] = useState(() => loadLayout().sidebarWidth ?? SIDEBAR_DEFAULT)
@@ -473,6 +482,7 @@ export function ChatFirstShell(): React.JSX.Element {
           tab={railTab}
           onTab={setRailTab}
           onOpenSettings={() => setSettingsOpen(true)}
+          chatAlert={chatAlert}
         />
         {railTab === 'bots' ? (
           // 「机器人」tab：同定时任务，占满列表列 + 右侧内容（机器人列表 + 详情）。
@@ -562,11 +572,14 @@ export function ChatFirstShell(): React.JSX.Element {
 function IconRail({
   tab,
   onTab,
-  onOpenSettings
+  onOpenSettings,
+  chatAlert
 }: {
   tab: RailTab
   onTab: (t: RailTab) => void
   onOpenSettings: () => void
+  /** 其他对话有新消息或待你处理 → 按钮上显示红点。 */
+  chatAlert: boolean
 }): React.JSX.Element {
   const { t } = useI18n()
   const [profileOpen, setProfileOpen] = useState(false)
@@ -590,6 +603,10 @@ function IconRail({
         onClick={() => onTab('chats')}
       >
         <MessageCircle size={20} />
+        {/* 不在对话页时，才在导航按钮上提示其他对话的动静（在对话页时列表头像已能看到）。 */}
+        {tab !== 'chats' && chatAlert && (
+          <span className="cf-navbtn__dot" aria-hidden="true" />
+        )}
       </button>
       <button
         className={`cf-navbtn${tab === 'roster' ? ' is-active' : ''}`}
@@ -658,7 +675,7 @@ function Rail({
   sessions: SessionMeta[]
   personas: Persona[]
   currentSessionId: string
-  sessionStates: Record<string, { streaming: boolean; attention: boolean }>
+  sessionStates: Record<string, SessionLiveState>
   viewPersonaId: string | null
   onOpenThread: (id: string) => void
   onOpenProfile: (id: string) => void
@@ -1502,7 +1519,7 @@ function ThreadRow({
 }: {
   session: SessionMeta
   owner?: Persona
-  state?: { streaming: boolean; attention: boolean }
+  state?: SessionLiveState
   active: boolean
   onClick: () => void
   onContext: (e: React.MouseEvent) => void
@@ -1510,7 +1527,7 @@ function ThreadRow({
   const { t } = useI18n()
   const rel = useRelativeTime()
   // 任务独占会话（sessionId = `task-…`）：行上打一枚静态「⏰ 定时」徽标以区别普通对话。
-  // 「有新运行未读」的动态红点复用既有 attention 通道（state.attention），不新造信号。
+  // 「有新运行未读」（state.unread）与待你处理（state.attention）都在头像右上角打红点。
   const isTask = session.id.startsWith('task-')
   return (
     <button
@@ -1518,8 +1535,15 @@ function ThreadRow({
       onClick={onClick}
       onContextMenu={onContext}
     >
-      {/* 对话中（streaming）→ 头像上一道扫光指示。 */}
-      <Avatar persona={owner} size={38} busy={state?.streaming} />
+      {/* 对话中（streaming）→ 头像上一道扫光指示；有新消息 / 待你处理 → 右上角红点。
+          正在查看的对话不打红点（内容就在眼前）。 */}
+      <Avatar
+        persona={owner}
+        size={38}
+        busy={state?.streaming}
+        attention={!active && state?.attention}
+        unread={!active && state?.unread}
+      />
       <div className="cf-thread__main">
         {/* 上：对话标题与时间（主视觉，醒目显示对话内容）；下：角色名。挂载目录不在此展示。 */}
         <div className="cf-thread__top">
@@ -4670,24 +4694,32 @@ function Avatar({
   persona,
   user,
   size,
-  busy
+  busy,
+  attention,
+  unread
 }: {
   persona?: Persona
   user?: boolean
   size?: number
   /** 忙碌（对话生成中）：头像上叠一道自左向右扫过的高光带，作就地「思考/生成中」指示。 */
   busy?: boolean
+  /** 待你处理（问答 / 计划 / 挂载 / 待确认名片）：右上角红点。 */
+  attention?: boolean
+  /** 有新消息未读：右上角红点。 */
+  unread?: boolean
 }): React.JSX.Element | null {
   const profile = useProfile()
   const style = { ...(size ? { '--sz': `${size}px` } : {}) } as React.CSSProperties
   const cls = `cf-ava${busy ? ' is-busy' : ''}${user ? ' is-user' : ''}`
-  // 遮层必须排在 .cf-ava__face 之后：同为 inset:0 的绝对定位兄弟，靠文档顺序压在头像之上。
+  // 遮层必须排在 .cf-ava__face 之后：同为 inset:0 的绝对定位兄弟，靠文档顺序压在头像之上；红点再压在最上。
   const sweep = busy ? <span className="cf-ava__sweep" aria-hidden="true" /> : null
+  const marks = unread || attention ? <span className="cf-ava__dot" aria-hidden="true" /> : null
   // 非用户、非角色（理论上罕见）：空占位圈。
   if (!user && !persona)
     return (
       <div className={cls} style={style}>
         {sweep}
+        {marks}
       </div>
     )
   const seed = user ? USER_AVATAR_SEED : (persona as Persona).id
@@ -4706,6 +4738,7 @@ function Avatar({
         />
       </span>
       {sweep}
+      {marks}
     </div>
   )
 }
