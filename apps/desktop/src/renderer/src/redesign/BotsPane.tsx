@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Loader2, Plus, QrCode, RefreshCw, Search, X } from 'lucide-react'
+import { Bot, Loader2, Plus, QrCode, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
@@ -416,6 +416,10 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
             {bot.region && <span className="bots-tag">{t(`bots.region.${bot.region}`)}</span>}
           </span>
         </div>
+        <button className="icon-btn provider-detail__del" title={t('bots.delete')} onClick={() => void remove()}>
+          <Trash2 size={15} />
+        </button>
+        <span className="provider-detail__enable">{t('bots.enable')}</span>
         <button
           className={`cf-switch${bot.enabled ? ' is-on' : ''}`}
           aria-pressed={bot.enabled}
@@ -503,9 +507,6 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
       </div>
 
       <p className="bots-warn">{t('bots.security')}</p>
-      <button className="ext-linkbtn bots-delete" onClick={() => void remove()}>
-        {t('bots.delete')}
-      </button>
     </>
   )
 }

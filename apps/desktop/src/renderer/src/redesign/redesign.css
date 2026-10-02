@@ -2046,6 +2046,11 @@ body.cf-resizing-y * {
 .cf-switch.is-on {
   background: var(--accent);
 }
+/* 锁定（如内置技能恒启用）：悬停显示禁用手势，不可切换 */
+.cf-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .cf-switch__dot {
   position: absolute;
   top: 2px;
@@ -3358,9 +3363,6 @@ body.cf-resizing-y * {
   background: color-mix(in srgb, var(--warning) 8%, transparent);
   font-size: 12px;
   line-height: 1.6;
-}
-.bots-delete {
-  color: var(--danger);
 }
 .bots-pair__meta {
   display: flex;

@@ -4252,22 +4252,25 @@ function McpEditor({ item, onBack }: { item: McpServer; onBack: () => void }): R
 
   return (
     <section className="provider-detail" key={item.id}>
-      <button className="provider-detail__back" onClick={onBack}>
-        <ChevronLeft size={16} />
-        {t('common.back')}
-      </button>
+      {/* 顶部工具条「返回 + 删除/启用」同一行，对齐模型设置页 */}
+      <div className="provider-detail__topbar">
+        <button className="provider-detail__back" onClick={onBack}>
+          <ChevronLeft size={16} />
+          {t('common.back')}
+        </button>
+        <div className="provider-detail__spacer" />
+        <button className="icon-btn provider-detail__del" title={t('extensions.remove')} onClick={onDelete}>
+          <Trash2 size={15} />
+        </button>
+        <span className="provider-detail__enable">{t('extensions.enable')}</span>
+        <Toggle on={item.enabled} onChange={() => toggle('mcp', item.id)} />
+      </div>
       <header className="provider-detail__head">
         <span className="ext-detail__icon">
           <Plug size={18} />
         </span>
         <h2 className="ext-detail__name ext-detail__name--mono">{item.name}</h2>
         <span className="ext-detail__scope">{t('common.global')}</span>
-        <div className="provider-detail__spacer" />
-        <button className="icon-btn" title={t('extensions.remove')} onClick={onDelete}>
-          <Trash2 size={15} />
-        </button>
-        <span className="provider-detail__enable">{t('extensions.enable')}</span>
-        <Toggle on={item.enabled} onChange={() => toggle('mcp', item.id)} />
       </header>
 
       <div className="ext-status">
