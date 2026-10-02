@@ -912,9 +912,13 @@ async function runCommand(chat: ChatAddress, name: string, arg: string): Promise
   }
 }
 
+/** 默认角色 Deva 的固定 id（种子角色，与桌面端默认身份一致）；按 id 绑定，用户改名不受影响。 */
+const DEFAULT_PERSONA_ID = 'general'
+
+/** 按名称 / id 找已启用角色；未指定角色（空名）固定用默认角色 Deva，不挑列表里的第一个。 */
 function pickPersona(name: string): { id: string; name: string } | null {
+  if (!name) return getPersona(DEFAULT_PERSONA_ID)
   const all = listPersonas().filter((p) => p.enabled)
-  if (!name) return all[0] ?? null
   const lower = name.toLowerCase()
   return all.find((p) => p.name.toLowerCase() === lower || p.id === name) ?? null
 }
