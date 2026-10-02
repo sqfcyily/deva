@@ -33,10 +33,10 @@ const READONLY_TOOLS = ['read_file', 'list_dir', 'glob', 'grep', 'web_fetch', 'r
 /**
  * 内置通用子智能体：未指定 agent、或指定的名字未命中时的**回落**定义。
  * `tools: '*'` = 全部内置工具（交互/创建类除外）+ 全部已连接 MCP；`prompt: ''` = 无额外职责正文，
- * 任务内容完全由本次调用的 prompt 给出。对标 CC 的 general-purpose。
+ * 任务内容完全由本次调用的 prompt 给出。对标 CC 的 general-purpose（旧名仍可作别名命中，见 getSubagentByName）。
  */
 export const GENERAL_SUBAGENT: SubagentDef = {
-  name: 'general-purpose',
+  name: 'General',
   description: '按主智能体现场给定的任务描述，独立完成一项封闭子任务；具备全部工具。',
   tools: '*',
   prompt: ''
@@ -82,9 +82,12 @@ export function subagentSummaries(): { name: string; description: string }[] {
   return BUILTIN_SUBAGENTS.map((a) => ({ name: a.name, description: a.description }))
 }
 
+/** 旧名别名（小写）：通用子智能体曾叫 general-purpose，模型也常沿用 CC 的叫法，照样直接命中、不报「未找到」。 */
+const ALIASES: Record<string, SubagentDef> = { 'general-purpose': GENERAL_SUBAGENT }
+
 /** 按名（大小写不敏感）取内置子智能体定义；未命中返回 null（调用方回落 GENERAL_SUBAGENT）。 */
 export function getSubagentByName(name: string): SubagentDef | null {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return null
-  return BUILTIN_SUBAGENTS.find((a) => a.name.toLowerCase() === wanted) ?? null
+  return BUILTIN_SUBAGENTS.find((a) => a.name.toLowerCase() === wanted) ?? ALIASES[wanted] ?? null
 }
