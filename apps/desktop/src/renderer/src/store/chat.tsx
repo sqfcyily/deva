@@ -1361,10 +1361,16 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       startFresh(personaId, focusRoot, model)
     }
 
-    // 挂载 / 卸载当前对话的聚焦工作区：只更新覆盖层（path 应已由调用方经 fs.openFolder 受信），
-    // 下次 chat:send 时 ensureSession 据此更新 focusRoot（null = 卸载回全机通用助手）。
+    // 挂载 / 卸载当前对话的聚焦工作区（path 应已由调用方经 fs.openFolder 受信；null = 卸载回全机通用助手）：
+    // 覆盖层即时置位驱动界面，同时立即落库——否则首条消息若从飞书等远程通道发出，主进程读不到这次挂载。
+    // 尚未建档的惰性会话由主进程跳过，仍随首发 chat:send 经 ensureSession 落库。
     const mountFocus = (path: string | null): void => {
-      setBinding(sessionIdRef.current, { focusRoot: path })
+      const sid = sessionIdRef.current
+      setBinding(sid, { focusRoot: path })
+      void (async () => {
+        await window.deva.chat.setFocus({ sessionId: sid, focusRoot: path })
+        await refreshSessions()
+      })()
     }
 
     // 设置当前对话模型（只改当前对话）：覆盖层即时置位驱动选择器，同时立即落库到会话属性——不等下一次

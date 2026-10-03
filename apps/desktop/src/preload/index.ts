@@ -72,6 +72,13 @@ export interface ChatSetModelRequest {
   modelRef: string
 }
 
+/** 挂载 / 卸载本对话的聚焦工作区：立即落库（会话尚未建档则不建档，由覆盖层随首发落库）。 */
+export interface ChatSetFocusRequest {
+  sessionId: string
+  /** 聚焦工作区绝对路径；null = 卸载回全机通用助手。 */
+  focusRoot: string | null
+}
+
 /** 附件类型（与 services/attachments.ts 对齐）。 */
 export type AttachmentKind = 'image' | 'document' | 'text' | 'unsupported'
 
@@ -811,6 +818,9 @@ const api = {
     /** 切换本对话模型并立即落库（不等下一次发送）。 */
     setModel: (req: ChatSetModelRequest): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:set-model', req),
+    /** 挂载 / 卸载本对话的聚焦工作区并立即落库（不等下一次发送）。 */
+    setFocus: (req: ChatSetFocusRequest): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('chat:set-focus', req),
     abort: (turnId: string): Promise<{ ok: true }> => ipcRenderer.invoke('chat:abort', turnId),
     reset: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:reset', sessionId, workspaceRoot),

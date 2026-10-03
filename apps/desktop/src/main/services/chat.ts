@@ -155,6 +155,12 @@ interface ChatSetModelRequest {
   modelRef: string
 }
 
+/** 挂载 / 卸载本对话的聚焦工作区（立即落库，不等下一次发送）。见 chat:set-focus。 */
+interface ChatSetFocusRequest {
+  sessionId: string
+  focusRoot: string | null
+}
+
 /** 角色名片草稿：propose_agent 原始参数归一化后的形状（编辑器/名片消费）。 */
 export interface AgentDraft {
   name: string
@@ -2898,6 +2904,18 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const session = getSession(payload.sessionId)
     if (session) {
       session.model = payload.modelRef
+      saveProject(payload.sessionId)
+    }
+    return { ok: true }
+  })
+
+  // 挂载 / 卸载聚焦工作区：立即落库到本对话。此前只写渲染层覆盖层、随下一次桌面发送才落库——
+  // 挂载后首条消息若来自远程通道（飞书等，不带 focusRoot），这一轮就读不到工作区；切了没发重启也会丢。
+  // 惰性会话同 set-model：查不到则不建档，仍由覆盖层随首发落库。不改 updatedAt。
+  ipcMain.handle('chat:set-focus', (_e, payload: ChatSetFocusRequest): { ok: true } => {
+    const session = getSession(payload.sessionId)
+    if (session) {
+      session.focusRoot = payload.focusRoot
       saveProject(payload.sessionId)
     }
     return { ok: true }
