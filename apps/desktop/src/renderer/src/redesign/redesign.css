@@ -3139,9 +3139,6 @@ body.cf-resizing-y * {
   border-radius: 0;
   object-fit: contain;
 }
-.bots-logo--telegram {
-  background: #2aabee;
-}
 .bots-tag {
   padding: 0 6px;
   border: 1px solid var(--border);
@@ -3333,6 +3330,29 @@ body.cf-resizing-y * {
 }
 .bots-scan__status.is-error {
   color: var(--danger);
+}
+
+/* Telegram 第一步：扫码打开 BotFather + 粘贴 Token（沿用扫码弹框的左码右栏布局） */
+.bots-token__row {
+  align-self: stretch;
+  display: flex;
+  gap: 8px;
+}
+.bots-token__input.cf-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  font-family: var(--font-mono);
+}
+.bots-token__row .bots-btn {
+  flex: none;
+}
+.bots-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+a.bots-btn {
+  text-decoration: none;
 }
 .bots-spin {
   animation: bots-spin 1s linear infinite;

@@ -12,18 +12,18 @@ import type { AskQuestion } from '../chat'
  * 新增平台 = 实现一个 RemoteAdapter + 在 index.ts 的 ADAPTERS 里登记，hub 不用改。
  */
 
-export type Platform = 'feishu'
+export type Platform = 'feishu' | 'telegram'
 
 /** 一个「通道」= 用户添加的一个机器人实例（同一平台可以有多个），id 由 Deva 生成。 */
 export type ChannelId = string
 
-/** 某机器人的一个会话（私聊）。chatId 为平台原生 id（飞书 chat_id）。 */
+/** 某机器人的一个会话（私聊）。chatId 为平台原生 id（飞书 chat_id / Telegram chat.id）。 */
 export interface ChatAddress {
   channel: ChannelId
   chatId: string
 }
 
-/** 平台上的发信人。id 为平台内稳定用户 id（飞书 open_id），用作配对白名单键。 */
+/** 平台上的发信人。id 为平台内稳定用户 id（飞书 open_id / Telegram user.id），用作配对白名单键。 */
 export interface RemoteUser {
   id: string
   name?: string
@@ -59,7 +59,7 @@ export type ActionValue =
   | { k: 'agent'; sid: string; tool: string; a: 'accept' | 'reject' }
   | { k: 'stop'; turn: string }
 
-/** 动作处理结果：适配器据此给出平台内的即时反馈（飞书 toast）。 */
+/** 动作处理结果：适配器据此给出平台内的即时反馈（飞书 toast / Telegram 按钮提示）。 */
 export interface ActionResult {
   ok: boolean
   message: string

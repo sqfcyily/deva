@@ -323,11 +323,25 @@ const zhCN: MessageTree = {
     failed: '操作失败',
     soon: '即将支持',
     scanRefresh: '刷新',
-    scanLead: '用飞书扫码，并在手机上确认创建应用。',
-    scanWaiting: '等待扫码确认…（{s} 秒后过期）',
-    scanLoading: '正在获取二维码…',
+    scanLead: {
+      feishu: '用飞书扫码，并在手机上确认创建应用。',
+      telegram: '用手机扫码打开机器人，点「开始 / Start」完成认领。'
+    },
+    scanWaiting: '等待扫码确认…（{s} 后过期）',
+    scanLoading: { feishu: '正在获取二维码…', telegram: '正在验证 Token…' },
     scanRetry: '重新获取二维码',
-    scanNote: '扫码的飞书账号会自动成为这个机器人的主人，创建完成后机器人会主动给你发消息。电脑上的 Deva 需要保持运行（关窗驻留托盘即可）。',
+    scanOpenLink: '在电脑上的 Telegram 中打开',
+    scanNote: {
+      feishu:
+        '扫码的飞书账号会自动成为这个机器人的主人，创建完成后机器人会主动给你发消息。电脑上的 Deva 需要保持运行（关窗驻留托盘即可）。',
+      telegram:
+        '点 Start 的 Telegram 账号会成为这个机器人的主人。Token 只加密保存在这台电脑上。电脑上的 Deva 需要保持运行（关窗驻留托盘即可），且能访问 Telegram（如需代理，请设置系统代理）。'
+    },
+    tokenLead: '扫码打开 BotFather，发送 /newbot 创建机器人，再把它回复的 Token 粘贴到下面。',
+    tokenPlaceholder: '粘贴 Token，形如 123456789:AAH…',
+    tokenSave: '保存',
+    openBotFather: '打开 BotFather',
+    tokenChange: '换一个 Token',
     scan: {
       denied: '已在手机上取消授权。',
       expired: '二维码已过期。'
@@ -337,7 +351,10 @@ const zhCN: MessageTree = {
     usersEmpty: '还没有账号。',
     owner: '主人',
     invite: '邀请其他账号',
-    inviteHint: '让对方在飞书里私聊这个机器人，发送：',
+    inviteHint: {
+      feishu: '让对方在飞书里私聊这个机器人，发送：',
+      telegram: '让对方在 Telegram 里私聊这个机器人，发送：'
+    },
     inviteExpires: '{s} 后失效',
     inviteRegen: '重新生成',
     inviteCancel: '取消邀请',
@@ -355,7 +372,10 @@ const zhCN: MessageTree = {
     security:
       '安全提示：能使用机器人的账号可以让 Deva 在这台电脑上读写文件、运行命令，权限和你在电脑上使用时一样。机器人只响应私聊，群聊消息一律忽略。',
     delete: '删除机器人',
-    deleteConfirm: '删除后机器人将断开连接，手机上无法再使用。飞书开放平台上的应用不会被删除，可自行在开放平台删除。'
+    deleteConfirm: {
+      feishu: '删除后机器人将断开连接，手机上无法再使用。飞书开放平台上的应用不会被删除，可自行在开放平台删除。',
+      telegram: '删除后机器人将断开连接，手机上无法再使用。Telegram 上的机器人不会被删除，可在 @BotFather 里用 /deletebot 删除。'
+    }
   },
   settings: {
     title: '设置',
@@ -1087,11 +1107,25 @@ const en: MessageTree = {
     failed: 'Operation failed',
     soon: 'Coming soon',
     scanRefresh: 'Refresh',
-    scanLead: 'Scan with Feishu and confirm creating the app on your phone.',
-    scanWaiting: 'Waiting for confirmation… (expires in {s}s)',
-    scanLoading: 'Getting QR code…',
+    scanLead: {
+      feishu: 'Scan with Feishu and confirm creating the app on your phone.',
+      telegram: 'Scan with your phone to open the bot, then tap Start to claim it.'
+    },
+    scanWaiting: 'Waiting for confirmation… (expires in {s})',
+    scanLoading: { feishu: 'Getting QR code…', telegram: 'Checking the token…' },
     scanRetry: 'Get a new QR code',
-    scanNote: 'The account that scans becomes the owner of the bot, and the bot will message you once it is ready. Deva must stay running on this computer (keeping it in the tray is enough).',
+    scanOpenLink: 'Open in Telegram on this computer',
+    scanNote: {
+      feishu:
+        'The account that scans becomes the owner of the bot, and the bot will message you once it is ready. Deva must stay running on this computer (keeping it in the tray is enough).',
+      telegram:
+        'The Telegram account that taps Start becomes the owner of the bot. The token is stored encrypted on this computer only. Deva must stay running here (keeping it in the tray is enough) and be able to reach Telegram (set a system proxy if you need one).'
+    },
+    tokenLead: 'Scan to open BotFather, send /newbot to create a bot, then paste the token it replies with below.',
+    tokenPlaceholder: 'Paste the token, e.g. 123456789:AAH…',
+    tokenSave: 'Save',
+    openBotFather: 'Open BotFather',
+    tokenChange: 'Use a different token',
     scan: {
       denied: 'Authorization was declined on the phone.',
       expired: 'The QR code has expired.'
@@ -1101,7 +1135,10 @@ const en: MessageTree = {
     usersEmpty: 'No accounts yet.',
     owner: 'Owner',
     invite: 'Invite another account',
-    inviteHint: 'Ask them to send this to the bot in a direct chat:',
+    inviteHint: {
+      feishu: 'Ask them to send this to the bot in a direct chat on Feishu:',
+      telegram: 'Ask them to send this to the bot in a direct chat on Telegram:'
+    },
     inviteExpires: 'Expires in {s}',
     inviteRegen: 'Regenerate',
     inviteCancel: 'Cancel invite',
@@ -1119,7 +1156,12 @@ const en: MessageTree = {
     security:
       'Security note: allowed accounts can make Deva read and write files and run commands on this computer, with the same permissions you have here. The bot only answers direct messages; group chats are ignored.',
     delete: 'Delete bot',
-    deleteConfirm: 'The bot will be disconnected and stop working on your phone. The app on the Feishu Open Platform is not deleted; you can remove it there yourself.'
+    deleteConfirm: {
+      feishu:
+        'The bot will be disconnected and stop working on your phone. The app on the Feishu Open Platform is not deleted; you can remove it there yourself.',
+      telegram:
+        'The bot will be disconnected and stop working on your phone. The bot itself is not deleted from Telegram; use /deletebot with @BotFather to remove it.'
+    }
   },
   settings: {
     title: 'Settings',

@@ -626,13 +626,14 @@ export type ChatStreamEvent =
   | { type: 'done'; stopReason: string }
 
 /** IM 机器人（远程通道）状态，与 services/remote/index.ts 的 BotView / ScanEvent 对齐。 */
-export type BotPlatform = 'feishu'
+export type BotPlatform = 'feishu' | 'telegram'
 export type BotReplyMode = 'stream' | 'final'
 export interface BotView {
   id: string
   platform: BotPlatform
   name: string
   region?: 'cn' | 'intl'
+  username?: string
   enabled: boolean
   state: 'off' | 'connecting' | 'connected' | 'error'
   error?: string
@@ -1010,16 +1011,17 @@ const api = {
     writeText: (text: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('clipboard:write-text', text)
   },
-  /** 远程通道 / 手机端（飞书等 IM 机器人）。密钥只写不读。 */
+  /** 远程通道 / 手机端（飞书、Telegram 等 IM 机器人）。密钥只写不读。 */
   remote: {
     getState: (): Promise<RemoteState> => ipcRenderer.invoke('remote:get-state'),
-    /** 开始扫码创建机器人：返回二维码（data URL）；结果经 onScan 推回。 */
+    /** 开始扫码创建机器人：返回二维码（data URL）；结果经 onScan 推回。Telegram 需带 @BotFather 给的 Token。 */
     scanStart: (
-      platform: BotPlatform
+      platform: BotPlatform,
+      opts?: { token?: string }
     ): Promise<
-      | { ok: true; scanId: string; qr: string; userCode?: string; expiresAt: number }
+      | { ok: true; scanId: string; qr: string; link?: string; userCode?: string; expiresAt: number }
       | { ok: false; error: string }
-    > => ipcRenderer.invoke('remote:scan-start', platform),
+    > => ipcRenderer.invoke('remote:scan-start', platform, opts),
     scanCancel: (scanId: string): Promise<{ ok: true }> => ipcRenderer.invoke('remote:scan-cancel', scanId),
     setEnabled: (id: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('remote:set-enabled', id, enabled),

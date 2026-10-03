@@ -1,21 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, Loader2, Plus, QrCode, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { Bot, ExternalLink, KeyRound, Loader2, Plus, QrCode, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import QRCode from 'qrcode'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
 import feishuLogo from '../assets/platforms/feishu.svg'
+import telegramLogo from '../assets/platforms/telegram.svg'
 
 type RemoteState = Awaited<ReturnType<typeof window.deva.remote.getState>>
 type BotView = RemoteState['bots'][number]
 type Platform = BotView['platform']
 
 /** 可添加的平台（菜单顺序）。soon = 即将支持，菜单里置灰。 */
-const PLATFORMS: { id: Platform | 'telegram'; soon?: boolean }[] = [{ id: 'feishu' }, { id: 'telegram', soon: true }]
+const PLATFORMS: { id: Platform; soon?: boolean }[] = [{ id: 'feishu' }, { id: 'telegram' }]
 
 /**
  * 「机器人」tab（图标栏「设置」上方）：与对话 / 角色 / 任务同一套面板——左列表 + 右详情。
  * 左列表顶部：搜索 + 「添加机器人」（悬停列出支持的平台，点即添加；扫码在弹框里完成）。
- * 机器人只能扫码创建：扫码即在平台上建好应用、拿到凭据，扫码人自动成为主人（已配对）。
+ * 机器人都经扫码创建，扫码人自动成为主人（已配对）：飞书扫码即在平台上建好应用；
+ * Telegram 先粘贴 @BotFather 给的 Token，再扫码打开机器人点 Start 认领。
  * 状态由主进程 remote:changed 推送，本面板只做展示与触发。
  */
 export function BotsPane(): React.JSX.Element {
@@ -188,7 +191,7 @@ function BotAddMenu({ onPick }: { onPick: (p: Platform) => void }): React.JSX.El
                 if (p.soon) return
                 cancelClose()
                 setOpen(false)
-                onPick(p.id as Platform)
+                onPick(p.id)
               }}
             >
               <PlatformLogo platform={p.id} size={20} />
@@ -202,29 +205,29 @@ function BotAddMenu({ onPick }: { onPick: (p: Platform) => void }): React.JSX.El
   )
 }
 
-/** 平台标志：有内置品牌图标的用图标，其余（尚未支持的平台）用简洁色块。 */
-const PLATFORM_ICONS: Record<string, string> = { feishu: feishuLogo }
+/** 平台标志：有内置品牌图标的用图标，其余用通用机器人图标。 */
+const PLATFORM_ICONS: Record<string, string> = { feishu: feishuLogo, telegram: telegramLogo }
 
 function PlatformLogo({ platform, size }: { platform: string; size: number }): React.JSX.Element {
   const icon = PLATFORM_ICONS[platform]
   if (icon)
     return <img className="bots-logo bots-logo--img" src={icon} width={size} height={size} alt="" aria-hidden />
   return (
-    <span
-      className={`bots-logo bots-logo--${platform}`}
-      style={{ width: size, height: size, fontSize: Math.round(size * 0.48) }}
-      aria-hidden
-    >
-      {platform === 'telegram' ? 'T' : <Bot size={size * 0.55} />}
+    <span className={`bots-logo bots-logo--${platform}`} style={{ width: size, height: size }} aria-hidden>
+      <Bot size={size * 0.55} />
     </span>
   )
 }
 
 // ───────── 添加：扫码弹框 ─────────
 
+const BOTFATHER_URL = 'https://t.me/BotFather'
+
 type ScanState =
+  /** Telegram 第一步：粘贴 @BotFather 给的 Token。 */
+  | { phase: 'token'; error?: string }
   | { phase: 'loading' }
-  | { phase: 'waiting'; qr: string; userCode?: string; expiresAt: number }
+  | { phase: 'waiting'; qr: string; link?: string; userCode?: string; expiresAt: number }
   | { phase: 'failed'; message: string }
 
 function ScanModal({
@@ -237,31 +240,50 @@ function ScanModal({
   onCreated: (botId: string) => void
 }): React.JSX.Element {
   const { t } = useI18n()
-  const [st, setSt] = useState<ScanState>({ phase: 'loading' })
+  const needsToken = platform === 'telegram'
+  const [st, setSt] = useState<ScanState>(needsToken ? { phase: 'token' } : { phase: 'loading' })
+  const [token, setToken] = useState('')
+  // Telegram 第一步的二维码：扫码在手机上打开 @BotFather 建机器人（固定链接，本地生成）。
+  const [bfQr, setBfQr] = useState('')
   const scanRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!needsToken) return
+    let alive = true
+    void QRCode.toDataURL(BOTFATHER_URL, { margin: 1, width: 360 }).then((u) => alive && setBfQr(u))
+    return () => {
+      alive = false
+    }
+  }, [needsToken])
   const [, setTick] = useState(0)
 
-  const start = useCallback(async () => {
+  const cancelScan = useCallback((): void => {
     if (scanRef.current) void window.deva.remote.scanCancel(scanRef.current)
     scanRef.current = null
+  }, [])
+
+  const start = useCallback(async () => {
+    cancelScan()
     setSt({ phase: 'loading' })
-    const r = await window.deva.remote.scanStart(platform)
+    const r = await window.deva.remote.scanStart(platform, needsToken ? { token } : undefined)
     if (!r.ok) {
-      setSt({ phase: 'failed', message: r.error })
+      // Telegram 的失败多半是 Token 不对：退回输入步骤，就地提示。
+      setSt(needsToken ? { phase: 'token', error: r.error } : { phase: 'failed', message: r.error })
       return
     }
     scanRef.current = r.scanId
-    setSt({ phase: 'waiting', qr: r.qr, userCode: r.userCode, expiresAt: r.expiresAt })
-  }, [platform])
+    setSt({ phase: 'waiting', qr: r.qr, link: r.link, userCode: r.userCode, expiresAt: r.expiresAt })
+  }, [platform, needsToken, token, cancelScan])
 
+  // 飞书打开即取二维码；Telegram 等填完 Token。
+  const startRef = useRef(start)
+  startRef.current = start
   useEffect(() => {
-    void start()
-    // 关弹框：取消后台轮询。
-    return () => {
-      if (scanRef.current) void window.deva.remote.scanCancel(scanRef.current)
-      scanRef.current = null
-    }
-  }, [start])
+    if (!needsToken) void startRef.current()
+  }, [needsToken])
+
+  // 关弹框：取消后台轮询。
+  useEffect(() => cancelScan, [cancelScan])
 
   useEffect(
     () =>
@@ -284,6 +306,8 @@ function ScanModal({
 
   const left = st.phase === 'waiting' ? Math.max(0, Math.ceil((st.expiresAt - Date.now()) / 1000)) : 0
   const title = t('bots.addTitle').replace('{p}', t(`bots.platform.${platform}`))
+  // 认领链接 t.me/<机器人>?start=… → 显示 @机器人，方便扫不了码时手动搜索。
+  const botName = st.phase === 'waiting' && st.link ? new URL(st.link).pathname.slice(1) : ''
 
   return (
     <div className="cf-modal__backdrop">
@@ -295,36 +319,95 @@ function ScanModal({
           </button>
         </div>
         <div className="bots-scanmodal__body">
-          <div className="bots-scan">
-            <div className="bots-scan__qr">
-              {st.phase === 'waiting' ? (
-                <img src={st.qr} alt="QR" />
-              ) : st.phase === 'failed' ? (
-                <QrCode size={48} className="bots-scan__placeholder" />
-              ) : (
-                <Loader2 size={28} className="bots-spin" />
-              )}
+          {st.phase === 'token' ? (
+            <div className="bots-scan">
+              <div className="bots-scan__qr">
+                {bfQr ? <img src={bfQr} alt="QR" /> : <Loader2 size={28} className="bots-spin" />}
+              </div>
+              <form
+                className="bots-scan__side"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (token.trim()) void start()
+                }}
+              >
+                <p className="bots-scan__lead">{t('bots.tokenLead')}</p>
+                <code className="bots-scan__code">@BotFather</code>
+                <div className="bots-token__row">
+                  <input
+                    className="cf-input bots-token__input"
+                    type="password"
+                    value={token}
+                    autoFocus
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder={t('bots.tokenPlaceholder')}
+                    aria-label={t('bots.tokenPlaceholder')}
+                    onChange={(e) => setToken(e.target.value)}
+                  />
+                  <button className="bots-btn" type="submit" disabled={!token.trim()}>
+                    <KeyRound size={13} />
+                    {t('bots.tokenSave')}
+                  </button>
+                </div>
+                {st.error && <span className="bots-scan__status is-error">{st.error}</span>}
+                <a className="bots-btn" href={BOTFATHER_URL} target="_blank" rel="noreferrer">
+                  <ExternalLink size={13} />
+                  {t('bots.openBotFather')}
+                </a>
+              </form>
             </div>
-            <div className="bots-scan__side">
-              <p className="bots-scan__lead">{t('bots.scanLead')}</p>
-              {st.phase === 'waiting' && st.userCode && <code className="bots-scan__code">{st.userCode}</code>}
-              {st.phase === 'waiting' && (
-                <span className="bots-scan__status">
-                  <Loader2 size={13} className="bots-spin" />
-                  {t('bots.scanWaiting').replace('{s}', String(left))}
-                </span>
-              )}
-              {st.phase === 'loading' && <span className="bots-scan__status">{t('bots.scanLoading')}</span>}
-              {st.phase === 'failed' && <span className="bots-scan__status is-error">{st.message}</span>}
-              {st.phase !== 'loading' && (
-                <button className="bots-btn" onClick={() => void start()}>
-                  <RefreshCw size={13} />
-                  {st.phase === 'failed' ? t('bots.scanRetry') : t('bots.scanRefresh')}
-                </button>
-              )}
+          ) : (
+            <div className="bots-scan">
+              <div className="bots-scan__qr">
+                {st.phase === 'waiting' ? (
+                  <img src={st.qr} alt="QR" />
+                ) : st.phase === 'failed' ? (
+                  <QrCode size={48} className="bots-scan__placeholder" />
+                ) : (
+                  <Loader2 size={28} className="bots-spin" />
+                )}
+              </div>
+              <div className="bots-scan__side">
+                <p className="bots-scan__lead">{t(`bots.scanLead.${platform}`)}</p>
+                {st.phase === 'waiting' && st.userCode && <code className="bots-scan__code">{st.userCode}</code>}
+                {botName && <code className="bots-scan__code">@{botName}</code>}
+                {st.phase === 'waiting' && st.link && (
+                  <a className="ext-linkbtn" href={st.link} target="_blank" rel="noreferrer">
+                    {t('bots.scanOpenLink')}
+                  </a>
+                )}
+                {st.phase === 'waiting' && (
+                  <span className="bots-scan__status">
+                    <Loader2 size={13} className="bots-spin" />
+                    {t('bots.scanWaiting').replace('{s}', fmtLeft(left))}
+                  </span>
+                )}
+                {st.phase === 'loading' && (
+                  <span className="bots-scan__status">{t(`bots.scanLoading.${platform}`)}</span>
+                )}
+                {st.phase === 'failed' && <span className="bots-scan__status is-error">{st.message}</span>}
+                {st.phase !== 'loading' && (
+                  <button className="bots-btn" onClick={() => void start()}>
+                    <RefreshCw size={13} />
+                    {st.phase === 'failed' ? t('bots.scanRetry') : t('bots.scanRefresh')}
+                  </button>
+                )}
+                {needsToken && st.phase !== 'loading' && (
+                  <button
+                    className="ext-linkbtn"
+                    onClick={() => {
+                      cancelScan()
+                      setSt({ phase: 'token' })
+                    }}
+                  >
+                    {t('bots.tokenChange')}
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-          <p className="bots-hint">{t('bots.scanNote')}</p>
+          )}
+          <p className="bots-hint">{t(`bots.scanNote.${platform}`)}</p>
         </div>
       </div>
     </div>
@@ -335,7 +418,10 @@ function ScanModal({
 
 /** 剩余秒数 → 「9:58」形式（邀请码 10 分钟有效，纯秒数太长不好读）。 */
 function fmtLeft(sec: number): string {
-  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = String(sec % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
 }
 
 function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
@@ -392,7 +478,7 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
   const remove = async (): Promise<void> => {
     const ok = await dialog.confirm({
       title: bot.name || t('bots.unnamed'),
-      message: t('bots.deleteConfirm'),
+      message: t(`bots.deleteConfirm.${bot.platform}`),
       confirmText: t('common.delete'),
       variant: 'danger'
     })
@@ -414,6 +500,11 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
             <span className="bots-detail__sep">·</span>
             {t(`bots.platform.${bot.platform}`)}
             {bot.region && <span className="bots-tag">{t(`bots.region.${bot.region}`)}</span>}
+            {bot.username && (
+              <>
+                <span className="bots-detail__sep">·</span>@{bot.username}
+              </>
+            )}
           </span>
         </div>
         <button className="icon-btn provider-detail__del" title={t('bots.delete')} onClick={() => void remove()}>
@@ -446,7 +537,7 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
         </div>
         {pair && (
           <div className="bots-pair">
-            <span className="bots-card__hint">{t('bots.inviteHint')}</span>
+            <span className="bots-card__hint">{t(`bots.inviteHint.${bot.platform}`)}</span>
             <code className="bots-pair__code">/pair {pair.code}</code>
             <div className="bots-pair__meta">
               <span className="bots-card__hint">{t('bots.inviteExpires').replace('{s}', fmtLeft(left))}</span>
