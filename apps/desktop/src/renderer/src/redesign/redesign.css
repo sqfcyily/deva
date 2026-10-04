@@ -295,6 +295,44 @@ body.cf-resizing-y * {
 .cf-ctx__item.is-danger:not(:disabled):hover {
   background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
+/* 分支多时面板限高可滚；长分支名省略。 */
+.cf-ctx {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+.cf-ctx__item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+.cf-ctx__sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.cf-ctx__section {
+  padding: 6px 9px 3px;
+  color: var(--fg-subtle);
+  font-size: 11px;
+  cursor: default;
+  user-select: none;
+}
+.cf-ctx__filter {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 4px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  outline: none;
+}
+.cf-ctx__filter:focus {
+  border-color: var(--accent);
+}
 /* 禁用项（如系统默认角色的删除）：明显变淡 + 禁用光标 + 关掉悬停反馈。 */
 .cf-ctx__item:disabled {
   opacity: 0.4;
@@ -729,6 +767,14 @@ body.cf-resizing-y * {
   max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.cf-gitchip__merge {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.4;
 }
 .cf-gitchip__ab {
   display: inline-flex;

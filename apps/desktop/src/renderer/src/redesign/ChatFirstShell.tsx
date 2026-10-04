@@ -20,8 +20,10 @@ import {
   FileCode2,
   FolderOpen,
   FolderPlus,
+  ArrowRightLeft,
   GitBranch,
   GitCommitHorizontal,
+  GitMerge,
   Image as ImageIcon,
   Info,
   ListChecks,
@@ -55,6 +57,7 @@ import type {
   GitFailReason,
   GitGenLocale,
   GitGenModel,
+  GitOpResult,
   GitStatus,
   PersonaUpsertInput,
   PreviewScheduleResult,
@@ -886,6 +889,22 @@ function Rail({
   )
 }
 
+/** 菜单条目：普通项点击即执行并关闭菜单；separator=分隔线；section=不可点的分组标题；filter=过滤框（按 label 过滤普通项）。 */
+interface CtxItem {
+  label: string
+  icon?: React.ReactNode
+  danger?: boolean
+  /** 禁用项：灰显 + 悬停说明（title），不可点（如系统默认角色的删除项）。 */
+  disabled?: boolean
+  title?: string
+  onClick: () => void
+}
+type CtxEntry =
+  | CtxItem
+  | { kind: 'separator' }
+  | { kind: 'section'; label: string }
+  | { kind: 'filter'; placeholder?: string }
+
 /**
  * 轻量右键菜单：定位到光标处（视口坐标），带全屏透明背板——点击 / 右键空白 / Esc 皆关闭。
  * 挂载后测量自身尺寸并夹取回视口内，避免贴近右 / 下边缘时溢出被裁。
@@ -901,21 +920,15 @@ function ContextMenu({
 }: {
   x: number
   y: number
-  items: Array<{
-    label: string
-    icon?: React.ReactNode
-    danger?: boolean
-    /** 禁用项：灰显 + 悬停说明（title），不可点（如系统默认角色的删除项）。 */
-    disabled?: boolean
-    title?: string
-    onClick: () => void
-  }>
+  items: CtxEntry[]
   onClose: () => void
   /** 向上浮出：y 视作菜单底边锚点，菜单朝上生长（默认向下）。 */
   openUp?: boolean
 }): React.JSX.Element {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ left: x, top: y })
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
@@ -927,7 +940,8 @@ function ContextMenu({
     if (left + r.width > window.innerWidth - pad) left = window.innerWidth - r.width - pad
     if (top + r.height > window.innerHeight - pad) top = window.innerHeight - r.height - pad
     setPos({ left: Math.max(pad, left), top: Math.max(pad, top) })
-  }, [x, y, openUp])
+    // 条目数 / 过滤结果变化会改变高度，需重新夹取
+  }, [x, y, openUp, items.length, q])
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
@@ -946,23 +960,40 @@ function ContextMenu({
         }}
       />
       <div ref={ref} className="cf-ctx" style={{ left: pos.left, top: pos.top }} role="menu">
-        {items.map((it, i) => (
-          <button
-            key={i}
-            type="button"
-            role="menuitem"
-            className={`cf-ctx__item${it.danger ? ' is-danger' : ''}`}
-            disabled={it.disabled}
-            title={it.title}
-            onClick={() => {
-              onClose()
-              it.onClick()
-            }}
-          >
-            {it.icon}
-            <span>{it.label}</span>
-          </button>
-        ))}
+        {items.map((it, i) => {
+          if ('kind' in it) {
+            if (it.kind === 'separator') return q ? null : <div key={i} className="cf-ctx__sep" role="separator" />
+            if (it.kind === 'section') return q ? null : <div key={i} className="cf-ctx__section">{it.label}</div>
+            return (
+              <input
+                key={i}
+                className="cf-ctx__filter"
+                autoFocus
+                placeholder={it.placeholder}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            )
+          }
+          if (q && !it.label.toLowerCase().includes(q)) return null
+          return (
+            <button
+              key={i}
+              type="button"
+              role="menuitem"
+              className={`cf-ctx__item${it.danger ? ' is-danger' : ''}`}
+              disabled={it.disabled}
+              title={it.title}
+              onClick={() => {
+                onClose()
+                it.onClick()
+              }}
+            >
+              {it.icon}
+              <span>{it.label}</span>
+            </button>
+          )
+        })}
       </div>
     </>
   )
@@ -1084,8 +1115,15 @@ function useGitStatus(root: string | null): GitState {
 
 /**
  * 挂载 chip 里的分支 pill + 快捷菜单。仅当 git 可用且目标是仓库时渲染，否则返回 null（非仓库 / 没装 git 静默隐藏）。
- * 菜单复用既有 ContextMenu（视口定位 + 越界夹回）；「切换分支」二次弹出分支列表菜单；「提交」开 CommitModal。
+ * 菜单复用 ContextMenu（视口定位 + 越界夹回），始终只显示一级：点「分支」原地换成分支列表（含合并分支 / 新建分支），
+ * 点某个分支再换成它的操作（切换 / 重命名 / 删除）。「提交」开 CommitModal。
  */
+type GitMenuView =
+  | { kind: 'main' }
+  | { kind: 'branches' }
+  | { kind: 'merge' }
+  | { kind: 'branch'; branch: GitBranchEntry }
+
 function GitWidget({ root }: { root: string }): React.JSX.Element | null {
   const { t, locale } = useI18n()
   const toast = useToast()
@@ -1093,7 +1131,7 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
   const { activeModel, hasKey } = useModels()
   const { available, status, busy, refresh } = useGitStatus(root)
 
-  const [menu, setMenu] = useState<{ kind: 'main' | 'branch'; x: number; y: number } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; view: GitMenuView } | null>(null)
   const [branches, setBranches] = useState<GitBranchEntry[]>([])
   const [commitOpen, setCommitOpen] = useState(false)
   const [opBusy, setOpBusy] = useState(false)
@@ -1102,14 +1140,26 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
   if (!available || !status || !status.isRepo) return null
 
   const label = status.detached ? t('cf.git.detached') : status.branch || t('cf.git.noBranch')
+  const fmt = (key: string, name: string): string => t(key).replace('{name}', name)
 
   // 锚点取 pill 上边缘（留 4px 间隙）；ContextMenu 以 openUp 把它当底边向上浮出，
   // 避免菜单向下遮挡下方的输入区/角色卡（挂载 chip 贴近视口底部）。
-  const openMenuAt = (kind: 'main' | 'branch'): void => {
+  // 打开前先拉分支列表（本地命令，很快），使「分支」视图点开即有内容。
+  const openMenu = async (): Promise<void> => {
     const el = pillRef.current
     if (!el) return
+    try {
+      setBranches(await window.deva.git.branches(root))
+    } catch {
+      setBranches([])
+    }
     const r = el.getBoundingClientRect()
-    setMenu({ kind, x: r.left, y: r.top - 4 })
+    setMenu({ x: r.left, y: r.top - 4, view: { kind: 'main' } })
+  }
+
+  // 切换菜单视图：ContextMenu 点击时先 onClose（置 null）再 onClick，故这里直接写入完整状态覆盖之。
+  const go = (view: GitMenuView): void => {
+    if (menu) setMenu({ x: menu.x, y: menu.y, view })
   }
 
   // 统一执行一个 git 写操作：置忙 → 调用 → 据结果 toast → 刷新状态。
@@ -1130,24 +1180,6 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
     }
   }
 
-  const openBranches = async (): Promise<void> => {
-    try {
-      setBranches(await window.deva.git.branches(root))
-    } catch {
-      setBranches([])
-    }
-    openMenuAt('branch')
-  }
-
-  const mainItems = [
-    { label: t('cf.git.fetch'), icon: <Download size={14} />, onClick: () => void run(() => window.deva.git.fetch(root), t('cf.git.doneFetch')) },
-    { label: t('cf.git.pull'), icon: <ArrowDownToLine size={14} />, onClick: () => void run(() => window.deva.git.pull(root), t('cf.git.donePull')) },
-    { label: t('cf.git.push'), icon: <ArrowUpFromLine size={14} />, onClick: () => void run(() => window.deva.git.push(root, status.upstream ? null : status.branch), t('cf.git.donePush')) },
-    { label: t('cf.git.commit'), icon: <GitCommitHorizontal size={14} />, onClick: () => setCommitOpen(true) },
-    { label: t('cf.git.refresh'), icon: <RefreshCw size={14} />, onClick: () => void refresh() },
-    { label: t('cf.git.switchBranch'), icon: <GitBranch size={14} />, onClick: () => void openBranches() }
-  ]
-
   // 新建分支：基于当前 HEAD 创建并立即切过去（git checkout -b），未提交的改动随之带到新分支。
   const createBranch = async (): Promise<void> => {
     const name = await dialog.prompt({
@@ -1159,22 +1191,203 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
       validate: isValidBranchName
     })
     if (!name) return
+    await run(() => window.deva.git.createBranch(root, name, true), fmt('cf.git.doneCreateBranch', name))
+  }
+
+  // 合并到当前分支：冲突时不当作普通失败——提示去解决或中止，并给「中止合并」快捷按钮。
+  const mergeBranch = async (ref: string): Promise<void> => {
+    setOpBusy(true)
+    try {
+      const r = await window.deva.git.merge(root, ref)
+      if (r.ok) toast.show({ variant: 'success', message: fmt('cf.git.doneMerge', ref) })
+      else if (r.reason === 'conflict')
+        toast.show({
+          variant: 'warning',
+          title: t('cf.git.mergeConflictTitle'),
+          message: t('cf.git.mergeConflictHint'),
+          action: { label: t('cf.git.abortMerge'), onClick: () => void abortMerge(false) }
+        })
+      else toast.show(gitErrorToast(t, r))
+    } catch {
+      toast.show({ variant: 'error', message: gitReasonText(t, 'error') })
+    } finally {
+      setOpBusy(false)
+      void refresh()
+    }
+  }
+
+  // 中止合并会丢弃已做的冲突解决，菜单入口先确认（toast 快捷按钮紧随合并失败，直接执行）。
+  const abortMerge = async (confirm: boolean): Promise<void> => {
+    if (
+      confirm &&
+      !(await dialog.confirm({
+        title: t('cf.git.abortMergeTitle'),
+        message: t('cf.git.abortMergeHint'),
+        variant: 'danger',
+        confirmText: t('cf.git.abortMerge')
+      }))
+    )
+      return
+    await run(() => window.deva.git.mergeAbort(root), t('cf.git.doneAbortMerge'))
+  }
+
+  // 删除本地分支：先确认 → -d；未合并则再确认一次（写明会丢失的提交数）→ -D。
+  const deleteBranch = async (name: string): Promise<void> => {
+    const ok = await dialog.confirm({
+      title: fmt('cf.git.deleteBranchTitle', name),
+      message: t('cf.git.deleteBranchHint'),
+      variant: 'danger',
+      confirmText: t('cf.git.delete')
+    })
+    if (!ok) return
+    const done = fmt('cf.git.doneDeleteBranch', name)
+    let first: GitOpResult
+    try {
+      first = await window.deva.git.deleteBranch(root, name, false)
+    } catch {
+      toast.show({ variant: 'error', message: gitReasonText(t, 'error') })
+      return
+    }
+    if (!first.ok && first.reason === 'unmerged') {
+      const force = await dialog.confirm({
+        title: t('cf.git.forceDeleteTitle'),
+        message: t('cf.git.forceDeleteHint').replace('{name}', name).replace('{n}', String(first.count ?? 0)),
+        variant: 'danger',
+        confirmText: t('cf.git.forceDelete')
+      })
+      if (force) await run(() => window.deva.git.deleteBranch(root, name, true), done)
+      return
+    }
+    await run(async () => first, done)
+  }
+
+  const renameBranch = async (oldName: string): Promise<void> => {
+    const name = await dialog.prompt({
+      title: t('cf.git.renameBranchTitle'),
+      label: t('cf.git.newBranchName'),
+      defaultValue: oldName,
+      confirmText: t('cf.git.rename'),
+      validate: (v) => isValidBranchName(v) && v.trim() !== oldName
+    })
+    if (!name) return
+    await run(() => window.deva.git.renameBranch(root, oldName, name), fmt('cf.git.doneRenameBranch', name))
+  }
+
+  const deleteRemoteBranch = async (b: GitBranchEntry): Promise<void> => {
+    if (!b.remote) return
+    const remote = b.remote
+    const ok = await dialog.confirm({
+      title: fmt('cf.git.deleteRemoteTitle', b.name),
+      message: t('cf.git.deleteRemoteHint'),
+      variant: 'danger',
+      confirmText: t('cf.git.delete')
+    })
+    if (!ok) return
     await run(
-      () => window.deva.git.createBranch(root, name, true),
-      t('cf.git.doneCreateBranch').replace('{name}', name)
+      () => window.deva.git.deleteRemoteBranch(root, remote, b.name.slice(remote.length + 1)),
+      fmt('cf.git.doneDeleteBranch', b.name)
     )
   }
 
-  const branchItems = [
-    ...branches.map((b) => ({
+  // 切换分支；远程分支：本地已有同名分支则直接切过去，否则建跟踪分支（checkout --track）。
+  const checkout = (b: GitBranchEntry): void => {
+    const done = t('cf.git.doneCheckout')
+    if (!b.remote) {
+      void run(() => window.deva.git.checkout(root, b.name), done)
+      return
+    }
+    const short = b.name.slice(b.remote.length + 1)
+    if (branches.some((x) => !x.remote && x.name === short))
+      void run(() => window.deva.git.checkout(root, short), done)
+    else void run(() => window.deva.git.checkoutRemote(root, b.name), done)
+  }
+
+  const spacer = <span style={{ width: 14, display: 'inline-block' }} />
+  const filterItem: CtxEntry[] =
+    branches.length > 8 ? [{ kind: 'filter', placeholder: t('cf.git.filterBranches') }] : []
+  // 分支列表（本地 / 远程分组）：onPick 决定点击某分支后做什么（进操作视图 / 直接合并）
+  const branchList = (list: GitBranchEntry[], onPick: (b: GitBranchEntry) => void): CtxEntry[] => {
+    const local = list.filter((b) => !b.remote)
+    const remote = list.filter((b) => b.remote)
+    const row = (b: GitBranchEntry): CtxEntry => ({
       label: b.name,
-      icon: b.current ? <Check size={14} /> : <span style={{ width: 14, display: 'inline-block' }} />,
-      disabled: b.current,
-      title: b.current ? t('cf.git.currentBranch') : undefined,
-      onClick: () => void run(() => window.deva.git.checkout(root, b.name), t('cf.git.doneCheckout'))
-    })),
-    { label: t('cf.git.createBranch'), icon: <Plus size={14} />, onClick: () => void createBranch() }
-  ]
+      icon: b.current ? <Check size={14} /> : spacer,
+      title: b.upstream ? `↑ ${b.upstream}` : undefined,
+      onClick: () => onPick(b)
+    })
+    return [
+      ...(local.length ? [{ kind: 'section' as const, label: t('cf.git.localBranches') }, ...local.map(row)] : []),
+      ...(remote.length ? [{ kind: 'section' as const, label: t('cf.git.remoteBranches') }, ...remote.map(row)] : [])
+    ]
+  }
+
+  const view = menu?.view ?? { kind: 'main' as const }
+  let items: CtxEntry[]
+  if (view.kind === 'branches') {
+    items = [
+      ...filterItem,
+      {
+        label: t('cf.git.mergeBranch'),
+        icon: <GitMerge size={14} />,
+        disabled: status.mergeInProgress,
+        title: status.mergeInProgress ? t('cf.git.mergeBusy') : undefined,
+        onClick: () => go({ kind: 'merge' })
+      },
+      { label: t('cf.git.createBranch'), icon: <Plus size={14} />, onClick: () => void createBranch() },
+      ...branchList(branches, (b) => go({ kind: 'branch', branch: b }))
+    ]
+  } else if (view.kind === 'merge') {
+    items = [
+      ...filterItem,
+      { kind: 'section', label: fmt('cf.git.mergeIntoTitle', label) },
+      ...branchList(
+        branches.filter((b) => !b.current),
+        (b) => void mergeBranch(b.name)
+      )
+    ]
+  } else if (view.kind === 'branch') {
+    const b = view.branch
+    items = [
+      { kind: 'section', label: b.name },
+      {
+        label: t('cf.git.checkout'),
+        icon: <ArrowRightLeft size={14} />,
+        disabled: b.current,
+        title: b.current ? t('cf.git.currentBranch') : undefined,
+        onClick: () => checkout(b)
+      },
+      ...(b.remote
+        ? []
+        : [{ label: t('cf.git.renameBranch'), icon: <Pencil size={14} />, onClick: () => void renameBranch(b.name) }]),
+      { kind: 'separator' },
+      b.remote
+        ? { label: t('cf.git.deleteRemoteBranch'), icon: <Trash2 size={14} />, danger: true, onClick: () => void deleteRemoteBranch(b) }
+        : {
+            label: t('cf.git.deleteBranch'),
+            icon: <Trash2 size={14} />,
+            danger: true,
+            disabled: b.current,
+            title: b.current ? t('cf.git.deleteCurrentHint') : undefined,
+            onClick: () => void deleteBranch(b.name)
+          }
+    ]
+  } else {
+    items = [
+      ...(status.mergeInProgress
+        ? [
+            { label: t('cf.git.abortMerge'), icon: <X size={14} />, danger: true, onClick: () => void abortMerge(true) },
+            { kind: 'separator' as const }
+          ]
+        : []),
+      { label: t('cf.git.pull'), icon: <ArrowDownToLine size={14} />, onClick: () => void run(() => window.deva.git.pull(root), t('cf.git.donePull')) },
+      { label: t('cf.git.push'), icon: <ArrowUpFromLine size={14} />, onClick: () => void run(() => window.deva.git.push(root, status.upstream ? null : status.branch), t('cf.git.donePush')) },
+      { label: t('cf.git.fetch'), icon: <Download size={14} />, onClick: () => void run(() => window.deva.git.fetch(root), t('cf.git.doneFetch')) },
+      { label: t('cf.git.commit'), icon: <GitCommitHorizontal size={14} />, onClick: () => setCommitOpen(true) },
+      { kind: 'separator' },
+      { label: t('cf.git.branches'), icon: <GitBranch size={14} />, onClick: () => go({ kind: 'branches' }) },
+      { label: t('cf.git.refresh'), icon: <RefreshCw size={14} />, onClick: () => void refresh() }
+    ]
+  }
 
   const commitModel: GitGenModel | null =
     activeModel && hasKey(activeModel.provider.id)
@@ -1195,11 +1408,12 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
         className={`cf-gitchip${opBusy || busy ? ' is-busy' : ''}`}
         title={t('cf.git.menuHint')}
         aria-label={t('cf.git.menuHint')}
-        onClick={() => openMenuAt('main')}
+        onClick={() => void openMenu()}
         disabled={opBusy}
       >
         <GitBranch size={13} />
         <span className="cf-gitchip__branch">{label}</span>
+        {status.mergeInProgress && <span className="cf-gitchip__merge">{t('cf.git.merging')}</span>}
         {(status.ahead > 0 || status.behind > 0) && (
           <span className="cf-gitchip__ab">
             {status.ahead > 0 && (
@@ -1222,7 +1436,8 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
           x={menu.x}
           y={menu.y}
           openUp
-          items={menu.kind === 'main' ? mainItems : branchItems}
+          key={view.kind === 'branch' ? `branch:${view.branch.name}` : view.kind}
+          items={items}
           onClose={() => setMenu(null)}
         />
       )}

@@ -495,6 +495,7 @@ export interface GitStatus {
   ahead: number
   behind: number
   remotes: string[]
+  mergeInProgress: boolean
   staged: GitFileStatus[]
   unstaged: GitFileStatus[]
   conflicts: GitFileStatus[]
@@ -514,8 +515,13 @@ export interface GitCommit {
   subject: string
 }
 export interface GitBranch {
+  /** 本地分支为短名；远程分支含远程名前缀（origin/x） */
   name: string
   current: boolean
+  /** 远程分支所属远程名；本地分支为 null */
+  remote: string | null
+  /** 本地分支的上游；无则 null */
+  upstream: string | null
 }
 export type GitFailReason =
   | 'auth'
@@ -525,6 +531,7 @@ export type GitFailReason =
   | 'dirty'
   | 'identity-needed'
   | 'empty'
+  | 'unmerged'
   | 'no-git'
   | 'canceled'
   | 'error'
@@ -533,6 +540,8 @@ export interface GitOpResult {
   ok: boolean
   reason?: GitFailReason
   message?: string
+  /** delete-branch 回 unmerged 时：未合并到当前 HEAD 的提交数 */
+  count?: number
 }
 
 /** AI 生成提交信息所用的模型配置（与 chat 的模型形状一致；密钥仍在主进程按 providerId 解密）。 */
@@ -946,6 +955,20 @@ const api = {
       ipcRenderer.invoke('git:checkout', dir, ref),
     createBranch: (dir: string, name: string, checkout: boolean): Promise<GitOpResult> =>
       ipcRenderer.invoke('git:create-branch', dir, name, checkout),
+    /** 检出远程分支为本地跟踪分支（checkout --track origin/x） */
+    checkoutRemote: (dir: string, remoteRef: string): Promise<GitOpResult> =>
+      ipcRenderer.invoke('git:checkout-remote', dir, remoteRef),
+    /** 合并 ref 到当前分支；冲突回 reason=conflict */
+    merge: (dir: string, ref: string): Promise<GitOpResult> => ipcRenderer.invoke('git:merge', dir, ref),
+    mergeAbort: (dir: string): Promise<GitOpResult> => ipcRenderer.invoke('git:merge-abort', dir),
+    /** 删除本地分支；未合并时回 reason=unmerged + count，UI 确认后 force=true 强删 */
+    deleteBranch: (dir: string, name: string, force: boolean): Promise<GitOpResult> =>
+      ipcRenderer.invoke('git:delete-branch', dir, name, force),
+    renameBranch: (dir: string, oldName: string, newName: string): Promise<GitOpResult> =>
+      ipcRenderer.invoke('git:rename-branch', dir, oldName, newName),
+    /** 删除远程分支（破坏性，UI 先确认） */
+    deleteRemoteBranch: (dir: string, remote: string, branch: string): Promise<GitOpResult> =>
+      ipcRenderer.invoke('git:delete-remote-branch', dir, remote, branch),
     log: (dir: string, depth?: number): Promise<GitCommit[]> =>
       ipcRenderer.invoke('git:log', dir, depth),
     init: (dir: string): Promise<GitOpResult> => ipcRenderer.invoke('git:init', dir),

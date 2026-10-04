@@ -56,6 +56,8 @@ export interface GitStatus {
   ahead: number
   behind: number
   remotes: string[]
+  /** 合并进行中（存在 MERGE_HEAD）：UI 显示「合并中」并提供「中止合并」 */
+  mergeInProgress: boolean
   staged: GitFileStatus[]
   unstaged: GitFileStatus[]
   conflicts: GitFileStatus[]
@@ -78,8 +80,13 @@ export interface GitCommit {
 }
 
 export interface GitBranch {
+  /** 本地分支为短名（feature/x）；远程分支含远程名前缀（origin/feature/x） */
   name: string
   current: boolean
+  /** 远程分支所属远程名（origin）；本地分支为 null */
+  remote: string | null
+  /** 本地分支的上游（origin/feature/x）；无上游或远程分支为 null */
+  upstream: string | null
 }
 
 /** 远程/提交/切换失败的结构化原因，渲染层据此给对应提示。 */
@@ -91,6 +98,7 @@ export type GitFailReason =
   | 'dirty'
   | 'identity-needed'
   | 'empty'
+  | 'unmerged'
   | 'no-git'
   | 'canceled'
   | 'error'
@@ -211,6 +219,7 @@ function emptyStatus(root: string): GitStatus {
     ahead: 0,
     behind: 0,
     remotes: [],
+    mergeInProgress: false,
     staged: [],
     unstaged: [],
     conflicts: []
@@ -261,7 +270,7 @@ function mkFile(
 function parsePorcelainV2(
   stdout: string,
   root: string
-): Omit<GitStatus, 'isRepo' | 'root' | 'remotes'> {
+): Omit<GitStatus, 'isRepo' | 'root' | 'remotes' | 'mergeInProgress'> {
   const tokens = stdout.split('\0')
   let branch: string | null = null
   let detached = false
@@ -465,6 +474,18 @@ function safeAbsPaths(paths: unknown): string[] {
   return out
 }
 
+/** 引用名（分支 / 远程引用）基础校验：非空字符串且不以 `-` 开头，杜绝被 git 当成选项。 */
+function safeRef(ref: unknown): ref is string {
+  return typeof ref === 'string' && ref.length > 0 && !ref.startsWith('-') && !/[\0\s]/.test(ref)
+}
+
+async function listRemotes(dir: string): Promise<string[]> {
+  const rem = await runGitRaw(dir, ['remote'])
+  return rem.code === 0 ? rem.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : []
+}
+
+const badRef = { ok: false as const, reason: 'error' as GitFailReason, message: 'invalid ref' }
+
 // ── AI 生成提交信息 ───────────────────────────────────────────────────────────
 
 /** 生成提交信息所用的模型配置（与 preload / chat 的模型形状对齐；密钥仍由主进程按 providerId 解密）。 */
@@ -582,8 +603,8 @@ export function registerGitIpc(): void {
         return false
       }
     }
-    const rem = await runGitRaw(dir, ['remote'])
-    const remotes = rem.code === 0 ? rem.stdout.split('\n').map((s) => s.trim()).filter(Boolean) : []
+    const remotes = await listRemotes(dir)
+    const merge = await runGitRaw(dir, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])
     return {
       isRepo: true,
       root,
@@ -593,6 +614,7 @@ export function registerGitIpc(): void {
       ahead: parsed.ahead,
       behind: parsed.behind,
       remotes,
+      mergeInProgress: merge.code === 0,
       staged: parsed.staged.filter(inside),
       unstaged: parsed.unstaged.filter(inside),
       conflicts: parsed.conflicts.filter(inside)
@@ -691,16 +713,28 @@ export function registerGitIpc(): void {
   // 分支清单
   ipcMain.handle('git:branches', async (_e, dir: string): Promise<GitBranch[]> => {
     assertInside(dir)
-    const res = await runGit(dir, ['branch', '--format=%(refname:short)%00%(HEAD)'])
+    const res = await runGit(dir, [
+      'for-each-ref',
+      '--format=%(refname)%00%(HEAD)%00%(upstream:short)%00%(symref)',
+      'refs/heads',
+      'refs/remotes'
+    ])
     if (res.code !== 0) return []
-    return res.stdout
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((l) => {
-        const [name, head] = l.split('\0')
-        return { name, current: head === '*' }
-      })
+    const remotes = (await listRemotes(dir)).sort((x, y) => y.length - x.length)
+    const out: GitBranch[] = []
+    for (const line of res.stdout.split('\n')) {
+      if (!line.trim()) continue
+      const [ref, head, upstream, symref] = line.split('\0')
+      if (ref.startsWith('refs/heads/')) {
+        out.push({ name: ref.slice(11), current: head === '*', remote: null, upstream: upstream || null })
+      } else if (ref.startsWith('refs/remotes/') && !symref) {
+        // 跳过 origin/HEAD 这类符号引用；远程名取最长匹配前缀（远程名本身可含 /）
+        const name = ref.slice(13)
+        const remote = remotes.find((r) => name.startsWith(r + '/')) ?? name.split('/')[0]
+        out.push({ name, current: false, remote, upstream: null })
+      }
+    }
+    return out
   })
 
   // 切换分支
@@ -721,6 +755,67 @@ export function registerGitIpc(): void {
     const args = checkout ? ['checkout', '-b', name.trim()] : ['branch', name.trim()]
     const res = await runGit(dir, args)
     return res.code === 0 ? { ok: true as const } : { ok: false as const, message: res.stderr.trim() }
+  })
+
+  // 检出远程分支为本地跟踪分支（checkout --track origin/x → 本地 x）
+  ipcMain.handle('git:checkout-remote', async (_e, dir: string, remoteRef: string) => {
+    assertInside(dir)
+    if (!safeRef(remoteRef)) return badRef
+    const res = await runGit(dir, ['checkout', '--track', remoteRef])
+    if (res.code === 0) return { ok: true as const }
+    const reason: GitFailReason = /local changes|would be overwritten/i.test(res.stderr) ? 'dirty' : 'error'
+    return { ok: false as const, reason, message: res.stderr.trim() }
+  })
+
+  // 合并指定分支到当前分支（--no-edit：用默认合并信息，不弹编辑器）
+  ipcMain.handle('git:merge', async (_e, dir: string, ref: string) => {
+    assertInside(dir)
+    if (!safeRef(ref)) return badRef
+    const res = await runGit(dir, ['merge', '--no-edit', ref])
+    if (res.code === 0) return { ok: true as const }
+    // 冲突信息在 stdout（CONFLICT (content): ...），脏工作区提示在 stderr
+    const out = `${res.stdout}\n${res.stderr}`.trim()
+    return { ok: false as const, reason: classifyRemoteError(out), message: out }
+  })
+
+  // 中止进行中的合并（恢复到合并前状态）
+  ipcMain.handle('git:merge-abort', async (_e, dir: string) => {
+    assertInside(dir)
+    const res = await runGit(dir, ['merge', '--abort'])
+    return res.code === 0 ? { ok: true as const } : { ok: false as const, message: res.stderr.trim() }
+  })
+
+  // 删除本地分支：先 -d；未合并时回 unmerged + 未合并到当前 HEAD 的提交数，UI 二次确认后 force=true 走 -D
+  ipcMain.handle('git:delete-branch', async (_e, dir: string, name: string, force: boolean) => {
+    assertInside(dir)
+    if (!safeRef(name)) return badRef
+    const res = await runGit(dir, ['branch', force ? '-D' : '-d', name])
+    if (res.code === 0) return { ok: true as const }
+    if (/not fully merged/i.test(res.stderr)) {
+      const cnt = await runGit(dir, ['rev-list', '--count', `HEAD..${name}`])
+      const count = cnt.code === 0 ? parseInt(cnt.stdout.trim(), 10) || 0 : 0
+      return { ok: false as const, reason: 'unmerged' as GitFailReason, count, message: res.stderr.trim() }
+    }
+    return { ok: false as const, reason: 'error' as GitFailReason, message: res.stderr.trim() }
+  })
+
+  // 重命名本地分支（git branch -m old new；上游配置随之迁移）
+  ipcMain.handle('git:rename-branch', async (_e, dir: string, oldName: string, newName: string) => {
+    assertInside(dir)
+    if (!safeRef(oldName) || typeof newName !== 'string' || !safeRef(newName.trim())) return badRef
+    const res = await runGit(dir, ['branch', '-m', oldName, newName.trim()])
+    return res.code === 0 ? { ok: true as const } : { ok: false as const, message: res.stderr.trim() }
+  })
+
+  // 删除远程分支（破坏性，UI 先确认）：git push <remote> --delete <branch>；remote 须是已配置远程
+  ipcMain.handle('git:delete-remote-branch', async (_e, dir: string, remote: string, branch: string) => {
+    assertInside(dir)
+    if (!safeRef(remote) || !safeRef(branch)) return badRef
+    if (!(await listRemotes(dir)).includes(remote)) return badRef
+    const res = await runGit(dir, ['push', remote, '--delete', branch], REMOTE_TIMEOUT)
+    return res.code === 0
+      ? { ok: true as const }
+      : { ok: false as const, reason: classifyRemoteError(res.stderr), message: res.stderr.trim() }
   })
 
   // 提交历史
