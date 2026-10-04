@@ -872,6 +872,11 @@ export type ChatStreamEvent =
       status: 'accepted' | 'rejected' | 'created' | 'dismissed'
       taskId?: string
     }
+  /**
+   * 回合开始（总是本轮第一个事件）：带上本轮的用户消息。桌面、手机端、定时任务发起的回合都发——
+   * 各端据此把「别处发起的一轮」当本地回合呈现（用户气泡 + 流式 + 可停止）；自己发起的按 turnId 认出并跳过。
+   */
+  | { type: 'turn_start'; user: { text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] } }
   | { type: 'done'; stopReason: StopReason }
 
 // 主对话单轮工具步数上限：Infinity = 不设上限，一直循环到模型不再调用工具为止（对标 Claude Code 的
@@ -1010,10 +1015,11 @@ const pendingMount = new Map<
 const mountDeclined = new Set<string>()
 
 /**
- * 正在跑回合的会话（主轮与定时任务都登记）。activeTurns 按 turnId 做键、查不到会话，
- * 回滚 / 撤销 / blob GC 据此判断「会话忙」而拒绝执行，免得与进行中的回合互相改写。
+ * 正在跑回合的会话 → 其 turnId（主轮与定时任务都登记）。activeTurns 按 turnId 做键、查不到会话，
+ * 回滚 / 撤销 / blob GC 据此判断「会话忙」而拒绝执行，免得与进行中的回合互相改写；
+ * 渲染层打开会话时也据此接上进行中的回合（chat:attach-session）。
  */
-const busySessions = new Set<string>()
+const busySessions = new Map<string, string>()
 
 /**
  * 把待决的问答 / 计划审阅 / 挂载请求一律按「取消」解开：给了 turnId 只解该轮的，缺省解全部。
@@ -1505,6 +1511,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
   function emit(turnId: string, sessionId: string, event: ChatStreamEvent): void {
     publishChatEvent({ turnId, sessionId, event })
+  }
+
+  /** 广播回合开始：本轮用户消息（历史末条）按展示形态带出，与重载后看到的气泡一致。 */
+  function emitTurnStart(turnId: string, sessionId: string, history: Message[]): void {
+    const [user] = toDisplayMessages(history.slice(-1))
+    if (user?.role === 'user') emit(turnId, sessionId, { type: 'turn_start', user })
   }
 
   /** 抛出一个或多个问题、暂停循环等用户一次性作答（不过权限闸门，恒放行执行）。 */
@@ -2458,7 +2470,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): Promise<void> {
     const controller = new AbortController()
     activeTurns.set(turnId, controller)
-    busySessions.add(sessionId)
+    busySessions.set(sessionId, turnId)
     const session = ensureSession(sessionId)
     // 聚焦工作区：本对话若挂载文件夹，用它作有效根（受信/在工作区内判定、终端 cwd、系统提示词聚焦、
     // 权限模式键均据此）；未挂载 → 回落 workspaceRoot（对话优先外壳恒 null，即全机通用助手）。
@@ -2669,7 +2681,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     activeTurns.set(turnId, controller)
     const auth = task.auth
     const sessionId = task.sessionId
-    busySessions.add(sessionId)
+    busySessions.set(sessionId, turnId)
     // 本次触发会改写该会话的消息：此前的回滚快照随之失效（撤销会把这一轮一并抹掉）。
     pendingUndo.delete(sessionId)
     // 密封任务无固定工作目录：相对路径回落进程 cwd，文件操作应用绝对路径。写入除硬底线外一律放行。
@@ -2703,6 +2715,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     repairDanglingToolUses(session)
     const history = session.messages
     history.push({ role: 'user', content: task.prompt })
+    emitTurnStart(turnId, sessionId, history)
 
     // 自动压缩：任务多次触发累积于同一会话，接近窗口即先摘要替换早期历史（失败/无需都不阻断本轮）。
     // history 已在上面捕获——compactSession 就地改写 messages，这个引用压缩后依然有效。
@@ -2861,6 +2874,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     saveProject(sessionId)
 
     const turnId = genId('turn')
+    emitTurnStart(turnId, sessionId, history)
     void runTurn(sessionId, turnId, model, workspaceRoot)
     return { turnId }
   }
@@ -2969,25 +2983,37 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   )
 
   // 载入某会话的历史（重建展示气泡）。id 全局唯一 → 无需 workspaceRoot（IPC 仍传，忽略即可）。
+  function loadDisplay(sessionId: string): DisplayMessage[] {
+    const s = getSession(sessionId)
+    // 载入即自愈并落盘：崩溃 / 强退遗留的悬空 tool_use 补成「未完成」，工具卡随之定格而不是永远转圈。
+    // 回合进行中不碰（那时的悬空是工具正在执行）。
+    if (s && !busySessions.has(sessionId) && repairDanglingToolUses(s)) saveProject(sessionId)
+    return s
+      ? toDisplayMessages(
+          s.messages,
+          s.proposals ?? {},
+          s.notices ?? [],
+          s.asks ?? {},
+          s.summaries ?? {},
+          s.plans ?? {},
+          s.autotasks ?? {}
+        )
+      : []
+  }
+
   ipcMain.handle(
     'chat:load-session',
-    (_e, sessionId: string, _workspaceRoot: string | null): DisplayMessage[] => {
-      const s = getSession(sessionId)
-      // 载入即自愈并落盘：崩溃 / 强退遗留的悬空 tool_use 补成「未完成」，工具卡随之定格而不是永远转圈。
-      // 回合进行中不碰（那时的悬空是工具正在执行）。
-      if (s && !busySessions.has(sessionId) && repairDanglingToolUses(s)) saveProject(sessionId)
-      return s
-        ? toDisplayMessages(
-            s.messages,
-            s.proposals ?? {},
-            s.notices ?? [],
-            s.asks ?? {},
-            s.summaries ?? {},
-            s.plans ?? {},
-            s.autotasks ?? {}
-          )
-        : []
-    }
+    (_e, sessionId: string, _workspaceRoot: string | null): DisplayMessage[] => loadDisplay(sessionId)
+  )
+
+  // 载入历史 + 进行中回合的 turnId（无则 null），同一时刻取出：渲染层据此接上别处发起、仍在跑的一轮——
+  // 此后到达的流事件都晚于这份快照，不会漏掉 done 而永远停在「进行中」。
+  ipcMain.handle(
+    'chat:attach-session',
+    (_e, sessionId: string): { messages: DisplayMessage[]; turnId: string | null } => ({
+      messages: loadDisplay(sessionId),
+      turnId: busySessions.get(sessionId) ?? null
+    })
   )
 
   // 持久化角色名片的终态（接受/拒绝）。名片本体随 Message[] 存活，但终态无处落，

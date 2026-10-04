@@ -691,7 +691,8 @@ function onBusEvent({ turnId, sessionId, event }: ChatEventPayload): void {
   if (channels.size === 0) return
   if (event.type === 'interaction_resolved') return applyResolution(event)
   if (event.type === 'card_resolved') return applyCardResolution(sessionId, event)
-  if (event.type === 'usage') return
+  // 回合开始只为桌面窗口补用户气泡；手机端的回合视图在首个内容事件时建立。
+  if (event.type === 'usage' || event.type === 'turn_start') return
   // 桌面手动 /compact 也走回合事件，但不是一轮对话：不推。
   if (event.type === 'compacted' && event.scope === 'manual') return
 

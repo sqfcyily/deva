@@ -639,6 +639,8 @@ export type ChatStreamEvent =
       status: 'accepted' | 'rejected' | 'created' | 'dismissed'
       taskId?: string
     }
+  /** 回合开始（本轮首个事件）：带本轮用户消息，供渲染层把别处发起的一轮当本地回合呈现。 */
+  | { type: 'turn_start'; user: { text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[] } }
   | { type: 'done'; stopReason: string }
 
 /** IM 机器人（远程通道）状态，与 services/remote/index.ts 的 BotView / ScanEvent 对齐。 */
@@ -839,6 +841,9 @@ const api = {
     /** 载入某会话历史，重建展示气泡 */
     loadSession: (sessionId: string, workspaceRoot: string | null): Promise<DisplayMessage[]> =>
       ipcRenderer.invoke('chat:load-session', sessionId, workspaceRoot),
+    /** 载入历史 + 进行中回合的 turnId（同一时刻取出，用于接上别处发起、仍在跑的一轮） */
+    attachSession: (sessionId: string): Promise<{ messages: DisplayMessage[]; turnId: string | null }> =>
+      ipcRenderer.invoke('chat:attach-session', sessionId),
     /** 删除某会话 */
     deleteSession: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:delete-session', sessionId, workspaceRoot),

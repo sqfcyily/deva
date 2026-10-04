@@ -300,6 +300,7 @@ type StreamEvent =
       status: 'accepted' | 'rejected' | 'created' | 'dismissed'
       taskId?: string
     }
+  | { type: 'turn_start'; user: { text: string; attachments: { name: string; kind: AttachKind }[] } }
   | { type: 'done'; stopReason: string }
 
 /**
@@ -790,6 +791,11 @@ interface SessionRuntime {
   startedAt: number
   /** 主进程 reconnecting 事件驱动的真实重连态（非猜测）；null=未在重连。 */
   reconnecting: RecoveryStatus | null
+  /**
+   * 本轮由别处发起（手机端 / 定时任务）、本层只是接上了它：中途接入时本步已流出的部分会缺失，
+   * 故 done 时以主进程为准重载。
+   */
+  external: boolean
 }
 
 /** 空活动态（共享冻结常量作 patch 种子；任何真实变更都返回新对象，绝不原地改）。 */
@@ -798,7 +804,8 @@ const EMPTY_RUNTIME: SessionRuntime = Object.freeze({
   streaming: false,
   turnId: null,
   startedAt: 0,
-  reconnecting: null
+  reconnecting: null,
+  external: false
 })
 
 /** 当前所视会话无活动态时对外暴露的空消息数组（稳定引用，避免每次渲染新建）。 */
@@ -892,6 +899,34 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       setRuntimes(map)
     },
     []
+  )
+
+  // 从主进程载入会话并建活动态；若该会话正有一轮在跑（手机端 / 定时任务发起，或本层切走前发起），就地接上：
+  // 置流式、记 turnId，此后的流事件照本地回合拼进末条助手气泡，发送键随之变为停止。
+  // 载入期间已切走 / 已有活动态生成 → 丢弃结果（绝不冲掉实时内容）。
+  const attachSession = useCallback(
+    async (sid: string): Promise<void> => {
+      const { messages, turnId } = await window.deva.chat.attachSession(sid)
+      if (sessionIdRef.current !== sid || runtimesRef.current.has(sid)) return
+      const msgs = displayToMessages(messages as DisplayMessage[])
+      if (!turnId) {
+        patchRuntime(sid, (r) => ({ ...r, messages: msgs }))
+        return
+      }
+      // 本轮已完成的步骤在历史里（末条即本轮助手消息）；尚无助手输出时补一个空助手位承接流事件。
+      const tail: ChatMessage[] =
+        msgs[msgs.length - 1]?.role === 'assistant' ? [] : [{ id: genId(), role: 'assistant', blocks: [] }]
+      patchRuntime(sid, (r) => ({
+        ...r,
+        messages: [...msgs, ...tail],
+        streaming: true,
+        turnId,
+        startedAt: Date.now(),
+        reconnecting: null,
+        external: true
+      }))
+    },
+    [patchRuntime]
   )
 
   // 只改某会话消息序列的便捷 patch（复用 updateLastAssistant 的引用短路，无变更则不提交）。
@@ -998,11 +1033,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       if (list.length) {
         const id = list[0].id
         setCurrent(id)
-        if (!runtimesRef.current.has(id)) {
-          const dms = await window.deva.chat.loadSession(id, path)
-          if (cancelled || sessionIdRef.current !== id || runtimesRef.current.has(id)) return
-          patchRuntime(id, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
-        }
+        if (!runtimesRef.current.has(id)) await attachSession(id)
       } else {
         startFresh()
       }
@@ -1010,7 +1041,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     return () => {
       cancelled = true
     }
-  }, [activeProject?.path, startFresh, patchRuntime])
+  }, [activeProject?.path, startFresh, attachSession])
 
   // 订阅主进程流事件（挂载一次）。按 payload.sessionId 路由进对应会话的活动态——
   // 不再丢弃「非当前会话」事件：后台那轮照常累积，切回去即见其实时流。
@@ -1044,10 +1075,31 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       const sid = payload.sessionId
       const ev = payload.event as StreamEvent
 
-      // 本渲染层是否正为该会话流式一轮 = 经 send/compact 建过「用户气泡 + 空助手位」脚手架。
-      // 只有这样的会话才能把流事件正确拼进气泡。否则是**后台回合**（典型：调度器触发的定时任务在
-      // 主进程内闭环执行），本层从未建脚手架 —— 其内容以主进程 + 磁盘为唯一真源，绝不在此凑合拼装。
+      // 本渲染层是否正为该会话流式一轮 = 建过「用户气泡 + 空助手位」脚手架：本层 send/compact 发起的，
+      // 或别处发起、经 turn_start / attachSession 接上的。只有这样的会话才能把流事件正确拼进气泡；
+      // 其余是本层没缓存的后台回合 —— 内容以主进程 + 磁盘为唯一真源，绝不在此凑合拼装。
       const localStreaming = runtimesRef.current.get(sid)?.streaming === true
+
+      // 回合开始。本层自己发起的已建好脚手架（send 尚未返回、turnId 未回填）→ 跳过。别处发起的
+      //（手机端 / 定时任务）当本地回合呈现：缓存着该会话就补用户气泡 + 空助手位并置流式；没缓存但正在看
+      //（还在载入）→ 经 attachSession 接上；都不是 → 不建空壳，打开时由 attachSession 接上。
+      if (ev.type === 'turn_start') {
+        void refreshSessions() // 新会话 / 标题 / 排序
+        if (localStreaming) return
+        if (runtimesRef.current.has(sid)) {
+          const [userMsg] = displayToMessages([{ role: 'user', ...ev.user }])
+          patchRuntime(sid, (r) => ({
+            ...r,
+            messages: [...r.messages, userMsg, { id: genId(), role: 'assistant', blocks: [] }],
+            streaming: true,
+            turnId: payload.turnId,
+            startedAt: Date.now(),
+            reconnecting: null,
+            external: true
+          }))
+        } else if (sessionIdRef.current === sid) void attachSession(sid)
+        return
+      }
 
       // 名片决议不属于回合（名片在回合结束后仍可操作）：只要本层缓存着该会话就就地收敛；
       // 没缓存的不必管——下次打开从磁盘重载，边车里已是终态。
@@ -1086,6 +1138,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         if (sessionIdRef.current !== sid && !compactDrop)
           setUnread((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)))
         if (localStreaming) {
+          const external = runtimesRef.current.get(sid)?.external === true
           patchRuntime(sid, (r) => ({
             ...r,
             streaming: false,
@@ -1101,7 +1154,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
           }))
           // 与重开同形：早期气泡当场收成一个摘要气泡。主进程在发 done 后同步补记终态提示并落盘，
           // 早于本层 loadSession 请求到达，故重载拿到的已含本轮 notices。
-          if (compacted) reloadIntoRuntime(sid)
+          // 别处发起、本层中途接上的一轮：接入前已流出的部分不在气泡里，同样以主进程为准重载。
+          if (compacted || external) reloadIntoRuntime(sid)
         } else {
           // 后台回合完成：主进程已落盘。绝不留下 messages:[] 的空壳 runtime 遮蔽已落盘内容
           //（此前正是它令定时任务生成的对话「打开是空的、重启才出现」）。正在查看 → 立刻从主进程
@@ -1113,8 +1167,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         return
       }
 
-      // 后台回合的中途事件一律忽略：本层无脚手架可拼（强拼只会污染陈旧 runtime 或凭空造出空壳），
-      // 内容以主进程为准、done 时统一重载。仅本层正流式的会话才继续处理下列实时事件。
+      // 未接上的后台回合，中途事件一律忽略：本层无脚手架可拼，内容以主进程为准、打开时由 attachSession
+      // 接上。仅本层正流式的会话才继续处理下列实时事件。
       if (!localStreaming) return
 
       // 主进程真实信号：断流后正在自动重连（展示"连接中断，正在重连"横幅）。
@@ -1149,7 +1203,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })
     })
     return unsub
-  }, [refreshSessions, patchRuntime, patchMessages, patchCardBlocks, dropRuntime, toast])
+  }, [refreshSessions, patchRuntime, patchMessages, patchCardBlocks, dropRuntime, attachSession, toast])
 
   const viewed = runtimes.get(currentSessionId)
   const viewedStreaming = viewed?.streaming ?? false
@@ -1261,7 +1315,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
           streaming: true,
           turnId: null,
           startedAt: Date.now(),
-          reconnecting: null
+          reconnecting: null,
+          external: false
         }))
         try {
           const { turnId } = await window.deva.chat.compact({
@@ -1308,7 +1363,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         streaming: true,
         turnId: null,
         startedAt: Date.now(),
-        reconnecting: null
+        reconnecting: null,
+        external: false
       }))
       // 绑定覆盖层：首发时把 persona / 聚焦工作区带上（主进程 ensureSession：personaId 一次性绑定、
       // focusRoot 可挂/卸更新）。旧壳无覆盖层 → 二者 undefined → 主进程走兼容分支，逐字节不变。
@@ -1390,12 +1446,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       setCurrent(id)
       // 已有活动态（正在流式或此前已载入）→ 直接呈现，绝不重载冲掉实时内容。
       if (runtimesRef.current.has(id)) return
-      void (async () => {
-        const dms = await window.deva.chat.loadSession(id, projectPathRef.current)
-        // 载入期间可能已切走 / 已有活动态生成 → 丢弃过期结果。
-        if (sessionIdRef.current !== id || runtimesRef.current.has(id)) return
-        patchRuntime(id, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
-      })()
+      void attachSession(id)
     }
 
     const deleteSession = (id: string): void => {
