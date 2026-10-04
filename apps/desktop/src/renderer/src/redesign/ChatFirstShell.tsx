@@ -1326,6 +1326,7 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
   if (view.kind === 'branches') {
     items = [
       ...filterItem,
+      { label: t('cf.git.createBranch'), icon: <Plus size={14} />, onClick: () => void createBranch() },
       {
         label: t('cf.git.mergeBranch'),
         icon: <GitMerge size={14} />,
@@ -1333,7 +1334,6 @@ function GitWidget({ root }: { root: string }): React.JSX.Element | null {
         title: status.mergeInProgress ? t('cf.git.mergeBusy') : undefined,
         onClick: () => go({ kind: 'merge' })
       },
-      { label: t('cf.git.createBranch'), icon: <Plus size={14} />, onClick: () => void createBranch() },
       ...branchList(branches, (b) => go({ kind: 'branch', branch: b }))
     ]
   } else if (view.kind === 'merge') {
