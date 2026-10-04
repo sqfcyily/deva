@@ -8,9 +8,10 @@ import type {
   NoticeView,
   PromptView,
   RemoteAdapter,
-  TurnBlock,
+  ToolBlock,
   TurnPage
 } from './types'
+import { toolSummary } from './types'
 
 /**
  * 飞书适配器：自建应用 + 事件「长连接」模式（WebSocket，无需公网 IP / 回调地址）。
@@ -301,8 +302,6 @@ function clip(s: string, n: number): string {
 /** 行内代码里不能出现反引号。 */
 const code = (s: string): string => (s ? ` \`${s.replace(/`/g, "'")}\`` : '')
 
-type ToolBlock = Extract<TurnBlock, { kind: 'tool' | 'subagent' }>
-
 function toolLine(b: ToolBlock): string {
   const icon = b.status === 'running' ? '⏳' : b.status === 'ok' ? '✅' : '❌'
   if (b.kind === 'subagent') {
@@ -313,20 +312,15 @@ function toolLine(b: ToolBlock): string {
   return `${icon} **${b.name}**${code(b.brief)}${err}`
 }
 
-/** 连续的工具块合成一段列表；太长时只露最近几步，其余收进折叠面板。 */
+/** 连续的工具块：只露一行摘要，明细默认折叠。 */
 function toolElements(run: ToolBlock[]): Card[] {
-  const SHOW = 6
-  const lines = run.map(toolLine)
-  if (lines.length <= SHOW + 2) return [md(lines.join('\n'))]
-  const hidden = lines.slice(0, lines.length - SHOW)
   return [
     {
       tag: 'collapsible_panel',
       expanded: false,
-      header: { title: { tag: 'markdown', content: grey(`前面还有 ${hidden.length} 个步骤`) } },
-      elements: [md(hidden.join('\n'))]
-    },
-    md(lines.slice(-SHOW).join('\n'))
+      header: { title: { tag: 'markdown', content: grey(toolSummary(run)) } },
+      elements: [md(run.map(toolLine).join('\n'))]
+    }
   ]
 }
 

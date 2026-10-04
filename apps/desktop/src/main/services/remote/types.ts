@@ -82,6 +82,25 @@ export type TurnBlock =
   | { kind: 'notice'; text: string }
   | { kind: 'error'; text: string }
 
+/**
+ * 一段连续工具块的一行摘要（飞书 / Telegram 共用）：明细默认折叠，只露这一行。
+ * 例：⏳ 调用工具 12 次：读取 5 · 编辑 3 · 子助手 1 · 失败 1
+ */
+export function toolSummary(run: ToolBlock[]): string {
+  const counts = new Map<string, number>()
+  for (const b of run) {
+    const n = b.kind === 'tool' ? b.name : '子助手'
+    counts.set(n, (counts.get(n) ?? 0) + 1)
+  }
+  const failed = run.filter((b) => b.status === 'error').length
+  const icon = run.some((b) => b.status === 'running') ? '⏳' : failed ? '⚠️' : '🔧'
+  const parts = [...counts].map(([n, c]) => `${n} ${c}`)
+  if (failed) parts.push(`失败 ${failed}`)
+  return `${icon} 调用工具 ${run.length} 次：${parts.join(' · ')}`
+}
+
+export type ToolBlock = Extract<TurnBlock, { kind: 'tool' | 'subagent' }>
+
 export type TurnStatus = 'running' | 'waiting' | 'retrying' | 'done' | 'aborted' | 'error'
 
 /**

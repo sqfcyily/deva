@@ -8,9 +8,10 @@ import type {
   NoticeView,
   PromptView,
   RemoteAdapter,
-  TurnBlock,
+  ToolBlock,
   TurnPage
 } from './types'
+import { toolSummary } from './types'
 
 /**
  * Telegram 适配器：Bot API + getUpdates 长轮询（无需公网 IP / Webhook）。
@@ -518,8 +519,6 @@ function head(title: string, subtitle?: string, icon?: string): string {
   return `${icon ? `${icon} ` : ''}${b(esc(title))}${subtitle ? ` · ${i(esc(subtitle))}` : ''}`
 }
 
-type ToolBlock = Extract<TurnBlock, { kind: 'tool' | 'subagent' }>
-
 function toolLine(t: ToolBlock): string {
   const icon = t.status === 'running' ? '⏳' : t.status === 'ok' ? '✅' : '❌'
   if (t.kind === 'subagent')
@@ -528,13 +527,9 @@ function toolLine(t: ToolBlock): string {
   return `${icon} ${b(esc(t.name))}${code(t.brief)}${err}`
 }
 
-/** 连续的工具块合成一段；太长时只露最近几步，其余收进可展开的引用。 */
+/** 连续的工具块：只露一行摘要，明细默认折叠。 */
 function toolSection(run: ToolBlock[]): string {
-  const SHOW = 6
-  const lines = run.map(toolLine)
-  if (lines.length <= SHOW + 2) return lines.join('\n')
-  const hidden = lines.slice(0, lines.length - SHOW)
-  return `${fold(`${i(`前面还有 ${hidden.length} 个步骤`)}\n${hidden.join('\n')}`)}\n${lines.slice(-SHOW).join('\n')}`
+  return fold(`${i(esc(toolSummary(run)))}\n${run.map(toolLine).join('\n')}`)
 }
 
 const STATUS: Record<TurnPage['status'], string> = {
