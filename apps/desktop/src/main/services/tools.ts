@@ -38,13 +38,13 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'read_file',
     description:
-      '读取工作区内一个文本文件。默认返回带行号的完整内容（便于定位与后续精确编辑）；可选 offset（起始行，1 起）/ limit（行数）分段读取大文件。path 可相对项目根或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。',
+      '读取工作区内一个文本文件，返回带行号的内容（便于定位与后续精确编辑）。默认从第 1 行起最多读 2000 行，超过 2000 字符的行会被截断；可用 offset（起始行，1 起）/ limit（行数）分段读取大文件，已知目标位置时建议只读相关片段。单次返回内容过大会报错，届时请缩小范围或先用 grep 定位。path 可相对项目根或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: '文件路径，相对项目根或绝对路径' },
         offset: { type: 'integer', description: '起始行号（1 起，含）。默认从第 1 行。' },
-        limit: { type: 'integer', description: '读取行数。默认到文件末尾。' }
+        limit: { type: 'integer', description: '读取行数。默认 2000 行。' }
       },
       required: ['path']
     }
@@ -141,6 +141,7 @@ export const toolSpecs: ToolSpec[] = [
     name: 'run_command',
     description:
       '执行一条 shell 命令并返回标准输出/错误与退出码（非交互、一次性）。用于构建、测试、git、脚本等。' +
+      '查找文件、搜索内容、阅读文件请用专用工具 glob / grep / read_file / list_dir，不要用 find、grep、cat、ls、head 之类的 shell 命令代替。' +
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
@@ -516,6 +517,13 @@ export interface ToolResult {
 }
 
 const MAX_READ_BYTES = 2 * 1024 * 1024
+/**
+ * read_file 文本护栏（对齐 Claude Code Read）：未给 limit 时默认最多读 2000 行；单行超 2000 字符截断；
+ * 单次返回超字符上限（≈25k token）直接报错要求缩小范围——宁可让模型多调一次，也不让一次读取吞掉半个上下文窗口。
+ */
+const READ_DEFAULT_LINES = 2000
+const READ_LINE_CHARS_MAX = 2000
+const READ_OUTPUT_MAX = 100_000
 /** read_file 按扩展名预判为图片的文件放宽体积门槛（读入后会缩放），最终以魔数为准。 */
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp'])
 /** 搜索类护栏：目录遍历文件数上限 / glob 返回上限 / grep 匹配行上限。 */
@@ -1092,7 +1100,7 @@ export async function executeTool(
         }
       if (!imageExt && stat.size > MAX_READ_BYTES)
         return {
-          content: '（文件超过 2MB，未加载；可用 offset/limit 分段，或用 grep 定位）',
+          content: '（文件超过 2MB，未加载；请用 grep 定位所需内容）',
           summary: '文件过大',
           isError: true
         }
@@ -1114,14 +1122,31 @@ export async function executeTool(
       const total = lines.length
       const start = Math.min(Math.max(1, toInt(a.offset) ?? 1), total)
       const lim = toInt(a.limit)
-      const end = lim && lim > 0 ? Math.min(start - 1 + lim, total) : total
+      const end = Math.min(start - 1 + (lim && lim > 0 ? lim : READ_DEFAULT_LINES), total)
+      let clipped = 0
       const numbered = lines
         .slice(start - 1, end)
-        .map((ln, i) => `${String(start + i).padStart(6, ' ')}\t${ln}`)
+        .map((ln, i) => {
+          if (ln.length > READ_LINE_CHARS_MAX) {
+            clipped++
+            ln = `${ln.slice(0, READ_LINE_CHARS_MAX)}…（本行共 ${ln.length} 字符，已截断）`
+          }
+          return `${String(start + i).padStart(6, ' ')}\t${ln}`
+        })
         .join('\n')
+      if (numbered.length > READ_OUTPUT_MAX)
+        return {
+          content: `（第 ${start}–${end} 行共约 ${numbered.length} 字符，超过单次读取上限 ${READ_OUTPUT_MAX} 字符，未返回；请用 offset/limit 缩小范围，或用 grep 定位所需内容）`,
+          summary: '读取范围过大',
+          isError: true
+        }
+      const notes: string[] = []
+      if (end < total)
+        notes.push(`仅显示第 ${start}–${end} 行（共 ${total} 行）；如需后续内容，用 offset=${end + 1} 继续读取。`)
+      if (clipped) notes.push(`有 ${clipped} 行超过 ${READ_LINE_CHARS_MAX} 字符，已截断显示。`)
       const ranged = start > 1 || end < total
       return {
-        content: numbered || '（空文件）',
+        content: (numbered || '（空文件）') + (notes.length ? `\n\n（${notes.join('')}）` : ''),
         summary: ranged ? `第 ${start}–${end}/${total} 行` : `${total} 行`
       }
     }

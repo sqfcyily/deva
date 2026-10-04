@@ -37,7 +37,8 @@ const READONLY_TOOLS = ['read_file', 'list_dir', 'glob', 'grep', 'web_fetch', 'r
  */
 export const GENERAL_SUBAGENT: SubagentDef = {
   name: 'General',
-  description: '按主智能体现场给定的任务描述，独立完成一项封闭子任务；具备全部工具。',
+  description:
+    '具备全部工具的通用子智能体。适用于需要多步检索后再理解、归纳的调研（如梳理某个模块或整个项目的结构与原理），以及搜索某个关键词或文件但没把握几次就找到时；也适用于与主线相对独立的封闭子任务。',
   tools: '*',
   prompt: ''
 }
@@ -45,7 +46,8 @@ export const GENERAL_SUBAGENT: SubagentDef = {
 /** 广度检索定位：把「在哪里、有几处、怎么命名的」问清楚，只回报事实。 */
 const EXPLORE: SubagentDef = {
   name: 'Explore',
-  description: '在代码库里做广度检索与定位，回报「路径:行号 + 说明」；只读，不改动、不评审。',
+  description:
+    '只读的广度检索子智能体。需要翻遍多个文件、目录或多种命名写法才能回答「在哪里、有几处、怎么命名的」，而你只需要结论时用它；回报「路径:行号 + 说明」，不改动、不评审。',
   tools: READONLY_TOOLS,
   prompt: [
     '你的专长是**在庞大或陌生的代码库里做广度检索与定位**：把「在哪里、有几处、怎么命名的」查清楚。',
