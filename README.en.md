@@ -16,6 +16,7 @@ It can also handle repetitive chores on a schedule, and you can keep chatting fr
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-4F46E5?style=flat-square" alt="Platform" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7C3AED?style=flat-square" alt="License" /></a>
   <img src="https://img.shields.io/badge/Electron-33-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
+  <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-community-FFB003?style=flat-square" alt="LINUX DO Community" /></a>
 </p>
 
 <a href="https://github.com/sqfcyily/deva/releases"><b>Download</b></a> ·

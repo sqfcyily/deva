@@ -16,6 +16,7 @@
   <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20macOS-4F46E5?style=flat-square" alt="平台" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF-MIT-7C3AED?style=flat-square" alt="许可" /></a>
   <img src="https://img.shields.io/badge/Electron-33-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
+  <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-%E7%A4%BE%E5%8C%BA-FFB003?style=flat-square" alt="LINUX DO 社区" /></a>
 </p>
 
 <a href="https://github.com/sqfcyily/deva/releases"><b>下载</b></a> ·
