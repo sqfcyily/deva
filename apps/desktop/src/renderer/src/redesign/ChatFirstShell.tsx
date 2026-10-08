@@ -1124,12 +1124,20 @@ type GitMenuView =
   | { kind: 'merge' }
   | { kind: 'branch'; branch: GitBranchEntry }
 
-function GitWidget({ root }: { root: string }): React.JSX.Element | null {
+function GitWidget({ root, streaming }: { root: string; streaming: boolean }): React.JSX.Element | null {
   const { t, locale } = useI18n()
   const toast = useToast()
   const dialog = useDialog()
   const { activeModel, hasKey } = useModels()
   const { available, status, busy, refresh } = useGitStatus(root)
+
+  // 一轮结束（正常完成 / 中断 / 出错，streaming 由 true 落为 false）后刷新一次：
+  // 本轮可能改了文件，pill 上的状态与提交框的改动清单随之更新。
+  const wasStreaming = useRef(streaming)
+  useEffect(() => {
+    if (wasStreaming.current && !streaming) void refresh()
+    wasStreaming.current = streaming
+  }, [streaming, refresh])
 
   const [menu, setMenu] = useState<{ x: number; y: number; view: GitMenuView } | null>(null)
   const [branches, setBranches] = useState<GitBranchEntry[]>([])
@@ -1529,7 +1537,7 @@ function WorkspaceMenu({ root }: { root: string }): React.JSX.Element {
  */
 function CommitModal({
   root,
-  status,
+  status: initialStatus,
   locale,
   model,
   onClose,
@@ -1547,6 +1555,21 @@ function CommitModal({
   const [msg, setMsg] = useState('')
   const [gen, setGen] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // 打开即重取一次状态：父级快照可能早于本轮对话 / 用户在外部新建的文件，避免改动数与可提交态过期。
+  const [status, setStatus] = useState(initialStatus)
+  useEffect(() => {
+    let alive = true
+    window.deva.git
+      .status(root)
+      .then((st) => {
+        if (alive && st.isRepo) setStatus(st)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [root])
 
   // 变更集：跨 staged/unstaged/conflicts 按路径去重计数。
   const changed = useMemo(() => {
@@ -1578,8 +1601,15 @@ function CommitModal({
     if (!canCommit) return
     setBusy(true)
     try {
-      // 先暂存全部未暂存改动（未跟踪文件已含在 status.unstaged 内），再提交。
-      const toStage = status.unstaged.map((f) => f.path)
+      // 提交前再取一次最新状态，暂存其中全部未暂存改动（未跟踪文件已含在 unstaged 内），再提交——
+      // 弹窗打开期间新增的文件也不会漏。
+      const fresh = await window.deva.git.status(root)
+      const latest = fresh.isRepo ? fresh : status
+      if (latest.conflicts.length > 0) {
+        setStatus(latest)
+        return
+      }
+      const toStage = latest.unstaged.map((f) => f.path)
       if (toStage.length > 0) {
         const sres = await window.deva.git.stage(root, toStage)
         if (!sres.ok) {
@@ -3785,7 +3815,7 @@ function Composer({
             {mounted && focusRoot ? (
               <span className="cf-wschip cf-wschip--mounted is-on">
                 <WorkspaceMenu root={focusRoot} />
-                <GitWidget root={focusRoot} />
+                <GitWidget root={focusRoot} streaming={streaming} />
                 <button
                   type="button"
                   className="cf-wschip__x"

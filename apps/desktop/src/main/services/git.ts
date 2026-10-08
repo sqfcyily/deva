@@ -887,7 +887,23 @@ export function registerGitIpc(): void {
       if (res.code !== 0)
         return { ok: false as const, reason: 'error' as GitFailReason, message: res.stderr.trim() }
 
+      // 提交框会连同未跟踪的新文件一起暂存提交，而 git diff 看不到它们：逐个按「新增文件」拼进 patch。
       let patch = res.stdout
+      const others = await runGit(dir, ['ls-files', '--others', '--exclude-standard', '-z'])
+      if (others.code === 0) {
+        for (const rel of others.stdout.split('\0')) {
+          if (!rel || patch.length > MAX_DIFF_CHARS) continue
+          const abs = resolve(dir, rel)
+          try {
+            assertInside(abs)
+          } catch {
+            continue
+          }
+          const lines = await diffUntracked(abs)
+          const body = lines.map((l) => (l.type === 'add' ? `+${l.text}` : l.text)).join('\n')
+          patch += `${patch && !patch.endsWith('\n') ? '\n' : ''}diff --git a/${rel} b/${rel}\nnew file\n--- /dev/null\n+++ b/${rel}\n${body}\n`
+        }
+      }
       if (!patch.trim()) return { ok: false as const, reason: 'empty' as GitFailReason }
       let truncated = false
       if (patch.length > MAX_DIFF_CHARS) {

@@ -1254,6 +1254,25 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     [currentSessionId, sessions, bindings]
   )
 
+  // 当前对话尚无自己的模型（新建时角色没设偏好模型、旧版本遗留对话、定时任务对话等）→ 把此刻显示的
+  // 生效模型（即全局「最近使用」）定格为本对话模型并落库。否则它会一直隐式跟随全局：在别的对话里一切换，
+  // 这里也跟着变（只有存过模型的对话不受影响，表现为「部分对话被连带切换」）。
+  // 惰性未建档的会话主进程查不到会跳过，覆盖层随首发 modelRef 落库。
+  useEffect(() => {
+    const sid = currentSessionId
+    if (!sid || currentBinding.model || !activeModel) return
+    const ref = `${activeModel.provider.id}:${activeModel.model.id}`
+    setBinding(sid, { model: ref })
+    if (sessions.some((s) => s.id === sid))
+      void (async () => {
+        await window.deva.chat.setModel({ sessionId: sid, modelRef: ref })
+        await refreshSessions()
+      })()
+    // 已定格的对话 currentBinding.model 非空、首行即返回，activeModel 之后再变也不会改写它；
+    // 依赖 activeModel 只为启动时配置晚于会话载入的情形（届时再补定格）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId, currentBinding.model, activeModel])
+
   // 草稿会话：当前会话尚未落库（不在 sessions 里）但已绑定身份（有 personaId）→ 合成一条会话元信息，
   // 让左侧聊天列表在首发前就显示这条「空对话」。首发后主进程惰性建档、refreshSessions 把同 id 的真值并入
   // sessions，本值随之转 null，列表项按 id 无缝接管（草稿标题「未命名」→ 真实标题）。
