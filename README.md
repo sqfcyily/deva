@@ -1,5 +1,7 @@
 <div align="center">
 
+**简体中文** | [English](README.en.md)
+
 <img src="apps/desktop/build/icon.png" alt="Deva" width="128" height="128" />
 
 # Deva
