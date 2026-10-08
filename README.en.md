@@ -115,6 +115,9 @@ Every conversation is with a "persona". A persona is more than a name: it has it
 | **Deva** | All-round work assistant: coding, writing, research, file organization, data analysis, running commands | Mentor and friend — concise, warm and natural; gently points out problems in your ideas and suggests better ones |
 | **小码酱 (Xiaomajiang)** | Red team / security research and reverse engineering, plus full-stack development and deep technical work | Hardcore techie vibe, great for digging into low-level details and tough problems |
 
+> [!NOTE]
+> **About 小码酱 (Xiaomajiang):** the persona prompt comes from [YuJunZhiXue/dsh-purge](https://github.com/YuJunZhiXue/dsh-purge) and **only works with Chinese models** (e.g. DeepSeek, Kimi, Zhipu GLM, Qwen); results on other models are not guaranteed. Follow that project for prompt updates.
+
 **Create your own:** give it a name, write its personality and style, pick a preferred model; the avatar can be customized or uploaded as an image. Don't feel like filling out a form? Click "Add via chat", or just say "create a persona that…" in a conversation — it will walk you through it and finally hand you a persona card to confirm.
 
 Personas can be reordered by drag and drop, pinned, or disabled when you don't need them for a while.
