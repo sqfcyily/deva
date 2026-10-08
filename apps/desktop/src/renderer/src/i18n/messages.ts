@@ -154,14 +154,16 @@ const zhCN: MessageTree = {
     addRow: '添加一行',
     removeRow: '删除此行',
     secretUnavailable: '当前系统不支持安全加密存储，密钥无法保存。',
-    connect: '连接',
-    disconnect: '断开',
-    test: '测试连接',
+    retry: '重试',
+    missingSecrets: '以下密钥尚未填写：{fields}。在下方填写后会自动连接。',
     status: {
+      off: '未启用',
       connected: '已连接',
       connecting: '连接中…',
       disconnected: '未连接',
-      error: '连接失败'
+      error: '连接失败',
+      needs_config: '待完善配置',
+      needs_secret: '待填密钥'
     },
     discoveredTools: '已发现工具',
     noToolsYet: '连接后显示该服务提供的工具',
@@ -814,8 +816,6 @@ const zhCN: MessageTree = {
     kindSkill: '技能',
     kindMcp: 'MCP',
     builtin: '内置',
-    mcpConnected: '已连接',
-    mcpDisconnected: '未连接',
     mcpDeleteConfirm: '确定删除该 MCP 服务？此操作不可撤销。'
   }
 }
@@ -966,14 +966,16 @@ const en: MessageTree = {
     addRow: 'Add row',
     removeRow: 'Remove row',
     secretUnavailable: 'Secure encryption is unavailable on this system; secrets cannot be saved.',
-    connect: 'Connect',
-    disconnect: 'Disconnect',
-    test: 'Test connection',
+    retry: 'Retry',
+    missingSecrets: 'Secrets not filled in yet: {fields}. It connects automatically once you fill them in below.',
     status: {
+      off: 'Off',
       connected: 'Connected',
       connecting: 'Connecting…',
       disconnected: 'Not connected',
-      error: 'Connection failed'
+      error: 'Connection failed',
+      needs_config: 'Needs configuration',
+      needs_secret: 'Needs secrets'
     },
     discoveredTools: 'Discovered tools',
     noToolsYet: 'Tools this server provides appear here once connected',
@@ -1636,8 +1638,6 @@ const en: MessageTree = {
     kindSkill: 'Skill',
     kindMcp: 'MCP',
     builtin: 'Built-in',
-    mcpConnected: 'Connected',
-    mcpDisconnected: 'Not connected',
     mcpDeleteConfirm: 'Delete this MCP server? This cannot be undone.'
   }
 }

@@ -382,7 +382,8 @@ export const toolSpecs: ToolSpec[] = [
       '仅在用户明确想接入某个 MCP 服务、且你已收集好要素并向用户复述确认后调用。' +
       '这是写入受保护配置的唯一途径——**严禁**用 write_file / run_command 去写 mcp.json（那些工具无法写入该目录）。' +
       '**密钥零明文**：绝不把 API Key / Token 等真实密钥值写进本工具参数或对话；只在 secretEnv / secretHeaders 里列出这些字段的**名字**，' +
-      '工具会写入占位符，真实值由用户稍后在「扩展」页加密填入。创建后服务自动启用，连接在下次启动或手动开关后建立。',
+      '工具会写入占位符，真实值由用户稍后在「扩展」页加密填入。创建后服务自动启用并在后台连接（缺密钥则待用户填入后自动连接），' +
+      '连上后其工具从用户下一条消息起可用。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1669,15 +1670,15 @@ export async function executeTool(
         secretFields = secretNames(a.secretHeaders)
       }
 
-      // 直调主进程 upsertServer（渲染层写不进 ~/.deva；本工具已过权限闸）——自动启用，但不在此连接。
+      // 直调主进程 upsertServer（渲染层写不进 ~/.deva；本工具已过权限闸）——自动启用；
+      // 写入层的变更通知随即触发 mcp.ts 对账，后台连接（缺密钥则停在「待填密钥」）。
       const rec = upsertServer(input)
-      const secretHint = secretFields.length
-        ? `\n⚠️ 以下字段为密钥占位、尚无真实值：${secretFields.join('、')}。请提示用户前往「扩展」页为该服务填写这些密钥（加密存储），否则连接会失败。`
-        : ''
+      const tail = secretFields.length
+        ? `\n⚠️ 以下字段为密钥占位、尚无真实值：${secretFields.join('、')}。请提示用户前往「扩展」页为该服务填写这些密钥（加密存储），填好后会自动连接。`
+        : '正在后台连接；连上后其工具从用户下一条消息起可用（本轮内不可用），连接结果可在「扩展」页查看。'
       return {
         content:
-          `已创建并启用 MCP 服务「${rec.name}」(id: ${rec.id}，传输 ${rec.transport})。` +
-          `连接将在下次启动应用、或在「扩展」页手动开关该服务后建立。${secretHint}`,
+          `已创建并启用 MCP 服务「${rec.name}」(id: ${rec.id}，传输 ${rec.transport})。${tail}`,
         summary: '已创建 MCP 服务'
       }
     }

@@ -2088,6 +2088,9 @@ body.cf-resizing-y * {
   font-weight: 400;
   color: var(--fg-subtle);
 }
+.cf-setrow__note--warn {
+  color: var(--warning);
+}
 .cf-badge {
   font-size: 10.5px;
   font-weight: 500;

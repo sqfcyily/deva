@@ -76,12 +76,8 @@ interface ExtensionsContextValue {
   setPersonaAvatarImage: (id: string, dataUri: string) => Promise<string>
   /** 技能：上传文件（.zip 技能包或单个 SKILL.md）导入并自动启用；失败弹出本地化提示。 */
   importSkill: () => void
-  /** MCP：连接（或重连）一个服务（状态经 onStatus 广播回流）。 */
-  mcpConnect: (id: string) => void
-  /** MCP：断开一个服务。 */
-  mcpDisconnect: (id: string) => void
-  /** MCP：测试连通（= 连接一次并保持）。 */
-  mcpTest: (id: string) => void
+  /** MCP：连接失败后手动重试（状态经 onStatus 广播回流）。启用即连接，无单独的连 / 断入口。 */
+  mcpRetry: (id: string) => void
   /** MCP：写入某密钥字段（空串即删除）；返回是否成功与加密是否可用（供降级提示）。 */
   mcpSetSecret: (id: string, field: string, value: string) => Promise<{ ok: boolean; available: boolean }>
 }
@@ -158,7 +154,7 @@ function mapFromKv(rows: McpKV[]): Record<string, McpValue> {
 /** 配置公共字段 → 渲染层（不含运行期）。 */
 function baseFromConfig(c: McpServerConfig): Omit<
   McpServer,
-  'enabled' | 'status' | 'toolCount' | 'lastError' | 'tools'
+  'enabled' | 'status' | 'toolCount' | 'lastError' | 'missingSecrets' | 'tools'
 > {
   return {
     id: c.id,
@@ -183,6 +179,7 @@ function viewToMcp(v: McpServerView): McpServer {
     status: v.status,
     toolCount: v.toolCount,
     lastError: v.lastError,
+    missingSecrets: v.missingSecrets ?? [],
     tools: v.tools
   }
 }
@@ -195,6 +192,7 @@ function configToMcp(c: McpServerConfig, enabled = false): McpServer {
     status: 'disconnected',
     toolCount: 0,
     lastError: null,
+    missingSecrets: [],
     tools: []
   }
 }
@@ -250,7 +248,9 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       // 只打运行期补丁，保留本地正在编辑的配置字段（防广播覆盖键入）。
       setMcp((list) => {
         const idx = list.findIndex((m) => m.id === view.id)
-        if (idx < 0) return list // 未知 id（清单尚未返回）→ 由随后的 list() 兜底
+        // 未知 id：多为对话里 create_mcp 刚建的服务——广播视图自带完整配置，直接补进清单
+        // （清单尚未返回时也无妨：随后的 list() 会整份替换）。
+        if (idx < 0) return [...list, viewToMcp(view)]
         const next = list.slice()
         next[idx] = {
           ...next[idx],
@@ -258,6 +258,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
           status: view.status,
           toolCount: view.toolCount,
           lastError: view.lastError,
+          missingSecrets: view.missingSecrets ?? [],
           tools: view.tools
         }
         return next
@@ -461,7 +462,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
           const cur = skills.find((s) => s.id === id)
           if (cur) void window.deva?.skills?.setEnabled(id, !cur.enabled).catch(() => {})
         } else if (kind === 'mcp') {
-          // 启停即连接 / 断开（状态经 onStatus 回流）。
+          // 启停即兑现：主进程对账连上 / 断开（状态经 onStatus 回流）。
           const cur = mcpRef.current.find((m) => m.id === id)
           if (cur) void window.deva?.mcp?.setEnabled(id, !cur.enabled).catch(() => {})
         } else if (kind === 'persona') {
@@ -507,9 +508,7 @@ export function ExtensionsProvider({ children }: { children: ReactNode }): React
       reorderPersonas,
       setPersonaAvatarImage,
       importSkill,
-      mcpConnect: (id) => void window.deva?.mcp?.connect(id).catch(() => {}),
-      mcpDisconnect: (id) => void window.deva?.mcp?.disconnect(id).catch(() => {}),
-      mcpTest: (id) => void window.deva?.mcp?.test(id).catch(() => {}),
+      mcpRetry: (id) => void window.deva?.mcp?.retry(id).catch(() => {}),
       mcpSetSecret: async (id, field, value) => {
         try {
           const r = await window.deva?.mcp?.setSecret(id, field, value)

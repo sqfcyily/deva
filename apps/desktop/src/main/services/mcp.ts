@@ -17,6 +17,8 @@ import {
   getServerConfig,
   isEnabled,
   listServerConfigs,
+  missingSecrets,
+  onMcpConfigChange,
   resolveEnv,
   resolveHeaders,
   setEnabled,
@@ -39,7 +41,18 @@ import { hasSecret, setSecret } from './secrets'
  * - 子进程 spawn、密钥解密只在此层发生；命名空间名强制 `^[A-Za-z0-9_-]{1,64}$`（各家 API 通用约束）。
  */
 
-export type McpStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+/**
+ * 运行期状态。用户只操作「启用」一个开关，连接由 `reconcile` 兑现，状态只读展示：
+ * disconnected=未启用；needs_config=配置不完整；needs_secret=缺密钥（不起进程）；
+ * connecting / connected / error=连接中 / 已连接 / 失败（可重试）。
+ */
+export type McpStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'error'
+  | 'needs_config'
+  | 'needs_secret'
 
 /** 发现到的单个工具：命名空间化名 + 原始名 + Agent 工具规格。 */
 interface McpToolInfo {
@@ -57,6 +70,10 @@ interface Runtime {
   client: Client | null
   /** 连接代次：使过期连接的异步回调失效，避免污染新状态。 */
   gen: number
+  /** needs_secret 时缺的字段名（env 变量名 / 请求头名）。 */
+  missingSecrets: string[]
+  /** 本次连上的时刻（判断断开前是否「稳定运行过」，决定自动重连计数是否清零）。 */
+  connectedAt: number
 }
 
 /** 回渲染层的合并视图（配置 + 启用态 + 运行期状态）。 */
@@ -67,6 +84,7 @@ export interface McpServerView extends McpServerConfig {
   status: McpStatus
   toolCount: number
   lastError: string | null
+  missingSecrets: string[]
   /** 已发现工具的展示清单（原始名 + 命名空间化名 + 描述）。 */
   tools: { name: string; fqName: string; description: string }[]
 }
@@ -76,10 +94,25 @@ const runtimes = new Map<string, Runtime>()
 const routes = new Map<string, { serverId: string; origName: string }>()
 /** 单调递增的连接代次发号器。 */
 let genCounter = 0
+/** 每服务的对账票号：对账中途（等密钥预检）被更晚的对账取代则放弃决策。 */
+const tickets = new Map<string, number>()
+/** 配置 / 密钥变更的防抖对账定时器（编辑框逐键落盘，不能每键都拉起一次子进程）。 */
+const debounces = new Map<string, ReturnType<typeof setTimeout>>()
+/** 意外断开后的自动重连进度。 */
+const retries = new Map<string, { attempt: number; timer: ReturnType<typeof setTimeout> | null }>()
+/** 应用退出中：不再发起任何连接。 */
+let shuttingDown = false
 
 const CONNECT_TIMEOUT = 30_000
 const DISPATCH_TIMEOUT = 60_000
 const TEXT_CAP = 30_000
+const RECONCILE_DEBOUNCE = 800
+/** 自动重连：首次 1s，逐次翻倍；远程最多 5 次，stdio 最多 2 次（进程反复崩溃时别一直拉起）。 */
+const RETRY_BASE = 1_000
+const RETRY_MAX_REMOTE = 5
+const RETRY_MAX_STDIO = 2
+/** 连上后稳定运行超过此时长才断开 → 视为新故障，重连计数清零。 */
+const STABLE_MS = 60_000
 
 let sendStatus: (view: McpServerView) => void = () => {}
 
@@ -123,6 +156,7 @@ function viewOf(cfg: McpServerConfig): McpServerView {
     status: rt?.status ?? 'disconnected',
     toolCount: rt?.toolCount ?? 0,
     lastError: rt?.lastError ?? null,
+    missingSecrets: rt?.missingSecrets ?? [],
     tools:
       rt?.tools.map((t) => ({
         name: t.origName,
@@ -198,14 +232,55 @@ function friendlyError(e: unknown): string {
   return `连接失败：${msg}`
 }
 
-/** 连接（或重连）一个服务；无论成败都返回其最新视图，绝不抛错。 */
-export async function connectServer(id: string): Promise<McpServerView | null> {
-  const cfg = getServerConfig(id)
-  if (!cfg) return null
+/** 配置是否足以发起连接；不足则返回说明（→ needs_config，不当作连接失败）。 */
+function configProblem(cfg: McpServerConfig): string | null {
+  if (cfg.transport === 'stdio') return (cfg.command ?? '').trim() ? null : '未配置启动命令（command）。'
+  const url = (cfg.url ?? '').trim()
+  if (!url) return '未配置服务地址（url）。'
+  try {
+    new URL(url)
+  } catch {
+    return `服务地址无效：${url}`
+  }
+  return null
+}
 
-  // 先断开旧连接（幂等；会 bump gen 使旧回调失效）。
-  await disconnectServer(id)
+/** 撤下某运行态已注册的工具名与路由（不改状态）。 */
+function dropTools(rt: Runtime): void {
+  unregisterMcpToolNames(rt.tools.map((t) => t.fqName))
+  for (const t of rt.tools) routes.delete(t.fqName)
+}
 
+/**
+ * 同步切到一个非连接态：bump 代次（使在途连接与 onclose 失效）、撤工具，再异步关旧 client。
+ * 状态在调用当刻即生效，故后发的对账总能盖过先发的。
+ */
+function settle(
+  id: string,
+  status: Exclude<McpStatus, 'connecting' | 'connected'>,
+  lastError: string | null = null,
+  missing: string[] = []
+): void {
+  const old = runtimes.get(id)
+  if (old) dropTools(old)
+  runtimes.set(id, {
+    status,
+    toolCount: 0,
+    lastError,
+    tools: [],
+    client: null,
+    gen: ++genCounter,
+    missingSecrets: missing,
+    connectedAt: 0
+  })
+  broadcast(id)
+  void old?.client?.close().catch(() => {})
+}
+
+/** 建立连接并发现工具；成败都只落状态、绝不抛错。返回是否连上。 */
+async function connect(id: string, cfg: McpServerConfig): Promise<boolean> {
+  const old = runtimes.get(id)
+  if (old) dropTools(old)
   const myGen = ++genCounter
   const rt: Runtime = {
     status: 'connecting',
@@ -213,100 +288,208 @@ export async function connectServer(id: string): Promise<McpServerView | null> {
     lastError: null,
     tools: [],
     client: null,
-    gen: myGen
+    gen: myGen,
+    missingSecrets: [],
+    connectedAt: 0
   }
   runtimes.set(id, rt)
   broadcast(id)
+  if (old?.client) await old.client.close().catch(() => {})
+  // 任一 await 之后都可能已被更晚的对账 / 断开取代 → 放弃本次结果（不注册工具、关掉自己的 client）。
+  const stale = (): boolean => runtimes.get(id)?.gen !== myGen
+  if (stale()) return false
 
+  let client: Client | null = null
   try {
     const transport = await buildTransport(cfg)
-    const client = new Client({ name: 'deva', version: app.getVersion() }, { capabilities: {} })
-    // 意外断开（子进程退出 / 网络掉线）→ 置 error，反注册工具，绝不崩。
-    client.onclose = (): void => {
+    if (stale()) return false
+    const c = new Client({ name: 'deva', version: app.getVersion() }, { capabilities: {} })
+    client = c
+    // 意外断开（子进程退出 / 网络掉线）→ 置 error、撤工具，并按退避自动重连。
+    c.onclose = (): void => {
       const cur = runtimes.get(id)
-      if (!cur || cur.gen !== myGen) return
-      if (cur.status === 'connected') {
-        unregisterMcpToolNames(cur.tools.map((t) => t.fqName))
-        for (const t of cur.tools) routes.delete(t.fqName)
-        cur.status = 'error'
-        cur.lastError = '连接已断开（服务进程退出或网络中断）。'
-        cur.tools = []
-        cur.toolCount = 0
-        cur.client = null
-        broadcast(id)
-      }
+      if (!cur || cur.gen !== myGen || cur.status !== 'connected') return
+      const lived = Date.now() - cur.connectedAt
+      cur.client = null
+      settle(id, 'error', '连接已断开（服务进程退出或网络中断）。')
+      scheduleRetry(id, lived)
     }
 
-    await client.connect(transport, { timeout: CONNECT_TIMEOUT })
-    // 连接期间若被更晚的 connect/disconnect 取代 → 放弃本次结果。
-    if (runtimes.get(id)?.gen !== myGen) {
-      await client.close().catch(() => {})
-      return viewOf(cfg)
+    await c.connect(transport, { timeout: CONNECT_TIMEOUT })
+    if (stale()) {
+      await c.close().catch(() => {})
+      return false
+    }
+    const listed = await c.listTools()
+    if (stale()) {
+      await c.close().catch(() => {})
+      return false
     }
 
-    const listed = await client.listTools()
     const used = new Set<string>()
     const tools: McpToolInfo[] = []
     for (const t of listed.tools) {
       const fqName = makeFqName(id, t.name, used)
       tools.push({ fqName, origName: t.name, spec: toSpec(cfg, fqName, t) })
     }
-
-    rt.client = client
+    rt.client = c
     rt.tools = tools
     rt.toolCount = tools.length
     rt.status = 'connected'
     rt.lastError = null
+    rt.connectedAt = Date.now()
     registerMcpToolNames(tools.map((t) => t.fqName))
     for (const t of tools) routes.set(t.fqName, { serverId: id, origName: t.origName })
     broadcast(id)
-    return viewOf(cfg)
+    return true
   } catch (e) {
-    const cur = runtimes.get(id)
-    if (cur && cur.gen === myGen) {
-      cur.status = 'error'
-      cur.lastError = friendlyError(e)
-      cur.tools = []
-      cur.toolCount = 0
-      cur.client = null
+    // 已起的 client（如 listTools 失败时子进程仍在）一并关掉，免留孤儿进程。
+    void client?.close().catch(() => {})
+    if (stale()) return false
+    rt.status = 'error'
+    rt.lastError = friendlyError(e)
+    broadcast(id)
+    return false
+  }
+}
+
+/**
+ * 对账——连接的唯一入口：让运行态与「期望」一致。
+ * 期望 = 已启用 且 配置完整 且 密钥齐全 → 连上（已连则按最新配置重连）；否则落到对应的非连接态。
+ * 因此「未启用却已连接」不可能出现，「启用了却没连」也总有可见原因（待配置 / 待填密钥 / 失败）。
+ * `keepRetry` 仅供自动重连自身调用（保留重试计数）；用户操作 / 配置变更一律清零重来。
+ */
+async function reconcile(id: string, keepRetry = false): Promise<boolean> {
+  cancelDebounce(id)
+  if (!keepRetry) clearRetry(id)
+  const ticket = (tickets.get(id) ?? 0) + 1
+  tickets.set(id, ticket)
+  if (shuttingDown) return false
+
+  const cfg = getServerConfig(id)
+  if (!cfg) {
+    forget(id)
+    return false
+  }
+  if (!isEnabled(id)) {
+    settle(id, 'disconnected')
+    return false
+  }
+  const problem = configProblem(cfg)
+  if (problem) {
+    settle(id, 'needs_config', problem)
+    return false
+  }
+  const missing = await missingSecrets(cfg)
+  if (tickets.get(id) !== ticket || shuttingDown) return false
+  if (missing.length) {
+    settle(id, 'needs_secret', null, missing)
+    return false
+  }
+  return connect(id, cfg)
+}
+
+function cancelDebounce(id: string): void {
+  const t = debounces.get(id)
+  if (t) clearTimeout(t)
+  debounces.delete(id)
+}
+
+/** 防抖对账（配置 / 密钥逐键落盘时用）。 */
+function scheduleReconcile(id: string): void {
+  cancelDebounce(id)
+  debounces.set(
+    id,
+    setTimeout(() => {
+      debounces.delete(id)
+      void reconcile(id)
+    }, RECONCILE_DEBOUNCE)
+  )
+}
+
+function clearRetry(id: string): void {
+  const r = retries.get(id)
+  if (r?.timer) clearTimeout(r.timer)
+  retries.delete(id)
+}
+
+/**
+ * 意外断开后按退避自动重连。刚连上就断则累计次数（防「崩溃—拉起」死循环），
+ * 稳定运行过 STABLE_MS 再断则清零重计。用尽次数后停在 error，等用户点「重试」。
+ */
+function scheduleRetry(id: string, livedMs: number): void {
+  const cfg = getServerConfig(id)
+  if (!cfg || !isEnabled(id) || shuttingDown) return
+  const r = retries.get(id) ?? { attempt: 0, timer: null }
+  if (livedMs >= STABLE_MS) r.attempt = 0
+  const max = cfg.transport === 'stdio' ? RETRY_MAX_STDIO : RETRY_MAX_REMOTE
+  const rt = runtimes.get(id)
+  if (r.attempt >= max) {
+    retries.delete(id)
+    if (rt) {
+      rt.lastError = `${rt.lastError ?? '连接已断开。'}（已自动重连 ${max} 次仍未成功）`
       broadcast(id)
     }
-    return getServerConfig(id) ? viewOf(cfg) : null
+    return
   }
+  const delay = RETRY_BASE * 2 ** r.attempt
+  r.attempt++
+  retries.set(id, r)
+  if (rt) {
+    rt.lastError = `${rt.lastError ?? '连接已断开。'}${delay / 1000} 秒后自动重连（第 ${r.attempt}/${max} 次）…`
+    broadcast(id)
+  }
+  r.timer = setTimeout(() => {
+    r.timer = null
+    void reconcile(id, true).then((ok) => {
+      if (!ok && runtimes.get(id)?.status === 'error') scheduleRetry(id, 0)
+    })
+  }, delay)
 }
 
-/** 断开一个服务（幂等）：反注册工具、关闭 client、置 disconnected。 */
-export async function disconnectServer(id: string): Promise<void> {
+/** 彻底撤掉某服务的运行态（删除服务时）：作废在途对账 / 定时器，撤工具，关 client。 */
+function forget(id: string): void {
+  tickets.set(id, (tickets.get(id) ?? 0) + 1)
+  cancelDebounce(id)
+  clearRetry(id)
   const rt = runtimes.get(id)
   if (!rt) return
-  rt.gen = ++genCounter // 使任何在途连接 / onclose 回调失效
-  const client = rt.client
-  unregisterMcpToolNames(rt.tools.map((t) => t.fqName))
-  for (const t of rt.tools) routes.delete(t.fqName)
-  rt.status = 'disconnected'
-  rt.tools = []
-  rt.toolCount = 0
-  rt.client = null
-  rt.lastError = null
-  if (client) {
-    try {
-      await client.close()
-    } catch {
-      /* 关闭异常忽略（子进程可能已退出） */
-    }
-  }
-  broadcast(id)
+  rt.gen = ++genCounter
+  dropTools(rt)
+  runtimes.delete(id)
+  void rt.client?.close().catch(() => {})
 }
 
-/** 断开全部（app 退出时清理 stdio 子进程，避免遗留孤儿进程）。 */
+// 配置写入层的变更 → 对账：启停立即兑现；连接字段变更防抖（未启用则无需理会）。
+onMcpConfigChange((id, change) => {
+  if (change.enabled) void reconcile(id)
+  else if (change.connection && isEnabled(id)) scheduleReconcile(id)
+})
+
+/** 断开全部（app 退出时清理 stdio 子进程，避免遗留孤儿进程）。此后不再发起任何连接。 */
 export async function disconnectAllServers(): Promise<void> {
-  await Promise.all([...runtimes.keys()].map((id) => disconnectServer(id)))
+  shuttingDown = true
+  for (const t of debounces.values()) clearTimeout(t)
+  debounces.clear()
+  for (const r of retries.values()) if (r.timer) clearTimeout(r.timer)
+  retries.clear()
+  const closing: Promise<void>[] = []
+  for (const rt of runtimes.values()) {
+    rt.gen = ++genCounter
+    dropTools(rt)
+    if (rt.client) closing.push(rt.client.close().catch(() => {}))
+    rt.client = null
+    rt.status = 'disconnected'
+    rt.tools = []
+    rt.toolCount = 0
+  }
+  await Promise.all(closing)
 }
 
-/** 启动时自动连接所有「已启用」的服务（失败各自降级，不互相阻塞）。 */
+/** 启动时对账所有「已启用」的服务（失败各自降级，不互相阻塞）。 */
 export function autoConnectEnabledServers(): void {
   for (const cfg of listServerConfigs()) {
-    if (isEnabled(cfg.id)) void connectServer(cfg.id)
+    if (isEnabled(cfg.id)) void reconcile(cfg.id)
   }
 }
 
@@ -424,29 +607,23 @@ export function registerMcpIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('mcp:list', (): McpServerView[] => listServers())
   ipcMain.handle('mcp:get', (_e, id: string): McpServerConfig | null => getServerConfig(id))
   ipcMain.handle('mcp:upsert', (_e, input: McpServerInput): McpServerConfig => upsertServer(input))
-  ipcMain.handle('mcp:remove', async (_e, id: string): Promise<{ ok: true }> => {
-    await disconnectServer(id)
+  ipcMain.handle('mcp:remove', (_e, id: string): { ok: true } => {
+    forget(id)
     deleteServer(id)
-    runtimes.delete(id)
     return { ok: true }
   })
-  ipcMain.handle(
-    'mcp:set-enabled',
-    async (_e, id: string, enabled: boolean): Promise<{ ok: true }> => {
-      setEnabled(id, Boolean(enabled))
-      if (enabled) void connectServer(id)
-      else await disconnectServer(id)
-      return { ok: true }
-    }
-  )
-  ipcMain.handle('mcp:connect', (_e, id: string): Promise<McpServerView | null> => connectServer(id))
-  ipcMain.handle('mcp:disconnect', async (_e, id: string): Promise<{ ok: true }> => {
-    await disconnectServer(id)
+  // 启停即兑现：setEnabled 经配置变更通知触发对账（连上 / 断开）。
+  ipcMain.handle('mcp:set-enabled', (_e, id: string, enabled: boolean): { ok: true } => {
+    setEnabled(id, Boolean(enabled))
     return { ok: true }
   })
-  // 测试 = 连接一次并返回结果视图（成功即保持连接；失败置 error）。
-  ipcMain.handle('mcp:test', (_e, id: string): Promise<McpServerView | null> => connectServer(id))
-  // 写入 / 更新某服务的某密钥字段（写后即用，明文永不回渲染层）。
+  // 重试 = 按当前配置重新对账一次（失败后的手动入口；未启用时只会落到「未启用」，不会连上）。
+  ipcMain.handle('mcp:retry', async (_e, id: string): Promise<McpServerView | null> => {
+    await reconcile(id)
+    const cfg = getServerConfig(id)
+    return cfg ? viewOf(cfg) : null
+  })
+  // 写入 / 更新某服务的某密钥字段（写后即用，明文永不回渲染层）；已启用则防抖重连以用上新值。
   ipcMain.handle(
     'mcp:set-secret',
     async (
@@ -457,7 +634,9 @@ export function registerMcpIpc(getWindow: () => BrowserWindow | null): void {
     ): Promise<{ ok: boolean; available: boolean }> => {
       const f = (field ?? '').trim()
       if (!f) return { ok: false, available: true }
-      return setSecret(`mcp:${id}:${f}`, typeof value === 'string' ? value : '')
+      const r = await setSecret(`mcp:${id}:${f}`, typeof value === 'string' ? value : '')
+      if (r.ok && isEnabled(id)) scheduleReconcile(id)
+      return r
     }
   )
   ipcMain.handle('mcp:has-secret', (_e, id: string, field: string): Promise<boolean> =>

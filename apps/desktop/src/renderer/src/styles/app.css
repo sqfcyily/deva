@@ -3962,6 +3962,12 @@ button.projmenu__item:disabled {
   font-size: 12px;
   line-height: 1.5;
 }
+/* 待处理（待填密钥 / 待完善配置）：警示色弱化，区别于连接失败的红。 */
+.mcp-error--warn {
+  border-color: color-mix(in srgb, var(--warning) 40%, var(--border));
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+  color: var(--fg);
+}
 .field__note--warn {
   color: var(--warning);
 }
@@ -4287,6 +4293,10 @@ button.projmenu__item:disabled {
 }
 .ext-status__live--disconnected {
   color: var(--fg-subtle);
+}
+.ext-status__live--needs_config,
+.ext-status__live--needs_secret {
+  color: var(--warning);
 }
 .ext-linkbtn {
   padding: 2px 4px;

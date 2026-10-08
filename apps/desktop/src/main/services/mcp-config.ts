@@ -124,6 +124,29 @@ function cleanValueMap(map: unknown): Record<string, McpValue> {
   return out
 }
 
+// ── 变更通知（mcp.ts 据此对账连接）──────────────────────────────────────────
+
+/** 一次配置变更的影响面：enabled=启用态变了（立即对账）；connection=影响连接的字段变了（防抖对账）。 */
+export interface McpChange {
+  enabled: boolean
+  connection: boolean
+}
+
+let changeListener: (id: string, change: McpChange) => void = () => {}
+
+/**
+ * 订阅配置变更（仅 mcp.ts 注册一次）。挂在写入层而非各 IPC 上，故无论经扩展页、`create_mcp`
+ * 工具还是将来别的入口改配置，「启用即可用」都由同一处兑现。
+ */
+export function onMcpConfigChange(fn: (id: string, change: McpChange) => void): void {
+  changeListener = fn
+}
+
+/** 影响连接的字段签名（名称 / 描述不在内：改它们无需重连）。 */
+function connectionSig(s: StoredServer): string {
+  return JSON.stringify([s.transport, s.command, s.args, s.env, s.url, s.headers])
+}
+
 // ── 启用态（config.json 的 mcp.enabled）──────────────────────────────────────
 
 function enabledMap(): Record<string, boolean> {
@@ -143,11 +166,17 @@ export function isEnabled(id: string): boolean {
   return enabledMap()[id] === true
 }
 
-export function setEnabled(id: string, enabled: boolean): void {
-  if (!isSafeId(id)) return
+function writeEnabled(id: string, enabled: boolean): void {
   const map = enabledMap()
   map[id] = enabled === true
   writeEnabledMap(map)
+}
+
+/** 用户显式启停：落盘并恒通知对账（即便值未变，也当作「请按此状态兑现」）。 */
+export function setEnabled(id: string, enabled: boolean): void {
+  if (!isSafeId(id)) return
+  writeEnabled(id, enabled)
+  changeListener(id, { enabled: true, connection: false })
 }
 
 // ── 读写 ──────────────────────────────────────────────────────────────────
@@ -194,11 +223,19 @@ export function upsertServer(input: McpServerInput): McpServerConfig {
     rec.headers = cleanValueMap(input.headers)
   }
 
+  const prev = servers[id]
+  const wasEnabled = isEnabled(id)
   servers[id] = rec
   writeAll(servers)
 
-  if (typeof input.enabled === 'boolean') setEnabled(id, input.enabled)
-  else if (isNew) setEnabled(id, false)
+  if (typeof input.enabled === 'boolean') writeEnabled(id, input.enabled)
+  else if (isNew) writeEnabled(id, false)
+
+  const change: McpChange = {
+    enabled: isEnabled(id) !== wasEnabled,
+    connection: !prev || connectionSig(prev) !== connectionSig(rec)
+  }
+  if (change.enabled || change.connection) changeListener(id, change)
 
   return { id, ...rec }
 }
@@ -234,6 +271,21 @@ async function resolveValueMap(
       const val = await getSecret(`mcp:${id}:${v.secretRef}`)
       if (val) out[k] = val // 未配置 / 解密失败 → 跳过该项（绝不注入空值）
     }
+  }
+  return out
+}
+
+/**
+ * 尚无可用值的密钥字段名（未填写或解密失败）。连接前预检：缺密钥的服务直接标「待填密钥」，
+ * 不再明知会鉴权失败还去起进程 / 发请求。只看当前传输方式用到的那张表（env 或 headers）。
+ */
+export async function missingSecrets(cfg: McpServerConfig): Promise<string[]> {
+  const map = cfg.transport === 'stdio' ? cfg.env : cfg.headers
+  const out: string[] = []
+  if (!map) return out
+  for (const [k, v] of Object.entries(map)) {
+    if (typeof v === 'string' || !v || typeof v.secretRef !== 'string') continue
+    if (!(await getSecret(`mcp:${cfg.id}:${v.secretRef}`))) out.push(k)
   }
   return out
 }

@@ -1,0 +1,36 @@
+- generic [ref=f1e2]:
+  - generic [ref=f1e4]:
+    - generic [ref=f1e21]:
+      - textbox "请输入手机号/邮箱地址" [ref=f1e25]
+      - generic [ref=f1e29]:
+        - textbox "请输入密码" [ref=f1e30]
+        - button [ref=f1e32] [cursor=pointer]
+      - generic [ref=f1e40]:
+        - text: 注册登录即代表已阅读并同意我们的
+        - link "用户协议" [ref=f1e41] [cursor=pointer]:
+          - /url: https://cdn.deepseek.com/policies/en-US/deepseek-terms-of-use.html?locale=zh_CN
+        - text: 与
+        - link "隐私政策" [ref=f1e42] [cursor=pointer]:
+          - /url: https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html?locale=zh_CN
+      - generic [ref=f1e43]:
+        - button "忘记密码" [ref=f1e44] [cursor=pointer]
+        - button "立即注册" [ref=f1e47] [cursor=pointer]
+      - button "登录" [ref=f1e50] [cursor=pointer]
+      - generic [ref=f1e54]:
+        - button "使用 Google 账号登录" [ref=f1e55] [cursor=pointer]
+        - button "使用 Apple 账号登录" [ref=f1e59] [cursor=pointer]
+    - generic [ref=f1e63]:
+      - link "浙ICP备2023025841号" [ref=f1e64] [cursor=pointer]:
+        - /url: https://beian.miit.gov.cn
+      - generic [ref=f1e65]: ·
+      - link "联系我们" [ref=f1e66] [cursor=pointer]:
+        - /url: https://trtgsjkv6r.feishu.cn/share/base/form/shrcnhcHE4A6lQaQ3v0raCXmBAg?hide_uid=1&hide_source=1&hide_app_version=1&hide_os_version=1&hide_device_brand=1&hide_device_model=1&hide_app_locale=1&hide_screen_resolution=1&prefill_source=web_auth&prefill_app_version=2.5.0&prefill_app_locale=zh-CN&prefill_screen_resolution=1920x1080
+  - generic [ref=f1e67]:
+    - generic [ref=f1e68]: Cookie 设置
+    - generic [ref=f1e69]:
+      - text: 我们使用 Cookies 来提供和改进服务并进行安全防护。点击查看我们的
+      - link "Cookie 政策" [ref=f1e70] [cursor=pointer]:
+        - /url: https://cdn.deepseek.com/policies/en-US/cookies-policy.html
+      - text: 。你可以选择接受全部，或仅接受必要 Cookies（可能导致部分功能无法正常使用）。
+    - button "仅接受必要 Cookies" [ref=f1e71] [cursor=pointer]
+    - button "接受全部" [ref=f1e74] [cursor=pointer]

@@ -4407,6 +4407,8 @@ function ExtensionsPane(): React.JSX.Element {
     enabled: boolean
     badge: string
     note?: string
+    /** 注记以警示色显示（MCP 已启用却没连上：失败 / 待填密钥 / 待完善配置）。 */
+    noteWarn?: boolean
     locked?: boolean
   }
   const items: Item[] = [
@@ -4428,7 +4430,9 @@ function ExtensionsPane(): React.JSX.Element {
         name: m.name,
         enabled: m.enabled,
         badge: t('cf.kindMcp'),
-        note: m.status === 'connected' ? t('cf.mcpConnected') : t('cf.mcpDisconnected')
+        // 未启用不加注记（开关本身已表达）；已启用则如实给出连接状态，没连上的原因用警示色。
+        note: m.enabled ? t(`extensions.status.${m.status}`) : undefined,
+        noteWarn: m.enabled && MCP_STATUS_WARN.has(m.status)
       })
     )
   ]
@@ -4451,7 +4455,11 @@ function ExtensionsPane(): React.JSX.Element {
                   <span className="cf-setrow__name">
                     {x.name}
                     <span className="cf-badge">{x.badge}</span>
-                    {x.note && <span className="cf-setrow__note">{x.note}</span>}
+                    {x.note && (
+                      <span className={`cf-setrow__note${x.noteWarn ? ' cf-setrow__note--warn' : ''}`}>
+                        {x.note}
+                      </span>
+                    )}
                   </span>
                   <ChevronRight className="cf-setrow__chevron" size={15} />
                 </button>
@@ -4476,13 +4484,18 @@ function ExtensionsPane(): React.JSX.Element {
   )
 }
 
-/** 面板 / 详情共用的运行期状态字形（● 连接 / ! 错 / ○ 断）。 */
+/** 详情页运行期状态字形（● 连接 / ! 错或待处理 / ○ 未启用）。 */
 const MCP_STATUS_GLYPH: Record<McpStatus, string> = {
   connected: '●',
   connecting: '●',
   error: '!',
+  needs_config: '!',
+  needs_secret: '!',
   disconnected: '○'
 }
+
+/** 已启用却没连上、需要用户处理的状态（列表注记用警示色）。 */
+const MCP_STATUS_WARN = new Set<McpStatus>(['error', 'needs_config', 'needs_secret'])
 
 /**
  * MCP 详情编辑（对话优先外壳）：钻取式主从抽屉，形态对齐模型设置页（顶部返回 + 逐字段即时落盘）。
@@ -4492,7 +4505,7 @@ const MCP_STATUS_GLYPH: Record<McpStatus, string> = {
 function McpEditor({ item, onBack }: { item: McpServer; onBack: () => void }): React.JSX.Element {
   const { t } = useI18n()
   const dialog = useDialog()
-  const { update, remove, toggle, mcpConnect, mcpDisconnect, mcpTest, mcpSetSecret } = useExtensions()
+  const { update, remove, toggle, mcpRetry, mcpSetSecret } = useExtensions()
   const [secretWarn, setSecretWarn] = useState(false)
   const isStdio = item.transport === 'stdio'
 
@@ -4542,28 +4555,34 @@ function McpEditor({ item, onBack }: { item: McpServer; onBack: () => void }): R
         <span className="ext-detail__scope">{t('common.global')}</span>
       </header>
 
+      {/* 启用即连接：状态只读展示，唯一的动作是失败后「重试」。未启用一律显示「未启用」。 */}
       <div className="ext-status">
-        <span className={`ext-status__live ext-status__live--${item.status}`}>
-          {MCP_STATUS_GLYPH[item.status]} {t(`extensions.status.${item.status}`)}
-          {item.status === 'connected' && item.toolCount > 0
+        <span className={`ext-status__live ext-status__live--${item.enabled ? item.status : 'disconnected'}`}>
+          {item.enabled
+            ? `${MCP_STATUS_GLYPH[item.status]} ${t(`extensions.status.${item.status}`)}`
+            : `${MCP_STATUS_GLYPH.disconnected} ${t('extensions.status.off')}`}
+          {item.enabled && item.status === 'connected' && item.toolCount > 0
             ? ` · ${item.toolCount} ${t('extensions.tools')}`
             : ''}
         </span>
         <span className="ext-detail__spacer" />
-        <button className="ext-linkbtn" onClick={() => mcpTest(item.id)}>
-          {t('extensions.test')}
-        </button>
-        {item.status === 'connected' ? (
-          <button className="ext-linkbtn" onClick={() => mcpDisconnect(item.id)}>
-            {t('extensions.disconnect')}
-          </button>
-        ) : (
-          <button className="ext-linkbtn" onClick={() => mcpConnect(item.id)}>
-            {t('extensions.connect')}
+        {item.enabled && item.status === 'error' && (
+          <button className="ext-linkbtn" onClick={() => mcpRetry(item.id)}>
+            {t('extensions.retry')}
           </button>
         )}
       </div>
-      {item.status === 'error' && item.lastError && <div className="mcp-error">{item.lastError}</div>}
+      {item.enabled && item.status === 'error' && item.lastError && (
+        <div className="mcp-error">{item.lastError}</div>
+      )}
+      {item.enabled && item.status === 'needs_config' && item.lastError && (
+        <div className="mcp-error mcp-error--warn">{item.lastError}</div>
+      )}
+      {item.enabled && item.status === 'needs_secret' && (
+        <div className="mcp-error mcp-error--warn">
+          {t('extensions.missingSecrets').replace('{fields}', item.missingSecrets.join(', '))}
+        </div>
+      )}
 
       <div className="ext-field">
         <label className="ext-field__label">{t('extensions.name')}</label>

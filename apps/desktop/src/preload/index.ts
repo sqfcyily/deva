@@ -334,7 +334,13 @@ export interface PersonaUpsertInput {
 
 /** MCP「线缆类型」（与 services/mcp.ts + mcp-config.ts 对齐，按既定模式在 preload 内复述）。 */
 export type McpTransport = 'stdio' | 'sse' | 'http'
-export type McpStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+export type McpStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'error'
+  | 'needs_config'
+  | 'needs_secret'
 /** env / header 值：明文字符串，或指向加密库的引用（真实值在主进程 `mcp:<id>:<secretRef>`）。 */
 export type McpValue = string | { secretRef: string }
 
@@ -373,6 +379,8 @@ export interface McpServerView extends McpServerConfig {
   status: McpStatus
   toolCount: number
   lastError: string | null
+  /** status=needs_secret 时尚未填写的密钥字段名。 */
+  missingSecrets: string[]
   /** 已发现工具的展示清单（原始名 + 命名空间化名 + 描述）。 */
   tools: { name: string; fqName: string; description: string }[]
 }
@@ -768,7 +776,8 @@ const api = {
       ipcRenderer.invoke('personas:clear-avatar-image', id)
   },
   /**
-   * MCP 服务（全局 ~/.deva/mcp.json）：列出 / 读取 / 增改删 / 启停 / 连接管理 / 密钥。
+   * MCP 服务（全局 ~/.deva/mcp.json）：列出 / 读取 / 增改删 / 启停 / 重试 / 密钥。
+   * 启用即连接：连接由主进程按启用态、配置、密钥自动对账，渲染层不直接连 / 断。
    * 连接、子进程 spawn、密钥解密全部在主进程；渲染层只见配置与运行期状态，明文密钥永不回传。
    */
   mcp: {
@@ -779,11 +788,8 @@ const api = {
     remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('mcp:remove', id),
     setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke('mcp:set-enabled', id, enabled),
-    /** 连接（或重连）一个服务，返回其最新视图（失败视图带 lastError）。 */
-    connect: (id: string): Promise<McpServerView | null> => ipcRenderer.invoke('mcp:connect', id),
-    disconnect: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('mcp:disconnect', id),
-    /** 测试连通 = 连接一次并返回结果视图（成功即保持连接）。 */
-    test: (id: string): Promise<McpServerView | null> => ipcRenderer.invoke('mcp:test', id),
+    /** 连接失败后手动重试（按当前配置重新对账），返回最新视图。 */
+    retry: (id: string): Promise<McpServerView | null> => ipcRenderer.invoke('mcp:retry', id),
     /** 写入某服务的某密钥字段（空串即删除；明文永不回渲染层）。 */
     setSecret: (
       id: string,

@@ -30,8 +30,17 @@ export interface Skill {
 }
 
 export type McpTransport = 'stdio' | 'sse' | 'http'
-/** 运行期连接状态（不落盘；由主进程广播）。 */
-export type McpStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+/**
+ * 运行期连接状态（不落盘；由主进程广播）。连接由主进程按启用态自动对账：
+ * disconnected=未启用；needs_config=配置不完整；needs_secret=缺密钥；其余为连接中 / 已连接 / 失败。
+ */
+export type McpStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'error'
+  | 'needs_config'
+  | 'needs_secret'
 
 /** env / header 编辑行：键 + 明文值；secret=true 表示值经加密存储（写后不回显，value 恒空占位）。 */
 export interface McpKV {
@@ -70,8 +79,10 @@ export interface McpServer {
   status: McpStatus
   /** 已发现工具数 */
   toolCount: number
-  /** 最近一次连接失败的中文说明（无则 null） */
+  /** 最近一次连接失败 / 配置不完整的中文说明（无则 null） */
   lastError: string | null
+  /** status=needs_secret 时尚未填写的密钥字段名 */
+  missingSecrets: string[]
   /** 已发现工具清单（连接成功后有值） */
   tools: McpTool[]
 }
