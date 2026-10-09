@@ -52,7 +52,12 @@ const ModelsContext = createContext<ModelsContextValue | null>(null)
 
 export function findActive(providers: Provider[], activeId: string | null) {
   if (!activeId) return null
-  const [pid, mid] = activeId.split(':')
+  // 按首个冒号切分：providerId 由本应用生成、无冒号，而模型 id 可以带冒号（Ollama 的 `qwen3:8b`），
+  // 不能 split(':') 解构——那样 mid 只剩 `qwen3`，解析失败即误报「尚未选择模型」。
+  const idx = activeId.indexOf(':')
+  if (idx <= 0) return null
+  const pid = activeId.slice(0, idx)
+  const mid = activeId.slice(idx + 1)
   const provider = providers.find((p) => p.id === pid)
   const model = provider?.models.find((mm) => mm.id === mid)
   return provider && model ? { provider, model } : null
