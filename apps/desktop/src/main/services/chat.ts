@@ -18,7 +18,26 @@ import {
 import { enabledSkillSummaries, loadSkillInstructionsByName, skillsDir } from './skills'
 import { listMemories, memoryPromptSection } from './memory'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
-import { GENERAL_SUBAGENT, getSubagentByName, subagentSummaries, type SubagentDef } from './subagents'
+import {
+  GENERAL_SUBAGENT,
+  FORK_AGENT,
+  getSubagentByName,
+  isForkAgent,
+  subagentSummaries,
+  type SubagentDef
+} from './subagents'
+import {
+  getSubagentMeta,
+  isSubagentBusy,
+  loadSubagent,
+  newSubagentId,
+  pruneSubagents,
+  removeSessionSubagents,
+  saveSubagent,
+  setSubagentBusy,
+  subagentIdFor,
+  type SubagentRecord
+} from './subagent-store'
 import { enabledPersonas, getPersona } from './personas'
 import { resolveDefaultModel, resolveModelRef, resolveModelRefOrNull } from './model-resolve'
 import { sealedDecision } from './sealed'
@@ -290,7 +309,9 @@ function toDisplayMessages(
   asks: Record<string, { answers: string[] | null }> = {},
   summaries: Record<string, string> = {},
   plans: Record<string, { decision: 'approve' | 'keep' | null }> = {},
-  autotasks: Record<string, { status: 'created' | 'dismissed'; taskId?: string }> = {}
+  autotasks: Record<string, { status: 'created' | 'dismissed'; taskId?: string }> = {},
+  /** 子智能体 id → 类型与任务标题（来自子智能体记录索引），给续聊卡补标题。 */
+  subagentLookup?: (id: string) => { agent: string; description: string } | undefined
 ): DisplayMessage[] {
   const out: DisplayMessage[] = []
   let lastAssistant: Extract<DisplayMessage, { role: 'assistant' }> | null = null
@@ -298,11 +319,24 @@ function toDisplayMessages(
   // 预扫：收集所有已存在 tool_result 的 toolUseId。用于判定 ask_user 是否「曾被答复过」——
   // 旧数据（本次修复前建的对话）无 asks 边车但有 tool_result，据此仍渲染为已答态（逐题回落「未作答」），
   // 而非误显为一张可再次点选的交互卡。真正从未答复的（无 result 无边车）才留作交互态。
+  // 顺带收集每次 run_subagent 派出的子智能体（id 由调用 id 确定性派生），记录已被清理时续聊卡仍能取到标题。
   const resultIds = new Set<string>()
+  const subagentOrigins = new Map<string, { agent: string; description: string }>()
   for (const m of messages) {
     if (typeof m.content === 'string') continue
-    for (const p of m.content) if (p.type === 'tool_result') resultIds.add(p.toolUseId)
+    for (const p of m.content) {
+      if (p.type === 'tool_result') resultIds.add(p.toolUseId)
+      else if (p.type === 'tool_use' && p.name === 'run_subagent') {
+        const input = (p.input ?? {}) as { agent?: unknown; description?: unknown }
+        subagentOrigins.set(subagentIdFor(p.id), {
+          agent: typeof input.agent === 'string' && input.agent.trim() ? input.agent.trim() : GENERAL_SUBAGENT.name,
+          description: typeof input.description === 'string' ? input.description.trim() : ''
+        })
+      }
+    }
   }
+  const lookupSubagent = (id: string): { agent: string; description: string } | undefined =>
+    subagentLookup?.(id) ?? subagentOrigins.get(id)
 
   // after → 该位置应插入的提示（一轮通常至多一条，用数组以防同位置多条）。
   const noticesAfter = new Map<number, StoredNotice[]>()
@@ -382,7 +416,7 @@ function toDisplayMessages(
               kind: 'tool',
               id: p.id,
               name: p.name,
-              args: p.input,
+              args: kind === 'send_to_subagent' ? withSubagentMeta(p.input, lookupSubagent) : p.input,
               status: 'ok',
               summary: summaries[p.id]
             })
@@ -527,6 +561,7 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
     s.autotasks = {}
     // 检查点记录同样按 toolUseId 归属，随轮一并清空（lastKnown / baselines 描述的是磁盘现状，保留）。
     s.checkpoints = {}
+    pruneSubagents(s.id, new Set())
     s.updatedAt = Date.now()
     return
   }
@@ -566,6 +601,8 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
   s.autotasks = prune(s.autotasks)
   // 被删轮的检查点记录随之丢弃：它们的文件改动留在磁盘上，此后不再能经回滚撤回。
   s.checkpoints = prune(s.checkpoints)
+  // 创建或续聊发生在被删轮次的子智能体整条删除：删掉的内容模型不再看到，子智能体的上下文里也不该留着。
+  pruneSubagents(s.id, liveUseIds)
   s.updatedAt = Date.now()
 }
 
@@ -1179,8 +1216,7 @@ function systemPrompt(
       : '你是 Deva，一个运行在用户桌面上的 AI 助手，可通过工具读取/写入文件、执行命令、加载技能等来完成用户请求。以下是你在本应用内必须始终遵守的规范。',
     `【环境】${loc}`,
     '【路径约定】默认用**相对路径**（相对上面的当前工作目录）：落点始终由应用按当前挂载的工作区解析，你无需记忆基准目录，也不会被历史消息里的旧目录带偏。只有当目标明确在工作区之外时才用绝对路径——用户指名了桌面、主目录、系统某处或另一个项目（`~/` 表示用户主目录）。切勿把历史消息里出现过的绝对路径当作当前工作目录的依据；未挂载工作区时也照常按相对路径发起，由挂载卡片解决基准问题。',
-    '【工具使用】动手前先了解现状：已知具体文件/符号时直接用 read_file / grep 等查看，面广时按下条【子任务委派】派发子智能体；查找与阅读请用 glob / grep / read_file / list_dir，不要用 run_command 跑 find、grep、cat、ls 代替；write_file 会覆盖整个文件，务必先读后写、保留无关内容。单次回复有输出长度上限：大文件按 write_file 的说明分段写入；完整文档、长篇代码这类很长的产出宜写入文件分段完成，而不是在一条回复里整篇输出。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用失败，回灌结果会写明原因——据此改道或如实说明，切勿原样反复重试。',
-    '【子任务委派】回答问题需要翻阅多个文件或多个目录、预计要做 3 次以上检索、或属于调研/梳理类问题（如「介绍/梳理这个项目」「某功能是怎么实现的」「X 在哪些地方用到」）时，优先用 `run_subagent` 派发：定位类派 `Explore`，需要理解与归纳的派 `General`；它们在隔离上下文里完成大量检索，你只拿回结论，本对话的上下文不会被文件内容撑满。彼此独立的几个方向，在同一轮里一次性派发多个，它们会并行执行。只有已知具体文件/符号、一两次检索就能答的单点问题，才自己直接读、直接搜。',
+    '【工具使用】动手前先了解现状：已知具体文件/符号时直接用 read_file / grep 等查看，面广时可交给子智能体（run_subagent）；查找与阅读请用 glob / grep / read_file / list_dir，不要用 run_command 跑 find、grep、cat、ls 代替；write_file 会覆盖整个文件，务必先读后写、保留无关内容。单次回复有输出长度上限：大文件按 write_file 的说明分段写入；完整文档、长篇代码这类很长的产出宜写入文件分段完成，而不是在一条回复里整篇输出。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用失败，回灌结果会写明原因——据此改道或如实说明，切勿原样反复重试。',
     '【并行调用】一次回复里可以同时发起多个工具调用。彼此没有依赖的调用（如同时读几个文件、同时搜几个关键词、同时看几个目录）务必在**同一次回复里一并发出**，只读调用会并发执行，省去逐个往返；只有后一步要用到前一步结果时才分开依次发起。',
     '【工程纪律】① 只做用户要求的事：不擅自加功能、不做没要求的重构或「顺手优化」，也不为不可能发生的情况堆防御代码；修 bug 就修 bug。② 改代码先读周边：贴合所在文件既有的命名、风格、惯用写法与注释密度，优先复用现有函数与工具，不另起炉灶。③ 如实汇报：改完能验证就验证（跑类型检查、测试或构建）；测试失败就说失败并给出关键输出，跳过了哪步就说跳过了，没验证过的不要说成「已完成、已通过」。④ 提到代码位置时用「路径:行号」的写法，方便用户定位。',
     `【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。文件读写与命令执行均不设任何限制（工作区外、主目录、隐藏目录、.git 均可直接读写，任何命令都会直接执行），删除、覆盖、强推等破坏性操作执行前请自行核对目标无误。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。`,
@@ -1268,23 +1304,24 @@ function buildSkillTool(skills: { name: string; description: string }[]): ToolSp
 
 /**
  * 构建 run_subagent 工具规格。**恒返回**：子智能体是内置能力，无需用户先配置任何东西。
- * 任务内容完全由本次调用的 `prompt` 现场给出；`agent` 只是在内置子智能体里挑一个（各自的职责
- * 正文 + 收窄的工具集），省略或未命中即回落通用子智能体（见 subagents.ts）。
- * 对标 Claude Code：内置类型开箱可用，选型是可选增强而非派生的前置条件。
+ * 任务内容完全由本次调用的 `prompt` 现场给出；`agent` 在内置子智能体里挑一个（各自的职责正文 +
+ * 收窄的工具集），或选 fork 继承主对话；省略或未命中即回落通用子智能体（见 subagents.ts）。
+ * 派发原则对齐 Claude Code 的 Agent 工具说明：原则式、只写在工具描述里（系统提示词不再另立一段）。
  */
 function buildSubagentTool(): ToolSpec {
   const list = subagentSummaries()
-    .map((a) => `${a.name}${a.description ? `（${a.description}）` : ''}`)
+    .map((a) => `${a.name}（${a.description}）`)
     .join('；')
   return {
     name: 'run_subagent',
     description:
-      '把一项子任务派发给一个「子智能体（Subagent）」在隔离上下文中独立完成，只返回其最终结论——你拿回结论，而不是一堆文件内容。' +
-      '何时使用：回答问题需要翻阅多个文件或目录、预计要做 3 次以上检索、没把握一两次就搜到目标、或属于调研/梳理类问题（介绍项目、追某功能的实现、查某符号的全部用法）时；彼此独立的多个方向，请在**同一轮里一次性发起多个调用**，它们会并行执行。' +
-      '何时不用：已知具体文件/符号/取值在哪，一两次读取或搜索就能答；或需要与用户交互、需要你亲自落笔改动。' +
-      '子智能体看不到主对话历史、跑完即结束，因此 prompt 要一次写清背景、目标与期望的回报格式；派发之后就采信它的结论，不要自己再重做一遍。' +
-      '它的结论默认折叠在任务卡里、用户不会主动展开——请在你的回复里转述其中要紧的部分，不要只说一句「已完成」。' +
-      `可派发的子智能体：${list}。省略 agent 即派生通用子智能体 ${GENERAL_SUBAGENT.name}。`,
+      '启动一个子智能体，在独立上下文里处理一项多步任务，完成后只把结论交回给你。' +
+      '任务对得上下面某种子智能体、有彼此独立可以并行的工作、或者回答需要跨多个文件阅读时，交给子智能体——你拿回结论，而不是一堆文件内容。已经知道具体文件、符号或取值的单点查找，直接自己查。检索交出去之后就不要自己再做一遍，等它的结论。' +
+      '彼此独立的多项工作，在同一条回复里发起多个调用，它们会并行执行。' +
+      '除 fork 外，子智能体看不到主对话，prompt 要写清背景、目标和期望的回报形式；派 Explore 时在 prompt 里说明检索力度（「中等」或「非常彻底」）。' +
+      '子智能体的结论不会直接显示给用户，把要紧的部分转述给用户。' +
+      '结论末尾附有子智能体 ID：用 send_to_subagent 给它发消息，它会在保留原有上下文的基础上继续；再次调用 run_subagent 则是全新开始。' +
+      `可用的子智能体：${list}。省略 agent 即通用子智能体 ${GENERAL_SUBAGENT.name}。`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -1294,20 +1331,68 @@ function buildSubagentTool(): ToolSpec {
         },
         agent: {
           type: 'string',
-          description:
-            '可选。要派发到的子智能体：检索/定位选 Explore，需要理解归纳的调研选 General（或省略），实现方案调研选 Plan（省略或未命中一律派生通用子智能体）。',
+          description: `可选。要使用的子智能体；省略或未命中即 ${GENERAL_SUBAGENT.name}。`,
           enum: subagentSummaries().map((a) => a.name)
         },
         prompt: {
           type: 'string',
-          description:
-            '交给该子智能体的完整任务描述。它看不到主对话历史，请把所需背景、目标与验收标准一次说清。'
+          description: '交给子智能体的任务描述（fork 之外它看不到主对话，背景要写全）。'
         }
       },
       required: ['description', 'prompt']
     }
   }
 }
+
+/**
+ * 构建 send_to_subagent 工具规格（对标 Claude Code 的 SendMessage）：给已派出的子智能体续聊，
+ * 它带着自己落盘的上下文接着跑。只给主轮：子智能体不能再派发或续聊（见 SUBAGENT_EXCLUDED）。
+ */
+function buildSendToSubagentTool(): ToolSpec {
+  return {
+    name: 'send_to_subagent',
+    description:
+      '给之前用 run_subagent 派出的子智能体发一条消息，让它在保留原有上下文的基础上继续工作（追问、补充要求、让它接着做），返回它这一次的结论。' +
+      '同一个子智能体同一时间只能处理一条消息。它的结论同样不会直接显示给用户，要紧的部分请转述。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          description: '子智能体 ID，即 run_subagent 结论末尾给出的 ID（如 sub-1a2b3c4d）。'
+        },
+        message: {
+          type: 'string',
+          description: '发给它的消息。它看得到自己之前的全部上下文，但看不到主对话里后来发生的事。'
+        },
+        description: {
+          type: 'string',
+          description: '可选。用 3-5 个字概括这次要它做的事，作为任务卡标题；省略则沿用原任务标题。'
+        }
+      },
+      required: ['to', 'message']
+    }
+  }
+}
+
+/**
+ * 子智能体禁用的工具：交互类（ask_user）、再派发/续聊（run_subagent / send_to_subagent）、创建持久实体类
+ * （create_* / propose_agent）、记忆写删（看不到与用户的对话，无从判断用户偏好）、skill。
+ * 普通子智能体在工具表里就看不到它们（buildSubagentTools）；fork 沿用主对话的完整工具表以共享
+ * 提示缓存，靠工具循环里 depth>0 的兜底拦截。
+ */
+const SUBAGENT_EXCLUDED = new Set([
+  'ask_user',
+  'skill',
+  'run_subagent',
+  'send_to_subagent',
+  'create_skill',
+  'propose_agent',
+  'create_mcp',
+  'create_task',
+  'memory_write',
+  'memory_delete'
+])
 
 /** 可在同一步内并发执行的内置只读工具：无副作用、彼此无先后依赖（见工具循环的 readRuns）。 */
 const PARALLEL_READ_TOOLS = new Set([
@@ -1328,21 +1413,8 @@ const PARALLEL_READ_TOOLS = new Set([
  * 工具集只**收窄**可见工具；被保留的每个调用仍照常过同一道权限闸门（无提权）。
  */
 function buildSubagentTools(def: SubagentDef): ToolSpec[] {
-  // create_skill / propose_agent / create_mcp / create_task 亦排除：子智能体不得创建技能/角色/MCP 服务/定时任务
-  //（它们在 toolSpecs 基表里，须显式剔除）。记忆写/删亦排除：子智能体看不到与用户的对话，无从判断用户偏好；
-  // memory_read 保留（只读无害）。
-  const EXCLUDED = new Set([
-    'ask_user',
-    'skill',
-    'run_subagent',
-    'create_skill',
-    'propose_agent',
-    'create_mcp',
-    'create_task',
-    'memory_write',
-    'memory_delete'
-  ])
-  const builtins = toolSpecs.filter((t) => !EXCLUDED.has(t.name))
+  // create_* / propose_agent 在 toolSpecs 基表里，须显式剔除；memory_read 保留（只读无害）。
+  const builtins = toolSpecs.filter((t) => !SUBAGENT_EXCLUDED.has(t.name))
   const mcp = getMcpToolSpecs()
   if (def.tools === '*') return [...builtins, ...mcp]
   const allow = new Set(def.tools)
@@ -1384,6 +1456,75 @@ function skillDirNote(dir: string | undefined): string {
   return dir
     ? `（技能文件夹：${dir}。正文中的相对路径均相对该文件夹；其中的参考文档、脚本、模板请按需用 read_file 读取，不必一次读完。）\n\n`
     : ''
+}
+
+/**
+ * fork 的起始历史：主对话历史的浅拷贝（消息对象按不可变对待、与主对话共享）+ 一条合成的回灌消息。
+ * 派发时主历史的末条是本步含全部 tool_use 的 assistant 消息，协议要求每个 tool_use 紧跟结果：本次 fork
+ * 调用自身与同一步的其它调用各补一条说明性结果（tool_result 排在最前），再接分身的任务指令。
+ */
+export function buildForkHistory(history: Message[], forkCallId: string, prompt: string): Message[] {
+  const out = [...history]
+  const last = out[out.length - 1]
+  const uses =
+    last && last.role === 'assistant' && typeof last.content !== 'string'
+      ? last.content.filter((p): p is Extract<ContentPart, { type: 'tool_use' }> => p.type === 'tool_use')
+      : []
+  const results: ContentPart[] = uses.map((u) => ({
+    type: 'tool_result',
+    toolUseId: u.id,
+    content:
+      u.id === forkCallId
+        ? '（已派生分身，任务见下。）'
+        : '（这是同一步里的其他调用，由主智能体处理，结果你看不到。）'
+  }))
+  out.push({
+    role: 'user',
+    content: [
+      ...results,
+      {
+        type: 'text',
+        text:
+          '你是主智能体派生出的分身（fork），上面是你们共享的全部对话。现在只专注完成下面这项子任务：' +
+          '直接动手，不要再派发子智能体，也不要向用户提问；完成后给出简洁的结论，作为交回主智能体的答复。\n\n任务：' +
+          prompt
+      }
+    ]
+  })
+  return out
+}
+
+/**
+ * send_to_subagent 的展示参数：补上原子智能体的类型（agent）与任务标题（description，本次未给时沿用
+ * 原标题），让续聊卡与原 Task 卡同名。只用于展示（实时事件 / 重开重建），不改写入历史的原参数。
+ */
+function withSubagentMeta(
+  args: unknown,
+  lookup: (id: string) => { agent: string; description: string } | undefined
+): unknown {
+  const a = (args ?? {}) as Record<string, unknown>
+  const to = typeof a.to === 'string' ? a.to.trim() : ''
+  const meta = to ? lookup(to) : undefined
+  if (!meta) return args
+  const own = typeof a.description === 'string' ? a.description.trim() : ''
+  return { ...a, agent: meta.agent, description: own || meta.description }
+}
+
+/** 子智能体历史末尾若是没等到结果的 tool_use（运行中途出错），补占位结果，续聊时协议才完整。 */
+function closeDanglingTail(messages: Message[]): void {
+  const last = messages[messages.length - 1]
+  if (!last || last.role !== 'assistant' || typeof last.content === 'string') return
+  const uses = last.content.filter((p) => p.type === 'tool_use')
+  if (uses.length === 0) return
+  messages.push({
+    role: 'user',
+    content: uses.map((u) => ({
+      type: 'tool_result' as const,
+      toolUseId: (u as Extract<ContentPart, { type: 'tool_use' }>).id,
+      content: DANGLING_RESULT,
+      isError: true
+    }))
+  })
 }
 
 /** 子智能体系统提示词：固定的隔离/约束说明 + 该子智能体自身的职责正文（prompt）。 */
@@ -1591,10 +1732,152 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const isSub = depth > 0
 
     /**
-     * 派发一次 run_subagent：起一个隔离上下文的子智能体（独立历史/工具/模型），只把其结论文本
-     * 交回父轮。派生本身不设闸——但子智能体的每一次嵌套工具调用仍在其 runAgentLoop 内照常过
-     * 同一道权限闸门（无后门）。递归深度上限 1：子轮 allowSubagents=false，杜绝子派生子。
-     * 任何解析/执行失败都捕获成结论文本，父轮继续，绝不整轮失败。
+     * 新派出一个子智能体（run_subagent）：建好它的记录（隔离历史 / 系统提示词 / 工具表），但不运行。
+     * 未指定 / 未命中 → 一律回落内置通用子智能体，**绝不因此失败**（对标 Claude Code：未知 subagent_type
+     * 同样落到 general-purpose）；名字落空时在结论前缀一行说明，免得模型以为点名的那位生效了。
+     * fork 原样继承主对话：同一份历史（浅拷贝）+ 定格的 system / tools，提示缓存可整段命中。
+     */
+    function prepareNewSubagent(tc: {
+      id: string
+      args: unknown
+    }): { label: string; note: string; rec?: SubagentRecord; error?: string } {
+      const a = (tc.args ?? {}) as { agent?: unknown; prompt?: unknown; description?: unknown }
+      const wantedAgent = typeof a.agent === 'string' ? a.agent.trim() : ''
+      const prompt = typeof a.prompt === 'string' ? a.prompt.trim() : ''
+      const fork = isForkAgent(wantedAgent)
+      const picked = wantedAgent && !fork ? getSubagentByName(wantedAgent) : null
+      const def = picked ?? GENERAL_SUBAGENT
+      const label = fork ? FORK_AGENT.name : def.name
+      const note =
+        wantedAgent && !fork && !picked
+          ? `（没有名为「${wantedAgent}」的子智能体，已改用通用子智能体 ${GENERAL_SUBAGENT.name} 完成。可选：${subagentSummaries()
+              .map((x) => x.name)
+              .join('、')}。）\n`
+          : ''
+      if (!prompt) return { label, note, error: `派生子智能体「${label}」失败：缺少任务描述（prompt）。` }
+      const now = Date.now()
+      return {
+        label,
+        note,
+        rec: {
+          id: newSubagentId(sessionId, tc.id),
+          sessionId,
+          agent: label,
+          description: typeof a.description === 'string' ? a.description.trim() : '',
+          originToolId: tc.id,
+          toolIds: [tc.id],
+          workspaceRoot: ctx.workspaceRoot,
+          system: fork ? system : buildSubagentSystem(def, ctx.workspaceRoot),
+          tools: fork ? tools : buildSubagentTools(def),
+          // 普通子智能体只带本次任务描述，不继承父对话（避免上下文串味与预算膨胀）。
+          messages: fork ? buildForkHistory(history, tc.id, prompt) : [{ role: 'user', content: prompt }],
+          createdAt: now,
+          updatedAt: now
+        }
+      }
+    }
+
+    /**
+     * 续聊一个已派出的子智能体（send_to_subagent）：读出它落盘的记录，把这条消息接到它自己的历史后面。
+     * 工作目录若已变化（其系统提示词里写的仍是旧目录），在消息前讲明新的相对路径基准。
+     */
+    function prepareContinueSubagent(tc: {
+      id: string
+      args: unknown
+    }): { label: string; note: string; rec?: SubagentRecord; error?: string } {
+      const a = (tc.args ?? {}) as { to?: unknown; message?: unknown }
+      const to = typeof a.to === 'string' ? a.to.trim() : ''
+      const message = typeof a.message === 'string' ? a.message.trim() : ''
+      const rec = to ? loadSubagent(sessionId, to) : undefined
+      const label = rec?.agent || to || '子智能体'
+      if (!to || !message)
+        return { label, note: '', error: '续聊子智能体失败：需要 to（子智能体 ID）与 message。' }
+      if (!rec)
+        return {
+          label,
+          note: '',
+          error: `子智能体 ${to} 已不可用（已被清理、所在轮次被删除，或 ID 有误），请用 run_subagent 重新派发。`
+        }
+      if (isSubagentBusy(sessionId, to))
+        return { label, note: '', error: `子智能体 ${to} 正在处理另一条消息，请等它完成后再发。` }
+      closeDanglingTail(rec.messages)
+      const moved = rec.workspaceRoot !== ctx.workspaceRoot
+      rec.messages.push({
+        role: 'user',
+        content: moved
+          ? `（提示：当前工作目录已变为 ${ctx.workspaceRoot ?? '（未挂载工作区）'}，相对路径以此为准。）\n${message}`
+          : message
+      })
+      rec.workspaceRoot = ctx.workspaceRoot
+      rec.toolIds.push(tc.id)
+      return { label, note: '', rec }
+    }
+
+    /**
+     * 在子智能体记录自己的历史上跑一次 runAgentLoop（新派出与续聊共用），把结果映射成交回父轮的结论。
+     * 派生本身不设闸——子智能体的每一次嵌套工具调用仍在其 runAgentLoop 内照常过同一道闸门（无后门）。
+     * 递归深度上限 1：子轮 allowSubagents=false，杜绝子派生子。结束后（含中止 / 出错）落盘并解除忙状态。
+     */
+    async function runSubagentLoop(
+      rec: SubagentRecord,
+      tc: { id: string }
+    ): Promise<{ conclusion: string; isErr: boolean; aborted: boolean }> {
+      const label = rec.agent
+      try {
+        const sub = await runAgentLoop({
+          turnId,
+          sessionId,
+          history: rec.messages,
+          system: rec.system,
+          tools: rec.tools,
+          // 子智能体恒跟随主对话（继承本轮模型）。
+          model,
+          ctx,
+          controller,
+          maxSteps: SUBAGENT_MAX_STEPS,
+          depth: depth + 1,
+          // 子智能体仍在用户在场时运行，其每次工具调用照常过交互权限闸门。
+          interactive: true,
+          allowAskUser: false,
+          allowSubagents: false,
+          skillSummaries: [],
+          agentName: label,
+          // 嵌套事件据此归入**本次调用**开出的那张 Task 卡（并行时唯一可靠依据）。
+          parentToolId: tc.id,
+          // 子轮写入归到本次调用的 id（见执行点 owner），随父轮一起回滚。
+          recorder: args.recorder
+        })
+        const aborted = sub.stopReason === 'aborted'
+        const isErr = sub.stopReason === 'error' || aborted || !!sub.stepLimit
+        const partial = sub.text.trim()
+        // 中止 / 步数用尽时的 text 只是半截过程输出，不能当成结论交给模型——明确标注「未完成」，
+        // 免得下一轮模型把它当作子任务的正式结果继续推进。
+        const conclusion = aborted
+          ? `子智能体「${label}」被用户中止，未完成。` + (partial ? `\n中止前的最近输出：\n${partial}` : '')
+          : sub.stepLimit
+            ? `子智能体「${label}」未完成：${sub.stepLimit}` +
+              (partial ? `\n停止前的最近输出：\n${partial}` : '')
+            : partial ||
+              (isErr && sub.errorMessage
+                ? `子智能体「${label}」执行失败：${sub.errorMessage}`
+                : '（子智能体未产生文本结论。）')
+        return { conclusion, isErr, aborted }
+      } catch (e) {
+        return {
+          conclusion: `子智能体「${label}」执行出错：${(e as Error)?.message ?? String(e)}`,
+          isErr: true,
+          aborted: false
+        }
+      } finally {
+        closeDanglingTail(rec.messages)
+        saveSubagent(rec)
+        setSubagentBusy(sessionId, rec.id, false)
+      }
+    }
+
+    /**
+     * 执行一次 run_subagent / send_to_subagent，只把结论文本交回父轮；任何解析/执行失败都捕获成结论，
+     * 父轮继续，绝不整轮失败。结论末尾附子智能体 ID，供模型之后用 send_to_subagent 找回它。
      * **可并发调用**：完成即定格自己那张 Task 卡（按调用 id 归属，与完成先后无关）。
      */
     async function runSubagentCall(tc: {
@@ -1602,81 +1885,31 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       name: string
       args: unknown
     }): Promise<{ conclusion: string; isErr: boolean }> {
-      const a = (tc.args ?? {}) as { agent?: unknown; prompt?: unknown }
-      const wantedAgent = typeof a.agent === 'string' ? a.agent.trim() : ''
-      const prompt = typeof a.prompt === 'string' ? a.prompt.trim() : ''
-      // 未指定 / 未命中 → 一律回落内置通用子智能体，**绝不因此失败**（对标 Claude Code：
-      // 未知 subagent_type 同样落到 general-purpose）。名字落空时在结论前缀一行说明，免得模型
-      // 以为自己点名的那位子智能体生效了。
-      const picked = wantedAgent ? getSubagentByName(wantedAgent) : null
-      const def = picked ?? GENERAL_SUBAGENT
-      const missNote =
-        wantedAgent && !picked
-          ? `（没有名为「${wantedAgent}」的子智能体，已改用通用子智能体 ${GENERAL_SUBAGENT.name} 完成。可选：${subagentSummaries()
-              .map((x) => x.name)
-              .join('、')}。）\n`
-          : ''
-
+      const prep =
+        tc.name === 'send_to_subagent' ? prepareContinueSubagent(tc) : prepareNewSubagent(tc)
+      const label = prep.label
       let conclusion: string
-      let isErr = false
+      let isErr = true
       let aborted = false
-      if (!prompt) {
-        conclusion = `派生子智能体「${def.name}」失败：缺少任务描述（prompt）。`
-        isErr = true
+      if (prep.rec) {
+        // 同步占住（首个 await 之前）：同一步里对同一子智能体的第二条消息会在准备阶段被拒。
+        setSubagentBusy(sessionId, prep.rec.id, true)
+        const r = await runSubagentLoop(prep.rec, tc)
+        conclusion =
+          prep.note +
+          r.conclusion +
+          `\n\n[子智能体 ID：${prep.rec.id}——用 send_to_subagent 发消息可让它在保留上下文的基础上继续]`
+        isErr = r.isErr
+        aborted = r.aborted
       } else {
-        try {
-          const sub = await runAgentLoop({
-            turnId,
-            sessionId,
-            // 隔离历史：只带本次任务描述，不继承父对话（避免上下文串味与预算膨胀）。
-            history: [{ role: 'user', content: prompt }],
-            system: buildSubagentSystem(def, ctx.workspaceRoot),
-            tools: buildSubagentTools(def),
-            // 内置子智能体恒跟随主对话（继承父轮模型）。
-            model,
-            ctx,
-            controller,
-            maxSteps: SUBAGENT_MAX_STEPS,
-            depth: depth + 1,
-            // 子智能体仍在用户在场时运行，其每次工具调用照常过交互权限闸门。
-            interactive: true,
-            allowAskUser: false,
-            allowSubagents: false,
-            skillSummaries: [],
-            agentName: def.name,
-            // 嵌套事件据此归入**本次调用**开出的那张 Task 卡（并行时唯一可靠依据）。
-            parentToolId: tc.id,
-            // 子轮写入归到本次 run_subagent 的 id（见执行点 owner），随父轮一起回滚。
-            recorder: args.recorder
-          })
-          aborted = sub.stopReason === 'aborted'
-          isErr = sub.stopReason === 'error' || aborted || !!sub.stepLimit
-          const partial = sub.text.trim()
-          // 中止 / 步数用尽时的 text 只是半截过程输出，不能当成结论交给模型——明确标注「未完成」，
-          // 免得下一轮模型把它当作子任务的正式结果继续推进。
-          conclusion = aborted
-            ? `子智能体「${def.name}」被用户中止，未完成。` +
-              (partial ? `\n中止前的最近输出：\n${partial}` : '')
-            : sub.stepLimit
-              ? `子智能体「${def.name}」未完成：${sub.stepLimit}` +
-                (partial ? `\n停止前的最近输出：\n${partial}` : '')
-              : partial ||
-                (isErr && sub.errorMessage
-                  ? `子智能体「${def.name}」执行失败：${sub.errorMessage}`
-                  : '（子智能体未产生文本结论。）')
-        } catch (e) {
-          conclusion = `子智能体「${def.name}」执行出错：${(e as Error)?.message ?? String(e)}`
-          isErr = true
-        }
+        conclusion = prep.note + (prep.error ?? '')
       }
 
-      if (missNote) conclusion = missNote + conclusion
-
       const subSummary = aborted
-        ? `子智能体「${def.name}」已中止`
+        ? `子智能体「${label}」已中止`
         : isErr
-          ? `子智能体「${def.name}」未完成`
-          : `子智能体「${def.name}」已完成`
+          ? `子智能体「${label}」未完成`
+          : `子智能体「${label}」已完成`
       args.onToolSummary?.(tc.id, subSummary)
       // 父轮（depth 0）事件不盖戳：run_subagent 这张卡本身即 Task 卡的「壳」，
       // 其内部嵌套事件已在递归调用里各自盖了 depth+parent 戳并折叠进来。
@@ -1832,7 +2065,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
                 type: 'tool_call',
                 id,
                 name: ev.name,
-                args: ev.args,
+                // 续聊卡要显示原子智能体的类型与任务标题：从记录索引补进展示用参数（不改入历史的原参数）。
+                args:
+                  ev.name === 'send_to_subagent' && !isSub
+                    ? withSubagentMeta(ev.args, (to) => getSubagentMeta(sessionId, to))
+                    : ev.args,
                 ...(evMeta ?? {})
               })
           } else if (ev.type === 'tool_call_truncated') {
@@ -2010,13 +2247,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       truncatedStreak = toolCalls.some((tc) => tc.truncated !== undefined) ? truncatedStreak + 1 : 0
 
       // 并行派发子任务（对标 Claude Code：同一条消息里的多个子任务真正并发跑）：先把本步全部
-      // run_subagent 一次性启动，其余工具仍按原序串行。每个子任务在**自己完成的那一刻**定格
-      // 自己那张 Task 卡（tool_result 按调用 id 归属，与完成先后无关）；回灌给模型的结果则在
-      // 下面按原序 await，顺序稳定。
+      // run_subagent / send_to_subagent 一次性启动，其余工具仍按原序串行。每个子任务在**自己完成的
+      // 那一刻**定格自己那张 Task 卡（tool_result 按调用 id 归属，与完成先后无关）；回灌给模型的结果
+      // 则在下面按原序 await，顺序稳定。
       const subRuns = new Map<string, Promise<{ conclusion: string; isErr: boolean }>>()
       if (allowSubagents)
         for (const tc of toolCalls)
-          if (tc.name === 'run_subagent' && tc.truncated === undefined)
+          if (
+            (tc.name === 'run_subagent' || tc.name === 'send_to_subagent') &&
+            tc.truncated === undefined
+          )
             subRuns.set(tc.id, runSubagentCall(tc))
 
       // 并行只读（对标 Claude Code：同一条消息里的多个只读调用并发执行）：仅当本步**全部**调用都是
@@ -2058,6 +2298,27 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             type: 'tool_result',
             toolUseId: tc.id,
             content: truncatedCallResult(tc.name, tc.truncated, truncatedStreak),
+            isError: true
+          })
+          continue
+        }
+
+        // 子智能体禁用工具兜底：普通子智能体的工具表里本就没有它们，fork 沿用主对话的完整工具表
+        //（为共享提示缓存），只能在这里拦下。
+        if (depth > 0 && SUBAGENT_EXCLUDED.has(tc.name)) {
+          const label = '子智能体不可用'
+          emit(turnId, sessionId, {
+            type: 'tool_result',
+            id: tc.id,
+            name: tc.name,
+            summary: label,
+            isError: true,
+            ...(evMeta ?? {})
+          })
+          resultParts.push({
+            type: 'tool_result',
+            toolUseId: tc.id,
+            content: `子智能体不能使用「${tc.name}」，请直接完成分配的任务。`,
             isError: true
           })
           continue
@@ -2488,7 +2749,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const skillTool = buildSkillTool(skillSummaries)
     // run_subagent 恒提供：内置子智能体（通用 / Explore / Plan）枚举进工具描述，无需任何用户配置。
     const subagentTool = buildSubagentTool()
-    // 每轮定格：内置工具 + exit_plan（计划先行）+（有启用技能时）skill + run_subagent +
+    // 每轮定格：内置工具 + exit_plan（计划先行）+（有启用技能时）skill + run_subagent / send_to_subagent +
     // 当前已连接 MCP 工具。exit_plan 仅主轮提供（子智能体的 buildSubagentTools 不含它）。
     // 角色不再收窄工具可见性：所有角色均可按需调用全部工具（每个调用仍照常过同一道权限闸门，零提权）。
     const turnTools: ToolSpec[] = [
@@ -2496,6 +2757,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       buildPlanTool(),
       ...(skillTool ? [skillTool] : []),
       subagentTool,
+      buildSendToSubagentTool(),
       ...getMcpToolSpecs()
     ]
 
@@ -2914,7 +3176,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           s.asks ?? {},
           s.summaries ?? {},
           s.plans ?? {},
-          s.autotasks ?? {}
+          s.autotasks ?? {},
+          (to) => getSubagentMeta(s.id, to)
         )
       : []
   }
@@ -3013,6 +3276,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       deleteStoredSession(sessionId)
       pendingUndo.delete(sessionId)
       removeSessionCheckpoints(sessionId)
+      removeSessionSubagents(sessionId)
       return { ok: true }
     }
   )
@@ -3048,7 +3312,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       }
       pendingUndo.delete(sessionId)
       // 会话忙时不删目录（进行中的写入正往里放 blob）；无引用的 blob 由该回合末的 GC 回收。
-      if (!busySessions.has(sessionId)) removeSessionCheckpoints(sessionId)
+      // 子智能体记录同理：忙时可能有子智能体正在跑、结束时会把记录写回。
+      if (!busySessions.has(sessionId)) {
+        removeSessionCheckpoints(sessionId)
+        removeSessionSubagents(sessionId)
+      }
       return { ok: true }
     }
   )
@@ -3078,7 +3346,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         s.asks ?? {},
         s.summaries ?? {},
         s.plans ?? {},
-        s.autotasks ?? {}
+        s.autotasks ?? {},
+        (to) => getSubagentMeta(s.id, to)
       )
     }
   )
@@ -3097,7 +3366,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       s.asks ?? {},
       s.summaries ?? {},
       s.plans ?? {},
-      s.autotasks ?? {}
+      s.autotasks ?? {},
+      (to) => getSubagentMeta(s.id, to)
     )
 
   // 回滚面板列表屏：每轮自身的改动量（文件数 / +N −M / 是否跑过命令）+ 能否撤销上次回滚。

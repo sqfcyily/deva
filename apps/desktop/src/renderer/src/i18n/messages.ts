@@ -242,8 +242,11 @@ const zhCN: MessageTree = {
     status: { running: '执行中', done: '完成', failed: '失败', denied: '已拒绝' },
     subagent: {
       title: '子智能体任务',
+      // send_to_subagent：给已派出的子智能体继续发消息。
+      continuedTitle: '继续子智能体任务',
       // 空 agent 名 = 未指定内置子智能体，即回落通用子智能体（见主进程 subagents.ts）。
       fallback: 'General',
+      fork: '分身',
       task: '任务',
       stepUnit: '步',
       noSteps: '无内部工具调用'
@@ -1056,7 +1059,9 @@ const en: MessageTree = {
     status: { running: 'Running', done: 'Done', failed: 'Failed', denied: 'Denied' },
     subagent: {
       title: 'Subagent task',
+      continuedTitle: 'Subagent follow-up',
       fallback: 'General',
+      fork: 'Fork',
       task: 'Task',
       stepUnit: 'steps',
       noSteps: 'No internal tool calls'

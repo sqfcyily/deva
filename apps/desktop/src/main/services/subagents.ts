@@ -37,8 +37,7 @@ const READONLY_TOOLS = ['read_file', 'list_dir', 'glob', 'grep', 'web_fetch', 'r
  */
 export const GENERAL_SUBAGENT: SubagentDef = {
   name: 'General',
-  description:
-    '具备全部工具的通用子智能体。适用于需要多步检索后再理解、归纳的调研（如梳理某个模块或整个项目的结构与原理），以及搜索某个关键词或文件但没把握几次就找到时；也适用于与主线相对独立的封闭子任务。',
+  description: '通用子智能体，具备全部工具；适合多步检索后再理解归纳的调研，或与主线相对独立的封闭子任务。',
   tools: '*',
   prompt: ''
 }
@@ -46,8 +45,7 @@ export const GENERAL_SUBAGENT: SubagentDef = {
 /** 广度检索定位：把「在哪里、有几处、怎么命名的」问清楚，只回报事实。 */
 const EXPLORE: SubagentDef = {
   name: 'Explore',
-  description:
-    '只读的广度检索子智能体。需要翻遍多个文件、目录或多种命名写法才能回答「在哪里、有几处、怎么命名的」，而你只需要结论时用它；回报「路径:行号 + 说明」，不改动、不评审。',
+  description: '只读的检索定位子智能体：查清「在哪里、有几处、怎么命名的」，回报「路径:行号 + 说明」，不改动、不评审。',
   tools: READONLY_TOOLS,
   prompt: [
     '你的专长是**在庞大或陌生的代码库里做广度检索与定位**：把「在哪里、有几处、怎么命名的」查清楚。',
@@ -79,9 +77,27 @@ const PLAN: SubagentDef = {
 /** 全部内置子智能体（顺序即 `run_subagent` 工具描述里的展示顺序）。 */
 export const BUILTIN_SUBAGENTS: SubagentDef[] = [GENERAL_SUBAGENT, EXPLORE, PLAN]
 
-/** 内置子智能体的 name+description 摘要，用于 `run_subagent` 的 agent 枚举与工具描述。 */
+/**
+ * 分身（fork，对标 Claude Code 的 `subagent_type: "fork"`）：不在 BUILTIN_SUBAGENTS 里——它没有自己的
+ * 系统提示词与工具白名单，而是**原样继承主对话**（历史 + 定格的 system / tools，同一模型），由 chat.ts
+ * 在派发时直接构造。工具表与主对话一致只为共享提示缓存，禁用的交互/创建类工具由工具循环兜底拦截。
+ */
+export const FORK_AGENT = {
+  name: 'fork',
+  description:
+    '继承你当前的完整对话上下文、使用同一模型；适合需要了解前文、又不想让中间过程占用主对话的子任务；主对话已经很长时慎用。'
+}
+
+export function isForkAgent(name: string): boolean {
+  return name.trim().toLowerCase() === FORK_AGENT.name
+}
+
+/** 可派发子智能体的 name+description 摘要（含 fork），用于 `run_subagent` 的 agent 枚举与工具描述。 */
 export function subagentSummaries(): { name: string; description: string }[] {
-  return BUILTIN_SUBAGENTS.map((a) => ({ name: a.name, description: a.description }))
+  return [
+    ...BUILTIN_SUBAGENTS.map((a) => ({ name: a.name, description: a.description })),
+    FORK_AGENT
+  ]
 }
 
 /** 旧名别名（小写）：通用子智能体曾叫 general-purpose，模型也常沿用 CC 的叫法，照样直接命中、不报「未找到」。 */

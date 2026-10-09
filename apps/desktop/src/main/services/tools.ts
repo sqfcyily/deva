@@ -470,6 +470,7 @@ const READ_TOOLS = new Set([
   'ask_user',
   'skill',
   'run_subagent',
+  'send_to_subagent',
   // 读记忆（主进程直读 ~/.deva 下的全局 / 项目记忆，无路径入参）；写/删记忆不在此集，落默认分支同 create_skill。
   'memory_read',
   // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「接受」（走渲染层 personas:upsert）。

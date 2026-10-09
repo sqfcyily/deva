@@ -25,6 +25,7 @@ export interface SealedVerdict {
 const SEALED_FORBIDDEN = new Set([
   'ask_user',
   'run_subagent',
+  'send_to_subagent',
   'create_skill',
   'propose_agent',
   'create_mcp',

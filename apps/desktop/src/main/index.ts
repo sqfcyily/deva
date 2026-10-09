@@ -9,6 +9,7 @@ import { registerProviderIpc } from './services/provider'
 import { hasActiveTurns, registerChatIpc, settleActiveTurns } from './services/chat'
 import { listSessions } from './services/chat-store'
 import { sweepCheckpoints } from './services/checkpoints'
+import { sweepSubagents } from './services/subagent-store'
 import { registerSkillsIpc } from './services/skills'
 import { ensureSeededPersonas, registerPersonasIpc } from './services/personas'
 import { registerProfileIpc } from './services/profile'
@@ -255,6 +256,10 @@ if (!app.requestSingleInstanceLock()) {
   // 检查点清扫（异步不阻塞启动）：删已不存在会话的备份目录、超 30 天的 blob 与残留临时文件
   void sweepCheckpoints(listSessions().map((m) => m.id)).catch((e) =>
     console.warn('[checkpoints] 清扫失败：', e)
+  )
+  // 子智能体记录清扫：删掉已不存在会话的记录目录
+  void sweepSubagents(listSessions().map((m) => m.id)).catch((e) =>
+    console.warn('[subagents] 清扫失败：', e)
   )
 
   // 技能（Skills，全局 ~/.deva/skills/*/SKILL.md；渐进式披露，启用态入 config.json）

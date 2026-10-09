@@ -225,7 +225,7 @@ export function StatusIndicator({
     activity.kind === 'tool'
       ? `${t('chat.work.usingTool')} · ${t(TOOL_META[activity.toolName]?.key ?? 'chat.tool.unknown')}`
       : activity.kind === 'subagent'
-        ? `${t('chat.work.subagent')} · ${activity.agent || t('chat.subagent.fallback')}`
+        ? `${t('chat.work.subagent')} · ${subagentName(activity.agent, t) || t('chat.subagent.fallback')}`
         : activity.kind === 'responding'
           ? t('chat.work.responding')
           : t('chat.work.thinking')
@@ -980,6 +980,12 @@ export function ToolGroupCard({ tools }: { tools: ToolBlock[] }): React.JSX.Elem
   )
 }
 
+/** 子智能体类型的展示名：分身（fork）按界面语言显示，其余（General / Explore / Plan）原样。 */
+function subagentName(agent: string | undefined, t: (key: string) => string): string {
+  if (!agent) return ''
+  return agent.toLowerCase() === 'fork' ? t('chat.subagent.fork') : agent
+}
+
 /**
  * 子智能体折叠 Task 卡（仿 Claude Code）：默认收起、只显示结论徽标；展开后看任务描述与内部工具调用序列。
  * 子智能体的权限请求不在此卡内——照常作为顶层权限卡浮出确认（见 reduceBlocks）。
@@ -993,7 +999,7 @@ function SubagentCard({
   const [open, setOpen] = useState(false)
   // 标题优先用模型给的任务描述（3-5 字）：比固定的子智能体名有信息量，也与 Claude Code 一致；
   // 没给描述时退回子智能体名（未指定预设则为「通用子智能体」）。
-  const name = block.desc || block.agent || t('chat.subagent.fallback')
+  const name = block.desc || subagentName(block.agent, t) || t('chat.subagent.fallback')
   const count = block.children.length
   return (
     <div className={`subagent${open ? ' is-open' : ''}`}>
@@ -1003,7 +1009,8 @@ function SubagentCard({
           <Bot size={14} />
         </span>
         <span className="subagent__title">
-          {t('chat.subagent.title')} · <strong>{name}</strong>
+          {t(block.continued ? 'chat.subagent.continuedTitle' : 'chat.subagent.title')} ·{' '}
+          <strong>{name}</strong>
           {count > 0 && (
             <span className="subagent__count">
               {count} {t('chat.subagent.stepUnit')}

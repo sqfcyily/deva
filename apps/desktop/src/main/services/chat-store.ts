@@ -254,7 +254,7 @@ function ensureIndex(): Map<string, ChatSessionMeta> {
  * （与旧行为一致）并清掉残留 tmp；tmp 本身写不进（磁盘满等）则原样抛出——此时再去直写只会把
  * 旧文件也截断。`.json.tmp` 不以 `.json` 结尾，扫描重建索引时天然被排除。
  */
-function writeFileAtomic(file: string, data: string): void {
+export function writeFileAtomic(file: string, data: string): void {
   const tmp = `${file}.tmp`
   writeFileSync(tmp, data, 'utf8')
   try {

@@ -381,7 +381,8 @@ function reduce(t: TurnTrack, ev: ChatStreamEvent): boolean {
         if (sub && sub.kind === 'subagent') sub.steps++
         return true
       }
-      if (ev.name === 'run_subagent') {
+      // 续聊（send_to_subagent）与新派出同样开子智能体卡；主进程已在事件参数里补上原类型与标题。
+      if (ev.name === 'run_subagent' || ev.name === 'send_to_subagent') {
         const a = (ev.args ?? {}) as Record<string, unknown>
         b.push({
           kind: 'subagent',

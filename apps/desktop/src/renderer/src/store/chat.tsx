@@ -118,8 +118,10 @@ export type ChatBlock =
       agent: string
       /** 任务标题（取自调用参数 description，3-5 字）：有则作卡片主标题，比固定的子智能体名有信息量。 */
       desc?: string
-      /** 任务描述（取自调用参数 prompt，仅展开时预览）。 */
+      /** 任务描述（取自调用参数 prompt；续聊卡取 message，仅展开时预览）。 */
       task?: string
+      /** 续聊卡：send_to_subagent 给已派出的子智能体发的消息（标题前加「继续」）。 */
+      continued?: boolean
       status: ToolStatus
       /** 结论摘要（壳结果 summary，如「子智能体「X」已完成」）。 */
       summary?: string
@@ -475,20 +477,9 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
       // 复原为只读展示——历史里的计划卡必定属于已结束的回合，画出按钮只会是点不动的摆设。
       if (b.kind === 'plan') return { kind: 'plan', key: b.id, plan: b.plan, decided: b.decision }
       const status: ToolStatus = b.status === 'error' ? 'error' : 'ok'
-      // 历史回填：run_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children 为空、仅存结论）。
-      if (b.name === 'run_subagent') {
-        const a = (b.args ?? {}) as { agent?: unknown; prompt?: unknown; description?: unknown }
-        return {
-          kind: 'subagent',
-          id: b.id,
-          agent: typeof a.agent === 'string' ? a.agent : '',
-          desc: typeof a.description === 'string' ? a.description.trim() || undefined : undefined,
-          task: typeof a.prompt === 'string' ? a.prompt : undefined,
-          status,
-          summary: b.summary,
-          children: []
-        }
-      }
+      // 历史回填：run_subagent / send_to_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children
+      // 为空、仅存结论）。
+      if (isSubagentCall(b.name)) return subagentBlock(b.id, b.name, b.args, status, b.summary)
       return { kind: 'tool', id: b.id, name: b.name, args: b.args, status, summary: b.summary }
     })
     return { id: genId(), role: 'assistant', blocks }
@@ -511,6 +502,38 @@ function subagentIndex(blocks: ChatBlock[], parent?: string): number {
     if (b.kind === 'subagent' && b.status === 'running') return i
   }
   return -1
+}
+
+/** 会开子智能体 Task 卡的调用：新派出（run_subagent）或续聊已派出的子智能体（send_to_subagent）。 */
+function isSubagentCall(name: string): boolean {
+  return name === 'run_subagent' || name === 'send_to_subagent'
+}
+
+/**
+ * 调用参数 → 子智能体 Task 卡（实时与历史回填共用）。续聊卡的任务正文取 message 并标 continued；
+ * 它的 agent / description 由主进程从子智能体记录补进参数（见 chat.ts 的 withSubagentMeta）。
+ */
+function subagentBlock(
+  id: string,
+  name: string,
+  args: unknown,
+  status: ToolStatus,
+  summary?: string
+): ChatBlock {
+  const a = (args ?? {}) as { agent?: unknown; prompt?: unknown; message?: unknown; description?: unknown }
+  const continued = name === 'send_to_subagent'
+  const task = continued ? a.message : a.prompt
+  return {
+    kind: 'subagent',
+    id,
+    agent: typeof a.agent === 'string' ? a.agent : '',
+    desc: typeof a.description === 'string' ? a.description.trim() || undefined : undefined,
+    task: typeof task === 'string' ? task : undefined,
+    ...(continued ? { continued: true } : {}),
+    status,
+    summary,
+    children: []
+  }
 }
 
 /** 归一化 propose_agent 原始参数为角色草稿（实时路径；与主进程 normalizeAgentDraft 对齐）。 */
@@ -595,18 +618,9 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
         })
         return next
       }
-      // run_subagent 的壳调用（depth 0）→ 开一张折叠 Task 卡。
-      if (ev.name === 'run_subagent') {
-        const a = (ev.args ?? {}) as { agent?: unknown; prompt?: unknown; description?: unknown }
-        next.push({
-          kind: 'subagent',
-          id: ev.id,
-          agent: typeof a.agent === 'string' ? a.agent : ev.agent ?? '',
-          desc: typeof a.description === 'string' ? a.description.trim() || undefined : undefined,
-          task: typeof a.prompt === 'string' ? a.prompt : undefined,
-          status: 'running',
-          children: []
-        })
+      // run_subagent / send_to_subagent 的壳调用（depth 0）→ 开一张折叠 Task 卡。
+      if (isSubagentCall(ev.name)) {
+        next.push(subagentBlock(ev.id, ev.name, ev.args, 'running'))
         return next
       }
       next.push({ kind: 'tool', id: ev.id, name: ev.name, args: ev.args, status: 'running' })
