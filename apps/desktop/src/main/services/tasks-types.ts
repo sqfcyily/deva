@@ -9,8 +9,8 @@
  *
  * 核心约束（用户明确）：**创建时批准、执行时零交互**。授权信封（TaskAuthorization）在任务存在之前
  * 一次性议定，触发执行时绝不再弹任何确认（无权限框 / 无 ask_user / 无 exit_plan）。
- * 信封仅承载「以何身份/模型运行」（persona + model）；工具一律可用、写入除硬底线外不设限，
- * 由 sealedDecision 的安全地板统一把关——不再有工具白名单 / 写入根 / 通知开关。
+ * 信封仅承载「以何身份/模型运行」（persona + model）；工具一律可用、读写与命令执行不设限，
+ * sealedDecision 只排除交互/创建类工具——不再有工具白名单 / 写入根 / 通知开关。
  */
 
 /**
@@ -34,8 +34,7 @@ export interface TaskSchedule {
 }
 
 /**
- * 授权信封：创建时议定「以何身份/模型运行」。工具一律可用、写入除硬底线外不设限。
- * 安全地板（Tier-1 敏感路径 / Tier-2 版本库内部（.git） / 危险命令）不可协商——sealedDecision 无条件强制。
+ * 授权信封：创建时议定「以何身份/模型运行」。工具一律可用、读写与命令执行不设限。
  */
 export interface TaskAuthorization {
   /** 绑定人格 id；null → 无人格（同 runTurn 无 persona 时行为）。人格被删则不注入人格提示。 */

@@ -29,8 +29,7 @@ import { fmScalar, fmString, parseFrontmatter } from './frontmatter'
  * - `enabledPersonas()`：把「已启用」persona 的 name+prompt 注入**主智能体**系统提示词（仅主轮；
  *   子智能体有自己的系统提示词，刻意不注入，避免串味）。
  *
- * 安全：`~/.deva` 在 fs-guard 的敏感硬地板内，Agent 自身文件工具读不到；persona 配置由**主进程直读**。
- * 注入时以固定前言框定为「用户自定义附加指令，在不违反安全与工具使用原则的前提下遵循」——persona
+ * 安全：persona 配置由**主进程直读**。注入时以固定前言框定为「用户自定义附加指令，在不违反安全与工具使用原则的前提下遵循」——persona
  * 绝不能借此关闭「切勿用文字征求授权」等安全/工具铁律。
  */
 

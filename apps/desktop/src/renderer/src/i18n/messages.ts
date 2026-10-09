@@ -633,8 +633,7 @@ const zhCN: MessageTree = {
         conflict: '回滚点之后被外部修改过，默认跳过',
         link: '链接文件（符号链接 / 硬链接），为安全起见不回写',
         blob_missing: '备份已缺失，无法恢复',
-        too_large: '文件过大，当时没有备份',
-        protected: '受保护路径（密钥目录 / .git），不回写'
+        too_large: '文件过大，当时没有备份'
       },
       both: '恢复代码和对话',
       conversation: '仅恢复对话',
@@ -1451,8 +1450,7 @@ const en: MessageTree = {
         conflict: 'Modified outside Deva after the checkpoint — skipped by default',
         link: 'Linked file (symlink / hard link) — not written back, for safety',
         blob_missing: 'Backup is missing — can’t be restored',
-        too_large: 'Too large — it wasn’t backed up at the time',
-        protected: 'Protected path (key directory / .git) — not written back'
+        too_large: 'Too large — it wasn’t backed up at the time'
       },
       both: 'Restore code and conversation',
       conversation: 'Restore conversation only',

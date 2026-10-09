@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'crypto'
 import { type Dirent, promises as fsp, realpathSync, rmSync } from 'fs'
 import { basename, dirname, join, relative, resolve, isAbsolute } from 'path'
 import { getDevaHome } from './config'
-import { isProtectedPath, isSensitivePath } from './fs-guard'
 import { looksBinary, writeTargetPath } from './tools'
 import { lineCount, lineStats } from './line-stats'
 import type { StoredSession } from './chat-store'
@@ -20,11 +19,10 @@ import type { StoredSession } from './chat-store'
  * 刻意不用影子 git：纯 JS、零外部依赖（免装铁律），且只追踪 Deva 自己写过的文件。run_command 的文件影响
  * 不追踪（只记命令本身，供回滚面板提示「运行过 N 条命令，影响无法撤销」）。
  *
- * 存储：`<DEVA_HOME>/data/checkpoints/<会话 id>/<sha256>`。blob 目录在 ~/.deva 下（Tier-1），Agent 工具本就
- * 读写不到；删会话即整目录删除，GC 只在本会话目录内做。
+ * 存储：`<DEVA_HOME>/data/checkpoints/<会话 id>/<sha256>`。删会话即整目录删除，GC 只在本会话目录内做。
  *
- * 安全：回滚由用户在主进程触发、**不经工具闸门**，故自守三条——①路径只来自记录，绝不接受渲染层传入的路径；
- * ②符号链接 / 硬链接 / 真实路径漂移一律跳过（防写穿到别处）；③敏感目录与 .git 防御性跳过。
+ * 安全：回滚由用户在主进程触发、**不经工具闸门**，故自守两条——①路径只来自记录，绝不接受渲染层传入的路径；
+ * ②符号链接 / 硬链接 / 真实路径漂移一律跳过（防写穿到别处）。Agent 写过的任何路径（含 .git、~/.deva）都可回写。
  */
 
 /** 一条检查点记录。file：一次写入；exec：一次通过闸门的 run_command（影响不可撤销，仅作提示）。 */
@@ -423,7 +421,7 @@ export function summarizeTurns(s: StoredSession, turnIds: string[][]): RewindTur
 }
 
 export type RewindAction = 'restore' | 'delete' | 'create' | 'none'
-export type RewindStatus = 'ok' | 'conflict' | 'link' | 'blob_missing' | 'too_large' | 'protected'
+export type RewindStatus = 'ok' | 'conflict' | 'link' | 'blob_missing' | 'too_large'
 
 /** 预览里的一个文件（发给渲染层；不含任何内容，只有摘要）。 */
 export interface RewindFile {
@@ -497,10 +495,6 @@ export async function planRewind(
     }
     items.push(item)
 
-    if (isSensitivePath(rec.path) || isProtectedPath(rec.path)) {
-      item.status = 'protected'
-      continue
-    }
     if (rec.real && pathKey(realOf(rec.path)) !== pathKey(rec.real)) {
       item.status = 'link'
       continue
@@ -576,7 +570,7 @@ export interface ApplyResult {
 
 /**
  * 执行文件回滚：只动 ok 的文件，外加 force 里勾选的冲突文件（force 只认计划里的冲突路径）。
- * 链接 / 备份缺失 / 过大 / 受保护的文件（计划里动作为 none）如实记入 skipped，与预览里的「跳过」一致；
+ * 链接 / 备份缺失 / 过大的文件（计划里动作为 none）如实记入 skipped，与预览里的「跳过」一致；
  * 单个文件失败也记入 skipped，其余照常继续；每写成一个就更新 lastKnown。
  */
 export async function applyFiles(

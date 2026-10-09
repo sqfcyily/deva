@@ -155,7 +155,6 @@ When a task requires going through many files, or can be split into independent 
 - 🧹 **Keeps the main chat clean**: each subagent has its own context; files it read and commands it ran stay out of the main conversation — only conclusions come back
 - 🔍 **Visible process**: each subagent's work is collapsed into a card you can expand to see what it looked into
 - 🧠 **Model follows along**: subagents use the model selected for the current conversation, no extra setup
-- 🛡️ **Same safety rules**: every subagent action is subject to the same blocking rules described in [Before You Start](#-before-you-start)
 
 ### ⏪ Broke something? Roll it back
 
@@ -224,13 +223,7 @@ When a conversation is about to fill the model's context window, earlier content
 ## ⚠️ Before You Start
 
 > [!WARNING]
-> **It doesn't ask before each action.** Reading/writing files and running commands are executed directly by default, with no permission prompts. Only the following are blocked outright:
->
-> - Reading or writing credential directories: `~/.ssh`, `~/.aws`, `~/.gnupg`, and Deva's own config directory `~/.deva` (except the skills directory)
-> - Directly modifying a project's `.git` directory
-> - Obviously destructive commands, such as wiping an entire drive or user directory, formatting, shutting down or rebooting
->
-> This is a best-effort guard against the most dangerous cases — not a sandbox, and not foolproof. Keep important projects under Git, or back them up first.
+> **It doesn't ask before each action.** Reading/writing files and running commands are executed directly, with no permission prompts. Keep important projects under Git, or back them up first.
 
 - 💳 **Costs go to your own account.** Every conversation and every scheduled task consumes quota from the API key you provide.
 - 🔒 **Your data stays local.** Settings, conversations, memories, tasks, skills, bot configs and more live under `~/.deva`, mostly as plain files you can open directly; API keys and bot credentials are stored encrypted. To use a different location, set the `DEVA_HOME` environment variable. If you use IM bots, messages from your phone pass through the corresponding IM platform's servers.

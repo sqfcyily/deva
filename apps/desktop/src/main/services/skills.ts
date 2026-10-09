@@ -28,9 +28,8 @@ import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
  * - `enabledSkillSummaries()`：把「已启用」技能的 name+description 注入系统提示词（便宜的清单段）。
  * - `loadSkillInstructionsByName()`：命中 `skill` 工具或 `/name` 显式触发时，才加载完整正文。
  *
- * 安全：`~/.deva` 在 fs-guard 的敏感硬地板内，**唯独技能目录开口**（fs-guard.isSkillsPath）——多文件技能
- * 的子文档须能被 read_file 读到。写入按通道收口：主交互循环可写（create_skill / write_file / 命令解压皆可），
- * 子智能体与定时任务只读（写技能 = 持久化提示词注入，闸门拒绝）。
+ * 文件读写不设路径限制：技能目录可被 read_file / write_file / 命令直接读写（多文件技能的子文档按需
+ * read_file，安装可下载解压到技能目录）。
  * `allowed-tools` 只作**建议文本**注入，绝不触碰权限闸门（evaluate）——技能不能借此自我提权。
  */
 
@@ -73,7 +72,7 @@ export interface SkillUpsertInput {
 
 /**
  * 内置元技能 `create-skill` 的正文：指导模型引导用户创建自己的技能。
- * 单文件技能走 `create_skill`（校验 + 自动启用）；多文件技能直接写进技能目录（Tier-1 对它开口）。
+ * 单文件技能走 `create_skill`（校验 + 自动启用）；多文件技能直接写进技能目录。
  * 正文不写死目录路径：它是模块级常量，而路径依赖 DEVA_HOME——绝对路径由系统提示词【技能】段给出。
  */
 const CREATE_SKILL_INSTRUCTIONS = `你正在帮助用户创建一个新的**技能（Skill）**。技能是一份结构化文档（SKILL.md），描述在特定场景下应如何完成某类任务；启用后，其摘要会进入系统提示词，用户输入 \`/技能名\` 或命中场景时加载完整正文。
@@ -101,7 +100,7 @@ const CREATE_SKILL_INSTRUCTIONS = `你正在帮助用户创建一个新的**技�
        （正文）
        \`\`\`
      - 正文引用子文件请写**相对该文件夹**的路径（如 \`references/api.md\`）；加载技能时会告知文件夹绝对路径，届时用 \`read_file\` 按需读取。
-   - ⚠️ 只能写技能目录本身；配置目录里的其他文件（config.json、secrets.json 等）仍受保护，不要尝试。
+   - ⚠️ 只在技能目录内写入，不要顺手改配置目录里的其他文件（config.json、secrets.json 等）。
 5. **告知结果**：技能落盘即**自动启用**（新文件夹无需另开开关，下一轮对话起进入技能清单），告诉用户可以用 \`/技能名\` 触发它，也可在「扩展」页查看或关闭。
 
 保持简洁友好，一次问清关键信息即可，不要连环追问。`
@@ -156,7 +155,7 @@ const BUILTIN_CREATE_AGENT: SkillRecord = {
 
 /**
  * 内置元技能 `create-mcp` 的正文：指导模型引导用户「用对话接入一个 MCP 服务」。
- * 关键约束——**必须调 `create_mcp` 工具落盘**（`~/.deva/mcp.json` 在敏感硬地板，写不进）；
+ * 关键约束——**必须调 `create_mcp` 工具落盘**（它负责校验配置与写密钥占位，直接写 mcp.json 会绕过这些）；
  * 且**密钥零明文**：模型只收集密钥字段的「名字」，真实值由用户稍后在「扩展」页加密填入。
  */
 const CREATE_MCP_INSTRUCTIONS = `你正在帮助用户接入一个新的 **MCP 服务（Model Context Protocol server）**。MCP 服务对外暴露一组工具/资源；接入并连接后，其工具会自动出现在助手的可用工具里。
@@ -173,7 +172,7 @@ const CREATE_MCP_INSTRUCTIONS = `你正在帮助用户接入一个新的 **MCP �
    - **密钥（API Key / Token 等）**：⚠️ **绝不要向用户索要、也绝不要把真实密钥值写进工具参数或对话**。你只需问清「有哪些字段是密钥」，把这些**字段名**放进 \`secretEnv\`（环境变量名，如 \`GITHUB_TOKEN\`）或 \`secretHeaders\`（请求头名，如 \`Authorization\`）。工具只写占位符，真实值由用户稍后在「扩展」页加密填入。
 4. **复述草案**：把整理好的要素（传输方式、命令/地址、参数、哪些字段是密钥）向用户复述一遍，请其确认或修改。
 5. **落盘**：用户确认后，**调用 \`create_mcp\` 工具**写入。
-   - ⚠️ **严禁用 \`write_file\` 或 \`run_command\` 去写 mcp.json**——MCP 配置在受保护路径下，只有 \`create_mcp\` 工具能写入。
+   - ⚠️ **不要用 \`write_file\` 或 \`run_command\` 直接写 mcp.json**——\`create_mcp\` 会校验配置并写入密钥占位符，直接写会绕过这些。
 6. **告知结果**：创建成功后服务会**自动启用并在后台连接**，连上后其工具从用户的**下一条消息**起可用。若存在密钥占位字段，务必提醒用户：**去「扩展」页为该服务填写这些密钥（加密存储）**，填好后会自动连接，无需其他操作。
 
 保持简洁友好，一次问清关键信息即可，不要连环追问。`
@@ -436,7 +435,7 @@ export function loadSkillInstructionsByName(
 /**
  * 校验并落盘一个导入的技能：frontmatter 必须含 `name`；写入 `~/.deva/skills/<id>/SKILL.md`
  * 及（可选）已过守卫的附带文件；成功后**自动启用**。运行期只注入 SKILL.md 正文，附带文件由模型
- * 按需 read_file（技能目录是 Tier-1 的唯一开口，skill 工具结果会给出文件夹绝对路径）。
+ * 按需 read_file（skill 工具结果会给出文件夹绝对路径）。
  */
 function writeImportedSkill(
   rawMd: string,

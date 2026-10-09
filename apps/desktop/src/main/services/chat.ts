@@ -2,21 +2,19 @@ import { ipcMain, type BrowserWindow } from 'electron'
 import { onChatEvent, publishChatEvent } from './chat-bus'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { dirname, resolve as resolvePath } from 'node:path'
+import { resolve as resolvePath } from 'node:path'
 import { streamChat } from '../providers'
 import type { ContentPart, Message, StopReason, ToolSpec } from '../providers/types'
 import {
   executeTool,
   isMcpTool,
   needsWorkspaceMount,
-  writeTargetPath,
   toolCategory,
   toolSpecs,
   buildPlanTool,
   type ToolContext,
   type ToolResult
 } from './tools'
-import { isDangerousCommand, touchesSensitivePath } from './exec-policy'
 import { enabledSkillSummaries, loadSkillInstructionsByName, skillsDir } from './skills'
 import { listMemories, memoryPromptSection } from './memory'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
@@ -27,14 +25,7 @@ import { sealedDecision } from './sealed'
 import { createTask, type CreateTaskResult } from './tasks'
 import type { TaskCreateInput, TaskRecord } from './tasks-types'
 import { dispatchMcpTool, getMcpToolSpecs } from './mcp'
-import {
-  isInsideRoot,
-  isProtectedPath,
-  isSensitivePath,
-  isSkillsPath,
-  trustRoot,
-  untrustRoot
-} from './fs-guard'
+import { trustRoot } from './fs-guard'
 import {
   deriveTitle,
   ensureSession,
@@ -1179,10 +1170,8 @@ function systemPrompt(
   const loc = workspaceRoot
     ? `当前工作目录：${workspaceRoot}。用户可随时切换工作区——历史消息里出现过的其它目录一律作废，恒以本行为准。`
     : '当前未挂载工作区（全机通用助手）：文件与命令工具照常可用。涉及某个项目的读写与扫描请直接按**相对路径**发起——系统会自动弹出「挂载工作区」卡片请用户一键选定目录，选定后该目录即成为本对话的相对路径基准（不必用文字索要路径，也不必先问「要不要挂载」）；用户若选择「暂不挂载」，再改用绝对路径继续。run_command 的工作目录为用户主目录。不要因「未打开项目」而拒绝执行。'
-  // 技能目录是配置目录里唯一可读写的开口（fs-guard.isSkillsPath）。写实际路径而非 ~/.deva：DEVA_HOME 可覆盖；
-  // 路径进程内恒定，不破坏提示缓存前缀。
+  // 技能目录写实际路径而非 ~/.deva：DEVA_HOME 可覆盖；路径进程内恒定，不破坏提示缓存前缀。
   const skillsRoot = skillsDir()
-  const devaDir = dirname(skillsRoot)
   // ── ① 系统默认提示词：纯规范。开场句仅交代运行环境与「身份/风格见角色设定」，不作任何身份/风格规定。
   const lines = [
     personas.length
@@ -1190,13 +1179,13 @@ function systemPrompt(
       : '你是 Deva，一个运行在用户桌面上的 AI 助手，可通过工具读取/写入文件、执行命令、加载技能等来完成用户请求。以下是你在本应用内必须始终遵守的规范。',
     `【环境】${loc}`,
     '【路径约定】默认用**相对路径**（相对上面的当前工作目录）：落点始终由应用按当前挂载的工作区解析，你无需记忆基准目录，也不会被历史消息里的旧目录带偏。只有当目标明确在工作区之外时才用绝对路径——用户指名了桌面、主目录、系统某处或另一个项目（`~/` 表示用户主目录）。切勿把历史消息里出现过的绝对路径当作当前工作目录的依据；未挂载工作区时也照常按相对路径发起，由挂载卡片解决基准问题。',
-    '【工具使用】动手前先了解现状：已知具体文件/符号时直接用 read_file / grep 等查看，面广时按下条【子任务委派】派发子智能体；查找与阅读请用 glob / grep / read_file / list_dir，不要用 run_command 跑 find、grep、cat、ls 代替；write_file 会覆盖整个文件，务必先读后写、保留无关内容。单次回复有输出长度上限：大文件按 write_file 的说明分段写入；完整文档、长篇代码这类很长的产出宜写入文件分段完成，而不是在一条回复里整篇输出。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用被安全策略拒绝，回灌结果会写明原因——据此改道或如实说明受限之处，切勿反复重试同一被拒操作。',
+    '【工具使用】动手前先了解现状：已知具体文件/符号时直接用 read_file / grep 等查看，面广时按下条【子任务委派】派发子智能体；查找与阅读请用 glob / grep / read_file / list_dir，不要用 run_command 跑 find、grep、cat、ls 代替；write_file 会覆盖整个文件，务必先读后写、保留无关内容。单次回复有输出长度上限：大文件按 write_file 的说明分段写入；完整文档、长篇代码这类很长的产出宜写入文件分段完成，而不是在一条回复里整篇输出。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用失败，回灌结果会写明原因——据此改道或如实说明，切勿原样反复重试。',
     '【子任务委派】回答问题需要翻阅多个文件或多个目录、预计要做 3 次以上检索、或属于调研/梳理类问题（如「介绍/梳理这个项目」「某功能是怎么实现的」「X 在哪些地方用到」）时，优先用 `run_subagent` 派发：定位类派 `Explore`，需要理解与归纳的派 `General`；它们在隔离上下文里完成大量检索，你只拿回结论，本对话的上下文不会被文件内容撑满。彼此独立的几个方向，在同一轮里一次性派发多个，它们会并行执行。只有已知具体文件/符号、一两次检索就能答的单点问题，才自己直接读、直接搜。',
     '【并行调用】一次回复里可以同时发起多个工具调用。彼此没有依赖的调用（如同时读几个文件、同时搜几个关键词、同时看几个目录）务必在**同一次回复里一并发出**，只读调用会并发执行，省去逐个往返；只有后一步要用到前一步结果时才分开依次发起。',
     '【工程纪律】① 只做用户要求的事：不擅自加功能、不做没要求的重构或「顺手优化」，也不为不可能发生的情况堆防御代码；修 bug 就修 bug。② 改代码先读周边：贴合所在文件既有的命名、风格、惯用写法与注释密度，优先复用现有函数与工具，不另起炉灶。③ 如实汇报：改完能验证就验证（跑类型检查、测试或构建）；测试失败就说失败并给出关键输出，跳过了哪步就说跳过了，没验证过的不要说成「已完成、已通过」。④ 提到代码位置时用「路径:行号」的写法，方便用户定位。',
-    `【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。唯有三类不可协商的安全底线会被静默拒绝并回灌原因——① 私钥/凭据目录（~/.ssh、~/.aws、~/.gnupg）与本应用配置目录（${devaDir}）的读写，唯一例外是其下的技能目录（${skillsRoot}），可正常读写；② 版本库内部（.git）的写入；③ 明显危险的命令（如 rm -rf）。被拒时请改用其它方式或向用户如实说明，切勿重试。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。`,
+    `【执行与安全边界】写入/修改文件、执行命令都无需任何授权：直接调用对应工具即可，本应用没有授权弹框。文件读写与命令执行均不设任何限制（工作区外、主目录、隐藏目录、.git 均可直接读写，任何命令都会直接执行），删除、覆盖、强推等破坏性操作执行前请自行核对目标无误。切勿在回复文字里询问「是否允许写入 / 是否同意覆盖 / 请确认」之类的话：不存在授权界面，用户也无法用文字给你授权，这只会让任务白白停滞——需要用户拍板时用 ask_user。`,
     '【决策与澄清】当需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息时，调用 ask_user 抛出一个或多个问题（每题可给候选项、可单选或多选，界面另有内置「自己输入」入口），用户在同一张卡片里一次性作答后回灌给你再继续；能合理默认就直接做，别为琐碎选择打断用户。注意区分：ask_user 只用于征求决策/澄清；写入与执行本就无需授权，切勿用它去问「是否允许写入/执行」。',
-    '【计划先行】遇到非平凡的实现类任务（新功能、跨多文件改动、有多个各有取舍的方案、或需求尚不明确等），先用只读工具（read_file / list_dir / glob / grep / web_fetch）充分调研理解现状——调研面较大时（要翻多个目录、追多条调用链、或需摸清一整套既有约定）可先用 `run_subagent` 派发 `Plan` 子智能体在隔离上下文里完成调研并带回方案要点，再由你综合判断——然后调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件或执行命令**。用户批准后你直接按计划执行、无需再次征求授权（写入/执行照常只受上述安全底线约束）；用户若选择继续完善，请依其反馈调整后再重新提交，在收到新反馈前不要重复调用 exit_plan。琐碎、单点、只读或答疑类任务直接做，不必先出计划。'
+    '【计划先行】遇到非平凡的实现类任务（新功能、跨多文件改动、有多个各有取舍的方案、或需求尚不明确等），先用只读工具（read_file / list_dir / glob / grep / web_fetch）充分调研理解现状——调研面较大时（要翻多个目录、追多条调用链、或需摸清一整套既有约定）可先用 `run_subagent` 派发 `Plan` 子智能体在隔离上下文里完成调研并带回方案要点，再由你综合判断——然后调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件或执行命令**。用户批准后你直接按计划执行、无需再次征求授权；用户若选择继续完善，请依其反馈调整后再重新提交，在收到新反馈前不要重复调用 exit_plan。琐碎、单点、只读或答疑类任务直接做，不必先出计划。'
   ]
   if (skills.length) {
     // 渐进式披露：此处只列「名称 + 一句话描述」；当任务匹配时，模型再调用 skill 工具取完整指令。
@@ -1226,7 +1215,7 @@ function systemPrompt(
 /**
  * 密封无头执行（定时任务）的系统提示词：与 systemPrompt 同构，但**去掉一切「等用户」的指引**。
  * 定时任务在无人在场时自动触发，绝不能停下来等确认——故不提 ask_user / exit_plan（二者在密封轮恒不可用），
- * 改为明确告知：基于合理默认自主完成，被安全底线拒绝处在结论中说明，不要反问、不要等待。
+ * 改为明确告知：基于合理默认自主完成，受限处在结论中说明，不要反问、不要等待。
  */
 function sealedSystemPrompt(
   workspaceRoot: string | null,
@@ -1236,7 +1225,6 @@ function sealedSystemPrompt(
   const loc = workspaceRoot
     ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
     : '本任务无固定工作目录；如需读写文件请使用**绝对路径**。'
-  const skillsRoot = skillsDir()
   const lines = [
     personas.length
       ? '你运行在 Deva 桌面应用中，正在**自动执行一个用户预先设定的定时任务**（无人实时在场）。以下是你必须始终遵守的规范；你的身份、性格与行文风格由后文的「角色设定」决定。'
@@ -1244,7 +1232,7 @@ function sealedSystemPrompt(
     `【环境】${loc}`,
     '【任务】按本次指令收集/整理信息或执行操作，给出条理清晰的结果；如需外部信息可使用 web_fetch 等工具。若是提醒类指令，直接给出清晰简洁的提醒正文（用户会通过系统通知看到）。',
     '【自动执行】本次为无人值守的自动执行：你**无法**向用户提问、征求授权或提交计划审阅（ask_user / exit_plan 均不可用，调用它们不会有人回应）。请基于合理默认自主完成任务，一次性给出最终结果，不要反问、不要停下等待确认。',
-    `【工具与权限】读写文件、执行命令、调用已启用的技能与 MCP 工具默认均可使用，无需授权。唯有私钥/凭据目录与本应用配置目录（Tier-1：~/.ssh、~/.aws、~/.gnupg、${dirname(skillsRoot)}，含以命令间接访问）、版本库内部（.git）与危险命令会被安全策略拒绝；其下的技能目录（${skillsRoot}）对本任务只读——可用 read_file / glob / grep 读取技能附带的文件，但不可写入，也不可用命令访问。若某次调用被拒，请改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。`,
+    '【工具与权限】读写文件、执行命令、调用已启用的技能与 MCP 工具默认均可使用，无需授权；文件读写与命令执行均不设任何限制。若某次调用失败，请改用其它方式或在结论中说明，切勿原样反复重试。',
     '【产出】用简洁、结构清晰的简体中文（除非角色设定另有风格）直接给出最终结果，作为本次任务的成果记录在对话中。'
   ]
   // 全局长期记忆：密封轮只读（写/删工具已从密封工具表剔除），用户习惯同样适用于定时任务的产出。
@@ -1336,7 +1324,7 @@ const PARALLEL_READ_TOOLS = new Set([
  * - `tools === '*'`（通用子智能体）→ 全部内置工具，对标 Claude Code general-purpose 的 `*`。
  * - 否则 → 仅白名单命中的内置工具（如 Explore / Plan 的只读集：不给 write_file / edit_file）。
  * **已连接的 MCP 工具两种情况都全量附加**：MCP 是外部能力面，把它挡在外面只会逼主智能体自己去干
- * 那些本该外包的活；其写入风险与 run_command 同源，由统一的安全地板兜底。
+ * 那些本该外包的活；其写入风险与 run_command 同源。
  * 工具集只**收窄**可见工具；被保留的每个调用仍照常过同一道权限闸门（无提权）。
  */
 function buildSubagentTools(def: SubagentDef): ToolSpec[] {
@@ -1368,7 +1356,7 @@ function buildSubagentTools(def: SubagentDef): ToolSpec[] {
  *   exit_plan 无用户可批准计划）后**全部保留**（read/write/exec 均在），不再有白名单收窄。
  * - **追加**已启用技能的 `skill` 工具（技能加载 headless-安全，用户明确要求「包含 skill」）与
  *   **全部已连接 MCP 工具**（用户明确要求「包含 mcp」）。
- * - 每个保留的调用仍由 sealedDecision 的安全地板（Tier-1/Tier-2/危险命令）兜底。
+ * - 每个保留的调用仍经 sealedDecision（读写与命令不设限，仅排除交互/创建类工具）。
  */
 function buildSealedTools(skills: { name: string; description: string }[]): ToolSpec[] {
   const EXCLUDED = new Set([
@@ -1410,7 +1398,7 @@ function buildSubagentSystem(def: SubagentDef, workspaceRoot: string | null): st
     '结论要能被主智能体直接使用：给出结论与依据，点名相关文件（**路径写绝对路径**）与必要的代码/取值片段；不要复述过程流水账。',
     '彼此没有依赖的工具调用（同时读几个文件、同时搜几个关键词）务必在同一次回复里一并发出，只读调用会并发执行；查找与阅读请用 glob / grep / read_file / list_dir，不要用 run_command 跑 find、grep、cat 代替。',
     '你无法向用户提问（没有 ask_user 工具），也不能再派生其它子智能体；若信息不足，基于合理默认完成，并在结论中说明所做的假设。',
-    `你的工具调用默认直接执行、无需授权；唯有私钥/凭据目录与本应用配置目录（~/.ssh、${dirname(skillsDir())} 等，含以命令间接访问）、版本库内部（.git）的写入与危险命令会被安全策略拒绝；其下的技能目录（${skillsDir()}）对你只读——可用 read_file / glob / grep 读取技能附带的文件，但不可写入，也不可用命令访问。被拒时改用其它方式或在结论中说明受限之处，切勿反复重试同一被拒操作。`
+    '你的工具调用默认直接执行、无需授权，文件读写与命令执行均不设任何限制。调用失败时改用其它方式或在结论中说明，切勿原样反复重试。'
   ]
   // 项目说明：子智能体同样在该项目里干活（Explore / Plan 调研、通用子智能体动手），须知项目约定。
   // 派生时按当时的工作区读取（轮中挂载后派生的也能拿到），在子轮内定格。
@@ -2100,7 +2088,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               type: 'tool_result',
               toolUseId: tc.id,
               content:
-                '用户已批准计划。现在请按已批准的计划开始执行（写入/执行无需再征求授权，仅受安全底线约束）。',
+                '用户已批准计划。现在请按已批准的计划开始执行（写入/执行无需再征求授权）。',
               isError: false
             })
           } else if (decision === 'keep') {
@@ -2191,19 +2179,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           continue
         }
 
-        // 权限闸门（纯同步策略，零弹框）：所有工具默认放行，唯有三类不可协商的安全地板**静默拒绝**
-        // （不弹窗、不挂起，回灌清晰 tool_result 让模型改道）——
-        //  · edit：Tier-1 敏感目录（凭据/密钥与 ~/.deva，技能目录除外）拒绝、子轮写技能目录拒绝、
-        //          Tier-2 版本库内部（.git）拒绝；其余目标（含工作区外）一律放行，越界写入仅此次临时受信、finally 撤销。
-        //  · exec：危险命令（rm -rf 等）与触及凭据/配置目录的命令拒绝（技能目录仅主轮放行）；其余放行。
-        //  · read / mcp：一律放行（read 的 Tier-1 仍由 tools 内 resolveReadPath 兜底拒绝）。
-        // 交互轮与密封轮统一到这套策略；密封轮另经 sealedDecision（同源地板 + 排除交互/创建类工具）。
-        const cat = toolCategory(tc.name)
-
+        // 权限闸门（纯同步策略，零弹框）：所有工具一律放行，文件读写与命令执行不设任何限制（2026-10-09 起）。
+        // 交互轮唯一的拒绝是「用户暂不挂载工作区」；密封轮另经 sealedDecision（排除交互/创建类工具）。
         let allowed: boolean
         let policyDenied = false
-        // 「仅此次」授权临时精确放行的路径：执行后必须撤销，避免长期扩大受信面。
-        let oneShotPath: string | null = null
         let denyContent = '该操作被安全策略拒绝。'
         /** 非安全策略的拒绝（当前仅「用户暂不挂载工作区」）：徽标文案与安全底线拒绝区分开。 */
         let denySummary: string | null = null
@@ -2255,70 +2234,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         if (mountRefused) {
           allowed = false
         } else if (!interactive) {
-          // 密封无头执行（定时任务）：绝不弹窗、绝不挂起——改走纯策略 sealedDecision（含同源安全地板）。
-          const verdict = sealedDecision(tc.name, tc.args, ctx.workspaceRoot)
+          // 密封无头执行（定时任务）：绝不弹窗、绝不挂起——改走纯策略 sealedDecision。
+          const verdict = sealedDecision(tc.name)
           allowed = verdict.allowed
           if (!allowed) {
             policyDenied = true
             denyContent = verdict.denyContent
-          } else if (verdict.trustPath) {
-            // 密封写入根未经「打开文件夹」登记进 fs-guard，放行的写入须临时精确放行使工具内 assertInside 通过；
-            // 执行后在既有 finally 撤销（oneShotPath），不长期扩大受信面。
-            trustRoot(verdict.trustPath)
-            oneShotPath = verdict.trustPath
-          }
-        } else if (cat === 'edit') {
-          const target = writeTargetPath(tc.name, tc.args, ctx.workspaceRoot)
-          const abs = target?.abs ?? null
-          if (abs && isSensitivePath(abs)) {
-            // Tier-1 硬底：凭据/密钥目录（含本应用 ~/.deva 配置库；技能目录除外），一律静默拒绝。
-            allowed = false
-            policyDenied = true
-            denyContent = `该路径受安全策略保护（凭据/密钥目录或本应用配置目录），拒绝写入：${abs}。请勿重试。`
-          } else if (abs && depth > 0 && isSkillsPath(abs)) {
-            // 技能目录对 Tier-1 开口，但写技能 = 持久化提示词注入：仅主交互循环可写，子智能体只读。
-            allowed = false
-            policyDenied = true
-            denyContent = `子智能体不可写入技能目录（只读）：${abs}。如需新建或修改技能，请在结论中交由主智能体处理。`
-          } else if (abs && isProtectedPath(abs)) {
-            // Tier-2 硬底：版本库内部（.git），一律静默拒绝。
-            allowed = false
-            policyDenied = true
-            denyContent = `该路径位于版本库内部（.git），拒绝写入：${abs}。请改用 git 命令操作仓库，勿直接写 .git 下的文件。`
-          } else {
-            // 其余目标一律放行（含工作区外）。越界写入仅此次临时精确受信，finally 撤销。
-            allowed = true
-            if (abs && !isInsideRoot(abs)) {
-              trustRoot(abs)
-              oneShotPath = abs
-            }
-          }
-        } else if (cat === 'exec') {
-          // 危险命令（rm -rf 等）与触及凭据路径的命令静默拒绝；其余一律放行。
-          const command =
-            tc.args && typeof (tc.args as { command?: unknown }).command === 'string'
-              ? (tc.args as { command: string }).command
-              : ''
-          if (isDangerousCommand(command)) {
-            allowed = false
-            policyDenied = true
-            denyContent =
-              '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。'
-          } else if (touchesSensitivePath(command, { allowSkills: depth === 0 })) {
-            // 文件工具的 Tier-1 硬底对 exec 无效（shell 可直接 cat 私钥），此处按命令文本兜一层。
-            // 启发式而非密封：见 exec-policy.touchesSensitivePath 的取舍说明。
-            // 技能目录仅对主轮开口（下载解压多文件技能）；子轮一律拒——命令放行即可写。
-            allowed = false
-            policyDenied = true
-            denyContent =
-              depth === 0
-                ? `该命令涉及凭据/密钥路径或本应用配置目录（如 ~/.ssh、${dirname(skillsDir())}），被安全策略拒绝，未执行。技能目录（${skillsDir()}）可正常访问，但命令里不能出现 \`..\` 跳出它或引用 DEVA_HOME 变量。请勿重试或变形绕过；确有需要请让用户自行操作。`
-                : `该命令涉及凭据/密钥路径或本应用配置目录（如 ~/.ssh、${dirname(skillsDir())}，含技能目录），被安全策略拒绝，未执行。子智能体读取技能附带文件请改用 read_file / glob / grep。请勿重试或变形绕过。`
-          } else {
-            allowed = true
           }
         } else {
-          // read + mcp：一律放行（read 的 Tier-1 仍由 tools 内 resolveReadPath 兜底拒绝）。
           allowed = true
         }
 
@@ -2345,6 +2268,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // 文件检查点：写入类工具执行前备份原文件、执行后结算；run_command 只记命令文本（影响不可撤销，
         // 回滚面板据此提示）。子轮的记录归到父级 run_subagent 的 id，随父轮一起回滚。
         // 记录失败只告警，**绝不影响工具执行**。
+        const cat = toolCategory(tc.name)
         const recorder = args.recorder
         const owner = depth > 0 && parentToolId ? parentToolId : tc.id
         let snap: WriteSnap | null = null
@@ -2356,19 +2280,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           }
         }
 
-        let res: ToolResult
-        try {
-          // MCP 工具走连接管理器（callTool + 超时 + 取消，结果恒作数据）；内置工具走本地执行器。
-          const prefetched = readRuns.get(tc.id)
-          res = prefetched
-            ? await prefetched
-            : isMcpTool(tc.name)
-              ? await dispatchMcpTool(tc.name, tc.args, ctx.signal)
-              : await executeTool(tc.name, tc.args, ctx)
-        } finally {
-          // 撤销「仅此次」临时受信根（无论成功/异常）。
-          if (oneShotPath) untrustRoot(oneShotPath)
-        }
+        // MCP 工具走连接管理器（callTool + 超时 + 取消，结果恒作数据）；内置工具走本地执行器。
+        const prefetched = readRuns.get(tc.id)
+        const res: ToolResult = prefetched
+          ? await prefetched
+          : isMcpTool(tc.name)
+            ? await dispatchMcpTool(tc.name, tc.args, ctx.signal)
+            : await executeTool(tc.name, tc.args, ctx)
         if (recorder) {
           try {
             if (snap) await recorder.after(snap, owner)
@@ -2684,7 +2602,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     busySessions.set(sessionId, turnId)
     // 本次触发会改写该会话的消息：此前的回滚快照随之失效（撤销会把这一轮一并抹掉）。
     pendingUndo.delete(sessionId)
-    // 密封任务无固定工作目录：相对路径回落进程 cwd，文件操作应用绝对路径。写入除硬底线外一律放行。
+    // 密封任务无固定工作目录：相对路径回落进程 cwd，文件操作应用绝对路径。读写不设路径限制。
     const effectiveRoot: string | null = null
     const session = ensureSession(sessionId, {
       personaId: auth.personaId ?? undefined,
@@ -2739,7 +2657,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
 
     // 密封工具集：除交互/创建类外全量放开（read/write/exec + 已启用技能 skill + 全部已连接 MCP）；
-    // 每次调用仍由 sealedDecision 的安全地板（Tier-1/Tier-2/危险命令）兜底。
+    // 每次调用仍经 sealedDecision（仅排除交互/创建类工具）。
     const skillSummaries = enabledSkillSummaries()
     const sealedTools = buildSealedTools(skillSummaries)
 
@@ -2974,7 +2892,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       // 持久化的对话属性——若不在此重新登记，重启后带挂载目录的会话一渲染就调 git:status / fs:*，其首行
       // assertInside 因根未受信而抛「拒绝访问」，表现为「git 丢失 + Error occurred in handler for 'git:status'」。
       // 这是渲染层能拿到 focusRoot 的最早时刻（渲染任何对话 / GitWidget 前必先经此列表），在此登记即无竞态。
-      // 语义等同 IDE 重开时恢复已打开的项目文件夹；Tier-1 敏感目录仍由各工具内的硬底线独立拦截，不受影响。
+      // 语义等同 IDE 重开时恢复已打开的项目文件夹（受信根只约束渲染层 IPC，与 Agent 文件工具无关）。
       for (const m of list) {
         if (typeof m.focusRoot === 'string' && m.focusRoot.trim()) trustRoot(m.focusRoot)
       }
@@ -3166,7 +3084,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   )
 
   // ───────── 检查点回滚（对标 Claude Code /rewind）─────────
-  // 只由用户在回滚面板里触发、不经工具闸门，故自守三条：路径只来自记录、链接跳过、敏感路径与 .git 跳过
+  // 只由用户在回滚面板里触发、不经工具闸门，故自守两条：路径只来自记录、链接跳过
   // （见 checkpoints.planRewind）。每次执行都在主进程重算计划，不信任渲染层回传的预览。
 
   /** 正在执行回滚 / 撤销的会话：防同一会话的两次回滚交错。 */

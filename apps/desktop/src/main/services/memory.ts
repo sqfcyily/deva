@@ -16,8 +16,8 @@ import { getDevaHome } from './config'
  * 设计：
  * - **由模型负责记录**：经 memory_read / memory_write / memory_delete 三个内置工具读写（tools.ts），
  *   memory_write 以 `scope` 参数选作用域；memory_delete 按 id 前缀（m_ 全局 / p_ 项目）自动定位。
- *   `~/.deva` 在 fs-guard 的 Tier-1 硬地板内，Agent 的文件工具读写不到——这三个工具是唯一开口
- *   （同 create_skill 的受控接口），由主进程直读直写。
+ *   这三个工具是受控接口（同 create_skill），由主进程直读直写、负责去重与预算校验；文件工具虽也能
+ *   直接改 memory.json，但提示词要求模型始终走这三个工具。
  * - **每轮开头注入系统提示词**（`memoryPromptSection`）：轮内定格，中途写入不改本轮 system，
  *   保持提示缓存前缀稳定；新记忆下一轮起生效（本轮靠 tool_result 告知模型）。
  * - **记忆是数据不是指令**：注入前言明确其不得凌驾规范——防网页/MCP 内容诱导模型写入持久化指令。

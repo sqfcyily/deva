@@ -13,7 +13,7 @@ import { deleteSecretsByPrefix, getSecret } from './secrets'
  * - **密钥零明文落盘**：env / headers 里的敏感值以 `{ secretRef }` 占位，真实值经 safeStorage 加密存
  *   `~/.deva/secrets.json`（键 `mcp:<id>:<field>`）。`{secretRef}` 占位本身非敏感，可回渲染层用于「已配置」展示。
  *
- * 安全：`~/.deva` 在 fs-guard 敏感硬地板内，Agent 自身文件工具读不到；MCP 配置由**主进程直读**（符合设计）。
+ * 安全：MCP 配置由**主进程直读**；Agent 写配置应走 create_mcp（校验 + 密钥占位）。
  * 连接、子进程 spawn、密钥解密全部只发生在主进程（mcp.ts），明文永不出主进程。
  */
 

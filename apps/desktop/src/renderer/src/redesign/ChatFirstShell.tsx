@@ -130,7 +130,7 @@ import { useProfile } from '../store/profile'
  *  - 动手全内联：复用 features/chat/blocks 的 BlockView / StatusIndicator / deriveActivity 渲染工具/权限/思考/子智能体
  *
  * 安全不变式全程不动：角色不收窄工具，每次调用都过同一闸门；聚焦挂载复用 fs.openFolder 的
- * trustRoot；~/.deva 等 Tier-1 永不可写（仅技能目录对主智能体开口）。旧壳（PREVIEW_CHAT_FIRST=false）零回归靠后端 personaId 缺省 gate。
+ * trustRoot；Agent 文件读写与命令执行不设任何限制。旧壳（PREVIEW_CHAT_FIRST=false）零回归靠后端 personaId 缺省 gate。
  */
 
 /* ============================ 小工具 ============================ */

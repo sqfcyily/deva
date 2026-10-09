@@ -172,8 +172,8 @@ export interface RewindTurnStat {
 
 /** 回滚对单个文件的动作：写回 / 删除（目标是不存在）/ 重建（现已不存在）/ 无需改动。 */
 export type RewindAction = 'restore' | 'delete' | 'create' | 'none'
-/** ok=可回滚；conflict=回滚点之后被外部改过；link=链接文件跳过；protected=敏感或 .git 路径跳过。 */
-export type RewindStatus = 'ok' | 'conflict' | 'link' | 'blob_missing' | 'too_large' | 'protected'
+/** ok=可回滚；conflict=回滚点之后被外部改过；link=链接文件跳过。 */
+export type RewindStatus = 'ok' | 'conflict' | 'link' | 'blob_missing' | 'too_large'
 
 /** 回滚预览里的一个文件（只有摘要，不含内容；与 services/checkpoints.ts 的 RewindFile 对齐）。 */
 export interface RewindFile {

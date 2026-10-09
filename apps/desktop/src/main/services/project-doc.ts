@@ -1,6 +1,5 @@
 import { closeSync, openSync, readSync, realpathSync, statSync } from 'fs'
 import { join } from 'path'
-import { isSensitivePath } from './fs-guard'
 
 /**
  * 项目说明（AGENTS.md）：挂载工作区时读取其根目录下的 `AGENTS.md`，每轮注入系统提示词。
@@ -11,11 +10,10 @@ import { isSensitivePath } from './fs-guard'
  * - **每轮开头读一次、轮内定格**：同记忆，保持提示缓存前缀稳定；模型中途改了它，下一轮起生效。
  *   文件内容不变则注入字符串逐字节不变，不破坏缓存。
  * - **仓库内容 ≠ 用户意愿**：可能由他人编写（克隆来的仓库）。前言声明其为项目数据，不得凌驾规范与
- *   安全底线；硬底线（Tier-1 / .git 写入 / 危险命令）照常在闸门兜底，与是否注入无关。
- * - **符号链接防泄露**：按真实路径判 Tier-1——`AGENTS.md -> ~/.ssh/id_rsa` 不得借注入把私钥发给模型服务商。
+ *   安全底线。
  * - **按字节限额**（对齐 Codex 默认 32 KiB）：只读前 N 字节，超出标注截断、提示用 read_file 看全文。
  *   按字节而非字数，中英文的 token 开销大致相当。
- * - 读不到（不存在 / 非文件 / 无权限 / 命中 Tier-1）一律静默返回 null，绝不抛错、绝不阻断本轮。
+ * - 读不到（不存在 / 非文件 / 无权限）一律静默返回 null，绝不抛错、绝不阻断本轮。
  */
 
 export const PROJECT_DOC_NAME = 'AGENTS.md'
@@ -37,7 +35,6 @@ export function loadProjectDoc(root: string | null): ProjectDoc | null {
   let fd: number | null = null
   try {
     const real = realpathSync(path)
-    if (isSensitivePath(real)) return null
     const st = statSync(real)
     if (!st.isFile()) return null
     const size = Math.min(st.size, PROJECT_DOC_MAX_BYTES)

@@ -2,8 +2,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, promises as fs, type Dirent } from 'fs'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'path'
-import { assertInside, isSensitivePath } from './fs-guard'
-import { isDangerousCommand, resolveExecShell } from './exec-policy'
+import { resolveExecShell } from './exec-policy'
 import { upsertSkill } from './skills'
 import {
   deleteMemory,
@@ -102,7 +101,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'write_file',
     description:
-      '把内容写入文件（覆盖式，不存在则创建；父目录不存在会自动创建）。多用于新建文件；改动既有文件请优先用 edit_file。单次写入内容较多（约 300 行以上）时请分段：先写入开头一部分，再用 append: true 分次追加其余部分——单次回复有输出长度上限，一次写太多会被截断、整次调用作废。凭据/密钥目录与版本库内部（.git）会被安全策略拒绝，其余位置直接写入、无需授权。',
+      '把内容写入文件（覆盖式，不存在则创建；父目录不存在会自动创建）。多用于新建文件；改动既有文件请优先用 edit_file。单次写入内容较多（约 300 行以上）时请分段：先写入开头一部分，再用 append: true 分次追加其余部分——单次回复有输出长度上限，一次写太多会被截断、整次调用作废。任意位置均可直接写入、无需授权。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -119,7 +118,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'edit_file',
     description:
-      '对工作区内「已存在」的文件做精确替换：把 old_string 匹配到的片段替换为 new_string。默认要求 old_string 在文件中唯一出现（否则报错——请多带上下文使其唯一）；replace_all=true 时替换所有匹配。这是修改代码的首选（优于覆盖式 write_file）。无需授权，直接调用即可（凭据/密钥目录与版本库内部 .git 除外）。',
+      '对工作区内「已存在」的文件做精确替换：把 old_string 匹配到的片段替换为 new_string。默认要求 old_string 在文件中唯一出现（否则报错——请多带上下文使其唯一）；replace_all=true 时替换所有匹配。这是修改代码的首选（优于覆盖式 write_file）。无需授权，直接调用即可。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -145,7 +144,7 @@ export const toolSpecs: ToolSpec[] = [
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
-      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。明显危险的命令（如 rm -rf）会被安全策略直接拒绝，请勿重试。涉及凭据/密钥路径或本应用配置目录的命令（~/.ssh、~/.aws、~/.gnupg、~/.deva、id_rsa、secrets.json 等）同样会被拒绝——请勿改写形式尝试绕过，确有需要请让用户自行操作；唯一例外是主对话中访问技能目录（~/.deva/skills，实际路径见系统提示词），但命令里不能用 .. 跳出它。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 120000ms（可用 timeout 调整，最长 600000ms）；输出过长会被截断。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -265,7 +264,7 @@ export const toolSpecs: ToolSpec[] = [
       '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增），更新时可省略 scope，按 id 前缀自动定位（m_ 为全局，p_ 为项目）。' +
       `内容须是一句简洁的事实陈述（≤${MEMORY_MAX_CHARS} 字）；不得记录密码/密钥等敏感信息或一次性任务细节。` +
       `总量上限：全局 ${MEMORY_BUDGET_CHARS} 字、项目 ${PROJECT_MEMORY_BUDGET_CHARS} 字，写满会被拒绝：此时请带 id 合并/精简相近条目或先 memory_delete 过时条目。` +
-      '记忆存于受保护目录，这是写入它的唯一途径（write_file 等工具无法写入）。',
+      '请始终用本工具写入记忆（会做去重与总量校验），不要用 write_file 等直接改记忆文件。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -329,8 +328,8 @@ export const toolSpecs: ToolSpec[] = [
       '这只是**提议**：本工具不写入任何东西、不创建任务，只把你生成的参数以名片形式呈现给用户；' +
       '用户在名片里核对日程与授权、点「创建」后才真正建任务。' +
       '因此调用后**切勿声称任务已创建**，应告诉用户「确认名片已生成，请核对后点创建」。' +
-      '**关键**：任务触发时会自动执行、期间不会再向用户确认。触发时所有工具默认可用（除私钥/凭据等等' +
-      '硬底线目录与危险命令外），无需你或用户挑选工具；名片里只需核对日程，并可选运行身份（人格）与模型。' +
+      '**关键**：任务触发时会自动执行、期间不会再向用户确认。触发时所有工具默认可用，' +
+      '无需你或用户挑选工具；名片里只需核对日程，并可选运行身份（人格）与模型。' +
       '你只负责把日程和意图表达清楚。不要设置 model（你无法可靠得知 providerId:modelId）。' +
       'schedule.tz 若不确定可省略，由系统按用户本地时区填充。',
     inputSchema: {
@@ -380,7 +379,7 @@ export const toolSpecs: ToolSpec[] = [
     description:
       '创建并启用一个新的 **MCP 服务**（Model Context Protocol server），写入用户的全局 MCP 配置（~/.deva/mcp.json）。' +
       '仅在用户明确想接入某个 MCP 服务、且你已收集好要素并向用户复述确认后调用。' +
-      '这是写入受保护配置的唯一途径——**严禁**用 write_file / run_command 去写 mcp.json（那些工具无法写入该目录）。' +
+      '请始终用本工具写入——**不要**用 write_file / run_command 直接改 mcp.json（会绕过配置校验与密钥占位处理）。' +
       '**密钥零明文**：绝不把 API Key / Token 等真实密钥值写进本工具参数或对话；只在 secretEnv / secretHeaders 里列出这些字段的**名字**，' +
       '工具会写入占位符，真实值由用户稍后在「扩展」页加密填入。创建后服务自动启用并在后台连接（缺密钥则待用户填入后自动连接），' +
       '连上后其工具从用户下一条消息起可用。',
@@ -558,7 +557,7 @@ export function looksBinary(buf: Buffer): boolean {
  * 展开开头的 `~`（`~`、`~/x`、Windows 下 `~` 加反斜杠）为用户主目录。
  * 模型极常写 `~/notes.txt`，而 Node 的 isAbsolute('~/x') 在所有平台都是 false——不展开就会被
  * 当成相对路径：未挂载时拦成挂载卡，挂载后 join 出 `<root>/~/notes.txt` 这种字面量 `~` 目录
- * （ENOENT）。展开必须发生在 isAbsolute / isSensitivePath 之前，`~/.ssh/id_rsa` 才会被 Tier-1 硬拒。
+ * （ENOENT）。展开必须发生在 isAbsolute 判定之前。
  * 只认不带用户名的形式；`~other/x` 无法可靠解析他人主目录，保持原样按相对路径处理。
  */
 function expandHome(p: string): string {
@@ -569,8 +568,7 @@ function expandHome(p: string): string {
 
 /**
  * 「模型给的 path → 绝对路径」的唯一规则：先展开 `~`，绝对路径用之，否则基于项目根。
- * 闸门（writeTargetPath）与执行（resolveReadPath / resolveWritePath）必须共用它，否则
- * 「判定的落点」与「实际落点」会分叉——那是安全判定被绕过的经典缺口。
+ * 检查点（writeTargetPath）与执行（resolvePath）必须共用它，否则「备份的落点」与「实际落点」会分叉。
  */
 function toAbsPath(root: string | null, p: string): string {
   const raw = expandHome(p)
@@ -578,10 +576,10 @@ function toAbsPath(root: string | null, p: string): string {
 }
 
 /**
- * 读取类路径解析：把 path 解析为绝对路径，仅拒绝 Tier-1 敏感目录（凭据/密钥与配置库；技能目录已开口）。
- * 刻意不校验受信根——读操作可及任意「非敏感」目录（对标 Claude Code：读不受工作区边界约束）。
+ * 文件工具的路径解析（读写共用）：把 path 解析为绝对路径。
+ * 不设任何路径限制（2026-10-09 起）：不校验受信根，凭据目录、~/.deva、.git 一律可读写。
  */
-function resolveReadPath(root: string | null, p: unknown): string {
+function resolvePath(root: string | null, p: unknown): string {
   if (typeof p !== 'string' || !p.trim()) throw new Error('缺少有效的 path 参数')
   // 未挂载工作区 + 相对路径 = 没有基准。旧行为是悄悄落到应用自身的 process.cwd()——读多半 ENOENT、
   // 写则**静默成功**在谁也找不到的地方。一律明确报错，让模型改用绝对路径（写入类更早一步由
@@ -592,28 +590,13 @@ function resolveReadPath(root: string | null, p: unknown): string {
       // 子智能体与密封定时任务——它们没有人可问，提了只会诱导出一句无人应答的文字请求。
       '未挂载工作区，相对路径没有基准：请改用绝对路径（~/ 开头的主目录路径亦可）。'
     )
-  const abs = toAbsPath(root, p)
-  if (isSensitivePath(abs))
-    throw new Error('拒绝访问：凭据/密钥目录或本应用配置目录（安全策略；技能目录除外），请勿重试。')
-  return abs
+  return toAbsPath(root, p)
 }
 
 /**
- * 写入类路径解析：在读取解析（含 Tier-1 拒绝）之上，再校验目标落在受信根内。
- * 越界写入由权限闸门的「越界卡」在授权后临时加根放行，故执行时此校验必过；
- * 未授权的越界写入到不了这里（闸门已拦）。
- */
-function resolveWritePath(root: string | null, p: unknown): string {
-  const abs = resolveReadPath(root, p)
-  assertInside(abs)
-  return abs
-}
-
-/**
- * 写入类工具（write_file / edit_file）的目标：目标文件绝对路径 abs 与授权目录 dir（父目录）。
- * 供权限闸门做 Tier-1 硬底 / Tier-2 版本库内部(.git) / 越界 三档分类。
- * 路径解析规则与 resolveWritePath 完全一致（相对路径基于项目根），确保「闸门判定 → 执行」一致。
- * 非写入类或缺 path → null（read/exec/mcp 走常规闸门，无路径越界概念）。
+ * 写入类工具（write_file / edit_file）的目标：目标文件绝对路径 abs 与其父目录 dir。
+ * 供文件检查点在写入前备份原文件；路径解析规则与 resolvePath 完全一致（相对路径基于项目根）。
+ * 非写入类或缺 path → null。
  */
 export function writeTargetPath(
   name: string,
@@ -656,7 +639,7 @@ const FILE_PATH_TOOLS = new Set(['write_file', 'edit_file', 'read_file'])
  * 的行为。判据本身（落点能否解析）从来就覆盖 read_file，当初只是按性价比排除。
  *
  * 仍刻意不含 `run_command`：命令文本里的相对路径无法可靠判定（`cat src/a.ts` / `cd /tmp && ls` /
- * `npm test`），要判就得解析 shell 语法，正是 exec-policy 已承认走不通的那条路；何况它有 homedir
+ * `npm test`），要判就得解析 shell 语法，不可靠；何况它有 homedir
  * 兜底，失败同样响亮（失败时另追加一行提示，见 run_command 分支）。
  */
 export function needsWorkspaceMount(
@@ -676,12 +659,9 @@ export function needsWorkspaceMount(
 
 /** 解析「搜索根目录」（读取语义）：给了 path 用之，否则回落项目根；两者皆缺则报错。 */
 function resolveReadDir(root: string | null, p: unknown): string {
-  if (typeof p === 'string' && p.trim()) return resolveReadPath(root, p)
+  if (typeof p === 'string' && p.trim()) return resolvePath(root, p)
   if (!root) throw new Error('未打开项目，且未提供 path')
-  const abs = resolve(root)
-  if (isSensitivePath(abs))
-    throw new Error('拒绝访问：凭据/密钥目录或本应用配置目录（安全策略；技能目录除外），请勿重试。')
-  return abs
+  return resolve(root)
 }
 
 function toInt(v: unknown): number | null {
@@ -755,8 +735,6 @@ async function collectFiles(root: string): Promise<{ abs: string; rel: string }[
       const childRel = rel ? `${rel}/${e.name}` : e.name
       if (e.isDirectory()) {
         if (IGNORE_DIRS.has(e.name)) continue
-        // 读遍历（glob/grep）现可作用于任意目录，遍历时绝不进入 Tier-1 凭据/密钥目录。
-        if (isSensitivePath(childAbs)) continue
         await walk(childAbs, childRel)
       } else if (e.isFile()) {
         out.push({ abs: childAbs, rel: childRel })
@@ -1090,7 +1068,7 @@ export async function executeTool(
   const a = (args ?? {}) as Record<string, unknown>
   try {
     if (name === 'read_file') {
-      const abs = resolveReadPath(ctx.workspaceRoot, a.path)
+      const abs = resolvePath(ctx.workspaceRoot, a.path)
       const stat = await fs.stat(abs)
       const imageExt = IMAGE_EXT.has(extname(abs).toLowerCase())
       if (imageExt && stat.size > MAX_IMAGE_SOURCE_BYTES)
@@ -1153,7 +1131,7 @@ export async function executeTool(
     }
 
     if (name === 'list_dir') {
-      // path 省略时回落项目根（与工具描述「默认项目根」一致）；resolveReadDir 兼顾默认与 Tier-1 拒绝。
+      // path 省略时回落项目根（与工具描述「默认项目根」一致）。
       const abs = resolveReadDir(ctx.workspaceRoot, a.path)
       const dirents = await fs.readdir(abs, { withFileTypes: true })
       const rows = dirents
@@ -1338,7 +1316,7 @@ export async function executeTool(
     }
 
     if (name === 'write_file') {
-      const abs = resolveWritePath(ctx.workspaceRoot, a.path)
+      const abs = resolvePath(ctx.workspaceRoot, a.path)
       const content = typeof a.content === 'string' ? a.content : ''
       const bytes = Buffer.byteLength(content, 'utf8')
       // 父目录不存在时先自动创建，免得模型还得先 run_command mkdir。
@@ -1352,7 +1330,7 @@ export async function executeTool(
     }
 
     if (name === 'edit_file') {
-      const abs = resolveWritePath(ctx.workspaceRoot, a.path)
+      const abs = resolvePath(ctx.workspaceRoot, a.path)
       const oldStr = typeof a.old_string === 'string' ? a.old_string : ''
       const newStr = typeof a.new_string === 'string' ? a.new_string : ''
       if (!oldStr)
@@ -1430,30 +1408,12 @@ export async function executeTool(
       const command = typeof a.command === 'string' ? a.command.trim() : ''
       if (!command)
         return { content: '缺少有效的 command 参数', summary: '参数无效', isError: true }
-      // cwd：挂载了工作区 → 项目根（须在受信集内，abs===root 通过）；未挂载（对话优先外壳的「全机
-      // 通用助手」）→ 回落用户主目录，与终端面板 safeCwd 同一口径，不再因「未打开项目」整个不可用。
-      // cwd 只是相对路径基准，不是安全边界——执行的安全底线是策略层的危险命令静默拒绝（见下）。
+      // cwd：挂载了工作区 → 项目根；未挂载（对话优先外壳的「全机通用助手」）→ 回落用户主目录，
+      // 与终端面板 safeCwd 同一口径，不再因「未打开项目」整个不可用。
+      // cwd 只是相对路径基准，不是安全边界——命令执行不设任何限制。
       let cwd = ctx.workspaceRoot
-      if (cwd) {
-        try {
-          assertInside(cwd)
-        } catch {
-          return {
-            content: '项目根不在受信目录内，拒绝执行。',
-            summary: '受信校验失败',
-            isError: true
-          }
-        }
-      }
       // 目录不存在（项目被移走/改名）同样回落主目录，避免 spawn 直接失败。
       if (!cwd || !existsSync(cwd)) cwd = homedir()
-      // 纵深兜底：即便调用方绕过闸门（chat.ts / sealedDecision），危险命令也在此 deny。
-      if (isDangerousCommand(command))
-        return {
-          content: '该命令被安全策略拒绝（危险操作），未执行。请勿重试，改用更精确、非破坏性的命令。',
-          summary: '已拒绝（安全策略）',
-          isError: true
-        }
       const timeoutMs = Math.min(
         Math.max(toInt(a.timeout) ?? EXEC_TIMEOUT_DEFAULT, 1000),
         EXEC_TIMEOUT_MAX
@@ -1557,7 +1517,7 @@ export async function executeTool(
         }
       const scope: MemoryScope =
         kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
-      // 直调主进程 memory 服务（~/.deva 在 Tier-1 硬地板内，文件工具写不进；本工具即受控开口）。
+      // 直调主进程 memory 服务（去重 + 总量预算在服务内校验）。
       const r = writeMemory(content, id, scope)
       if (!r.ok) return { content: r.error, summary: '未写入', isError: true }
       const where = kind === 'project' ? '项目私有记忆' : '长期记忆'
