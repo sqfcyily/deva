@@ -374,9 +374,10 @@ const zhCN: MessageTree = {
     scope: '回复范围',
     scopeOpt: { all: '全部', personas: '角色', sessions: '对话' },
     scopeHint: {
-      all: '所有对话都会推送，/list 列出全部对话。',
-      personas: '只推送选中角色的对话（含这些角色的定时任务），/list 也只列出这些对话。',
-      sessions: '只推送选中的对话（含定时任务的对话），/list 也只列出这些对话。在手机上新建的对话会自动加入。'
+      all: '所有对话都可以在手机上切换并推送。',
+      personas: '只有选中角色的对话（含这些角色的定时任务）可以切换并推送。',
+      sessions:
+        '只有选中的对话（含定时任务的对话）可以切换并推送，在手机上新建的对话会自动加入。'
     },
     scopePicked: { personas: '已选择 {n} 个角色', sessions: '已选择 {n} 个对话' },
     scopePick: '选择',
@@ -1205,11 +1206,11 @@ const en: MessageTree = {
     scope: 'Reply scope',
     scopeOpt: { all: 'All', personas: 'Personas', sessions: 'Chats' },
     scopeHint: {
-      all: 'Every chat is pushed, and /list shows all chats.',
+      all: 'Every chat can be switched to and pushed from your phone.',
       personas:
-        'Only chats with the selected personas are pushed (including their scheduled tasks); /list shows only those chats.',
+        'Only chats with the selected personas (including their scheduled tasks) can be switched to and pushed.',
       sessions:
-        'Only the selected chats are pushed (including scheduled-task chats); /list shows only those chats. Chats created from your phone are added automatically.'
+        'Only the selected chats (including scheduled-task chats) can be switched to and pushed; Chats created from your phone are added automatically.'
     },
     scopePicked: { personas: '{n} personas selected', sessions: '{n} chats selected' },
     scopePick: 'Choose',
