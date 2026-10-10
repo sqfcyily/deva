@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto'
-import { onAppNotice, onChatEvent, type ChatEventPayload } from '../chat-bus'
+import { onAppNotice, onChatEvent, type AppNotice, type ChatEventPayload } from '../chat-bus'
 import { getChatRuntime, type ChatStreamEvent } from '../chat'
 import { ensureSession, getSession, listSessions, save as saveSession } from '../chat-store'
 import { getPersona, listPersonas, upsertPersona } from '../personas'
@@ -743,14 +743,26 @@ function onBusEvent({ turnId, sessionId, event }: ChatEventPayload): void {
   if (reduce(t, event)) scheduleFlush(t)
 }
 
-function onNotice(n: { title: string; body: string; sessionId?: string }): void {
+/** 该对话最近一轮是否已作为正常回复推到了这个私聊（回合结束后跟踪表项还保留一分钟）。 */
+function replied(sessionId: string, chat: ChatAddress): boolean {
+  let last: TurnTrack | undefined
+  for (const t of turns.values()) if (t.sessionId === sessionId) last = t
+  return !!last && last.finished && hasVisible(last) && last.posts.has(chatKey(chat))
+}
+
+function onNotice(n: AppNotice): void {
   if (channels.size === 0) return
-  for (const chat of homeChats())
+  const sid = n.sessionId
+  for (const chat of homeChats()) {
+    // 已在该对话里：那轮回复已按正常回复推到这里，摘要不再重复推；其余通知（如自动暂停）照发，只是不带「切换」按钮。
+    const here = !!sid && boundSession(chat) === sid
+    if (sid && here && n.echoesReply && replied(sid, chat)) continue
     void notice(chat, {
       title: n.title,
       text: n.body,
-      buttons: n.sessionId ? [{ label: '切换到此对话', value: { k: 'use', sid: n.sessionId } }] : undefined
+      buttons: sid && !here ? [{ label: '切换到此对话', value: { k: 'use', sid } }] : undefined
     })
+  }
 }
 
 let wired = false

@@ -94,9 +94,9 @@ function firstLine(text: string): string {
  * 弹一条系统通知（不可用则静默降级）。
  * 点击 → 聚焦窗口，并（若给了 sessionId）推 `tasks:navigate` 让渲染层打开该任务的独占会话。
  */
-function notify(title: string, body: string, sessionId?: string): void {
+function notify(title: string, body: string, sessionId?: string, echoesReply = false): void {
   // 远程通道（飞书等）经总线同步推送到手机；与系统通知互不影响。
-  publishAppNotice({ title: title || 'Deva', body, sessionId })
+  publishAppNotice({ title: title || 'Deva', body, sessionId, echoesReply })
   try {
     if (!Notification.isSupported()) return
     const n = new Notification({ title: title || 'Deva', body })
@@ -127,7 +127,7 @@ function notifyForRun(task: TaskRecord, run: TaskRun, autoPaused: boolean): void
     return
   }
   if (run.status === 'skipped') return
-  notify(task.title, run.summary || task.prompt, task.sessionId)
+  notify(task.title, run.summary || task.prompt, task.sessionId, true)
 }
 
 // ── 触发一次（队列消费单元）─────────────────────────────────────────────────

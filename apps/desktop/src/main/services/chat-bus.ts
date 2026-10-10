@@ -21,6 +21,8 @@ export interface AppNotice {
   body: string
   /** 关联的对话（远程端可一键切过去查看）。 */
   sessionId?: string
+  /** 正文只是该对话刚结束那一轮回复的摘要（定时任务跑完）：已把那轮作为正常回复收到的私聊不必再推。 */
+  echoesReply?: boolean
 }
 
 const bus = new EventEmitter()
