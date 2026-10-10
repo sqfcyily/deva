@@ -4,12 +4,20 @@ import QRCode from 'qrcode'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
+import { PersonaFace, parseAvatarSpec } from '../components/humation'
+import { useChat, type SessionMeta } from '../store/chat'
+import { useExtensions } from '../store/extensions'
 import feishuLogo from '../assets/platforms/feishu.svg'
 import telegramLogo from '../assets/platforms/telegram.svg'
 
 type RemoteState = Awaited<ReturnType<typeof window.deva.remote.getState>>
 type BotView = RemoteState['bots'][number]
 type Platform = BotView['platform']
+type Scope = BotView['scope']
+type ScopeKind = Exclude<Scope['mode'], 'all'>
+
+/** 与主进程 hub 同口径：没绑定角色的旧对话算默认角色。 */
+const DEFAULT_PERSONA_ID = 'general'
 
 /** 可添加的平台（菜单顺序）。soon = 即将支持，菜单里置灰。 */
 const PLATFORMS: { id: Platform; soon?: boolean }[] = [{ id: 'feishu' }, { id: 'telegram' }]
@@ -592,6 +600,8 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
         </div>
       </div>
 
+      <ScopeCard bot={bot} />
+
       <div className="bots-card">
         <div className="bots-card__label">{t('bots.usage')}</div>
         <p className="bots-card__hint bots-usage">{t('bots.usageText')}</p>
@@ -599,5 +609,204 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
 
       <p className="bots-warn">{t('bots.security')}</p>
     </>
+  )
+}
+
+// ───────── 回复范围 ─────────
+
+/**
+ * 「回复范围」：全部 / 角色 / 对话。后两者多选；计数只算还存在的（选中的都删了即「已选择 0 个」）。
+ * 范围同时决定推送与 /list、/use 能看到的对话，判定在主进程 hub，这里只编辑配置。
+ */
+function ScopeCard({ bot }: { bot: BotView }): React.JSX.Element {
+  const { t } = useI18n()
+  const { personas } = useExtensions()
+  const { sessions: railSessions } = useChat()
+  const [sessions, setSessions] = useState<SessionMeta[]>(railSessions)
+  const [picking, setPicking] = useState<ScopeKind | null>(null)
+  const scope = bot.scope
+
+  // 对话清单直接问主进程：手机上 /new 的对话在首轮之前进不了左侧列表，用它计数会少算。
+  // 左侧列表变了（删对话）或范围变了（手机上新建的对话自动纳入）都重取一次。
+  useEffect(() => {
+    let alive = true
+    void window.deva.chat.listSessions(null).then((list) => alive && setSessions(list))
+    return () => {
+      alive = false
+    }
+  }, [railSessions, scope])
+
+  const picked = (k: ScopeKind): number =>
+    k === 'personas'
+      ? scope.personas.filter((id) => personas.some((p) => p.id === id)).length
+      : scope.sessions.filter((id) => sessions.some((s) => s.id === id)).length
+
+  const save = (next: Scope): void => void window.deva.remote.setScope(bot.id, next)
+
+  const pickMode = (m: Scope['mode']): void => {
+    if (m === scope.mode) return
+    // 切到一个都还没选的「角色 / 对话」：先弹出选择，确定后才生效，免得一切换就什么都不推了。
+    if (m !== 'all' && picked(m) === 0) setPicking(m)
+    else save({ ...scope, mode: m })
+  }
+
+  return (
+    <div className="bots-card">
+      <div className="bots-card__row">
+        <div className="bots-card__label">
+          {t('bots.scope')}
+          <span className="bots-card__hint">{t(`bots.scopeHint.${scope.mode}`)}</span>
+        </div>
+        <div className="cf-seg">
+          {(['all', 'personas', 'sessions'] as const).map((m) => (
+            <button
+              key={m}
+              className={`cf-seg__opt${scope.mode === m ? ' is-on' : ''}`}
+              onClick={() => pickMode(m)}
+            >
+              {t(`bots.scopeOpt.${m}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+      {scope.mode !== 'all' && (
+        <div className="bots-scope">
+          <span className="bots-card__hint">
+            {t(`bots.scopePicked.${scope.mode}`).replace('{n}', String(picked(scope.mode)))}
+          </span>
+          <button className="bots-btn" onClick={() => setPicking(scope.mode as ScopeKind)}>
+            {t('bots.scopePick')}
+          </button>
+        </div>
+      )}
+      {picking && (
+        <ScopePicker
+          kind={picking}
+          selected={scope[picking]}
+          personas={personas}
+          sessions={sessions}
+          onClose={() => setPicking(null)}
+          onSave={(ids) => {
+            save({ ...scope, mode: picking, [picking]: ids })
+            setPicking(null)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function ScopePicker({
+  kind,
+  selected,
+  personas,
+  sessions,
+  onClose,
+  onSave
+}: {
+  kind: ScopeKind
+  selected: string[]
+  personas: ReturnType<typeof useExtensions>['personas']
+  sessions: SessionMeta[]
+  onClose: () => void
+  onSave: (ids: string[]) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const [picked, setPicked] = useState(() => new Set(selected))
+  const [query, setQuery] = useState('')
+
+  const items = useMemo(() => {
+    const byId = new Map(personas.map((p) => [p.id, p]))
+    if (kind === 'personas')
+      return personas.map((p) => ({
+        id: p.id,
+        title: p.name,
+        sub: p.enabled ? p.desc : t('bots.scopeDisabled'),
+        persona: p
+      }))
+    return sessions.map((s) => {
+      const p = byId.get(s.personaId || DEFAULT_PERSONA_ID)
+      return {
+        id: s.id,
+        title: s.title || t('bots.scopeUntitled'),
+        sub: `${p?.name ?? 'Deva'} · ${new Date(s.updatedAt).toLocaleString()}`,
+        persona: p
+      }
+    })
+  }, [kind, personas, sessions, t])
+
+  const q = query.trim().toLowerCase()
+  const shown = q ? items.filter((i) => i.title.toLowerCase().includes(q)) : items
+
+  const toggle = (id: string): void =>
+    setPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const title = t(`bots.scopePickTitle.${kind}`)
+  return (
+    <div className="cf-modal__backdrop">
+      <div className="cf-modal bots-pickmodal" role="dialog" aria-label={title}>
+        <div className="cf-modal__head">
+          <span className="cf-modal__title">{title}</span>
+          <button className="cf-modal__close" title={t('common.close')} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="bots-pick__search">
+          <div className="cf-search">
+            <Search className="cf-search__icon" size={14} />
+            <input
+              className="cf-search__input"
+              type="text"
+              value={query}
+              autoFocus
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t('bots.scopeSearch')}
+              aria-label={t('bots.scopeSearch')}
+            />
+          </div>
+        </div>
+        <div className="bots-pick__list">
+          {items.length === 0 ? (
+            <div className="cf-empty">{t(`bots.scopeListEmpty.${kind}`)}</div>
+          ) : shown.length === 0 ? (
+            <div className="cf-empty">{t('cf.searchNoResults')}</div>
+          ) : (
+            shown.map((i) => (
+              <label key={i.id} className={`bots-pick__row${picked.has(i.id) ? ' is-on' : ''}`}>
+                <input type="checkbox" checked={picked.has(i.id)} onChange={() => toggle(i.id)} />
+                <span className="bots-pick__ava">
+                  <PersonaFace
+                    seed={i.persona?.id ?? DEFAULT_PERSONA_ID}
+                    spec={parseAvatarSpec(i.persona?.avatar)}
+                    image={i.persona?.avatarImage}
+                  />
+                </span>
+                <span className="bots-pick__main">
+                  <span className="bots-pick__title">{i.title}</span>
+                  {i.sub && <span className="bots-pick__sub">{i.sub}</span>}
+                </span>
+              </label>
+            ))
+          )}
+        </div>
+        <div className="bots-pick__foot">
+          <button className="cf-btn" onClick={onClose}>
+            {t('common.cancel')}
+          </button>
+          {/* 只存列表里还存在的：已删除的角色 / 对话顺手从配置里清掉。 */}
+          <button
+            className="cf-btn is-primary"
+            onClick={() => onSave(items.filter((i) => picked.has(i.id)).map((i) => i.id))}
+          >
+            {t('common.confirm')}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }

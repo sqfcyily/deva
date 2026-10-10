@@ -24,6 +24,36 @@ export interface PairedUser {
 /** stream = 流式更新同一张卡片；final = 只在需要你决定和回合结束时更新（少打扰）。 */
 export type ReplyMode = 'stream' | 'final'
 
+/**
+ * 回复范围：机器人只推送、只列出（/list）、只允许切到（/use）范围内的对话；定时任务按其独占对话判定。
+ * all = 全部；personas = 选中角色名下的对话（未绑定角色的旧对话算默认角色）；sessions = 选中的对话。
+ * 两份清单都保留，切换模式不丢已选项；已删除的角色 / 对话留在清单里也无妨——匹配不上，界面上也不计数。
+ */
+export type ScopeMode = 'all' | 'personas' | 'sessions'
+
+export interface ReplyScope {
+  mode: ScopeMode
+  personas: string[]
+  sessions: string[]
+}
+
+export const DEFAULT_SCOPE: ReplyScope = { mode: 'all', personas: [], sessions: [] }
+
+function ids(v: unknown): string[] {
+  return Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === 'string' && x.length > 0))] : []
+}
+
+/** 外部输入（config.json / IPC）→ 合法的回复范围。 */
+export function normalizeScope(raw: unknown): ReplyScope {
+  if (!raw || typeof raw !== 'object') return DEFAULT_SCOPE
+  const r = raw as Record<string, unknown>
+  return {
+    mode: r.mode === 'personas' || r.mode === 'sessions' ? r.mode : 'all',
+    personas: ids(r.personas),
+    sessions: ids(r.sessions)
+  }
+}
+
 export interface BotConfig {
   id: ChannelId
   platform: Platform
@@ -31,6 +61,7 @@ export interface BotConfig {
   enabled: boolean
   createdAt: number
   replyMode: ReplyMode
+  scope: ReplyScope
   users: PairedUser[]
   /** IM 私聊 chatId → 当前绑定的 Deva 对话 id。 */
   bindings: Record<string, string>
@@ -62,6 +93,7 @@ function normalize(raw: unknown): BotConfig | null {
     enabled: c.enabled === true,
     createdAt: typeof c.createdAt === 'number' ? c.createdAt : 0,
     replyMode: c.replyMode === 'final' ? 'final' : 'stream',
+    scope: normalizeScope(c.scope),
     users,
     bindings,
     settings: c.settings && typeof c.settings === 'object' ? (c.settings as Record<string, unknown>) : {}
@@ -109,6 +141,7 @@ export function getChannelConfig(id: ChannelId): BotConfig {
       enabled: false,
       createdAt: 0,
       replyMode: 'stream',
+      scope: DEFAULT_SCOPE,
       users: [],
       bindings: {},
       settings: {}

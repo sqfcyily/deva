@@ -16,14 +16,17 @@ import {
   stopChannel
 } from './hub'
 import {
+  DEFAULT_SCOPE,
   addBot,
   deleteBot,
   getBot,
   listBots,
+  normalizeScope,
   updateBot,
   type BotConfig,
   type PairedUser,
-  type ReplyMode
+  type ReplyMode,
+  type ReplyScope
 } from './store'
 import { TelegramAdapter, fetchTelegramMe } from './telegram'
 import { startTelegramLink } from './telegram-onboard'
@@ -70,6 +73,7 @@ export interface BotView {
   state: ChannelState
   error?: string
   replyMode: ReplyMode
+  scope: ReplyScope
   users: { id: string; name?: string; pairedAt: number }[]
 }
 
@@ -86,6 +90,7 @@ function publicState(): { bots: BotView[] } {
         enabled: b.enabled,
         ...channelState(b.id),
         replyMode: b.replyMode,
+        scope: b.scope,
         users: b.users.map((u) => ({ id: u.id, name: u.name, pairedAt: u.pairedAt }))
       }))
   }
@@ -248,6 +253,7 @@ export function registerRemoteIpc(getWindow: () => BrowserWindow | null): void {
           enabled: true,
           createdAt: Date.now(),
           replyMode: 'stream',
+          scope: DEFAULT_SCOPE,
           users: r.bot.users,
           bindings: {},
           settings: r.bot.settings
@@ -291,6 +297,12 @@ export function registerRemoteIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('remote:set-reply-mode', (_e, id: ChannelId, mode: ReplyMode): { ok: true } => {
     updateBot(id, (b) => ({ ...b, replyMode: mode === 'final' ? 'final' : 'stream' }))
+    push()
+    return { ok: true }
+  })
+
+  ipcMain.handle('remote:set-scope', (_e, id: ChannelId, scope: ReplyScope): { ok: true } => {
+    updateBot(id, (b) => ({ ...b, scope: normalizeScope(scope) }))
     push()
     return { ok: true }
   })

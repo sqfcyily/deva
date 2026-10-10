@@ -371,6 +371,20 @@ const zhCN: MessageTree = {
       stream: '回复和工具调用实时更新在同一张卡片里。',
       final: '只在需要你决定和回复完成时更新，消息更少。'
     },
+    scope: '回复范围',
+    scopeOpt: { all: '全部', personas: '角色', sessions: '对话' },
+    scopeHint: {
+      all: '所有对话都会推送，/list 列出全部对话。',
+      personas: '只推送选中角色的对话（含这些角色的定时任务），/list 也只列出这些对话。',
+      sessions: '只推送选中的对话（含定时任务的对话），/list 也只列出这些对话。在手机上新建的对话会自动加入。'
+    },
+    scopePicked: { personas: '已选择 {n} 个角色', sessions: '已选择 {n} 个对话' },
+    scopePick: '选择',
+    scopePickTitle: { personas: '选择角色', sessions: '选择对话' },
+    scopeListEmpty: { personas: '还没有角色。', sessions: '还没有对话。' },
+    scopeSearch: '搜索',
+    scopeDisabled: '已停用',
+    scopeUntitled: '新对话',
     usage: '在手机上怎么用',
     usageText:
       '直接发消息就是在当前对话里继续聊。指令：/new 新建对话、/list 最近对话、/use 序号 切换、/stop 停止、/status 当前对话、/help 帮助。计划审批、提问、定时任务完成通知都会以卡片形式发给你。',
@@ -1188,6 +1202,22 @@ const en: MessageTree = {
       stream: 'The reply and tool calls update live in a single card.',
       final: 'Only updates when your decision is needed and when the reply is done.'
     },
+    scope: 'Reply scope',
+    scopeOpt: { all: 'All', personas: 'Personas', sessions: 'Chats' },
+    scopeHint: {
+      all: 'Every chat is pushed, and /list shows all chats.',
+      personas:
+        'Only chats with the selected personas are pushed (including their scheduled tasks); /list shows only those chats.',
+      sessions:
+        'Only the selected chats are pushed (including scheduled-task chats); /list shows only those chats. Chats created from your phone are added automatically.'
+    },
+    scopePicked: { personas: '{n} personas selected', sessions: '{n} chats selected' },
+    scopePick: 'Choose',
+    scopePickTitle: { personas: 'Choose personas', sessions: 'Choose chats' },
+    scopeListEmpty: { personas: 'No personas yet.', sessions: 'No chats yet.' },
+    scopeSearch: 'Search',
+    scopeDisabled: 'Disabled',
+    scopeUntitled: 'New chat',
     usage: 'Using it on your phone',
     usageText:
       'Just send a message to continue the current conversation. Commands: /new, /list, /use <n>, /stop, /status, /help. Plan reviews, questions and scheduled-task results arrive as cards.',

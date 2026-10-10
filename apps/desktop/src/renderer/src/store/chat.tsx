@@ -1219,6 +1219,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     return unsub
   }, [refreshSessions, patchRuntime, patchMessages, patchCardBlocks, dropRuntime, attachSession, toast])
 
+  // 回合之外新建的对话（手机上 /new，还没发消息）：没有 turn_start 可借，主进程单独通知刷新列表。
+  useEffect(() => window.deva.chat.onSessionsChanged(() => void refreshSessions()), [refreshSessions])
+
   const viewed = runtimes.get(currentSessionId)
   const viewedStreaming = viewed?.streaming ?? false
 

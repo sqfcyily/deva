@@ -1,5 +1,5 @@
 import { ipcMain, type BrowserWindow } from 'electron'
-import { onChatEvent, publishChatEvent } from './chat-bus'
+import { onChatEvent, onSessionsChanged, publishChatEvent } from './chat-bus'
 import { randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
@@ -1636,6 +1636,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const win = getWindow()
     if (!win || win.isDestroyed()) return
     win.webContents.send('chat:event', p)
+  })
+  onSessionsChanged(() => {
+    const win = getWindow()
+    if (!win || win.isDestroyed()) return
+    win.webContents.send('chat:sessions-changed')
   })
 
   function emit(turnId: string, sessionId: string, event: ChatStreamEvent): void {

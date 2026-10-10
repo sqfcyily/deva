@@ -3465,3 +3465,84 @@ a.bots-btn {
   align-items: center;
   gap: 10px;
 }
+
+/* 回复范围 */
+.bots-scope {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.cf-modal.bots-pickmodal {
+  max-width: 460px;
+  height: min(560px, 82vh);
+}
+.bots-pick__search {
+  display: flex;
+  padding: 12px 16px 8px;
+}
+.bots-pick__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+.bots-pick__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.bots-pick__row:hover {
+  background: var(--bg-hover);
+}
+.bots-pick__row input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.bots-pick__ava {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--bg-inset);
+}
+.bots-pick__ava img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.bots-pick__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bots-pick__title,
+.bots-pick__sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bots-pick__title {
+  font-size: 13px;
+}
+.bots-pick__sub {
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.bots-pick__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}

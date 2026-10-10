@@ -654,6 +654,12 @@ export type ChatStreamEvent =
 /** IM 机器人（远程通道）状态，与 services/remote/index.ts 的 BotView / ScanEvent 对齐。 */
 export type BotPlatform = 'feishu' | 'telegram'
 export type BotReplyMode = 'stream' | 'final'
+/** 回复范围：all 全部 / personas 选中角色的对话 / sessions 选中的对话（两份清单都保留，切模式不丢）。 */
+export interface BotReplyScope {
+  mode: 'all' | 'personas' | 'sessions'
+  personas: string[]
+  sessions: string[]
+}
 export interface BotView {
   id: string
   platform: BotPlatform
@@ -664,6 +670,7 @@ export interface BotView {
   state: 'off' | 'connecting' | 'connected' | 'error'
   error?: string
   replyMode: BotReplyMode
+  scope: BotReplyScope
   users: { id: string; name?: string; pairedAt: number }[]
 }
 export interface RemoteState {
@@ -908,6 +915,12 @@ const api = {
       const listener = (_e: unknown, payload: ChatEventPayload): void => cb(payload)
       ipcRenderer.on('chat:event', listener)
       return () => ipcRenderer.removeListener('chat:event', listener)
+    },
+    /** 对话清单在别处变了（手机上新建的空对话），需重新 listSessions；返回取消订阅函数 */
+    onSessionsChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb()
+      ipcRenderer.on('chat:sessions-changed', listener)
+      return () => ipcRenderer.removeListener('chat:sessions-changed', listener)
     }
   },
   /** 集成终端：列出已装 shell、建 PTY、写输入、改尺寸、销毁；订阅数据/退出事件。 */
@@ -1071,6 +1084,8 @@ const api = {
       ipcRenderer.invoke('remote:set-enabled', id, enabled),
     setReplyMode: (id: string, mode: BotReplyMode): Promise<{ ok: true }> =>
       ipcRenderer.invoke('remote:set-reply-mode', id, mode),
+    setScope: (id: string, scope: BotReplyScope): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('remote:set-scope', id, scope),
     deleteBot: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('remote:delete-bot', id),
     pairCode: (id: string): Promise<{ code: string; expiresAt: number }> =>
       ipcRenderer.invoke('remote:pair-code', id),

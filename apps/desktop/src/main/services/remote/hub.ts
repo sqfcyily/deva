@@ -1,8 +1,14 @@
 import { randomInt } from 'node:crypto'
-import { onAppNotice, onChatEvent, type AppNotice, type ChatEventPayload } from '../chat-bus'
+import {
+  onAppNotice,
+  onChatEvent,
+  publishSessionsChanged,
+  type AppNotice,
+  type ChatEventPayload
+} from '../chat-bus'
 import { getChatRuntime, type ChatStreamEvent } from '../chat'
 import { ensureSession, getSession, listSessions, save as saveSession } from '../chat-store'
-import { getPersona, listPersonas, upsertPersona } from '../personas'
+import { getPersona, listPersonas, upsertPersona, type PersonaRecord } from '../personas'
 import { resolveDefaultModel, resolveModelRefOrNull } from '../model-resolve'
 import { previewSchedule } from '../tasks'
 import type { TaskCreateInput } from '../tasks-types'
@@ -217,7 +223,8 @@ function chatKey(c: ChatAddress): string {
 
 function boundSession(chat: ChatAddress): string | null {
   const sid = getChannelConfig(chat.channel).bindings[chat.chatId]
-  return sid && getSession(sid) ? sid : null
+  // 绑着的对话后来被移出了回复范围：当作没绑定（下条消息另起一个范围内的对话）。
+  return sid && getSession(sid) && inScope(chat.channel, sid) ? sid : null
 }
 
 function bind(chat: ChatAddress, sessionId: string): void {
@@ -227,23 +234,23 @@ function bind(chat: ChatAddress, sessionId: string): void {
   }))
 }
 
-/** 当前跟随某对话的全部 IM 私聊（只算已连接的通道）。 */
+/** 当前跟随某对话的全部 IM 私聊（只算已连接、且回复范围包含该对话的通道）。 */
 function watchersOf(sessionId: string): ChatAddress[] {
   const out: ChatAddress[] = []
   for (const id of channels.keys()) {
-    if (!liveAdapter(id)) continue
+    if (!liveAdapter(id) || !inScope(id, sessionId)) continue
     for (const [chatId, sid] of Object.entries(getChannelConfig(id).bindings))
       if (sid === sessionId) out.push({ channel: id, chatId })
   }
   return out
 }
 
-/** 已配对用户的私聊（通知 / 无人跟随时的交互卡推到这里）。 */
-function homeChats(): ChatAddress[] {
+/** 已配对用户的私聊（通知 / 无人跟随时的交互卡推到这里）；给了对话则只取回复范围包含它的通道。 */
+function homeChats(sessionId?: string): ChatAddress[] {
   const out: ChatAddress[] = []
   const seen = new Set<string>()
   for (const id of channels.keys()) {
-    if (!liveAdapter(id)) continue
+    if (!liveAdapter(id) || (sessionId && !inScope(id, sessionId))) continue
     for (const u of getChannelConfig(id).users) {
       if (!u.chatId) continue
       const c = { channel: id, chatId: u.chatId }
@@ -254,6 +261,33 @@ function homeChats(): ChatAddress[] {
   }
   return out
 }
+
+// ───────── 回复范围 ─────────
+
+/** 对话是否落在机器人的回复范围内（见 store.ts ReplyScope）；没绑定角色的旧对话算默认角色。 */
+function allows(channel: ChannelId, s: { id: string; personaId?: string }): boolean {
+  const { scope } = getChannelConfig(channel)
+  if (scope.mode === 'personas') return scope.personas.includes(s.personaId || DEFAULT_PERSONA_ID)
+  if (scope.mode === 'sessions') return scope.sessions.includes(s.id)
+  return true
+}
+
+/** 同 allows，按 id 查对话。「全部」不看对话在不在（任务首跑前就失败时，对话还没建出来，通知照样要推）。 */
+function inScope(channel: ChannelId, sessionId: string): boolean {
+  if (getChannelConfig(channel).scope.mode === 'all') return true
+  const s = getSession(sessionId)
+  return !!s && allows(channel, s)
+}
+
+/** 本机器人能用的已启用角色（回复范围限定了角色时只含选中的）。 */
+function allowedPersonas(channel: ChannelId): PersonaRecord[] {
+  const { scope } = getChannelConfig(channel)
+  const all = listPersonas().filter((p) => p.enabled)
+  return scope.mode === 'personas' ? all.filter((p) => scope.personas.includes(p.id)) : all
+}
+
+/** 回复范围限定了角色、却没有一个可用（选中的都删了 / 停用了）：新建不了对话。 */
+const NO_PERSONA = '回复范围内没有可用的角色，请在电脑端「机器人」里调整回复范围。'
 
 function sessionTitle(sessionId: string): string {
   return getSession(sessionId)?.title || '新对话'
@@ -617,7 +651,7 @@ const TASK_ERRORS: Record<string, string> = {
 
 function openPrompt(turnId: string, sessionId: string, view: PromptView): void {
   const watchers = watchersOf(sessionId)
-  const chats = watchers.length ? watchers : homeChats()
+  const chats = watchers.length ? watchers : homeChats(sessionId)
   const p: PromptTrack = {
     view,
     turnId,
@@ -753,7 +787,7 @@ function replied(sessionId: string, chat: ChatAddress): boolean {
 function onNotice(n: AppNotice): void {
   if (channels.size === 0) return
   const sid = n.sessionId
-  for (const chat of homeChats()) {
+  for (const chat of homeChats(sid)) {
     // 已在该对话里：那轮回复已按正常回复推到这里，摘要不再重复推；其余通知（如自动暂停）照发，只是不带「切换」按钮。
     const here = !!sid && boundSession(chat) === sid
     if (sid && here && n.echoesReply && replied(sid, chat)) continue
@@ -836,15 +870,17 @@ async function runCommand(chat: ChatAddress, name: string, arg: string): Promise
       await notice(chat, { text: '你已经配对过了。' })
       return true
     case 'new': {
-      const persona = pickPersona(arg)
+      const persona = pickPersona(chat.channel, arg)
       if (arg && !persona) {
-        const names = listPersonas()
-          .filter((p) => p.enabled)
-          .map((p) => p.name)
+        const names = allowedPersonas(chat.channel).map((p) => p.name)
         await notice(chat, {
           tone: 'warning',
           text: `没有找到角色「${arg}」。可用角色：${names.join('、') || '（无）'}`
         })
+        return true
+      }
+      if (!persona && getChannelConfig(chat.channel).scope.mode === 'personas') {
+        await notice(chat, { tone: 'warning', text: NO_PERSONA })
         return true
       }
       createSession(chat, persona?.id)
@@ -856,12 +892,13 @@ async function runCommand(chat: ChatAddress, name: string, arg: string): Promise
     }
     case 'list': {
       const all = listSessions()
-        .slice()
+        .filter((s) => allows(chat.channel, s))
         .sort((a, b) => b.updatedAt - a.updatedAt)
       const list = all.slice(0, LIST_MAX)
       lastLists.set(chatKey(chat), list.map((s) => s.id))
       if (!list.length) {
-        await notice(chat, { text: '还没有任何对话，直接发消息即可新建。' })
+        const scoped = getChannelConfig(chat.channel).scope.mode !== 'all'
+        await notice(chat, { text: `${scoped ? '回复范围内' : ''}还没有任何对话，直接发消息即可新建。` })
         return true
       }
       const cur = boundSession(chat)
@@ -886,7 +923,7 @@ async function runCommand(chat: ChatAddress, name: string, arg: string): Promise
       const list = lastLists.get(chatKey(chat)) ?? []
       const n = Number(arg)
       const sid = Number.isInteger(n) && n >= 1 ? list[n - 1] : arg
-      if (!sid || !getSession(sid)) {
+      if (!sid || !getSession(sid) || !inScope(chat.channel, sid)) {
         await notice(chat, { tone: 'warning', text: '找不到这个对话。先发 /list 看看序号。' })
         return true
       }
@@ -929,12 +966,19 @@ async function runCommand(chat: ChatAddress, name: string, arg: string): Promise
 /** 默认角色 Deva 的固定 id（种子角色，与桌面端默认身份一致）；按 id 绑定，用户改名不受影响。 */
 const DEFAULT_PERSONA_ID = 'general'
 
-/** 按名称 / id 找已启用角色；未指定角色（空名）固定用默认角色 Deva，不挑列表里的第一个。 */
-function pickPersona(name: string): { id: string; name: string } | null {
-  if (!name) return getPersona(DEFAULT_PERSONA_ID)
-  const all = listPersonas().filter((p) => p.enabled)
+/**
+ * 按名称 / id 找本机器人能用的角色。未指定角色（空名）固定用默认角色 Deva，不挑列表里的第一个——
+ * 除非回复范围限定了角色且不含 Deva，才取范围内的第一个。
+ */
+function pickPersona(channel: ChannelId, name: string): { id: string; name: string } | null {
+  if (!name) {
+    const { scope } = getChannelConfig(channel)
+    if (scope.mode !== 'personas' || scope.personas.includes(DEFAULT_PERSONA_ID))
+      return getPersona(DEFAULT_PERSONA_ID)
+    return allowedPersonas(channel)[0] ?? null
+  }
   const lower = name.toLowerCase()
-  return all.find((p) => p.name.toLowerCase() === lower || p.id === name) ?? null
+  return allowedPersonas(channel).find((p) => p.name.toLowerCase() === lower || p.id === name) ?? null
 }
 
 function genSessionId(): string {
@@ -947,7 +991,17 @@ function createSession(chat: ChatAddress, personaId?: string): string {
   // 与桌面「新建对话」同形：立即建档（左侧列表可见），模型快照角色偏好（空 = 跟随默认）。
   ensureSession(sid, { personaId, focusRoot: null, model: persona?.model || undefined })
   saveSession(sid)
+  // 桌面左侧列表只在回合开始时刷新，/new 建的空对话不发消息就一直看不到：单独通知一次。
+  publishSessionsChanged()
   bind(chat, sid)
+  // 回复范围限定了对话：在手机上新建的对话自动纳入，否则一建好就落在范围外、收不到回复。
+  if (getChannelConfig(chat.channel).scope.mode === 'sessions') {
+    updateChannelConfig(chat.channel, (c) => ({
+      ...c,
+      scope: { ...c.scope, sessions: [...c.scope.sessions, sid] }
+    }))
+    notifyState()
+  }
   return sid
 }
 
@@ -999,7 +1053,12 @@ async function sendToSession(chat: ChatAddress, text: string): Promise<void> {
   const rt = getChatRuntime()
   if (!rt) return notice(chat, { tone: 'error', text: 'Deva 还没准备好，请稍后再试。' })
   let sid = boundSession(chat)
-  if (!sid) sid = createSession(chat, pickPersona('')?.id)
+  if (!sid) {
+    const persona = pickPersona(chat.channel, '')
+    if (!persona && getChannelConfig(chat.channel).scope.mode === 'personas')
+      return notice(chat, { tone: 'warning', text: NO_PERSONA })
+    sid = createSession(chat, persona?.id)
+  }
 
   // 对话正停在交互卡上：单题问答直接把这条消息当答案；其余情况引导去卡片上操作。
   for (const p of prompts.values()) {
@@ -1084,6 +1143,7 @@ async function handleAction(a: InboundAction): Promise<ActionResult> {
         : { ok: false, message: '这个请求已经结束了。' }
     case 'use':
       if (!getSession(v.sid)) return { ok: false, message: '这个对话已经不存在了。' }
+      if (!inScope(a.chat.channel, v.sid)) return { ok: false, message: '这个对话不在机器人的回复范围内。' }
       void useSession(a.chat, v.sid)
       return { ok: true, message: '已切换' }
     case 'stop':
