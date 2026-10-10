@@ -1,6 +1,6 @@
 {
   "name": "@deva/desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Deva 桌面应用",
   "main": "./out/main/index.js",
   "author": "sqfcy",
