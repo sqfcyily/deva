@@ -13,9 +13,10 @@
  * 编辑器：打开时把「seed + 已存 spec」经 `resolveSpec` 解析为**具体** selections/colors，此后一律以具体值工作、
  * 保存时也写入具体值 —— 故「所见（编辑器）＝所存＝各处所渲染」，绝无 seed 与存储不一致的漂移。
  */
+import { Component, type ReactNode } from 'react'
 import { Avatar } from '@humation/react'
 import { humation1 } from '@humation/assets-humation-1'
-import { createAvatar, createPartPreview, getPartsForSlot } from '@humation/core'
+import { createAvatar, createPartPreview, getPartsForSlot, resolvePartId } from '@humation/core'
 import type { PartOption } from '@humation/core'
 
 export { humation1 }
@@ -130,6 +131,28 @@ function pickStrings(o: unknown): Record<string, string> {
   return out
 }
 
+const PART_SLOT = new Map(humation1.parts.map((p) => [p.id, p.selectionSlot]))
+
+/**
+ * 剔除部件清单里对不上的 selections 项（部件不存在 / 不属于该槽位 / 槽位不存在），被剔的槽位回落 seed 生成。
+ *
+ * 为什么必须：引擎遇到这类值会直接 throw，而 spec 来自磁盘——手改角色文件、模型用写文件工具改、
+ * 部件包升级后旧 id 下线都会带进坏值。渲染期一抛就整个界面白屏，连编辑器都进不去修（issue #25）。
+ * 故凡把外来 selections 交给引擎（HumationFace / resolveSpec）都先过这里；判定口径照搬引擎的 resolveAvatarState。
+ */
+function validSelections(sel?: Record<string, string>): Record<string, string> | undefined {
+  if (!sel) return undefined
+  const out: Record<string, string> = {}
+  for (const [slot, value] of Object.entries(sel)) {
+    try {
+      if (PART_SLOT.get(resolvePartId(value, humation1, slot)) === slot) out[slot] = value
+    } catch {
+      // 未知部件：丢弃
+    }
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 /** 解析存储字符串 → AvatarSpec；空 / 非 JSON / 解析失败一律返回 null（回落 seed 生成）。 */
 export function parseAvatarSpec(raw: string | null | undefined): AvatarSpec | null {
   if (!raw || typeof raw !== 'string') return null
@@ -166,7 +189,7 @@ export function resolveSpec(seed: string, spec?: AvatarSpec | null): Required<Av
   const pal = seededPalette(seed)
   const json = createAvatar(humation1, {
     seed,
-    selections: spec?.selections,
+    selections: validSelections(spec?.selections),
     colors: { ...pal.colors, ...spec?.colors },
     background: spec?.background || pal.background
   }).toJSON()
@@ -254,21 +277,40 @@ export function HumationFace({
   title?: string
   className?: string
 }): React.JSX.Element {
-  const selections =
-    spec?.selections && Object.keys(spec.selections).length ? spec.selections : undefined
+  const selections = validSelections(spec?.selections)
   // 无 spec 配色时用 seed 配色兜底（引擎默认是黑白线稿）；spec 里显式给的逐项覆盖。
   const pal = seededPalette(seed)
   const colors = { ...pal.colors, ...(spec?.colors ?? {}) }
+  const background = spec?.background || pal.background
   return (
-    <Avatar
-      assets={humation1}
-      seed={seed}
-      selections={selections}
-      colors={colors}
-      background={spec?.background || pal.background}
-      size={size ?? '100%'}
-      title={title}
-      className={className}
-    />
+    // key 只取喂给引擎的输入：换了头像就重建兜底、重新渲染；改配色只换 CSS 变量，不必重建。
+    <FaceBoundary key={JSON.stringify([seed, selections, background])}>
+      <Avatar
+        assets={humation1}
+        seed={seed}
+        selections={selections}
+        colors={colors}
+        background={background}
+        size={size ?? '100%'}
+        title={title}
+        className={className}
+      />
+    </FaceBoundary>
   )
+}
+
+/**
+ * 头像渲染兜底：引擎在渲染期抛错时只让这一枚头像留空，不让异常冒到根上把整个界面卸成白屏。
+ * 已知的坏数据由 validSelections 事先剔除，这里防的是引擎升级后新增的校验等意料之外的抛错。
+ */
+class FaceBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  render(): ReactNode {
+    return this.state.failed ? null : this.props.children
+  }
 }
