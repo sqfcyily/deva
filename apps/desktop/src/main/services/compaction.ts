@@ -408,7 +408,9 @@ async function summarize(
   transcript: string,
   locale: string,
   signal: AbortSignal,
-  midTurn = false
+  midTurn = false,
+  /** 被压缩的对话 id：随请求发出供个别网关固定会话路由（见 providers/opencode.ts）。 */
+  sessionId = ''
 ): Promise<string> {
   const zh = locale !== 'en'
   const system = zh ? SUMMARY_SYSTEM_ZH : SUMMARY_SYSTEM_EN
@@ -448,6 +450,7 @@ async function summarize(
         {
           model: model.model,
           system,
+          sessionId,
           messages: [{ role: 'user', content: userText }],
           maxTokens: SUMMARY_MAX_TOKENS,
           // 不传 temperature：新版 Claude（如 Opus）已弃用该参数，传了直接 400；用模型默认值即可。
@@ -569,7 +572,7 @@ export async function compactSession(args: {
   args.onStart?.()
   let summary = ''
   try {
-    summary = await summarize(model, transcript, locale, signal, keepHead >= 0)
+    summary = await summarize(model, transcript, locale, signal, keepHead >= 0, session.id)
   } catch (e) {
     // 失败原因原样带回（鉴权 / 断流 / 超时 / 无正文）：调用方会连同提示一起展示给用户。
     // 历史在此之前一个字都没动，返回即安全收场。

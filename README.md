@@ -76,13 +76,15 @@ Deva 是一款跨平台桌面 Agent 客户端。创建角色、定时任务、�
 2. 选择服务商，填写 API 密钥，添加需要使用的模型。
 3. 在输入框上方选择模型后即可开始对话。
 
-预置服务商：Anthropic、OpenAI、Google Gemini、DeepSeek、Kimi、智谱 GLM、通义千问、Ollama。自定义服务商可选用以下任一协议，适用于中转服务与自建网关：
+预置服务商：Anthropic、OpenAI、Google Gemini、DeepSeek、Kimi、智谱 GLM、通义千问、OpenCode Go、Ollama。自定义服务商可选用以下任一协议，适用于中转服务与自建网关：
 
 | 协议                      | 说明                                 |
 | ----------------------- | ---------------------------------- |
 | Anthropic Messages      | Claude 原生协议，以及提供 Anthropic 兼容端点的服务 |
 | OpenAI Chat Completions | 兼容绝大多数服务商                          |
 | OpenAI Responses        | OpenAI 新版接口                        |
+
+OpenCode Go 一个服务商即可用其全部模型（Console 会按需跨协议翻译），「拉取模型」可取全量清单；该网关要求每个对话附带稳定的 `x-opencode-session` 会话头，缺失即报 `MissingSessionID`，本应用已自动带上。
 
 思考等级按模型能力显示可用档位，不支持的模型自动隐藏该选项。
 

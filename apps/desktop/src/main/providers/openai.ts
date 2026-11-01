@@ -195,7 +195,8 @@ export async function* streamOpenAI(
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${cfg.apiKey}`
+        authorization: `Bearer ${cfg.apiKey}`,
+        ...cfg.headers
       },
       body: JSON.stringify(body),
       signal: req.signal

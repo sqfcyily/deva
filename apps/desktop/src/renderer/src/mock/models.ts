@@ -148,6 +148,23 @@ export const seedProviders: Provider[] = [
     models: []
   },
   {
+    // OpenCode Go / Console 推理网关：一份订阅聚合各家开放模型（GLM / Kimi / DeepSeek / Qwen / MiMo /
+    // Claude / GPT / Grok 等，点「拉取模型」取全量清单）。此处预置 Chat Completions 入口——官方明确
+    // 每套 API 都服务全部文本模型（Console 按需翻译），一个服务商即可用全部模型；偏好原生协议的可把协议
+    // 换成 Responses（同址）或 Messages（地址 https://opencode.ai/inference/go/anthropic，末尾不带 /v1，
+    // 因 Anthropic 适配器自补 /v1/messages）。
+    // 该网关要求每个对话带一个稳定的 x-opencode-session（缺失即 400 MissingSessionID），主进程已自动补上。
+    id: 'opencode-go',
+    name: 'OpenCode Go',
+    kind: 'official',
+    accent: '#ff6a3d',
+    adapter: 'openai',
+    apiHost: 'https://opencode.ai/inference/go/openai/v1',
+    docUrl: 'https://opencode.ai/console',
+    enabled: false,
+    models: []
+  },
+  {
     id: 'ollama',
     name: 'Ollama · 本地',
     kind: 'official',

@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron'
 import { getSecret } from './secrets'
+import { opencodeModelsURL, providerHeaders } from '../providers/opencode'
 import { httpError, type ErrorKind, type NormalizedError } from '../providers/types'
 
 /**
@@ -72,15 +73,18 @@ export function registerProviderIpc(): void {
   ipcMain.handle('provider:list-models', async (_e, cfg: ProbeConfig): Promise<ListModelsResult> => {
     const apiKey = (await getSecret(cfg.providerId)) ?? ''
     const base = normalizeBase(cfg.baseURL)
+    // 清单地址：opencode 网关只在推理根下给 /v1/models（各 API 路径下没有清单，照常规拼法必 404）；
+    // 同一份清单服务三套协议——网关对每个模型都提供了跨协议翻译，故不按适配器筛选。
+    const url =
+      opencodeModelsURL(base) ?? (cfg.adapter === 'anthropic' ? `${base}/v1/models` : `${base}/models`)
+    const authHeaders: Record<string, string> =
+      cfg.adapter === 'anthropic'
+        ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+        : { authorization: `Bearer ${apiKey}` }
     try {
-      const res =
-        cfg.adapter === 'anthropic'
-          ? await fetchWithTimeout(`${base}/v1/models`, {
-              headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
-            })
-          : await fetchWithTimeout(`${base}/models`, {
-              headers: { authorization: `Bearer ${apiKey}` }
-            })
+      const res = await fetchWithTimeout(url, {
+        headers: { ...authHeaders, ...providerHeaders(base) }
+      })
       if (!res.ok) {
         const text = await res.text().catch(() => '')
         const err = httpError(res.status, text)

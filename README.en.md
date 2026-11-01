@@ -82,13 +82,15 @@ The packages are not code-signed (macOS builds are ad-hoc signed only).
 2. Choose a provider, enter the API key and add the models you want to use.
 3. Pick a model above the input box and start chatting.
 
-Preset providers: Anthropic, OpenAI, Google Gemini, DeepSeek, Kimi, Zhipu GLM, Qwen and Ollama. Custom providers can use any of the following protocols, which covers relays and self-hosted gateways:
+Preset providers: Anthropic, OpenAI, Google Gemini, DeepSeek, Kimi, Zhipu GLM, Qwen, OpenCode Go and Ollama. Custom providers can use any of the following protocols, which covers relays and self-hosted gateways:
 
 | Protocol | Notes |
 | --- | --- |
 | Anthropic Messages | Native Claude protocol and Anthropic-compatible endpoints |
 | OpenAI Chat Completions | Compatible with most providers |
 | OpenAI Responses | OpenAI's newer API |
+
+One OpenCode Go provider covers its entire catalog (Console translates across protocols), and "Fetch models" pulls the full list. The gateway requires a stable `x-opencode-session` header per conversation and fails with `MissingSessionID` without it; Deva sends it automatically.
 
 Reasoning effort shows only the levels a model supports and is hidden for models without it.
 

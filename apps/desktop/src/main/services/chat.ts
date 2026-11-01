@@ -2587,6 +2587,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           {
             model: model.model,
             system,
+            // 本对话 id：需要「每对话稳定会话 id」的网关据此固定路由与复用缓存（OpenCode Go 缺失即
+            // 400 MissingSessionID，见 providers/opencode.ts）。子智能体与 fork 沿用父对话 id。
+            sessionId,
             // 旧回合的工具图片换成文字说明、本回合超预算的较早图片也裁掉（只影响本次请求，历史不动）。
             messages: trimHistoryImages(history),
             tools,

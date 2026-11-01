@@ -978,6 +978,7 @@ export function registerGitIpc(): void {
           { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
           {
             model: model.model,
+            // 提交信息不属于任何对话：需要会话头的网关（OpenCode Go）由 providers/opencode.ts 退回本次运行 id。
             // 每次生成现读 AGENTS.md：改了提交规范，下一次生成即生效。
             system: commitSystemPrompt(lang, loadProjectDoc(dir)),
             messages: [{ role: 'user', content: userText }],
