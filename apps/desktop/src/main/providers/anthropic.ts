@@ -166,7 +166,8 @@ export async function* streamAnthropic(
       headers: {
         'content-type': 'application/json',
         'x-api-key': cfg.apiKey,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        ...cfg.headers
       },
       body: JSON.stringify(body),
       signal: req.signal
