@@ -273,6 +273,7 @@ const zhCN: MessageTree = {
       memoryDelete: '删除记忆',
       todoWrite: '更新待办清单',
       presentFiles: '交付文件',
+      skill: '加载技能',
       unknown: '调用工具'
     },
     // 交付卡（present_files）
@@ -340,6 +341,7 @@ const zhCN: MessageTree = {
         memoryDelete: '已删除记忆',
         todoWrite: '已更新待办清单',
         presentFiles: '已交付',
+        skill: '已加载技能',
         unknown: '已调用'
       },
       doing: {
@@ -359,6 +361,7 @@ const zhCN: MessageTree = {
         memoryDelete: '正在删除记忆',
         todoWrite: '正在更新待办清单',
         presentFiles: '正在交付',
+        skill: '正在加载技能',
         unknown: '正在调用'
       },
       base: {
@@ -378,6 +381,7 @@ const zhCN: MessageTree = {
         memoryDelete: '删除记忆',
         todoWrite: '更新待办清单',
         presentFiles: '交付',
+        skill: '加载技能',
         unknown: '调用'
       },
       failed: '失败',
@@ -1402,6 +1406,7 @@ const en: MessageTree = {
       memoryDelete: 'Forget memory',
       todoWrite: 'Update todo list',
       presentFiles: 'Deliver files',
+      skill: 'Load skill',
       unknown: 'Call tool'
     },
     deliver: {
@@ -1458,6 +1463,7 @@ const en: MessageTree = {
         memoryDelete: 'Forgot memory',
         todoWrite: 'Updated todo list',
         presentFiles: 'Delivered',
+        skill: 'Loaded skill',
         unknown: 'Called'
       },
       doing: {
@@ -1477,6 +1483,7 @@ const en: MessageTree = {
         memoryDelete: 'Forgetting memory',
         todoWrite: 'Updating todo list',
         presentFiles: 'Delivering',
+        skill: 'Loading skill',
         unknown: 'Calling'
       },
       base: {
@@ -1496,6 +1503,7 @@ const en: MessageTree = {
         memoryDelete: 'Forget memory',
         todoWrite: 'Update todo list',
         presentFiles: 'Deliver',
+        skill: 'Load skill',
         unknown: 'Call'
       },
       failed: 'failed',

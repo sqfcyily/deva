@@ -2058,6 +2058,7 @@ body.cf-resizing-y * {
   line-height: 18px;
   color: var(--fg-muted);
   white-space: nowrap;
+  container-type: inline-size; /* 工具行结果说明的宽度上限按这一行算（见 app.css .tl__extra） */
 }
 .cf-bg__more {
   flex: none;

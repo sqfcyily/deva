@@ -33,9 +33,11 @@ import {
   ListChecks,
   Package,
   Archive,
+  Puzzle,
   type LucideIcon
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
+import { useExtensions } from '../../store/extensions'
 import type { ChatBlock, ChatMessage, StreamStatus, ToolStatus } from '../../store/chat'
 import { CopyButton, Markdown } from './Markdown'
 import { HumationFace } from '../../components/humation'
@@ -70,7 +72,9 @@ const TOOL_META: Record<string, { key: string; icon: LucideIcon }> = {
   // 正常的 todo_write 不画工具节点（进度在胶囊里）；只有参数被输出上限截断的那次会以普通工具节点出现。
   todo_write: { key: 'todoWrite', icon: ListChecks },
   // present_files 在时间轴上与普通工具一样是一步；成功的交付另在回合结束后于回复末尾画交付卡（见 deliveries）。
-  present_files: { key: 'presentFiles', icon: Package }
+  present_files: { key: 'presentFiles', icon: Package },
+  // 拼图与输入框「/」联想、角色资料卡里的技能图标一致。
+  skill: { key: 'skill', icon: Puzzle }
 }
 
 /**
@@ -85,13 +89,17 @@ function shortPath(p: string): string {
 }
 
 /**
- * 工具行的「对象」：优先 command（run_command），再 pattern（grep/glob——搜的是什么比在哪搜更有信息量，
- * 搜索范围挂悬停），再 path，再 url（web_fetch），再记忆正文 / id。full 为原值（挂悬停），text 为展示值——
+ * 工具行的「对象」：技能为技能名；其余优先 command（run_command），再 pattern（grep/glob——搜的是什么比在哪搜
+ * 更有信息量，搜索范围挂悬停），再 path，再 url（web_fetch），再记忆正文 / id。full 为原值（挂悬停），text 为展示值——
  * 只有 path 缩成「父目录/文件名」，命令、正则、URL 原样展示，超长时由 CSS 单行省略号截断尾部。
  * 未知工具（如 MCP 工具）显示工具名：动词「已调用」本身说明不了调了什么。
  */
 function flowObject(name: string, args: unknown): { text: string; full: string } | null {
   if (!TOOL_META[name]) return { text: name, full: name }
+  if (name === 'skill') {
+    const skill = (args as { name?: unknown } | null)?.name
+    return typeof skill === 'string' && skill.trim() ? { text: skill.trim(), full: skill.trim() } : null
+  }
   if (args && typeof args === 'object') {
     const o = args as { command?: unknown; path?: unknown; pattern?: unknown; url?: unknown }
     if (typeof o.command === 'string' && o.command.trim()) return { text: o.command, full: o.command }
@@ -1132,6 +1140,9 @@ const QUIET_SUMMARIES = new Set([
   '已创建 MCP 服务'
 ])
 
+/** 成功摘要只是复述对象的工具：技能的「已加载技能「名称」」与行上的「已加载技能 名称」重复，不写。 */
+const QUIET_TOOLS = new Set(['skill'])
+
 /** 子智能体被用户亲手停下的结局摘要（后台「已停止」/ 前台「已中止」）：不当作出错展示。 */
 const STOPPED_SUMMARIES = new Set(['已停止', '已中止'])
 
@@ -1191,7 +1202,7 @@ export function ToolText({ step }: { step: ToolStep }): React.JSX.Element {
     tail = <span className="tl__extra">{reason}</span>
   } else {
     verb = <span className="tl__verb">{t(`chat.flow.done.${key}`)}</span>
-    if (step.summary && !QUIET_SUMMARIES.has(step.summary))
+    if (step.summary && !QUIET_SUMMARIES.has(step.summary) && !QUIET_TOOLS.has(step.name))
       tail = <span className="tl__extra">{step.summary}</span>
   }
   return (
@@ -1210,15 +1221,23 @@ export function ToolText({ step }: { step: ToolStep }): React.JSX.Element {
  */
 function TimelineTool({ step }: { step: ToolStep }): React.JSX.Element {
   const { t } = useI18n()
+  const { skills } = useExtensions()
   const [open, setOpen] = useState(false)
   const state = step.status === 'running' ? ' is-run' : isFailed(step.status) ? ' is-err' : ''
   const command = step.name === 'run_command' ? flowObject(step.name, step.args)?.full : undefined
+  let title = stepTitle(step, t)
+  // 技能行里只写技能名：悬停另起一行附上技能说明（按名称或文件夹名匹配，同主进程 skill 工具）。
+  if (step.name === 'skill' && !isFailed(step.status)) {
+    const wanted = flowObject(step.name, step.args)?.full.toLowerCase()
+    const desc = skills.find((s) => s.name.toLowerCase() === wanted || s.id.toLowerCase() === wanted)?.desc.trim()
+    if (title && desc) title = `${title}\n${desc}`
+  }
   if (!command)
     return (
       <li className={`tl__item${state}`}>
         <span className="tl__node">{stepIcon(step, 14)}</span>
         <div className="tl__main">
-          <div className="tl__line" title={stepTitle(step, t)}>
+          <div className="tl__line" title={title}>
             <ToolText step={step} />
           </div>
         </div>

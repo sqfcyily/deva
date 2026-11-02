@@ -1286,6 +1286,8 @@ textarea {
 }
 .tl__main {
   min-width: 0;
+  /* 工具行结果说明的宽度上限按这一列算（见 .tl__text--tool > .tl__extra） */
+  container-type: inline-size;
 }
 .tl__line {
   display: flex;
@@ -1340,9 +1342,12 @@ button.tl__line:hover {
   flex: 0 1 auto;
   min-width: 0;
 }
-/* 结果说明很长（少见）时最多占六成，自身省略 */
+/*
+ * 结果说明很长（少见）时最多占这一行的六成，自身省略。用 cqi 按行的可用宽度算（容器：.tl__main /
+ * .cf-bg__step）；写 60% 会按文字自身收缩后的宽度算，行里放得下时说明也被截短。
+ */
 .tl__text--tool > .tl__extra {
-  max-width: 60%;
+  max-width: 60cqi;
 }
 .tl__verb {
   font-weight: 500;
