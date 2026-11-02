@@ -325,7 +325,7 @@ type RailTab = 'chats' | 'roster' | 'tasks' | 'bots'
 
 export function ChatFirstShell(): React.JSX.Element {
   const {
-    sessions,
+    sessions: storedSessions,
     currentSessionId,
     messages,
     streaming,
@@ -476,13 +476,24 @@ export function ChatFirstShell(): React.JSX.Element {
   )
   const defaultPersonaId = defaultPersona?.id
 
+  // 对话归属的角色：未绑定、或绑定的角色已不存在（如手动删了角色文件）一律算默认角色，与主进程执行时一致
+  // （见 personas.ts resolvePersonaId）。列表头像、筛选、搜索、资料卡都读这里；只改显示，不改对话里存的绑定。
+  const sessions = useMemo(() => {
+    if (!defaultPersonaId) return storedSessions
+    const ids = new Set(personas.map((p) => p.id))
+    const known = (s: SessionMeta): boolean => !!s.personaId && ids.has(s.personaId)
+    return storedSessions.every(known)
+      ? storedSessions
+      : storedSessions.map((s) => (known(s) ? s : { ...s, personaId: defaultPersonaId }))
+  }, [storedSessions, personas, defaultPersonaId])
+
   // 说明（去掉了旧的「自动绑定通用」effect）：从前只要当前对话未绑定且为空，就自动落一条绑定到默认身份
   // 的空会话——这会在「删空左侧所有对话」后立刻重建一条，导致永远无法真正清空、也进不了「快速开启」空态。
   // 现在改为：空对话由用户显式动作（点头像 / ＋开始对话 / 通过对话添加）才创建并落盘（见 startWith）；
   // 左侧无任何对话时，中列改渲染 QuickStart（列出全部角色，点头像直接开聊）。
 
-  /** 当值身份（当前对话绑定的 persona）。 */
-  const owner = personas.find((p) => p.id === currentBinding.personaId)
+  /** 当值身份（当前对话绑定的 persona；未绑定或已不存在时为默认角色，同上）。 */
+  const owner = personas.find((p) => p.id === currentBinding.personaId) ?? defaultPersona
 
   // 左侧列表数据源：把「草稿会话」（尚未落库的空对话）并到已落库会话之前——与角色开启新对话时，该对话
   // 立即出现在聊天列表（内容可为空）。草稿 id 必不在 sessions 中（见 store.draftSession），无需去重；

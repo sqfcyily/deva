@@ -12,6 +12,7 @@ import {
   DEFAULT_PERSONA_ID,
   getPersona,
   listPersonas,
+  resolvePersonaId,
   upsertPersona,
   type PersonaRecord
 } from '../personas'
@@ -270,10 +271,10 @@ function homeChats(sessionId?: string): ChatAddress[] {
 
 // ───────── 回复范围 ─────────
 
-/** 对话是否落在机器人的回复范围内（见 store.ts ReplyScope）；没绑定角色的旧对话算默认角色。 */
+/** 对话是否落在机器人的回复范围内（见 store.ts ReplyScope）；没绑定角色、或角色已不存在的对话算默认角色。 */
 function allows(channel: ChannelId, s: { id: string; personaId?: string }): boolean {
   const { scope } = getChannelConfig(channel)
-  if (scope.mode === 'personas') return scope.personas.includes(s.personaId || DEFAULT_PERSONA_ID)
+  if (scope.mode === 'personas') return scope.personas.includes(resolvePersonaId(s.personaId))
   if (scope.mode === 'sessions') return scope.sessions.includes(s.id)
   return true
 }
@@ -301,7 +302,7 @@ function sessionTitle(sessionId: string): string {
 
 function personaName(sessionId: string): string {
   const pid = getSession(sessionId)?.personaId
-  return (pid && getPersona(pid)?.name) || 'Deva'
+  return (pid && getPersona(resolvePersonaId(pid))?.name) || 'Deva'
 }
 
 // ───────── 出站：回合视图 ─────────
@@ -959,7 +960,7 @@ async function runCommand(chat: ChatAddress, name: string, arg: string, trail: T
         text: `共 ${all.length} 个对话${more}。点一下即可切换。`,
         buttonLayout: 'column',
         buttons: list.map((s, i) => {
-          const p = (s.personaId && getPersona(s.personaId)?.name) || 'Deva'
+          const p = (s.personaId && getPersona(resolvePersonaId(s.personaId))?.name) || 'Deva'
           return {
             // 截断交给客户端按屏宽处理（单行省略），这里只防极端长标题撑大卡片。
             label: `${i + 1}. ${truncate(s.title || '新对话', 80)} · ${p}${s.id === cur ? '（当前）' : ''}`,

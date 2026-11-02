@@ -725,7 +725,7 @@ function ScopePicker({
         persona: p
       }))
     return sessions.map((s) => {
-      const p = byId.get(s.personaId || DEFAULT_PERSONA_ID)
+      const p = byId.get(s.personaId ?? '') ?? byId.get(DEFAULT_PERSONA_ID)
       return {
         id: s.id,
         title: s.title || t('bots.scopeUntitled'),

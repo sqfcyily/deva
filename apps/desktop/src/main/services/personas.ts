@@ -30,9 +30,8 @@ import { reassignTaskPersona } from './tasks'
  * - 自定义头像图片（用户上传）另存 `personas/avatars/<id>.<ext>`，**不入 frontmatter**：有图即覆盖
  *   生成头像，一个 id 至多一张（重传先清变体），删角色时一并删（否则 id 复用会串脸）。
  *
- * 运行期（chat.ts 同进程直接调用，无需 IPC）：
- * - `enabledPersonas()`：把「已启用」persona 的 name+prompt 注入**主智能体**系统提示词（仅主轮；
- *   子智能体有自己的系统提示词，刻意不注入，避免串味）。
+ * 运行期（chat.ts 同进程直接调用，无需 IPC）：主轮只注入本对话角色这一条的 name+prompt（见 resolvePersonaId；
+ * 子智能体有自己的系统提示词，刻意不注入，避免串味）。
  *
  * 安全：persona 配置由**主进程直读**。注入时以固定前言框定为「用户自定义附加指令，在不违反安全与工具使用原则的前提下遵循」——persona
  * 绝不能借此关闭「切勿用文字征求授权」等安全/工具铁律。
@@ -58,7 +57,7 @@ export interface PersonaRecord {
    * 真源是磁盘上的 `personas/avatars/<id>.*` 是否存在——故**不入 frontmatter**、不进 upsert 输入，
    * 改图走独立的 set/clear IPC（见文件末）。渲染层 CSP 不许 `file:`，只能以 data URI 交付。
    *
-   * **按需读取**：只有 IPC 出口（给渲染层显示）才填，主进程内部调用（enabledPersonas 组装系统提示词、
+   * **按需读取**：只有 IPC 出口（给渲染层显示）才填，主进程内部调用（组装系统提示词、
    * chat.ts 取角色）恒为空串——否则每轮对话都要把所有头像读盘 + base64 一遍，纯属白做功。
    */
   avatarImage: string
@@ -230,6 +229,14 @@ export function getPersona(id: string, withImage = false): PersonaRecord | null 
   }
 }
 
+/**
+ * 对话归属的角色 id：未绑定、或绑定的角色已不存在（如手动删了角色文件）时回落默认角色。
+ * 只在读取时换算，不改写对话里存的 personaId（绑定一次性、绝不覆盖）。渲染层的对话列表按同一规则显示。
+ */
+export function resolvePersonaId(id: string | undefined): string {
+  return id && isSafeId(id) && existsSync(personaFile(id)) ? id : DEFAULT_PERSONA_ID
+}
+
 /** 组装 persona.md 文本（frontmatter + 正文）。 */
 function composePersonaMd(input: {
   name: string
@@ -348,15 +355,6 @@ export function setPersonaEnabled(id: string, enabled: boolean): void {
   const map = enabledMap()
   map[id] = enabled === true
   writeEnabledMap(map)
-}
-
-// ── 运行期（chat.ts 直接调用）───────────────────────────────────────────────
-
-/** 已启用 persona 的 name+prompt（追加进主智能体系统提示词）；prompt 为空的条目跳过。 */
-export function enabledPersonas(): { name: string; prompt: string }[] {
-  return listPersonas()
-    .filter((p) => p.enabled && p.prompt.trim())
-    .map((p) => ({ name: p.name, prompt: p.prompt }))
 }
 
 /**

@@ -50,7 +50,7 @@ import {
   subagentIdFor,
   type SubagentRecord
 } from './subagent-store'
-import { DEFAULT_PERSONA_ID, enabledPersonas, getPersona } from './personas'
+import { DEFAULT_PERSONA_ID, getPersona, resolvePersonaId } from './personas'
 import {
   modelOverrides,
   resolveDefaultModel,
@@ -150,7 +150,7 @@ export interface ChatSendRequest {
   attachments?: string[]
   /**
    * 对话优先外壳：本对话绑定的 persona id（首发落库时绑定，一对话一身份）。
-   * 缺省 = 旧 AppShell 路径（叠加式 enabledPersonas，无单身份注入）。
+   * 缺省 = 不绑定（旧对话），本轮按默认角色执行。
    */
   personaId?: string
   /**
@@ -2036,7 +2036,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   /** 系统通知标题：对话绑定的角色名，回落对话标题、Deva。 */
   function notifyTitle(sessionId: string): string {
     const s = getSession(sessionId)
-    const p = s?.personaId ? getPersona(s.personaId) : null
+    const p = s?.personaId ? getPersona(resolvePersonaId(s.personaId)) : null
     return p?.name || s?.title || 'Deva'
   }
 
@@ -3332,9 +3332,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 默认）。故：同角色的多个对话可各用不同模型，改角色偏好模型不影响已建对话，删模型自动回归默认。
     // 提前解析，以便压缩按本轮实际模型的上下文窗口判定/摘要。
     // 注：persona 仍需取出用于系统提示词单身份注入，但**不再**参与模型选择（快照已固定于会话）。
-    const persona = session.personaId ? getPersona(session.personaId) : null
-    // 决定本轮能用哪些技能 / MCP 的角色（未绑定 = 默认角色）。
-    const rolePersonaId = session.personaId || DEFAULT_PERSONA_ID
+    // 本轮的角色：决定注入哪条角色设定、能用哪些技能 / MCP（未绑定、或绑定的角色已不存在 = 默认角色）。
+    const rolePersonaId = resolvePersonaId(session.personaId)
+    const persona = getPersona(rolePersonaId)
     const turnModel = resolveModelRef(session.model, config)
 
     // 自动压缩：接近上下文窗口时，先把较早历史摘要替换，再进入本轮（一轮进行中另有逐步检查，见 compact）。
@@ -3418,16 +3418,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       return ms
     }
 
-    // 本轮 persona 快照（仅主智能体）：
-    //  · 绑定了 persona（对话优先外壳）→ 注入**该单条**身份提示词（绑定的 persona 被删则不注入，
-    //    绝不回落叠加式，避免绑定对话突然串入其它启用身份）。
-    //  · 未绑定（旧 AppShell）→ 走叠加式 enabledPersonas()，逐字节兼容旧行为。
-    // 子智能体一律不注入（有自己的系统提示词，避免串味）。
-    const personas = session.personaId
-      ? persona && persona.prompt.trim()
-        ? [{ name: persona.name, prompt: persona.prompt }]
-        : []
-      : enabledPersonas()
+    // 本轮 persona 快照（仅主智能体）：只注入本对话角色**这一条**身份提示词——未绑定的旧对话、或绑定的角色
+    // 已不存在，都用默认角色（与对话列表显示一致），不叠加其它角色。子智能体一律不注入（有自己的系统提示词，避免串味）。
+    const personas = persona && persona.prompt.trim() ? [{ name: persona.name, prompt: persona.prompt }] : []
     // run_subagent 恒提供：内置子智能体（通用 / Explore / Plan）枚举进工具描述，无需任何用户配置。
     const subagentTool = buildSubagentTool()
     // 每轮定格：内置工具 + exit_plan（计划先行）+ skill（描述固定，技能清单随消息下发）+
@@ -3747,7 +3740,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     let effectiveText = text
     const slashMatch = /^\/([A-Za-z0-9_-]+)[ \t]*([\s\S]*)$/.exec(text.trim())
     if (slashMatch) {
-      const loaded = loadSkillInstructionsByName(slashMatch[1], session.personaId || DEFAULT_PERSONA_ID)
+      const loaded = loadSkillInstructionsByName(slashMatch[1], resolvePersonaId(session.personaId))
       if (loaded) {
         const rest = slashMatch[2].trim()
         effectiveText =

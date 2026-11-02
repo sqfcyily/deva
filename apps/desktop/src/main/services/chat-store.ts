@@ -53,7 +53,7 @@ export interface StoredSession {
   lastCacheWrite?: number
   /**
    * 绑定的 persona id（对话优先外壳：一对话一身份，单选当值）。
-   * 缺省 = 旧 AppShell 路径（叠加式 enabledPersonas，不做单身份注入）。首发落库后绑定不再改。
+   * 缺省 = 旧版遗留的未绑定对话，执行与显示都按默认角色（见 personas.ts resolvePersonaId）。首发落库后绑定不再改。
    */
   personaId?: string
   /**
