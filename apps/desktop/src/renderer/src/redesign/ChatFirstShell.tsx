@@ -1046,7 +1046,7 @@ function Rail({
     const onDown = (e: MouseEvent): void => {
       const inside =
         e.target instanceof Element &&
-        e.target.closest('.cf-filter, .cf-search__filter, .cf-search__tokens')
+        e.target.closest('.cf-filter, .cf-search__filter')
       if (!inside) setFilterOpen(false)
     }
     const onKey = (e: KeyboardEvent): void => {
@@ -1109,7 +1109,7 @@ function Rail({
       folders.push({ key: NO_FOLDER, name: t('cf.filterNoFolder'), hint: '', n: none })
     return { roles, folders }
   }, [filterOpen, personas, liveSessions, roleIds, folderKeys, t])
-  // 搜索框里的已选标签：角色头像（按选中先后）与文件夹。
+  // 已选条件的说明（搜索框里只写总数，选了什么挂在悬停与读屏上）：「角色：…」「文件夹：…」各一行。
   const pickedRoles = roleIds
     .map((id) => personas.find((p) => p.id === id))
     .filter((p): p is Persona => !!p)
@@ -1119,12 +1119,10 @@ function Rail({
     .map((k) => (k === NO_FOLDER ? t('cf.filterNoFolder') : basename(k)))
     .join(sep)
   const roleNames = pickedRoles.map((p) => p.name).join(sep)
-  const filterSummary = [
+  const filterLines = [
     pickedRoles.length ? `${t('cf.filterRoles')}${colon}${roleNames}` : '',
     folderKeys.length ? `${t('cf.filterFolders')}${colon}${folderNames}` : ''
-  ]
-    .filter(Boolean)
-    .join(locale === 'en' ? '; ' : '；')
+  ].filter(Boolean)
   // 归一化后的检索词（去空白 + 小写）；空则视为不过滤。
   const q = query.trim().toLowerCase()
   // 消息列表按最近更新降序，先按筛选条件，再按检索词过滤（标题 + 所属角色名 + 挂载的文件夹名，均大小写不敏感）。
@@ -1223,39 +1221,20 @@ function Rail({
           <div className={`cf-search${tab === 'chats' ? ' cf-search--filter' : ''}`}>
             {tab !== 'chats' ? (
               <Search className="cf-search__icon" size={14} />
-            ) : filters.length === 0 ? (
+            ) : (
+              // 选了条件仍是同一个按钮：原位加底色、图标后接已选总数，图标不换不挪，选择前后不跳。
               <button
-                className="cf-search__filter"
-                title={t('cf.filter')}
-                aria-label={t('cf.filter')}
+                className={`cf-search__filter${filters.length ? ' is-active' : ''}`}
+                title={filters.length ? filterLines.join('\n') : t('cf.filter')}
+                aria-label={
+                  filters.length ? filterLines.join(locale === 'en' ? '; ' : '；') : t('cf.filter')
+                }
                 aria-haspopup="menu"
                 aria-expanded={filterOpen}
                 onClick={() => setFilterOpen((o) => !o)}
               >
                 <ListFilter size={15} />
-              </button>
-            ) : (
-              <button
-                className="cf-search__tokens"
-                aria-label={filterSummary}
-                aria-haspopup="menu"
-                aria-expanded={filterOpen}
-                onClick={() => setFilterOpen((o) => !o)}
-              >
-                {pickedRoles.length > 0 && <AvatarStack personas={pickedRoles} size={20} max={3} />}
-                {folderKeys.length > 0 && (
-                  <span
-                    className={`cf-search__folder${folderKeys.length > 1 ? ' has-badge' : ''}`}
-                    title={folderNames}
-                  >
-                    {folderKeys.length === 1 && folderKeys[0] === NO_FOLDER ? (
-                      <FolderMinus size={15} />
-                    ) : (
-                      <Folder size={15} />
-                    )}
-                    {folderKeys.length > 1 && <span className="cf-search__badge">{folderKeys.length}</span>}
-                  </span>
-                )}
+                {filters.length > 0 && filters.length}
               </button>
             )}
             <input
@@ -1263,12 +1242,6 @@ function Rail({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                // 输入框为空时按退格，撤掉最后选的一项筛选。
-                if (e.key !== 'Backspace' || query || !filters.length || e.nativeEvent.isComposing) return
-                e.preventDefault()
-                setFilters((fs) => fs.slice(0, -1))
-              }}
               placeholder={
                 tab === 'chats' ? t(filters.length ? 'cf.search' : 'cf.searchChats') : t('cf.searchRoster')
               }

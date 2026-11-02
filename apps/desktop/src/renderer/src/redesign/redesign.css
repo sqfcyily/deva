@@ -532,73 +532,44 @@ body.cf-resizing-y * {
   background: var(--bg-hover);
   color: var(--fg);
 }
-/* 消息 tab：最左是筛选按钮（代替放大镜），选了条件后换成已选的角色头像堆叠与文件夹，再是输入框。
-   输入文字起点与其他搜索框（放大镜样式）对齐：2 + 26 + 6 = 12 + 14 + 8 = 34px */
+/* 消息 tab：最左是筛选按钮（代替放大镜），再是输入框。
+   没有条件时输入文字起点与其他搜索框（放大镜样式）对齐：2 + 26 + 6 = 12 + 14 + 8 = 34px */
 .cf-search--filter {
   padding-left: 2px;
   gap: 6px;
 }
-.cf-search__filter,
-.cf-search__tokens {
+/* 图标左右各 5.5px：没有条件时宽 26px、图标居中；选了条件后左侧不变，图标原位不动，数字接在后面 */
+.cf-search__filter {
   flex: none;
   height: 26px;
   display: flex;
   align-items: center;
+  gap: 4px;
+  padding: 0 5.5px;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
-  cursor: pointer;
-}
-.cf-search__filter {
-  width: 26px;
-  justify-content: center;
-  padding: 0;
   color: var(--fg-subtle);
+  cursor: pointer;
 }
 .cf-search__filter:hover,
 .cf-search__filter[aria-expanded='true'] {
   background: var(--bg-hover);
   color: var(--fg);
 }
-/* 至少与筛选按钮同宽、内容居中：只有一个头像或一个文件夹时占位与筛选按钮相同，输入文字不左右移 */
-.cf-search__tokens {
-  min-width: 26px;
-  justify-content: center;
-  gap: 9px;
-  padding: 0 3px;
-  color: var(--fg-muted);
-}
-.cf-search__tokens:hover {
-  background: var(--bg-hover);
-}
-.cf-search .cf-avstack {
-  --ring: var(--bg);
-}
-.cf-search__folder {
-  position: relative;
-  display: grid;
-  place-items: center;
-}
-/* 多个文件夹：图标右上角标数字（同头像堆叠的「+N」：主题色实底反白），右侧留出角标的位置 */
-.cf-search__folder.has-badge {
-  margin-right: 6px;
-}
-.cf-search__badge {
-  position: absolute;
-  top: -6px;
-  right: -8px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-fg);
-  font-size: 9.5px;
+/* 已选条件：不分角色与文件夹，只写总数；主题色浅底提示列表正在筛选，选了什么挂在悬停上 */
+.cf-search__filter.is-active {
+  height: 22px;
+  padding-right: 7px;
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: 12px;
   font-weight: 600;
-  line-height: 14px;
-  text-align: center;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 0 0 1.5px var(--bg);
+}
+.cf-search__filter.is-active:hover,
+.cf-search__filter.is-active[aria-expanded='true'] {
+  background: var(--bg-selected);
 }
 /* 筛选面板：外观沿用统一下拉框的浮层（.select-menu），改为贴在搜索行下方、与列表等宽 */
 .cf-filter.select-menu {
