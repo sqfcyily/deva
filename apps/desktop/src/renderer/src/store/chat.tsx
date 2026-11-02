@@ -1202,8 +1202,25 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     [refreshSessions]
   )
 
-  // 切项目：重载会话清单 + 载入最近一条到其活动态（无则起新会话）。
+  // 打开列表第一条：最近更新、且未归档的对话（已归档的不在列表里，不能跳进去），载入其历史；
+  // 一条都没有则起惰性新会话（右侧转「快速开启」）。启动 / 切项目，以及当前对话被删除或归档后都走这里。
   // 已有活动态（如后台正在流式的会话）不重载，避免冲掉实时累积的内容。
+  const openFirstSession = useCallback(
+    (list: SessionMeta[]): void => {
+      const first = list
+        .filter((s) => !s.archived)
+        .reduce<SessionMeta | null>((a, s) => (a && a.updatedAt >= s.updatedAt ? a : s), null)
+      if (!first) {
+        startFresh()
+        return
+      }
+      setCurrent(first.id)
+      if (!runtimesRef.current.has(first.id)) void attachSession(first.id)
+    },
+    [startFresh, attachSession]
+  )
+
+  // 切项目：重载会话清单 + 打开列表第一条（无则起新会话）。
   useEffect(() => {
     const path = activeProject?.path ?? null
     projectPathRef.current = path
@@ -1212,18 +1229,12 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       const list = await window.deva.chat.listSessions(path)
       if (cancelled || projectPathRef.current !== path) return
       setSessions(list)
-      if (list.length) {
-        const id = list[0].id
-        setCurrent(id)
-        if (!runtimesRef.current.has(id)) await attachSession(id)
-      } else {
-        startFresh()
-      }
+      openFirstSession(list)
     })()
     return () => {
       cancelled = true
     }
-  }, [activeProject?.path, startFresh, attachSession])
+  }, [activeProject?.path, openFirstSession])
 
   // 订阅主进程流事件（挂载一次）。按 payload.sessionId 路由进对应会话的活动态——
   // 不再丢弃「非当前会话」事件：后台那轮照常累积，切回去即见其实时流。
@@ -1770,18 +1781,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         const list = await window.deva.chat.listSessions(path)
         if (projectPathRef.current !== path) return
         setSessions(list)
-        if (id !== sessionIdRef.current) return
-        // 删的是当前会话：切到最近一条（载入其历史）或起新会话。
-        if (list.length) {
-          const nid = list[0].id
-          setCurrent(nid)
-          if (runtimesRef.current.has(nid)) return
-          const dms = await window.deva.chat.loadSession(nid, path)
-          if (sessionIdRef.current !== nid || runtimesRef.current.has(nid)) return
-          patchRuntime(nid, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
-        } else {
-          startFresh()
-        }
+        // 删的是当前会话：打开列表第一条（不含已归档）或起新会话。
+        if (id === sessionIdRef.current) openFirstSession(list)
       })()
     }
 
@@ -1799,10 +1800,13 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     // 归档 / 取消归档：先就地改标记（列表立刻移走 / 移回），再落盘；失败（尚未建档）则以主进程清单为准。
+    // 归档的是当前对话：右侧随之离开，与删除一样打开列表第一条。
     const setArchived = (id: string, archived: boolean): void => {
       setSessions((list) =>
         list.map((s) => (s.id === id ? { ...s, archived: archived || undefined } : s))
       )
+      if (archived && id === sessionIdRef.current)
+        openFirstSession(sessions.filter((s) => s.id !== id))
       void (async () => {
         const r = await window.deva.chat.setArchived({ sessionId: id, archived })
         if (!r.ok) void refreshSessions()
@@ -1810,7 +1814,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     // 批量删除（删角色时清其名下全部对话）：中止各自在跑回合 → 逐条落盘删除 → 清绑定覆盖层 →
-    // 只刷新一次列表；当前会话若在删除集内，切到最近一条或起新会话。与单条 deleteSession 同语义，
+    // 只刷新一次列表；当前会话若在删除集内，打开列表第一条或起新会话。与单条 deleteSession 同语义，
     // 但合并刷新、避免 N 条并发各自 listSessions/切换互相打架。
     const deleteSessions = (ids: string[]): void => {
       if (ids.length === 0) return
@@ -1836,18 +1840,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         const list = await window.deva.chat.listSessions(path)
         if (projectPathRef.current !== path) return
         setSessions(list)
-        if (!idSet.has(sessionIdRef.current)) return
-        // 删的集合含当前会话：切到最近一条（载入其历史）或起新会话。
-        if (list.length) {
-          const nid = list[0].id
-          setCurrent(nid)
-          if (runtimesRef.current.has(nid)) return
-          const dms = await window.deva.chat.loadSession(nid, path)
-          if (sessionIdRef.current !== nid || runtimesRef.current.has(nid)) return
-          patchRuntime(nid, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
-        } else {
-          startFresh()
-        }
+        // 删的集合含当前会话：打开列表第一条（不含已归档）或起新会话。
+        if (idSet.has(sessionIdRef.current)) openFirstSession(list)
       })()
     }
 
@@ -2042,6 +2036,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     t,
     toast,
     startFresh,
+    openFirstSession,
     setBinding,
     refreshSessions,
     patchRuntime,

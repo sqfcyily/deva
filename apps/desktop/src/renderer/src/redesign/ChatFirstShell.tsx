@@ -502,6 +502,8 @@ export function ChatFirstShell(): React.JSX.Element {
     () => (draftSession ? [draftSession, ...sessions] : sessions),
     [draftSession, sessions]
   )
+  // 列表里一条对话都没有（已归档的不算）、右侧也没开着已归档对话 → 右侧显示快速开启页。
+  const noThreads = !railSessions.some((s) => !s.archived || s.id === currentSessionId)
 
   // 打开某对话 → 切到「消息」tab（右侧内容随 railTab 切换）。不清 viewPersonaId：让「角色」tab 记住
   // 自己上次查看的角色，两个 tab 的右侧彼此独立。
@@ -605,13 +607,21 @@ export function ChatFirstShell(): React.JSX.Element {
       if (next !== null) renameSession(id, next)
     })()
   }
-  // 右键归档：从列表移走，提示条带「撤销」。名字经 clipName 限长，随语言拼装。
+  // 右键归档：从列表移走，提示条带「撤销」。归档的是当前对话时右侧随之打开列表第一条（见 store.setArchived），
+  // 撤销则把它重新打开。名字经 clipName 限长，随语言拼装。
   const archiveThread = (id: string, title: string): void => {
+    const wasCurrent = id === currentSessionId
     setArchived(id, true)
     const name = clipName(title || t('chat.untitled'))
     toast.show({
       message: locale === 'en' ? `Archived “${name}”` : `已归档「${name}」`,
-      action: { label: t('cf.undo'), onClick: () => setArchived(id, false) }
+      action: {
+        label: t('cf.undo'),
+        onClick: () => {
+          setArchived(id, false)
+          if (wasCurrent) openThread(id)
+        }
+      }
     })
   }
   // 按「轮」删除当前对话的选中轮次（同步删上下文）：先弹居中破坏性确认，确认后走 store.deleteTurns。
@@ -766,7 +776,7 @@ export function ChatFirstShell(): React.JSX.Element {
               ) : (
                 <RosterEmpty />
               )
-            ) : railSessions.length === 0 ? (
+            ) : noThreads ? (
               <QuickStart personas={personas} onStart={startWith} />
             ) : (
               <Conversation
