@@ -872,7 +872,7 @@ const zhCN: MessageTree = {
     filterNoFolder: '未挂载文件夹',
     filterClear: '清除筛选',
     clearSearch: '清除搜索和筛选',
-    archive: '归档',
+    archive: '归档对话',
     unarchive: '移回对话列表',
     archivedTag: '已归档',
     archivedChats: '已归档对话',
