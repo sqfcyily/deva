@@ -89,6 +89,7 @@ import {
 import { trimHistoryImages } from './image-trim'
 import { ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
 import { isEn } from '../locale'
+import { clearBrowserOperating, closeSessionPages, setSessionAborter } from './browser'
 import {
   applyFiles,
   buildRestoreNote,
@@ -3446,7 +3447,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 权限模式键均据此）；未挂载 → 回落 workspaceRoot（对话优先外壳恒 null，即全机通用助手）。
     const effectiveRoot = session.focusRoot ?? workspaceRoot
     // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
-    const ctx: ToolContext = { workspaceRoot: effectiveRoot, signal: controller.signal }
+    // canPromptUser：手机端发起的对话，用户不在电脑前，不能弹窗请他在网页上亲自操作（browser 的 handoff）。
+    const ctx: ToolContext = {
+      workspaceRoot: effectiveRoot,
+      signal: controller.signal,
+      sessionId,
+      canPromptUser: !fromRemote
+    }
 
     // 本轮实际模型（对话优先外壳·快照固定/只改当前对话）：以**本对话**存的 model 为准（新建时快照角色偏好、
     // 聊天中切换即更新），经 resolveModelRef 解析——空/非法/模型已被删除都回落 config（chat:send 带上的全局
@@ -3455,6 +3462,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 注：persona 仍需取出用于系统提示词单身份注入，但**不再**参与模型选择（快照已固定于会话）。
     // 本轮的角色：决定注入哪条角色设定、能用哪些技能 / MCP（未绑定、或绑定的角色已不存在 = 默认角色）。
     const rolePersonaId = resolvePersonaId(session.personaId)
+    ctx.personaId = rolePersonaId
     const persona = getPersona(rolePersonaId)
     const turnModel = resolveModelRef(session.model, config)
 
@@ -3667,6 +3675,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       session.updatedAt = Date.now()
       saveProject(sessionId)
       busySessions.delete(sessionId)
+      // 本轮结束：浏览器窗口 / 胶囊上的「正在操作」立即收起（不等空闲计时）
+      clearBrowserOperating(sessionId)
       insertableTurns.delete(turnId)
       collectBlobs(session)
       // 还有来不及送达的插入消息、本轮又是正常结束：马上作为下一轮发出（见 flushInserts），这一轮不算回复完成。
@@ -3737,7 +3747,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       }
     }
 
-    const ctx: ToolContext = { workspaceRoot: effectiveRoot, signal: controller.signal }
+    const ctx: ToolContext = { workspaceRoot: effectiveRoot, signal: controller.signal, sessionId }
     const personas =
       persona && persona.prompt.trim() ? [{ name: persona.name, prompt: persona.prompt }] : []
 
@@ -3829,6 +3839,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       session.updatedAt = Date.now()
       saveProject(sessionId)
       busySessions.delete(sessionId)
+      clearBrowserOperating(sessionId)
     }
     return result
   }
@@ -4201,6 +4212,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     'chat:delete-session',
     (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
       cancelBackground(sessionId)
+      closeSessionPages(sessionId)
       deleteStoredSession(sessionId)
       pendingUndo.delete(sessionId)
       removeSessionCheckpoints(sessionId)
@@ -4215,6 +4227,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 待决问答回灌「用户取消了本次询问」，计划审阅记取消，挂载请求按「未挂载」解开。
     releasePending(turnId)
   }
+
+  // 内置浏览器窗口里的「停止」：按对话停止它正在进行的回合
+  setSessionAborter((sessionId) => {
+    const turnId = busySessions.get(sessionId)
+    if (!turnId) return false
+    abortTurn(turnId)
+    return true
+  })
 
   ipcMain.handle('chat:abort', (_e, turnId: string): { ok: true } => {
     abortTurn(turnId)

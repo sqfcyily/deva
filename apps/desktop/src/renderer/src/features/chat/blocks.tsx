@@ -34,6 +34,24 @@ import {
   Package,
   Archive,
   Puzzle,
+  MousePointerClick,
+  Keyboard,
+  ScanText,
+  Camera,
+  ArrowLeft,
+  ArrowRight,
+  RotateCw,
+  Hourglass,
+  Code,
+  AppWindow,
+  ArrowDownUp,
+  ListFilter,
+  KeyRound,
+  ShieldCheck,
+  Upload,
+  Hand,
+  MessageSquare,
+  CircleCheckBig,
   type LucideIcon
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
@@ -75,7 +93,76 @@ const TOOL_META: Record<string, { key: string; icon: LucideIcon }> = {
   // present_files 在时间轴上与普通工具一样是一步；成功的交付另在回合结束后于回复末尾画交付卡（见 deliveries）。
   present_files: { key: 'presentFiles', icon: Package },
   // 拼图与输入框「/」联想、角色资料卡里的技能图标一致。
-  skill: { key: 'skill', icon: Puzzle }
+  skill: { key: 'skill', icon: Puzzle },
+  // 内置浏览器：时间轴上按动作区分（见 BROWSER_META）；这里是不知道动作时（如底部状态行）的通用说法。
+  browser: { key: 'browser', icon: Globe }
+}
+
+/** browser 工具的各个动作：每个动作有自己的动词与图标（打开网页、查看页面、点击……）。 */
+const BROWSER_META: Record<string, { key: string; icon: LucideIcon }> = {
+  open: { key: 'browserOpen', icon: Globe },
+  snapshot: { key: 'browserRead', icon: ScanText },
+  click: { key: 'browserClick', icon: MousePointerClick },
+  type: { key: 'browserType', icon: Keyboard },
+  select: { key: 'browserSelect', icon: ListFilter },
+  press: { key: 'browserPress', icon: Keyboard },
+  scroll: { key: 'browserScroll', icon: ArrowDownUp },
+  back: { key: 'browserBack', icon: ArrowLeft },
+  forward: { key: 'browserForward', icon: ArrowRight },
+  reload: { key: 'browserReload', icon: RotateCw },
+  wait: { key: 'browserWait', icon: Hourglass },
+  screenshot: { key: 'browserShot', icon: Camera },
+  evaluate: { key: 'browserEval', icon: Code },
+  tabs: { key: 'browserTabs', icon: AppWindow },
+  switch_tab: { key: 'browserSwitchTab', icon: AppWindow },
+  close_tab: { key: 'browserCloseTab', icon: AppWindow },
+  dialog: { key: 'browserDialog', icon: MessageSquare }
+}
+
+/** handoff（请用户在网页上亲自操作）按原因区分：等你登录 / 完成验证 / 上传文件 / 确认 / 操作。 */
+const HANDOFF_META: Record<string, { key: string; icon: LucideIcon }> = {
+  login: { key: 'browserHandoffLogin', icon: KeyRound },
+  captcha: { key: 'browserHandoffCaptcha', icon: ShieldCheck },
+  upload: { key: 'browserHandoffUpload', icon: Upload },
+  confirm: { key: 'browserHandoffConfirm', icon: CircleCheckBig },
+  other: { key: 'browserHandoffOther', icon: Hand }
+}
+
+/** 工具的文案键与图标：browser 按 args.action 细分，其余按工具名；未知工具（如 MCP 工具）为 undefined。 */
+function toolMeta(name: string, args?: unknown): { key: string; icon: LucideIcon } | undefined {
+  if (name === 'browser') {
+    const a = args as { action?: unknown; reason?: unknown } | null | undefined
+    if (a?.action === 'handoff') return HANDOFF_META[typeof a.reason === 'string' ? a.reason : ''] ?? HANDOFF_META.other
+    if (typeof a?.action === 'string' && BROWSER_META[a.action]) return BROWSER_META[a.action]
+  }
+  return TOOL_META[name]
+}
+
+/** browser 各动作在工具行上显示的对象：打开的网址、输入的文字、按键、等待的文字、脚本、标签编号。 */
+function browserObject(args: unknown): { text: string; full: string } | null {
+  const a = (args ?? {}) as Record<string, unknown>
+  const pick = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+  let text = ''
+  switch (a.action) {
+    case 'open':
+      text = pick(a.url)
+      break
+    case 'type':
+    case 'wait':
+      text = pick(a.text)
+      break
+    case 'press':
+      text = pick(a.key)
+      break
+    case 'evaluate':
+      text = pick(a.script)
+      break
+    case 'switch_tab':
+    case 'close_tab':
+      text = pick(a.tab)
+      break
+  }
+  return text ? { text: text.replace(/\s+/g, ' '), full: text } : null
 }
 
 /**
@@ -97,6 +184,7 @@ function shortPath(p: string): string {
  */
 function flowObject(name: string, args: unknown): { text: string; full: string } | null {
   if (!TOOL_META[name]) return { text: name, full: name }
+  if (name === 'browser') return browserObject(args)
   if (name === 'skill') {
     const skill = (args as { name?: unknown } | null)?.name
     return typeof skill === 'string' && skill.trim() ? { text: skill.trim(), full: skill.trim() } : null
@@ -1154,9 +1242,9 @@ const QUIET_TOOLS = new Set(['skill'])
 /** 子智能体被用户亲手停下的结局摘要（后台「已停止」/ 前台「已中止」）：不当作出错展示。 */
 const STOPPED_SUMMARIES = new Set(['已停止', '已中止'])
 
-/** 工具的动词键（chat.flow.{done|doing|base}.<键>），与 TOOL_META 同名；未知工具（如 MCP 工具）为 unknown。 */
-function verbKey(name: string): string {
-  return TOOL_META[name]?.key ?? 'unknown'
+/** 工具的动词键（chat.flow.{done|doing|base}.<键>），见 toolMeta；未知工具（如 MCP 工具）为 unknown。 */
+function verbKey(name: string, args?: unknown): string {
+  return toolMeta(name, args)?.key ?? 'unknown'
 }
 
 type ToolStep = { name: string; args: unknown; status: ToolStatus; summary?: string }
@@ -1185,7 +1273,7 @@ function stepTitle(step: ToolStep, t: (key: string) => string): string | undefin
 function stepIcon(step: ToolStep, size: number): React.JSX.Element {
   if (step.status === 'running') return <Loader2 size={size} className="spin" />
   if (isFailed(step.status)) return <XCircle size={size} />
-  const Icon = TOOL_META[step.name]?.icon ?? Wrench
+  const Icon = toolMeta(step.name, step.args)?.icon ?? Wrench
   return <Icon size={size} />
 }
 
@@ -1198,7 +1286,7 @@ function stepIcon(step: ToolStep, size: number): React.JSX.Element {
  */
 export function ToolText({ step }: { step: ToolStep }): React.JSX.Element {
   const { t } = useI18n()
-  const key = verbKey(step.name)
+  const key = verbKey(step.name, step.args)
   const obj = flowObject(step.name, step.args)
   const reason = failReason(step, t)
   let verb: React.JSX.Element

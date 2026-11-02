@@ -31,6 +31,12 @@ import { registerRemoteIpc, stopAllChannels } from './services/remote'
 import { registerUpdaterIpc } from './services/updater'
 import { registerToastIdentity } from './services/portable'
 import { integrateAppImage } from './services/appimage'
+import {
+  disposeAllPages,
+  isBrowserHostWindow,
+  registerBrowserIpc,
+  setMainWindowGetter
+} from './services/browser'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -60,6 +66,12 @@ function ensureLinuxPasswordStore(): void {
 
 // 必须早于 app ready：Chromium 在初始化 OSCrypt 时读一次，之后再改就没用了
 ensureLinuxPasswordStore()
+
+// 内置浏览器：收起的「Deva 浏览器」窗口挪在屏幕外继续运行（隐藏的窗口不渲染，Deva 没法截图、点击、输入）。
+// Chromium 默认会把完全看不见的窗口判为被遮挡而停止绘制，这里关掉这项检测（实测关掉后屏幕外窗口照常工作）。
+// 代价：Deva 窗口被别的程序挡住时也照常绘制，界面基本静止，影响很小。须早于 app ready。
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 
 /** 明暗主题下的窗口控件叠加配色（与 tokens.css 的 --bg / --fg 对齐）。 */
 const OVERLAY_SYMBOL = { light: '#3a3a3d', dark: '#e4e4e7' } as const
@@ -137,6 +149,8 @@ function createWindow(): void {
   setTimeout(() => revealOnce('timeout'), 5000)
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null
+    // 内置浏览器的离屏网页也是窗口：主窗口真正关闭时一并关掉，否则 window-all-closed 不会触发、应用退不出去。
+    disposeAllPages()
   })
   // macOS 全屏时系统隐藏红绿灯：通知渲染层收起图标栏为它预留的位置
   win.on('enter-full-screen', () => win.webContents.send('window:fullscreen', true))
@@ -371,6 +385,10 @@ if (!app.requestSingleInstanceLock()) {
   // 检查更新（设置 → 关于；只在用户点按钮时检查，Windows exe 安装的可应用内下载并覆盖安装）
   registerUpdaterIpc(() => mainWindow)
 
+  // 内置浏览器的登录窗口挂在主窗口上
+  setMainWindowGetter(() => mainWindow)
+  registerBrowserIpc()
+
   createWindow()
 
   // 自动连接已启用的全局 MCP 服务（各自失败降级，不阻塞启动）。
@@ -383,7 +401,7 @@ if (!app.requestSingleInstanceLock()) {
   createTray()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().filter((w) => !isBrowserHostWindow(w)).length === 0) createWindow()
   })
   })
 }
@@ -407,6 +425,7 @@ app.on('before-quit', (e) => {
   }
   void disconnectAllServers()
   void stopAllChannels()
+  disposeAllPages()
 })
 
 // 全部窗口关闭即退出（非 macOS）。注意：关窗驻留托盘时窗口仅隐藏而未销毁，本事件不会触发；

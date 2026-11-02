@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { EffortLevel } from '../shared/effort'
 import type { UpdateState } from '../shared/update'
 import type { DeliverableInfo } from '../shared/deliverables'
+import type { BrowserUiState } from '../shared/browser'
 
 /** 目录项（单层）。 */
 export interface DirEntry {
@@ -1259,6 +1260,40 @@ const api = {
    * 检查更新（设置 → 关于）。状态由主进程持有，经 onState 推送；check / download / install 只负责触发。
    * download：Windows exe 安装的在应用内下载，其余在浏览器里打开安装包直链。
    */
+  /**
+   * 内置浏览器（Deva 操作网页用）。主窗口输入框上方的胶囊与「Deva 浏览器」窗口的外框共用：状态经 onState 推送；
+   * 窗口收起时网页在屏幕外继续运行。
+   */
+  browser: {
+    getState: (): Promise<BrowserUiState> => ipcRenderer.invoke('browser:state'),
+    /** 外框界面载入完成，拉一次状态。 */
+    ready: (): Promise<BrowserUiState> => ipcRenderer.invoke('browser:ready'),
+    onState: (cb: (state: BrowserUiState) => void): (() => void) => {
+      const listener = (_e: unknown, state: BrowserUiState): void => cb(state)
+      ipcRenderer.on('browser:state', listener)
+      return () => ipcRenderer.removeListener('browser:state', listener)
+    },
+    /** 展开窗口：切到指定标签，或某个对话的当前标签。 */
+    open: (opts: { tab?: string; sessionId?: string } = {}): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('browser:open', opts),
+    /** 收起到胶囊（网页继续在后台运行）。 */
+    dock: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:dock'),
+    pin: (on: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:pin', on),
+    activate: (tab: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:activate', tab),
+    closeTab: (tab: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:close-tab', tab),
+    navigate: (tab: string, url: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('browser:navigate', tab, url),
+    nav: (tab: string, what: 'back' | 'forward' | 'reload' | 'stop'): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('browser:nav', tab, what),
+    openExternal: (tab: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:open-external', tab),
+    /** 网页当前画面的缩略图（data URL，宽 480）；取不到返回 null。 */
+    thumbnail: (tab: string): Promise<string | null> => ipcRenderer.invoke('browser:thumbnail', tab),
+    /** 等用户操作时的「完成，继续」/「跳过」。 */
+    handoff: (sessionId: string, answer: 'done' | 'skip'): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('browser:handoff', sessionId, answer),
+    /** 停止该对话正在进行的回合。 */
+    stop: (sessionId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:stop', sessionId)
+  },
   update: {
     getState: (): Promise<UpdateState> => ipcRenderer.invoke('update:get-state'),
     check: (): Promise<void> => ipcRenderer.invoke('update:check'),

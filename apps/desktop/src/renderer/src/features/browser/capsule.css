@@ -1,0 +1,273 @@
+/*
+ * 内置浏览器胶囊：外观同待办清单 / 后台任务胶囊（.cf-todo__pill / .cf-bg__pill），分成两段——
+ * 左段（状态，点击打开窗口，悬停浮出缩略图）+ 右段（网页数量与箭头，点开列出本对话的网页）。
+ * 列表面板复用 .cf-todo__panel。
+ */
+.cf-browser {
+  position: relative;
+  min-width: 0;
+}
+.cf-browser__pill {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+.cf-browser:hover .cf-browser__pill,
+.cf-browser.is-open .cf-browser__pill {
+  border-color: var(--border-strong);
+}
+.cf-browser__main {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 8px 0 10px;
+  border-radius: var(--radius-full) 0 0 var(--radius-full);
+  cursor: pointer;
+}
+.cf-browser__main:hover {
+  color: var(--fg);
+}
+.cf-browser__icon {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.cf-browser__icon.is-live {
+  color: var(--accent);
+}
+.cf-browser__icon.is-warn {
+  color: var(--warning);
+}
+.cf-browser__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-browser__btn {
+  flex: none;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.cf-browser__btn:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.cf-browser__btn.is-primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+.cf-browser__btn.is-primary:hover {
+  color: var(--accent-fg);
+  border-color: transparent;
+  background: var(--accent-hover, var(--accent));
+}
+.cf-browser__more {
+  flex: none;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 9px 0 7px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0 var(--radius-full) var(--radius-full) 0;
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.cf-browser__more:hover,
+.cf-browser__more[aria-expanded='true'] {
+  color: var(--fg);
+  background: var(--bg-hover);
+}
+.cf-browser__more svg {
+  transition: transform 0.15s ease;
+}
+.cf-browser__more[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+.cf-browser__count {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 悬停预览：胶囊正上方的大缩略图；下方 8px 透明桥接，鼠标可以移进去点 */
+.cf-browser__preview {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: cf-browser-in 0.12s ease;
+}
+.cf-browser__preview::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 10px;
+}
+@keyframes cf-browser-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.cf-browser__shot {
+  display: block;
+  width: 100%;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-inset);
+}
+.cf-browser__shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 240px;
+  object-fit: cover;
+  object-position: top;
+}
+.cf-browser__shot-empty {
+  display: block;
+  height: 200px;
+}
+.cf-browser__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 8px 10px 12px;
+  min-width: 0;
+}
+.cf-browser__meta-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* 在独立窗口中打开 */
+.cf-browser__open {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.cf-browser__open:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-tint);
+}
+.cf-browser__meta-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-browser__meta-url {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 网页列表：复用待办面板的样式；胶囊自身有定位，面板宽度单独给（否则只有胶囊那么宽） */
+.cf-browser .cf-todo__panel {
+  right: auto;
+  width: 440px;
+  max-width: calc(100vw - 48px);
+}
+.cf-browser__hint {
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+}
+.cf-browser__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cf-browser__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.cf-browser__row:hover {
+  background: var(--bg-hover);
+}
+.cf-browser__row.is-on {
+  background: var(--bg-selected);
+}
+.cf-browser__row > svg {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.cf-browser__row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-browser__row-url {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-subtle);
+}

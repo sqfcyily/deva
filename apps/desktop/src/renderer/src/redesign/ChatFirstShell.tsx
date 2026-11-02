@@ -91,6 +91,7 @@ import { TaskModelSelect, TaskPersonaSelect } from '../features/chat/TaskPickers
 import { taskErrorKey } from '../features/chat/TaskConfirmCard'
 import { TodoCapsule } from '../features/chat/Todos'
 import { BackgroundCapsule } from '../features/chat/BackgroundTasks'
+import { BrowserCapsule } from '../features/browser/BrowserCapsule'
 import { ModelSetupCard } from '../features/chat/ModelSetupCard'
 import { Markdown } from '../features/chat/Markdown'
 import {
@@ -5045,6 +5046,7 @@ function Composer({
           <InsertCapsule sessionId={sessionId} />
           <TodoCapsule />
           <BackgroundCapsule />
+          <BrowserCapsule sessionId={sessionId} />
         </div>
         <div className="cf-box">
           {/* 拖拽手柄压在输入框上边框：向上拖加高输入框。 */}

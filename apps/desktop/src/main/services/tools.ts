@@ -27,6 +27,7 @@ import {
   type ImageMime
 } from './image-read'
 import type { ImagePart, ListingRecord, ToolSpec } from '../providers/types'
+import { browserToolSpec, runBrowserTool } from './browser'
 
 /**
  * Agent 工具集。工具名遵循 ^[a-zA-Z0-9_-]{1,64}$（各家 API 均不允许点号），
@@ -106,6 +107,7 @@ export const toolSpecs: ToolSpec[] = [
       required: ['url']
     }
   },
+  browserToolSpec,
   {
     name: 'write_file',
     description:
@@ -541,7 +543,8 @@ export function buildTodoTool(): ToolSpec {
 export type ToolCategory = 'read' | 'edit' | 'exec' | 'mcp'
 
 export const EDIT_TOOLS = new Set(['write_file', 'edit_file'])
-const EXEC_TOOLS = new Set<string>(['run_command']) // 执行类：命令行（受策略层 + 权限闸门约束）
+// 执行类：命令行（受策略层 + 权限闸门约束）；内置浏览器会提交表单、改变网页状态，同归此类（定时任务照常可用）。
+const EXEC_TOOLS = new Set<string>(['run_command', 'browser'])
 /**
  * 明确的只读/无副作用内置工具白名单。ask_user / skill / run_subagent 均在循环内「闸门前特判」，
  * 恒放行执行（不真正走 evaluate），列在此处只是兜底：万一改动导致它们落到闸门，也按 read 放行。
@@ -594,8 +597,14 @@ export function toolCategory(name: string): ToolCategory {
 
 export interface ToolContext {
   workspaceRoot: string | null
-  /** 仅 run_command 使用：随 chat:abort 中止正在跑的子进程（杀树）。其他工具忽略。 */
+  /** run_command 与 browser 使用：随 chat:abort 中止正在跑的子进程（杀树）/ 正在等待的浏览器操作。 */
   signal?: AbortSignal
+  /** 当前对话：browser 按对话管理标签。 */
+  sessionId?: string
+  /** 用户在电脑前、可以弹窗请他操作（browser 的 request_login）；定时任务与手机端发起的对话不传。 */
+  canPromptUser?: boolean
+  /** 当前对话的角色：browser 在浏览器窗口的标签上显示其头像。 */
+  personaId?: string
 }
 
 export interface ToolResult {
@@ -1340,6 +1349,8 @@ export async function executeTool(
 ): Promise<ToolResult> {
   const a = (args ?? {}) as Record<string, unknown>
   try {
+    if (name === 'browser') return await runBrowserTool(a, ctx)
+
     if (name === 'read_file') {
       const abs = resolvePath(ctx.workspaceRoot, a.path)
       const stat = await fs.stat(abs)

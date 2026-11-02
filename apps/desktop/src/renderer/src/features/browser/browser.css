@@ -1,0 +1,323 @@
+/*
+ * 「Deva 浏览器」窗口外框。高度须与 shared/browser.ts 的 BROWSER_CHROME 一致：
+ * 标签条 40 + 地址栏 42 + 状态条 36（有时）；网页视图由主进程叠放在外框下方，四周留 2px 画边框。
+ */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+body {
+  background: var(--bg-panel);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  user-select: none;
+}
+
+.bc {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 标签条：占标题栏，整条可拖动窗口；右侧给系统窗口按钮（约 138px）让位，macOS 左侧给红绿灯让位 */
+.bc-tabs {
+  flex: none;
+  height: 40px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 0 140px 0 8px;
+  background: var(--titlebar-bg, var(--bg-inset));
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+.bc.is-mac .bc-tabs {
+  padding: 0 8px 0 80px;
+}
+.bc-tabs__list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  overflow: hidden;
+}
+.bc-tab {
+  position: relative;
+  flex: 0 1 200px;
+  min-width: 72px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 6px 0 9px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: default;
+  -webkit-app-region: no-drag;
+}
+.bc-tab:hover {
+  background: var(--bg-hover);
+}
+.bc-tab.is-on {
+  height: 33px;
+  margin-bottom: -1px;
+  background: var(--bg-panel);
+  border-color: var(--border);
+  color: var(--fg);
+}
+.bc-tab__ava {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  color: var(--fg-subtle);
+}
+.bc-tab__ava > img,
+.bc-tab__ava > svg:only-child {
+  width: 100%;
+  height: 100%;
+}
+.bc-tab__ava.is-live {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: bc-pulse 1.4s ease-in-out infinite;
+}
+.bc-tab__ava.is-wait {
+  box-shadow: 0 0 0 2px var(--warning);
+}
+@keyframes bc-pulse {
+  50% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+}
+.bc-tab__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bc-tab__spin {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.bc-tab__x {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.bc-tab__x:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.bc-tabs__acts {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  align-self: center;
+  -webkit-app-region: no-drag;
+}
+
+/* 通用图标按钮 */
+.bc-ib {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.bc-ib:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.bc-ib:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.bc-ib.is-on {
+  color: var(--accent);
+  background: var(--accent-tint);
+}
+
+/* 地址栏 */
+.bc-bar {
+  flex: none;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.bc-addr {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  margin: 0 6px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-subtle);
+}
+.bc-addr:focus-within {
+  border-color: var(--accent);
+}
+.bc-addr > svg {
+  flex: none;
+}
+.bc-addr input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  user-select: text;
+}
+.bc-addr input:disabled {
+  color: var(--fg-subtle);
+}
+
+/* 状态条：Deva 正在操作 / 等你操作 */
+.bc-strip {
+  flex: none;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+.bc-strip.is-op {
+  background: var(--accent-tint);
+}
+.bc-strip__icon {
+  flex: none;
+  color: var(--warning);
+}
+.bc-strip__ava {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.bc-strip__ava > img {
+  width: 100%;
+  height: 100%;
+}
+.bc-strip__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bc-strip__text b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.bc-btn {
+  flex: none;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.bc-btn:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+.bc-btn.is-primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+.bc-btn.is-primary:hover {
+  background: var(--accent-hover, var(--accent));
+}
+
+/* 网页区域：网页视图盖在上面、四周留 2px；Deva 操作时这 2px 显示为主题色边框 */
+.bc-frame {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border: 2px solid var(--bg-panel);
+  border-top: 0;
+}
+.bc-frame.is-op {
+  border-color: var(--accent);
+}
+.bc-frame.is-handoff {
+  border-color: var(--warning);
+}
+.bc-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--fg-subtle);
+  text-align: center;
+}
+.bc-empty__title {
+  color: var(--fg-muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+.bc-empty p {
+  margin: 0;
+  max-width: 360px;
+  line-height: 1.7;
+}

@@ -1,0 +1,509 @@
+/**
+ * 「Deva 浏览器」窗口：前台对话的网页都放在这一个窗口里（所有对话共用，标签上带角色头像）。
+ *
+ * 窗口自身的 webContents 是浏览器的外框界面（标签条、地址栏、状态条，渲染层 browser.html）；每个网页是一个
+ * WebContentsView，叠放在外框下方，当前标签放在最上面。被盖住的视图照常渲染，所以别的对话可以同时在后台标签上操作。
+ *
+ * 收起（用户点「收回」或关闭按钮）不是隐藏：隐藏的窗口不渲染，截图、点击、输入都会失效。收起时把窗口挪到所有
+ * 屏幕之外继续显示、不进任务栏；配合启动时关掉 Chromium 的窗口遮挡检测（index.ts），屏幕外的窗口也照常渲染。
+ *
+ * 状态（标签、当前标签、Deva 正在做什么、等用户操作）经 browser:state 推给主窗口（输入框上方的胶囊）和外框界面。
+ */
+import {
+  BrowserWindow,
+  ipcMain,
+  nativeTheme,
+  screen,
+  shell,
+  WebContentsView,
+  type Rectangle
+} from 'electron'
+import { join } from 'path'
+import { is } from '@electron-toolkit/utils'
+import { getAppIcon } from '../tray-icon'
+import { isEn } from '../../locale'
+import { normalizeUrl } from './url'
+import {
+  allPages,
+  basePage,
+  browserSession,
+  closePage,
+  currentBySession,
+  markHostWindow,
+  notifyPagesChanged,
+  setPagesChangedListener,
+  setWindowPageFactory,
+  type BrowserPage
+} from './pages'
+
+import {
+  BROWSER_CHROME,
+  type BrowserHandoffReason,
+  type BrowserUiState,
+  type BrowserUiTab
+} from '../../../shared/browser'
+
+const TAB_BAR = BROWSER_CHROME.tabBar
+const ADDRESS_BAR = BROWSER_CHROME.addressBar
+const STATUS_BAR = BROWSER_CHROME.statusBar
+const FRAME = BROWSER_CHROME.frame
+const DEFAULT_SIZE = { width: 1180, height: 820 }
+
+export const HANDOFF_REASONS = ['login', 'captcha', 'upload', 'confirm', 'other'] as const
+export type HandoffReason = BrowserHandoffReason
+export type HandoffResponse = 'done' | 'skipped' | 'closed' | 'aborted' | 'timeout'
+export type { BrowserUiState }
+
+let win: BrowserWindow | null = null
+let docked = true
+let pinned = false
+let quitting = false
+let active: string | null = null
+let savedBounds: Rectangle | null = null
+const views = new Map<string, WebContentsView>()
+const operating = new Map<string, { tab: string; action: string; label?: string; timer?: NodeJS.Timeout }>()
+const handoffs = new Map<
+  string,
+  { tab: string; reason: HandoffReason; message: string; finish: (r: HandoffResponse) => void }
+>()
+let mainWindowGetter: () => BrowserWindow | null = () => null
+let sessionAborter: (sessionId: string) => boolean = () => false
+
+export function setMainWindowGetter(fn: () => BrowserWindow | null): void {
+  mainWindowGetter = fn
+}
+/** chat.ts 注入：停止某对话正在进行的回合（窗口里的「停止」）。 */
+export function setSessionAborter(fn: (sessionId: string) => boolean): void {
+  sessionAborter = fn
+}
+
+/* ───────── 状态推送 ───────── */
+
+export function uiState(): BrowserUiState {
+  const tabs: BrowserUiTab[] = []
+  for (const p of allPages()) {
+    if (p.kind !== 'window' || p.wc.isDestroyed()) continue
+    const h = p.wc.navigationHistory
+    const url = p.wc.getURL()
+    tabs.push({
+      id: p.id,
+      sessionId: p.sessionId,
+      personaId: p.personaId,
+      title: p.wc.getTitle() && url !== 'about:blank' ? p.wc.getTitle() : '',
+      url: url === 'about:blank' ? '' : url,
+      loading: p.wc.isLoading(),
+      canGoBack: h.canGoBack(),
+      canGoForward: h.canGoForward()
+    })
+  }
+  return {
+    open: !!win && !win.isDestroyed() && !docked,
+    pinned,
+    active,
+    tabs,
+    current: currentBySession(),
+    operating: Object.fromEntries([...operating].map(([sid, o]) => [sid, { tab: o.tab, action: o.action, label: o.label }])),
+    handoff: Object.fromEntries([...handoffs].map(([sid, h]) => [sid, { tab: h.tab, reason: h.reason, message: h.message }]))
+  }
+}
+
+let pushTimer: NodeJS.Timeout | null = null
+/** 合并 60ms 内的多次变化再推送（加载过程中标题、网址会连续变）。 */
+function push(): void {
+  if (pushTimer) return
+  pushTimer = setTimeout(() => {
+    pushTimer = null
+    const state = uiState()
+    for (const w of [mainWindowGetter(), win])
+      if (w && !w.isDestroyed() && !w.webContents.isDestroyed()) w.webContents.send('browser:state', state)
+  }, 60)
+}
+
+/* ───────── 窗口 ───────── */
+
+/** 所有屏幕之外的位置（收起时放这里）。 */
+function offscreenPoint(): { x: number; y: number } {
+  const right = Math.max(...screen.getAllDisplays().map((d) => d.bounds.x + d.bounds.width))
+  return { x: right + 200, y: 0 }
+}
+
+function overlay(): Electron.TitleBarOverlay | undefined {
+  const dark = nativeTheme.shouldUseDarkColors
+  if (process.platform === 'win32')
+    return { color: '#00000000', symbolColor: dark ? '#e4e4e7' : '#3a3a3d', height: TAB_BAR }
+  if (process.platform === 'linux') return { color: dark ? '#252528' : '#f7f7f8', height: TAB_BAR }
+  return undefined
+}
+
+function ensureWindow(): BrowserWindow {
+  if (win && !win.isDestroyed()) return win
+  const off = offscreenPoint()
+  const dark = nativeTheme.shouldUseDarkColors
+  win = new BrowserWindow({
+    ...DEFAULT_SIZE,
+    ...off,
+    minWidth: 480,
+    minHeight: 360,
+    show: false,
+    skipTaskbar: true,
+    title: isEn() ? 'Deva Browser' : 'Deva 浏览器',
+    icon: getAppIcon(),
+    backgroundColor: dark ? '#252528' : '#f7f7f8',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: overlay(),
+    trafficLightPosition: { x: 12, y: 13 },
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false,
+      spellcheck: false
+    }
+  })
+  markHostWindow(win)
+  docked = true
+  const w = win
+  w.on('close', (e) => {
+    if (quitting) return
+    // 关闭 = 收起到胶囊：网页继续在后台运行
+    e.preventDefault()
+    dock()
+  })
+  w.on('closed', () => {
+    if (win === w) win = null
+  })
+  w.on('resize', layout)
+  w.on('focus', push)
+  const onTheme = (): void => {
+    if (!w.isDestroyed()) {
+      const o = overlay()
+      if (o) w.setTitleBarOverlay(o)
+    }
+  }
+  nativeTheme.on('updated', onTheme)
+  w.on('closed', () => nativeTheme.off('updated', onTheme))
+  if (is.dev && process.env['ELECTRON_RENDERER_URL'])
+    void w.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/browser.html`).catch(() => {})
+  else void w.loadFile(join(__dirname, '../renderer/browser.html')).catch(() => {})
+  // 屏幕外也要「显示着」：隐藏的窗口不渲染网页
+  w.showInactive()
+  return w
+}
+
+/** 外框占的高度（顶部标签条 + 地址栏，有状态条时再加一条）。 */
+function chromeHeight(): number {
+  const tab = active
+  const sid = tab ? allPages().find((p) => p.id === tab)?.sessionId : undefined
+  const strip = !!sid && (handoffs.get(sid)?.tab === tab || operating.get(sid)?.tab === tab)
+  return TAB_BAR + ADDRESS_BAR + (strip ? STATUS_BAR : 0)
+}
+
+/** 所有网页视图叠放在外框下方，当前标签在最上面。 */
+function layout(): void {
+  if (!win || win.isDestroyed()) return
+  const [w, h] = win.getContentSize()
+  const top = chromeHeight()
+  const bounds = { x: FRAME, y: top, width: Math.max(0, w - FRAME * 2), height: Math.max(0, h - top - FRAME) }
+  for (const v of views.values()) v.setBounds(bounds)
+  if (active && views.has(active)) win.contentView.addChildView(views.get(active)!)
+}
+
+/** 显示器增减 / 分辨率变化后，系统可能把屏幕外的窗口挪回可见区域：收起状态下重新挪出去。 */
+function repositionIfDocked(): void {
+  if (win && !win.isDestroyed() && docked) {
+    const off = offscreenPoint()
+    win.setPosition(off.x, off.y)
+  }
+}
+
+/** 展开窗口并切到某个标签。focus=false 时不抢焦点（如 Deva 自己弹出时）。 */
+export function showWindow(tab?: string | null, focus = true): void {
+  const w = ensureWindow()
+  if (tab && views.has(tab)) active = tab
+  if (docked) {
+    const main = mainWindowGetter()
+    let b = savedBounds
+    if (!b) {
+      // 第一次：与主窗口同一块屏幕，居中
+      const area = screen.getDisplayMatching(main && !main.isDestroyed() ? main.getBounds() : w.getBounds()).workArea
+      const width = Math.min(DEFAULT_SIZE.width, area.width - 40)
+      const height = Math.min(DEFAULT_SIZE.height, area.height - 40)
+      b = { x: area.x + Math.round((area.width - width) / 2), y: area.y + Math.round((area.height - height) / 2), width, height }
+    }
+    w.setBounds(b)
+    w.setSkipTaskbar(false)
+    docked = false
+    if (pinned) w.setAlwaysOnTop(true, 'floating')
+  }
+  if (focus) {
+    w.show()
+    w.focus()
+  } else w.showInactive()
+  layout()
+  push()
+}
+
+/** 收起：挪到屏幕外继续运行。 */
+export function dock(): void {
+  if (!win || win.isDestroyed() || docked) return
+  if (!win.isMinimized() && !win.isMaximized() && !win.isFullScreen()) savedBounds = win.getBounds()
+  if (win.isMaximized()) win.unmaximize()
+  if (win.isMinimized()) win.restore()
+  win.setAlwaysOnTop(false)
+  win.setSkipTaskbar(true)
+  const off = offscreenPoint()
+  win.setPosition(off.x, off.y)
+  docked = true
+  // 等用户操作时被收起：当作用户关掉了窗口
+  for (const h of handoffs.values()) h.finish('closed')
+  push()
+}
+
+export function setPinned(on: boolean): void {
+  pinned = on
+  if (win && !win.isDestroyed() && !docked) win.setAlwaysOnTop(on, 'floating')
+  push()
+}
+
+export function activateTab(tab: string): void {
+  if (!views.has(tab)) return
+  active = tab
+  layout()
+  push()
+}
+
+/** 应用退出：真正销毁窗口（不再拦关闭）。 */
+export function destroyWindow(): void {
+  quitting = true
+  for (const h of handoffs.values()) h.finish('aborted')
+  if (win && !win.isDestroyed()) win.destroy()
+  win = null
+}
+
+/* ───────── 网页视图 ───────── */
+
+function createWindowPage(id: string, sessionId: string, personaId?: string): BrowserPage {
+  const w = ensureWindow()
+  const view = new WebContentsView({
+    webPreferences: {
+      session: browserSession(),
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+      spellcheck: false
+    }
+  })
+  views.set(id, view)
+  w.contentView.addChildView(view)
+  // 窗口没打开时新标签直接成为显示的标签；打开着则不抢用户正在看的标签
+  if (!active || docked) active = id
+  layout()
+  const wc = view.webContents
+  for (const ev of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated'] as const)
+    wc.on(ev as 'did-stop-loading', push)
+  return basePage(id, sessionId, personaId, 'window', wc, () => {
+    views.delete(id)
+    if (win && !win.isDestroyed()) win.contentView.removeChildView(view)
+    if (!wc.isDestroyed()) wc.close()
+    if (active === id) {
+      const rest = [...views.keys()]
+      active = rest.length ? rest[rest.length - 1] : null
+    }
+    // 关掉的是某个对话正在等用户操作的标签
+    for (const h of handoffs.values()) if (h.tab === id) h.finish('closed')
+    layout()
+    push()
+  })
+}
+
+/* ───────── Deva 正在操作 / 等用户操作 ───────── */
+
+/** 动作开始：外框出状态条与边框、胶囊显示「正在…」。返回 true 表示状态条刚出现（网页高度变了，动作前稍等）。 */
+export function beginOperating(page: BrowserPage, action: string, label?: string): boolean {
+  if (page.kind !== 'window') return false
+  const prev = operating.get(page.sessionId)
+  if (prev?.timer) clearTimeout(prev.timer)
+  const stripBefore = chromeHeight()
+  operating.set(page.sessionId, { tab: page.id, action, label })
+  const changedLayout = chromeHeight() !== stripBefore
+  if (changedLayout) layout()
+  push()
+  return changedLayout
+}
+
+/** 补上动作的对象（如定位到元素后才知道的元素名）。 */
+export function updateOperating(page: BrowserPage, label: string): void {
+  const o = operating.get(page.sessionId)
+  if (o && o.tab === page.id) {
+    o.label = label
+    push()
+  }
+}
+
+/** 动作结束：状态条留一会儿（连续操作时不闪），空闲几秒后收起。 */
+export function endOperating(page: BrowserPage, idleMs = 6_000): void {
+  const o = operating.get(page.sessionId)
+  if (!o) return
+  if (o.timer) clearTimeout(o.timer)
+  o.timer = setTimeout(() => {
+    if (operating.get(page.sessionId) === o) {
+      operating.delete(page.sessionId)
+      layout()
+      push()
+    }
+  }, idleMs)
+}
+
+/** 本轮结束（或被停止）：立刻收起该对话的「正在操作」。 */
+export function clearOperating(sessionId: string): void {
+  const o = operating.get(sessionId)
+  if (!o) return
+  if (o.timer) clearTimeout(o.timer)
+  operating.delete(sessionId)
+  layout()
+  push()
+}
+
+/**
+ * 请用户在网页上亲自操作：展开窗口、切到该标签、外框出提示条（「完成，继续」「跳过」），等用户处理。
+ * 用户操作的就是 Deva 正在用的同一个页面，完成后不需要重新加载。
+ */
+export function requestHandoff(
+  page: BrowserPage,
+  reason: HandoffReason,
+  message: string,
+  signal?: AbortSignal,
+  timeoutMs = 30 * 60_000
+): Promise<HandoffResponse> {
+  const existing = handoffs.get(page.sessionId)
+  if (existing) existing.finish('aborted')
+  clearOperating(page.sessionId)
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (r: HandoffResponse): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      if (handoffs.get(page.sessionId)?.finish === finish) handoffs.delete(page.sessionId)
+      layout()
+      push()
+      resolve(r)
+    }
+    const onAbort = (): void => finish('aborted')
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => finish('timeout'), timeoutMs)
+    handoffs.set(page.sessionId, { tab: page.id, reason, message, finish })
+    showWindow(page.id, true)
+  })
+}
+
+/** 外框 / 胶囊上的按钮：完成或跳过。 */
+export function respondHandoff(sessionId: string, answer: 'done' | 'skip'): void {
+  handoffs.get(sessionId)?.finish(answer === 'done' ? 'done' : 'skipped')
+}
+
+export function closeSessionHandoff(sessionId: string): void {
+  handoffs.get(sessionId)?.finish('aborted')
+  clearOperating(sessionId)
+}
+
+/* ───────── IPC ───────── */
+
+function pageById(id: unknown): BrowserPage | undefined {
+  return typeof id === 'string' ? allPages().find((p) => p.id === id && p.kind === 'window') : undefined
+}
+
+let registered = false
+export function registerBrowserIpc(): void {
+  if (registered) return
+  registered = true
+  setWindowPageFactory(createWindowPage)
+  // screen 只能在 app ready 之后用，故在这里（启动后调用）才挂监听
+  screen.on('display-added', repositionIfDocked)
+  screen.on('display-removed', repositionIfDocked)
+  screen.on('display-metrics-changed', repositionIfDocked)
+  setPagesChangedListener(() => {
+    layout()
+    push()
+  })
+  ipcMain.handle('browser:state', () => uiState())
+  // 打开窗口：指定标签，或某个对话的当前标签
+  ipcMain.handle('browser:open', (_e, opts: { tab?: string; sessionId?: string } = {}) => {
+    const tab = opts.tab ?? (opts.sessionId ? currentBySession()[opts.sessionId] : undefined)
+    showWindow(tab ?? null, true)
+    return { ok: true }
+  })
+  ipcMain.handle('browser:dock', () => {
+    dock()
+    return { ok: true }
+  })
+  ipcMain.handle('browser:pin', (_e, on: boolean) => {
+    setPinned(on === true)
+    return { ok: true }
+  })
+  ipcMain.handle('browser:activate', (_e, tab: string) => {
+    activateTab(tab)
+    return { ok: true }
+  })
+  ipcMain.handle('browser:close-tab', (_e, tab: string) => {
+    if (pageById(tab)) closePage(tab)
+    return { ok: true }
+  })
+  ipcMain.handle('browser:navigate', (_e, tab: string, url: string) => {
+    const p = pageById(tab)
+    if (!p || typeof url !== 'string') return { ok: false }
+    const target = normalizeUrl(url)
+    if (!target) return { ok: false }
+    void p.wc.loadURL(target).catch(() => {})
+    return { ok: true }
+  })
+  ipcMain.handle('browser:nav', (_e, tab: string, what: 'back' | 'forward' | 'reload' | 'stop') => {
+    const p = pageById(tab)
+    if (!p) return { ok: false }
+    const h = p.wc.navigationHistory
+    if (what === 'back' && h.canGoBack()) h.goBack()
+    else if (what === 'forward' && h.canGoForward()) h.goForward()
+    else if (what === 'reload') p.wc.reload()
+    else if (what === 'stop') p.wc.stop()
+    return { ok: true }
+  })
+  ipcMain.handle('browser:open-external', (_e, tab: string) => {
+    const url = pageById(tab)?.wc.getURL() ?? ''
+    if (/^https?:/i.test(url)) void shell.openExternal(url)
+    return { ok: true }
+  })
+  // 胶囊悬停预览：网页当前画面（宽 480）
+  ipcMain.handle('browser:thumbnail', async (_e, tab: string) => {
+    const p = pageById(tab)
+    if (!p) return null
+    try {
+      const img = await p.wc.capturePage()
+      if (img.isEmpty()) return null
+      return img.resize({ width: 480, quality: 'good' }).toDataURL()
+    } catch {
+      return null
+    }
+  })
+  ipcMain.handle('browser:handoff', (_e, sessionId: string, answer: 'done' | 'skip') => {
+    respondHandoff(sessionId, answer)
+    return { ok: true }
+  })
+  ipcMain.handle('browser:stop', (_e, sessionId: string) => {
+    const ok = sessionAborter(sessionId)
+    clearOperating(sessionId)
+    return { ok }
+  })
+  // 外框界面载入后拉一次状态
+  ipcMain.handle('browser:ready', () => {
+    push()
+    return uiState()
+  })
+}
+
+/** 状态有变时由外部调用（如 browser 工具切换了当前标签）。 */
+export function refreshUi(): void {
+  notifyPagesChanged()
+}
