@@ -84,6 +84,33 @@ export function hasUsableModel(providers: Provider[]): boolean {
   )
 }
 
+// config.json 允许手改，也有外部工具写入，载入时逐条整理：格式不对的只丢这一条。
+// 若任由某条抛错，载入会落到兜底，随后默认种子回写，用户全部服务商与模型都被清掉。
+function normalizeModel(raw: unknown): ModelDef | null {
+  const mm = raw as Partial<ModelDef> | null
+  if (!mm || typeof mm !== 'object' || typeof mm.id !== 'string' || !mm.id) return null
+  return {
+    ...mm,
+    id: mm.id,
+    name: typeof mm.name === 'string' ? mm.name : mm.id,
+    enabled: mm.enabled === true
+  }
+}
+
+function normalizeProvider(raw: unknown): Provider | null {
+  const p = raw as Partial<Provider> | null
+  if (!p || typeof p !== 'object' || typeof p.id !== 'string' || !p.id) return null
+  const models = Array.isArray(p.models) ? (p.models as unknown[]) : []
+  return {
+    ...p,
+    id: p.id,
+    name: typeof p.name === 'string' ? p.name : p.id,
+    apiHost: typeof p.apiHost === 'string' ? p.apiHost : '',
+    enabled: p.enabled === true,
+    models: models.map(normalizeModel).filter((mm): mm is ModelDef => mm !== null)
+  } as Provider
+}
+
 export function ModelsProvider({ children }: { children: ReactNode }): React.JSX.Element {
   const [providers, setProviders] = useState<Provider[]>(() =>
     seedProviders.map((p) => ({ ...p, purpose: p.purpose ?? 'llm', models: p.models.map((mm) => ({ ...mm })) }))
@@ -128,11 +155,13 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
       try {
         const cfg = await window.deva.config.get()
         const saved = cfg?.models as
-          | { providers?: Provider[]; activeModelId?: string | null; activeEffort?: EffortLevel }
+          | { providers?: unknown; activeModelId?: unknown; activeEffort?: EffortLevel }
           | undefined
         if (!alive) return
-        const savedProviders = saved?.providers
-        if (Array.isArray(savedProviders) && savedProviders.length > 0) {
+        const savedProviders = Array.isArray(saved?.providers)
+          ? saved.providers.map(normalizeProvider).filter((p): p is Provider => p !== null)
+          : []
+        if (savedProviders.length > 0) {
           // 已保存的为准，并追加用户尚未见过的新内置服务商（保留用户编辑 + 呈现新预置，
           // 含新引入的决策模型 typesafe——老配置无该项时自动补齐）。
           const savedIds = new Set(savedProviders.map((p) => p.id))
@@ -146,7 +175,8 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
             }))
           )
         }
-        if (saved && 'activeModelId' in saved) setActiveModelId(saved.activeModelId ?? null)
+        if (saved && 'activeModelId' in saved)
+          setActiveModelId(typeof saved.activeModelId === 'string' ? saved.activeModelId : null)
         if (saved?.activeEffort) setActiveEffort(saved.activeEffort)
       } catch {
         /* 无配置 / 读取失败：沿用默认种子 */
