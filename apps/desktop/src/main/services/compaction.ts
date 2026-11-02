@@ -40,6 +40,28 @@ export const AUTO_MARKER = '⟦deva:auto⟧'
  */
 export const NOTIFY_MARKER = '⟦deva:notify⟧'
 
+/**
+ * 插入消息的标记前缀：回合进行中用户发来的消息，以一个 text 块附在某步工具结果之后交给模型（见 chat.ts 的
+ * pendingInserts）。它**不算一轮起点**（所在的 user 消息含 tool_result），展示为执行步骤里的一个节点。
+ * 格式：标记 + 写给模型的一行说明 + 换行 + 用户原文。
+ */
+export const INSERT_MARKER = '⟦deva:insert⟧'
+
+/** 插入消息交给模型的完整文本。 */
+export function insertText(body: string, en: boolean): string {
+  const note = en
+    ? '(The user sent the following message while you were working. Take it into account for the rest of the task, then carry on.)'
+    : '（以下是用户在你执行过程中发来的消息，请据此调整接下来的工作，然后继续完成任务。）'
+  return `${INSERT_MARKER}${note}\n${body}`
+}
+
+/** 插入消息的用户原文；不是插入消息则为 null。 */
+export function insertBody(text: string): string | null {
+  if (!text.startsWith(INSERT_MARKER)) return null
+  const nl = text.indexOf('\n')
+  return nl >= 0 ? text.slice(nl + 1) : ''
+}
+
 export type CompactStatus = 'compacted' | 'none' | 'failed'
 
 interface CompactionCfg {
@@ -321,6 +343,12 @@ export function buildTranscript(
       if (p.type === 'text') {
         // 清单块（技能 / 记忆）不进转录：它不是对话内容，被摘要掉后引擎会按需重新附上（见 listing.ts）。
         if (p.listing) continue
+        // 插入消息附在工具结果之后，却是用户说的话：去掉标记与说明行，记成用户发言。
+        const inserted = insertBody(p.text)
+        if (inserted !== null) {
+          if (inserted.trim()) lines.push(`${U}: ${inserted}`)
+          continue
+        }
         if (p.text.trim()) lines.push(`${label}: ${p.text}`)
       } else if (p.type === 'tool_use') {
         const args = clip(JSON.stringify(p.input ?? {}), MAX_TOOL_ARGS_CHARS)

@@ -40,7 +40,8 @@ import { useI18n } from '../../i18n/i18n'
 import { useExtensions } from '../../store/extensions'
 import type { ChatBlock, ChatMessage, StreamStatus, ToolStatus } from '../../store/chat'
 import { CopyButton, Markdown } from './Markdown'
-import { HumationFace } from '../../components/humation'
+import { HumationFace, PersonaFace, USER_AVATAR_SEED } from '../../components/humation'
+import { useProfile } from '../../store/profile'
 import { TaskConfirmCard } from './TaskConfirmCard'
 import { DeliverablesCard } from './DeliverablesCard'
 import { TodoItemList } from './Todos'
@@ -445,8 +446,15 @@ export function BlockView({
     )
   }
 
-  // 思考 / 工具调用 / 子智能体 / 已完成清单通常由 groupBlocks 归进时间轴；单独交到这里时画成只有一个节点的时间轴。
-  if (block.kind === 'thinking' || block.kind === 'tool' || block.kind === 'subagent' || block.kind === 'todolist') {
+  // 思考 / 工具调用 / 子智能体 / 已完成清单 / 插入的消息通常由 groupBlocks 归进时间轴；单独交到这里时画成只有
+  // 一个节点的时间轴。
+  if (
+    block.kind === 'thinking' ||
+    block.kind === 'tool' ||
+    block.kind === 'subagent' ||
+    block.kind === 'todolist' ||
+    block.kind === 'insert'
+  ) {
     return <Timeline steps={[{ block, index: 0 }]} liveBlock={thinkingDone ? undefined : block} />
   }
 
@@ -1427,6 +1435,27 @@ function TimelineMount({ block }: { block: Extract<ChatBlock, { kind: 'mount' }>
   )
 }
 
+/**
+ * 时间轴上回合进行中插入的消息：节点是用户自己的小头像，正文用用户气泡的底色，与工具步骤区分开，一眼看出是「我说的」。
+ * 正文完整显示（可换行），不像工具步骤那样截成一行。
+ */
+function TimelineInsert({ text }: { text: string }): React.JSX.Element {
+  const { t } = useI18n()
+  const profile = useProfile()
+  return (
+    <li className="tl__item tl__item--insert">
+      <span className="tl__node">
+        <span className="tl__me" title={t('chat.insert.node')}>
+          <PersonaFace seed={USER_AVATAR_SEED} spec={profile.avatar} image={profile.avatarImage} />
+        </span>
+      </span>
+      <div className="tl__main">
+        <div className="tl__insert">{text}</div>
+      </div>
+    </li>
+  )
+}
+
 /** 时间轴的一步（index 为其在原块序列中的下标）。 */
 type TimelineStep = { block: ChatBlock; index: number }
 
@@ -1465,6 +1494,7 @@ export function Timeline({
         if (b.kind === 'plan') return <TimelinePlan key={b.key} block={b} />
         if (b.kind === 'mount') return <TimelineMount key={b.key} block={b} />
         if (b.kind === 'todolist') return <TimelineTodo key={b.id} block={b} />
+        if (b.kind === 'insert') return <TimelineInsert key={`i${index}`} text={b.text} />
         return null
       })}
       {capped && (
@@ -1501,6 +1531,7 @@ function isTimelineStep(b: ChatBlock): boolean {
     case 'thinking':
     case 'subagent':
     case 'todolist':
+    case 'insert':
       return true
     case 'ask':
       return b.answers !== undefined

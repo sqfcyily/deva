@@ -113,6 +113,8 @@ import {
   AUTO_MARKER,
   compactSession,
   displaySummary,
+  insertBody,
+  insertText,
   isAutoNudge,
   isCompactionSummary,
   isTaskNotification,
@@ -168,6 +170,22 @@ export interface ChatSendRequest {
   /** 本对话生效的思考等级：发送时恒带上并落库（同 modelRef，防别处切换串到本对话）；缺省 = 不改。 */
   effort?: EffortLevel
 }
+
+/**
+ * 回合进行中插入一条消息（见 chat:insert）：当前步骤结束、下一次请求模型之前交给模型；来不及（模型已在写
+ * 最后的回复）就在本轮结束后作为普通消息发出。model 只在后一种情况下用作回落（同 chat:send）。
+ */
+export interface ChatInsertRequest {
+  sessionId: string
+  text: string
+  model: ChatModelConfig
+}
+
+/**
+ * idle = 该对话此刻没有回合在跑（刚结束）：调用方改走普通发送；
+ * busy = 正在跑的回合不接受插入（定时任务、压缩、回滚）；empty = 正文为空。
+ */
+export type ChatInsertResult = { ok: true } | { ok: false; reason: 'idle' | 'busy' | 'empty' }
 
 /** 手动 /compact 请求：无用户文本、无后续模型轮，只压缩历史并回发结果事件。 */
 interface ChatCompactRequest {
@@ -356,6 +374,8 @@ type DisplayBlock =
    * 其余 todo_write 调用在对话流里不画（进度只在输入框上方的胶囊里显示）。
    */
   | { kind: 'todolist'; id: string; title: string; items: TodoItem[] }
+  /** 回合进行中插入的消息（见 INSERT_MARKER）：执行步骤里的一个节点，排在它送达时的两步之间。 */
+  | { kind: 'insert'; text: string }
 
 export type DisplayMessage =
   | {
@@ -577,6 +597,12 @@ function toDisplayMessages(
             b.status = 'error'
             b.summary = '后台运行已中断'
           } else if (bg) b.status = bg
+        }
+        // 随这步工具结果交给模型的插入消息：执行步骤里的一个节点，排在本步之后。
+        for (const p of parts) {
+          if (p.type !== 'text') continue
+          const inserted = insertBody(p.text)
+          if (inserted !== null) lastAssistant.blocks.push({ kind: 'insert', text: inserted })
         }
       }
       return
@@ -1066,6 +1092,17 @@ export type ChatStreamEvent =
       /** notify：本轮由后台任务通知自动发起（见 NOTIFY_MARKER），text 为通知标题。 */
       user: { text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[]; notify?: true }
     }
+  /** 插入的消息已随本步工具结果交给模型（回合事件）：渲染层在执行步骤里添一个节点。 */
+  | { type: 'insert'; text: string }
+  /**
+   * 该对话待送达的插入消息有变（会话级，以空 turnId 发出）：插入、送达、撤回、回合结束时都发。
+   * pending 为各条原文，空数组 = 没有待送达的。
+   */
+  | { type: 'inserts'; pending: string[] }
+  /**
+   * 回合被停止或出错，待送达的插入消息不再发出（会话级，空 turnId）：渲染层把 text 放回该对话的输入框。
+   */
+  | { type: 'inserts_returned'; text: string }
   /** durationMs：本轮耗时（扣除等用户处置的时间），渲染层据此给工作过程折叠条显示「已处理 X」。 */
   | { type: 'done'; stopReason: StopReason; durationMs?: number }
 
@@ -1357,6 +1394,22 @@ function noticeHeadline(content: string): string {
 }
 
 /**
+ * 回合进行中用户插入、还没交给模型的消息（键 = sessionId，按插入先后）。去向：
+ *  · 回合还有下一步 → 当前步骤结束后随工具结果一并交给模型（几条合并成一段，见 INSERT_MARKER）；
+ *  · 回合正常结束时仍未送达（模型已在写最后的回复）→ 合并成一条普通消息发出，自动开始下一轮；
+ *  · 回合被停止或出错 → 不再发出，原文退回渲染层的输入框（inserts_returned）。
+ * 用户也可以在送达前撤回（chat:withdraw-inserts）。
+ */
+interface PendingInsert {
+  text: string
+  /** 插入时的模型：来不及送达、改作下一轮发出时，本对话模型解析不了就用它（同 chat:send）。 */
+  model: ChatModelConfig
+  /** 从手机端插入的（改作下一轮发出时，全是手机端的才按手机端发起处理）。 */
+  fromRemote: boolean
+}
+const pendingInserts = new Map<string, PendingInsert[]>()
+
+/**
  * 把待决的问答 / 计划审阅 / 挂载请求一律按「取消」解开：给了 turnId 只解该轮的，缺省解全部。
  * 否则被中止的回合会一直阻塞在 askUser / reviewPlan / requestMount 上，永远走不到收尾落盘。
  */
@@ -1487,6 +1540,8 @@ export function runScheduledTask(task: TaskRecord): Promise<ScheduledTurnResult>
  */
 export interface ChatRuntime {
   send(req: ChatSendRequest): Promise<{ turnId: string }>
+  /** 回合进行中插入一条消息（见 ChatInsertRequest）。 */
+  insert(req: ChatInsertRequest): ChatInsertResult
   abort(turnId: string): void
   answerAsk(r: AskResponse): boolean
   decidePlan(r: PlanResponse): boolean
@@ -1947,6 +2002,11 @@ interface AgentLoopArgs {
    */
   takeNotices?: () => string | null
   /**
+   * 取走本会话待送达的插入消息（见 pendingInserts），返回合并后的原文（没有则 null）：每步工具结果回灌前、
+   * 取完通知之后调用，有则附在最后，并发 insert 事件。仅主轮传入。
+   */
+  takeInserts?: () => string | null
+  /**
    * 每收到一次真实用量即回调（主轮据此持久化 lastInputTokens 作压缩触发依据）。
    * input 为**总提示 token**（含缓存命中/写入）；cacheRead/cacheWrite 仅供观测，不参与任何判定。
    */
@@ -2093,6 +2153,59 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     emitTurnStart(turnId, sessionId, session.messages)
     // 模型以本对话存的为准（runTurn 内解析）；解析不了才用派发时那一轮的模型。
     void runTurn(sessionId, turnId, queue[queue.length - 1].model, null)
+  }
+
+  /** 接受插入的回合（对话的主轮，见 runTurn）。定时任务、压缩、回滚期间都不在其中。 */
+  const insertableTurns = new Set<string>()
+
+  /** 推送某会话待送达的插入消息（插入 / 送达 / 撤回 / 回合结束后）。 */
+  function emitInserts(sessionId: string): void {
+    emit('', sessionId, { type: 'inserts', pending: (pendingInserts.get(sessionId) ?? []).map((e) => e.text) })
+  }
+
+  /** 回合进行中插入一条消息（桌面 chat:insert 与手机端共用）。见 ChatInsertRequest / pendingInserts。 */
+  function insertMessage(req: ChatInsertRequest, fromRemote = false): ChatInsertResult {
+    const text = req.text.trim()
+    if (!text) return { ok: false, reason: 'empty' }
+    const turnId = busySessions.get(req.sessionId)
+    if (!turnId) return { ok: false, reason: 'idle' }
+    if (!insertableTurns.has(turnId)) return { ok: false, reason: 'busy' }
+    const entry: PendingInsert = { text, model: req.model, fromRemote }
+    const queue = pendingInserts.get(req.sessionId)
+    if (queue) queue.push(entry)
+    else pendingInserts.set(req.sessionId, [entry])
+    emitInserts(req.sessionId)
+    return { ok: true }
+  }
+
+  /** 取走某会话全部待送达的插入消息，合并成一段原文（没有则 null）。 */
+  function takeInserts(sessionId: string): string | null {
+    const queue = pendingInserts.get(sessionId)
+    if (!queue?.length) return null
+    pendingInserts.delete(sessionId)
+    emitInserts(sessionId)
+    return queue.map((e) => e.text).join('\n\n')
+  }
+
+  /**
+   * 回合收尾时仍未送达的插入消息：正常结束 → 合并成一条普通消息发出，自动开始下一轮（返回 true）；
+   * 被停止 / 出错 / 正在退出 → 退回输入框。须在解除忙状态之后调用（发出走的是 sendMessage）。
+   */
+  function flushInserts(sessionId: string, endReason: StopReason): boolean {
+    const queue = pendingInserts.get(sessionId)
+    if (!queue?.length) return false
+    const text = takeInserts(sessionId) as string
+    const giveBack = (): void => emit('', sessionId, { type: 'inserts_returned', text })
+    if (endReason === 'aborted' || endReason === 'error' || shuttingDown) {
+      giveBack()
+      return false
+    }
+    // 没有附件时 sendMessage 在起轮之前不会让出执行权：返回时下一轮已经开始，会话又是忙的。
+    sendMessage(
+      { sessionId, text, model: queue[queue.length - 1].model, workspaceRoot: null },
+      queue.every((e) => e.fromRemote)
+    ).catch(giveBack)
+    return true
   }
 
   /** 抛出一个或多个问题、暂停循环等用户一次性作答（不过权限闸门，恒放行执行）。 */
@@ -3218,6 +3331,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       // 中止时不取，留给下一轮。
       const notices = abortedHere ? null : (args.takeNotices?.() ?? null)
       if (notices) resultParts.push({ type: 'text', text: notices })
+      // 回合进行中用户插入的消息：同样附在本步工具结果之后（排在通知后面，离模型的下一步最近）。中止时不取，
+      // 由回合收尾退回输入框。
+      const inserted = abortedHere ? null : (args.takeInserts?.() ?? null)
+      if (inserted) {
+        resultParts.push({ type: 'text', text: insertText(inserted, isEn()) })
+        emit(turnId, sessionId, { type: 'insert', text: inserted })
+      }
       history.push({ role: 'user', content: resultParts })
       args.onStep?.()
       if (abortedHere) return { text: finalText, stopReason: 'aborted' }
@@ -3319,6 +3439,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const startedAt = Date.now()
     activeTurns.set(turnId, controller)
     busySessions.set(sessionId, turnId)
+    insertableTurns.add(turnId)
     if (fromRemote) remoteTurns.add(turnId)
     const session = ensureSession(sessionId)
     // 聚焦工作区：本对话若挂载文件夹，用它作有效根（受信/在工作区内判定、终端 cwd、系统提示词聚焦、
@@ -3502,6 +3623,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         recorder: createRecorder(session),
         // 后台子智能体在本轮期间结束：通知随下一步的工具结果交给模型。
         takeNotices: () => takeNotices(sessionId),
+        // 用户在本轮进行中插入的消息：同样随下一步的工具结果交给模型。
+        takeInserts: () => takeInserts(sessionId),
         // 逐步落盘：长回合中途崩溃 / 强退，已完成的步骤仍在磁盘上。
         onStep: () => saveProject(sessionId),
         // 轮中压缩：旧读数作废（别让 finally 把压缩前的大数存成下轮触发依据）；本轮请求在历史里的位置变了，
@@ -3544,19 +3667,28 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       session.updatedAt = Date.now()
       saveProject(sessionId)
       busySessions.delete(sessionId)
+      insertableTurns.delete(turnId)
       collectBlobs(session)
+      // 还有来不及送达的插入消息、本轮又是正常结束：马上作为下一轮发出（见 flushInserts），这一轮不算回复完成。
+      const continues =
+        endReason !== 'aborted' &&
+        endReason !== 'error' &&
+        !shuttingDown &&
+        (pendingInserts.get(sessionId)?.length ?? 0) > 0
       // 用户没在看 Deva 时弹系统通知提醒回复已完成。不提醒：手机端发起的（回复已推到手机）、
-      // 用户按了停止的、退出途中被中止的。
-      if (endReason !== 'aborted' && !fromRemote && !shuttingDown)
+      // 用户按了停止的、退出途中被中止的、马上接着下一轮的。
+      if (endReason !== 'aborted' && !fromRemote && !shuttingDown && !continues)
         notifyReplyDone(getWindow, {
           sessionId,
           title: notifyTitle(sessionId),
           text: replyText,
           error: endReason === 'error' ? (replyError ?? '') : undefined
         })
-      // 本轮最后一步之后才结束的后台子智能体：它们的通知还在队列里，现在为它们起一轮。
-      // 用户刚按了停止就不起——通知留着，随下一条消息带给模型。
-      if (endReason !== 'aborted') wakeForNotices(sessionId)
+      // 来不及送达的插入消息：正常结束就接着发出，停止 / 出错则退回输入框。
+      const continued = flushInserts(sessionId, endReason)
+      // 本轮最后一步之后才结束的后台子智能体：它们的通知还在队列里，现在为它们起一轮（插入消息已起了一轮的，
+      // 通知随那条消息一并带上）。用户刚按了停止就不起——通知留着，随下一条消息带给模型。
+      if (endReason !== 'aborted' && !continued) wakeForNotices(sessionId)
     }
   }
 
@@ -3803,6 +3935,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   ipcMain.handle('chat:send', (_e, payload: ChatSendRequest) => sendMessage(payload))
+
+  // 回合进行中插入消息（见 insertMessage）；撤回全部待送达的，返回合并后的原文供放回输入框。
+  ipcMain.handle('chat:insert', (_e, payload: ChatInsertRequest): ChatInsertResult => insertMessage(payload))
+  ipcMain.handle('chat:withdraw-inserts', (_e, sessionId: string): { text: string } => ({
+    text: takeInserts(sessionId) ?? ''
+  }))
 
   /* 说明：persona 绑定与聚焦工作区都已由 ensureSession 落在 session 上，runTurn 内直接读取 —— 见其实现。 */
 
@@ -4404,6 +4542,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // 挂上模块级桥接，供远程通道（remote/hub.ts）跨模块直调——与桌面 IPC 走同一套入口。
   chatRuntime = {
     send: (req) => sendMessage(req, true),
+    insert: (req) => insertMessage(req, true),
     abort: abortTurn,
     answerAsk,
     decidePlan,

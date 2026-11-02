@@ -346,13 +346,17 @@ export function ChatFirstShell(): React.JSX.Element {
     mountFocus,
     respondAsk,
     respondPlan,
-    respondMount
+    respondMount,
+    onInsertsReturned
   } = useChat()
   const { personas, remove, reorderPersonas } = useExtensions()
   const { tasks } = useTasks()
   const { t, locale } = useI18n()
   const dialog = useDialog()
   const toast = useToast()
+
+  // 回合被停止或出错时还没送达的插入消息：放回所属会话的输入框（正在看就直接放进去，否则进那个会话的草稿）。
+  useEffect(() => onInsertsReturned(restoreToComposer), [onInsertsReturned])
 
   const [railTab, setRailTab] = useState<RailTab>('chats')
   // 图标栏「对话」按钮的红点：其他对话有新消息或待你处理时亮起（与头像红点同口径）。
@@ -4551,6 +4555,59 @@ function subscribeDrafts(onChange: () => void): () => void {
   }
 }
 
+/**
+ * 正在显示的输入框（随会话切换更新）：插入的消息被撤回或退回时，正是这个会话就直接放回输入框，否则并进那个
+ * 会话的草稿（见 restoreToComposer）。
+ */
+let liveComposer: { sessionId: string; restore: (text: string) => void } | null = null
+
+/** 把文字放回某会话的输入框：排在已有内容之前，中间空一行。 */
+function restoreToComposer(sessionId: string, text: string): void {
+  if (!text.trim()) return
+  if (liveComposer?.sessionId === sessionId) {
+    liveComposer.restore(text)
+    return
+  }
+  const d = composerDrafts.get(sessionId)
+  setComposerDraft(sessionId, {
+    text: d?.text.trim() ? `${text}\n\n${d.text}` : text,
+    pending: d?.pending ?? []
+  })
+}
+
+/**
+ * 待送达的插入消息（输入框上方，与待办清单、后台任务胶囊同一排）：回合进行中插入、当前步骤还没结束的消息。
+ * 「撤回」把文字放回输入框，可以改完再插入；送达后胶囊消失，消息出现在执行步骤里。多条显示条数，送达时合并成一条。
+ */
+function InsertCapsule({ sessionId }: { sessionId: string }): React.JSX.Element | null {
+  const { t } = useI18n()
+  const { pendingInserts, withdrawInserts } = useChat()
+  const [busy, setBusy] = useState(false)
+  if (pendingInserts.length === 0) return null
+  const text = pendingInserts.join('  ')
+  const withdraw = (): void => {
+    setBusy(true)
+    void withdrawInserts()
+      .then((back) => restoreToComposer(sessionId, back))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <div className="cf-ins">
+      <div className="cf-bg__pill cf-ins__pill" title={t('cf.insert.pendingHint')}>
+        <Clock size={13} className="cf-ins__icon" />
+        <span className="cf-bg__label cf-ins__label">{t('cf.insert.pending')}</span>
+        <span className="cf-bg__name">{text}</span>
+        {pendingInserts.length > 1 && (
+          <span className="cf-ins__count">{t('cf.insert.count').replace('{n}', String(pendingInserts.length))}</span>
+        )}
+        <button type="button" className="cf-bg__stop" disabled={busy} onClick={withdraw}>
+          {t('cf.insert.withdraw')}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 /** 某会话草稿的一行摘要：正文（空白归一），只有附件时为附件名；没有草稿为 null。 */
 function useDraftPreview(id: string): string | null {
   return useSyncExternalStore(subscribeDrafts, () => {
@@ -4598,6 +4655,7 @@ function Composer({
     [allSkills, ownerId]
   )
   const toast = useToast()
+  const { insert: onInsert } = useChat()
   const [input, setInput] = useState('')
   const [pending, setPending] = useState<Picked[]>([])
   const pendingRef = useRef(pending)
@@ -4682,9 +4740,16 @@ function Composer({
   const applySlash = (c: SlashCommand): void => composer.setText(`/${c.name} `, true)
 
   const name = owner?.name ?? t('cf.assistant')
-  const placeholder = locale === 'en' ? `Message ${name}…` : `跟 ${name} 说点什么…`
+  // 回合进行中：输入框里的文字会插入当前这一轮，占位提示说明送达时机。
+  const placeholder = streaming
+    ? t('cf.insert.placeholder').replace('{name}', name)
+    : locale === 'en'
+      ? `Message ${name}…`
+      : `跟 ${name} 说点什么…`
   const supported = pending.filter((p) => p.supported)
   const canSend = Boolean(input.trim()) || supported.length > 0
+  // 回合进行中有文字：停止键旁出现「插入」。只插文字，待发附件留在输入框里随下一条消息发出。
+  const canInsert = streaming && Boolean(input.trim())
   const mounted = Boolean(focusRoot)
 
   // 挂载工作区（放在输入区工具条，取代原顶部头部的入口）：仅未挂载态的 chip 调用，选了才挂载，取消则保持现状。
@@ -4777,10 +4842,27 @@ function Composer({
   const removePending = (path: string): void =>
     setPending((prev) => prev.filter((p) => p.path !== path))
 
+  // 插入当前轮：清空输入框交给主进程，当前步骤结束后送达；没插进去（原因已 toast）就把文字放回。
+  const insertNow = (): void => {
+    const text = composer.getText()
+    // /compact、/rewind 是本地指令，回合进行中用不了，也不该当成消息插进去。
+    if (!text.trim() || /^\/(compact|rewind)$/i.test(text.trim())) return
+    const sid = sessionId
+    composer.setText('')
+    composer.clearHistory()
+    void onInsert(text).then((ok) => {
+      if (!ok) restoreToComposer(sid, text)
+    })
+  }
+
   const submit = (): void => {
+    if (streaming) {
+      insertNow()
+      return
+    }
     const text = composer.getText()
     const atts = pending.filter((p) => p.supported)
-    if ((!text.trim() && atts.length === 0) || streaming) return
+    if (!text.trim() && atts.length === 0) return
     // /rewind 纯渲染层指令：打开回滚面板、不发消息；此刻不可用则原样留在输入框。
     if (text.trim().toLowerCase() === '/rewind' && atts.length === 0) {
       if (onRewind()) composer.setText('')
@@ -4890,6 +4972,22 @@ function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
 
+  // 登记为「正在显示的输入框」：撤回或退回的插入消息若属于本会话，直接放回这里（排在已有内容之前）。
+  useLayoutEffect(() => {
+    const entry = {
+      sessionId,
+      restore: (text: string): void => {
+        const cur = composer.getText()
+        composer.setText(cur.trim() ? `${text}\n\n${cur}` : text, true)
+      }
+    }
+    liveComposer = entry
+    return () => {
+      if (liveComposer === entry) liveComposer = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
+
   return (
     <div className="cf-composer">
       {/* 回到最新：仅当用户上滚离开底部且已有消息时浮现，锚在输入区正上方居中 */}
@@ -4944,6 +5042,7 @@ function Composer({
         )}
         {/* 输入框上方的胶囊排：待办清单进度（有进行中的清单才出现）+ 后台任务（有后台运行的子智能体才出现）。 */}
         <div className="cf-dock">
+          <InsertCapsule sessionId={sessionId} />
           <TodoCapsule />
           <BackgroundCapsule />
         </div>
@@ -5032,17 +5131,30 @@ function Composer({
             )}
             <ModelPicker />
             <EffortPicker />
-            {/* 流式输出时发送键变「停止」（点击中断本会话当前回合）：只放图标，按钮宽度不变、两态不跳动。 */}
+            {/* 流式输出时发送键变「停止」（点击中断本会话当前回合）：只放图标，按钮宽度不变、两态不跳动。
+                输入框有文字时停止键缩成方块挪到左边，最右换成「插入」——习惯打完字点最右边的人不会误点停止。 */}
             {streaming ? (
-              <button
-                className="cf-send is-stop"
-                type="button"
-                title={t('chat.stop')}
-                aria-label={t('chat.stop')}
-                onClick={onStop}
-              >
-                <Square size={14} fill="currentColor" />
-              </button>
+              <>
+                <button
+                  className={`cf-send is-stop${canInsert ? ' is-square' : ''}`}
+                  type="button"
+                  title={t('chat.stop')}
+                  aria-label={t('chat.stop')}
+                  onClick={onStop}
+                >
+                  <Square size={14} fill="currentColor" />
+                </button>
+                {canInsert && (
+                  <button
+                    className="cf-send is-insert"
+                    type="button"
+                    title={t('cf.insert.hint').replace('{name}', name)}
+                    onClick={insertNow}
+                  >
+                    {t('cf.insert.button')}
+                  </button>
+                )}
+              </>
             ) : (
               <button className="cf-send" type="button" disabled={!canSend} onClick={submit}>
                 {t('cf.send')}

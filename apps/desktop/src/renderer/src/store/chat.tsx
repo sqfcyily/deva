@@ -202,6 +202,11 @@ export type ChatBlock =
     }
   /** 较早历史已压缩为摘要（只来自主进程重建）：一行提示，摘要正文默认折叠、点开才显示。 */
   | { kind: 'compaction'; summary: string }
+  /**
+   * 回合进行中插入、已交给模型的消息：执行步骤里的一个节点，排在它送达时的两步之间（不计入步数）。
+   * 送达前的消息不在这里，显示在输入框上方的胶囊里（见 pendingInserts）。
+   */
+  | { kind: 'insert'; text: string }
 
 export interface ChatMessage {
   id: string
@@ -294,6 +299,7 @@ type DisplayBlock =
       feedback?: string
     }
   | { kind: 'todolist'; id: string; title: string; items: TodoItem[] }
+  | { kind: 'insert'; text: string }
 type DisplayMessage =
   | { role: 'user'; text: string; attachments: { name: string; kind: AttachKind }[]; notify?: true }
   | { role: 'assistant'; blocks: DisplayBlock[]; durationMs?: number }
@@ -367,6 +373,9 @@ type StreamEvent =
       type: 'turn_start'
       user: { text: string; attachments: { name: string; kind: AttachKind }[]; notify?: true }
     }
+  | { type: 'insert'; text: string }
+  | { type: 'inserts'; pending: string[] }
+  | { type: 'inserts_returned'; text: string }
   | { type: 'done'; stopReason: string; durationMs?: number }
 
 /**
@@ -507,9 +516,33 @@ interface ChatContextValue {
    * 结论随下一轮交给模型（不为此自动起一轮）。
    */
   stopSubagent: (toolId: string) => void
+  /**
+   * 回合进行中向当前会话插入一条消息：当前步骤结束后交给模型，来不及就在本轮结束后作为下一条发出。
+   * 回合恰好已经结束则改走普通发送。返回是否发出（false 时原因已 toast，调用方把文字放回输入框）。
+   */
+  insert: (text: string) => Promise<boolean>
+  /** 当前会话待送达的插入消息（输入框上方的胶囊），按插入先后。 */
+  pendingInserts: string[]
+  /** 撤回当前会话全部待送达的插入消息，返回合并后的原文（已送达或没有则为空串）。 */
+  withdrawInserts: () => Promise<string>
+  /**
+   * 订阅「插入消息被退回」（回合被停止或出错时还没送达）：(sessionId, 原文)。返回取消订阅函数。
+   * 由输入框所在的外壳把原文放回对应会话的输入框。
+   */
+  onInsertsReturned: (cb: (sessionId: string, text: string) => void) => () => void
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null)
+
+/** 各会话「插入消息被退回」的订阅者（见 onInsertsReturned）。 */
+const insertReturnListeners = new Set<(sessionId: string, text: string) => void>()
+function onInsertsReturned(cb: (sessionId: string, text: string) => void): () => void {
+  insertReturnListeners.add(cb)
+  return () => {
+    insertReturnListeners.delete(cb)
+  }
+}
+const NO_INSERTS: string[] = []
 
 /** 空闲态的流式状态（归零）。 */
 /**
@@ -570,6 +603,8 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
         }
       // 历史回填：已完成的待办清单卡（条目取自主进程 todos 边车里令其完成的那次快照）。
       if (b.kind === 'todolist') return { kind: 'todolist', id: b.id, title: b.title, items: b.items }
+      // 历史回填：回合进行中插入的消息（执行步骤里的一个节点）。
+      if (b.kind === 'insert') return { kind: 'insert', text: b.text }
       const status: ToolStatus = b.status === 'error' ? 'error' : b.status === 'running' ? 'running' : 'ok'
       // 历史回填：run_subagent / send_to_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children
       // 为空、仅存结论）。
@@ -793,6 +828,9 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
     case 'mount_request':
       next.push({ kind: 'mount', key: ev.key, tool: ev.tool, path: ev.path })
       return next
+    case 'insert':
+      next.push({ kind: 'insert', text: ev.text })
+      return next
     case 'error':
       next.push({ kind: 'error', message: ev.message })
       return next
@@ -812,9 +850,10 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
 function dropStepPartial(blocks: ChatBlock[]): ChatBlock[] {
   let lastTool = -1
   for (let i = blocks.length - 1; i >= 0; i--) {
-    // 工具卡、子智能体 Task 卡、已完成清单卡与步骤标记都是「步骤边界」：其后才是本步残缺的 thinking/text 尾部。
+    // 工具卡、子智能体 Task 卡、已完成清单卡、步骤标记与插入的消息（随上一步结果送达）都是「步骤边界」：
+    // 其后才是本步残缺的 thinking/text 尾部。
     const k = blocks[i].kind
-    if (k === 'tool' || k === 'subagent' || k === 'todolist' || k === 'step') {
+    if (k === 'tool' || k === 'subagent' || k === 'todolist' || k === 'step' || k === 'insert') {
       lastTool = i
       break
     }
@@ -1111,6 +1150,18 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     setTodoStates(map)
   }, [])
 
+  // 各会话待送达的插入消息（键=sessionId）：只由主进程的 inserts 事件更新（插入 / 送达 / 撤回 / 回合结束都会推）。
+  const [insertStates, setInsertStates] = useState<Map<string, string[]>>(() => new Map())
+  const setInsertState = useCallback((sid: string, pending: string[]): void => {
+    setInsertStates((prev) => {
+      if (!pending.length && !prev.has(sid)) return prev
+      const map = new Map(prev)
+      if (pending.length) map.set(sid, pending)
+      else map.delete(sid)
+      return map
+    })
+  }, [])
+
   // 只改某会话消息序列的便捷 patch（复用 updateLastAssistant 的引用短路，无变更则不提交）。
   const patchMessages = useCallback(
     (sid: string, mutate: (blocks: ChatBlock[]) => ChatBlock[]): void => {
@@ -1319,6 +1370,16 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         return
       }
 
+      // 待送达的插入消息与退回的插入消息同样是会话级的：不论本层是否正流式该会话都要处理。
+      if (ev.type === 'inserts') {
+        setInsertState(sid, ev.pending)
+        return
+      }
+      if (ev.type === 'inserts_returned') {
+        for (const cb of insertReturnListeners) cb(sid, ev.text)
+        return
+      }
+
       // 本回合压缩成功（自动或 /compact）：主进程历史已改写为「摘要 + 近期轮」，本层气泡却仍是全量，
       // 两边的轮下标因此错开被压掉的轮数，回滚 / 删轮会落到错的轮上。先记下，done 时以主进程为准重载。
       if (ev.type === 'compacted' && ev.status === 'compacted') compactedSids.add(sid)
@@ -1443,7 +1504,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     dropRuntime,
     attachSession,
     toast,
-    setTodoState
+    setTodoState,
+    setInsertState
   ])
 
   // 切到某会话时拉取其待办清单（此后的变化走 todos 事件）。拉取期间事件已先到则以事件为准。
@@ -1713,6 +1775,50 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     const stop = (): void => {
       const turnId = runtimesRef.current.get(sessionIdRef.current)?.turnId
       if (turnId) void window.deva.chat.abort(turnId)
+    }
+
+    // 回合进行中插入（见 ChatContextValue.insert）。模型只在来不及送达、改作下一轮发出时用作回落，解析同 send。
+    const insert = async (text: string): Promise<boolean> => {
+      const sid = sessionIdRef.current
+      const body = text.trim()
+      if (!body) return false
+      const ov = bindingsRef.current.get(sid)
+      const meta = sessions.find((s) => s.id === sid)
+      const sessionModelRef = ov && ov.model !== undefined ? ov.model : meta?.model
+      const model = findActive(providers, sessionModelRef ?? null) ?? activeModel
+      if (!model) {
+        const msg = hasUsableModel(providers) ? t('chat.noModel') : t('chat.setup.noModel')
+        toast.show({ variant: 'warning', message: msg, duration: 6000 })
+        return false
+      }
+      try {
+        const r = await window.deva.chat.insert({
+          sessionId: sid,
+          text: body,
+          model: {
+            adapter: model.provider.adapter as 'anthropic' | 'openai' | 'responses',
+            providerId: model.provider.id,
+            baseURL: model.provider.apiHost,
+            model: model.model.id
+          }
+        })
+        if (r.ok) return true
+        // 回合恰好已经结束：照常发出，开始新的一轮。
+        if (r.reason === 'idle') return send(body)
+        if (r.reason === 'busy') toast.show({ variant: 'warning', message: t('chat.insert.busy') })
+        return false
+      } catch (e) {
+        toast.show({ variant: 'error', title: t('chat.error'), message: (e as Error)?.message ?? String(e), duration: 8000 })
+        return false
+      }
+    }
+
+    const withdrawInserts = async (): Promise<string> => {
+      try {
+        return (await window.deva.chat.withdrawInserts(sessionIdRef.current)).text
+      } catch {
+        return ''
+      }
     }
 
     // 新建 / 切换 / 删除随时可用——即使别的会话正在流式（这正是多对话并行的关键）。
@@ -2017,13 +2123,18 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       resolveAutotask,
       todos: todoStates.get(currentSessionId) ?? EMPTY_TODOS,
       cancelTodoList,
-      stopSubagent
+      stopSubagent,
+      insert,
+      pendingInserts: insertStates.get(currentSessionId) ?? NO_INSERTS,
+      withdrawInserts,
+      onInsertsReturned
     }
   }, [
     sessions,
     currentSessionId,
     todoStates,
     setTodoState,
+    insertStates,
     messages,
     streaming,
     streamStatus,

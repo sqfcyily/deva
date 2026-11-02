@@ -55,6 +55,18 @@ export interface ChatSendRequest {
   effort?: EffortLevel
 }
 
+/**
+ * 回合进行中插入一条消息：当前步骤结束后交给模型，来不及就在本轮结束后作为普通消息发出（model 此时作回落）。
+ */
+export interface ChatInsertRequest {
+  sessionId: string
+  text: string
+  model: ChatModelConfig
+}
+
+/** idle = 回合刚结束（改走普通发送）；busy = 正在跑的不接受插入（如定时任务）；empty = 正文为空。 */
+export type ChatInsertResult = { ok: true } | { ok: false; reason: 'idle' | 'busy' | 'empty' }
+
 /** 手动 /compact 压缩请求（无用户文本、无后续模型轮；locale 在主进程解析）。 */
 export interface ChatCompactRequest {
   sessionId: string
@@ -745,6 +757,12 @@ export type ChatStreamEvent =
       /** notify：本轮由后台任务通知自动发起，text 为通知标题。 */
       user: { text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[]; notify?: true }
     }
+  /** 插入的消息已随本步工具结果交给模型：执行步骤里添一个节点。 */
+  | { type: 'insert'; text: string }
+  /** 该对话待送达的插入消息（会话级，turnId 为空串）；空数组 = 没有。 */
+  | { type: 'inserts'; pending: string[] }
+  /** 回合被停止或出错，待送达的插入消息退回（会话级，turnId 为空串）：放回该对话的输入框。 */
+  | { type: 'inserts_returned'; text: string }
   /** durationMs：本轮耗时（扣除等用户处置的时间）。 */
   | { type: 'done'; stopReason: string; durationMs?: number }
 
@@ -950,6 +968,11 @@ const api = {
   chat: {
     send: (req: ChatSendRequest): Promise<{ turnId: string }> =>
       ipcRenderer.invoke('chat:send', req),
+    /** 回合进行中插入一条消息（见 ChatInsertRequest）。 */
+    insert: (req: ChatInsertRequest): Promise<ChatInsertResult> => ipcRenderer.invoke('chat:insert', req),
+    /** 撤回某对话全部待送达的插入消息，返回合并后的原文（没有则为空串）。 */
+    withdrawInserts: (sessionId: string): Promise<{ text: string }> =>
+      ipcRenderer.invoke('chat:withdraw-inserts', sessionId),
     /** 手动压缩历史（/compact）：无后续模型轮，只回发 compacted + done 事件。 */
     compact: (req: ChatCompactRequest): Promise<{ turnId: string }> =>
       ipcRenderer.invoke('chat:compact', req),

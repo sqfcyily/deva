@@ -200,6 +200,11 @@ const zhCN: MessageTree = {
     placeholder: '向 Deva 描述你的任务，或输入 / 使用技能…',
     send: '发送',
     stop: '停止',
+    // 回合进行中插入的消息（执行步骤里的节点）
+    insert: {
+      node: '执行过程中插入的消息',
+      busy: '这个对话正在执行定时任务或整理上下文，暂时不能插入消息。'
+    },
     jumpToLatest: '回到最新',
     thinking: '思考中',
     thought: '已思考',
@@ -1047,6 +1052,16 @@ const zhCN: MessageTree = {
     msgCollapse: '收起',
     attach: '附加文件',
     send: '发送',
+    // 回合进行中插入当前轮：输入框的插入键、占位提示与待送达胶囊
+    insert: {
+      button: '插入',
+      hint: '插入当前轮（Enter）：当前步骤结束后交给 {name}，来不及就在本轮结束后发出',
+      placeholder: '补充或纠正，当前步骤结束后交给 {name}…',
+      pending: '待插入',
+      pendingHint: '当前步骤结束后送达',
+      count: '{n} 条',
+      withdraw: '撤回'
+    },
     newline: '换行',
     cancel: '取消',
     attachSkipped: '以下文件类型不支持或过大，未添加：{names}',
@@ -1334,6 +1349,10 @@ const en: MessageTree = {
     placeholder: 'Describe a task for Deva, or type / to use a skill…',
     send: 'Send',
     stop: 'Stop',
+    insert: {
+      node: 'Message added while it was working',
+      busy: "This conversation is busy with a scheduled task or housekeeping, so messages can't be added right now."
+    },
     jumpToLatest: 'Jump to latest',
     thinking: 'Thinking',
     thought: 'Thought',
@@ -2183,6 +2202,15 @@ const en: MessageTree = {
     msgCollapse: 'Show less',
     attach: 'Attach file',
     send: 'Send',
+    insert: {
+      button: 'Insert',
+      hint: "Insert into the current turn (Enter): {name} gets it after the current step, or right after this turn if it's already wrapping up",
+      placeholder: 'Add a note or correction — {name} gets it after the current step…',
+      pending: 'Queued',
+      pendingHint: 'Delivered after the current step',
+      count: '{n} messages',
+      withdraw: 'Withdraw'
+    },
     newline: 'newline',
     cancel: 'Cancel',
     attachSkipped: 'Skipped unsupported or oversized files: {names}',

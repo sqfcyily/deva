@@ -1545,6 +1545,35 @@ button.tl__line:hover {
   line-height: calc(22px * var(--cs, 1));
   color: var(--fg-muted);
 }
+/* 回合进行中插入的消息：节点是用户的小头像，正文用用户气泡的底色、完整显示（可换行），一眼看出是「我说的」 */
+.tl__me {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: var(--bg-inset);
+}
+.tl__me > svg,
+.tl__me > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.tl__insert {
+  width: fit-content;
+  max-width: 100%;
+  /* 上下各 1px：首行与 22px 高的节点对齐 */
+  margin-top: 1px;
+  padding: 0 9px;
+  border-radius: var(--radius);
+  background: var(--chat-user-bubble);
+  font-size: calc(13px * var(--cs, 1));
+  line-height: calc(20px * var(--cs, 1));
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 /* 子智能体展开后的内部步骤：每步一行，带小图标 */
 .tl__sub {
   display: flex;

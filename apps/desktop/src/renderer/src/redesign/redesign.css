@@ -2296,6 +2296,31 @@ body.cf-resizing-y * {
 .cf-send.is-stop:hover {
   background: var(--border);
 }
+/* 回合进行中输入框有文字：停止键缩成方块让到左边，最右是浅主题色的「插入」，与平时实心的「发送」一眼可分。 */
+.cf-send.is-stop.is-square {
+  min-width: 32px;
+  width: 32px;
+  padding: 0;
+}
+.cf-send.is-insert {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+.cf-send.is-insert:hover {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+/* 待送达的插入消息胶囊：外观同后台任务胶囊（.cf-bg__pill），图标与「待插入」用主题色 */
+.cf-ins__pill {
+  cursor: default;
+}
+.cf-ins__icon {
+  flex: none;
+  color: var(--accent);
+}
+.cf-ins__count {
+  flex: none;
+  color: var(--fg-subtle);
+}
 .cf-hint {
   margin-top: 6px;
   font-size: 11px;
