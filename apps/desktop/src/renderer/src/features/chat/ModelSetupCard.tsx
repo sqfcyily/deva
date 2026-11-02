@@ -130,8 +130,9 @@ export function ModelSetupCard(): React.JSX.Element {
           (p) =>
             p.kind === 'official' &&
             (p.purpose ?? 'llm') === 'llm' &&
-            // 同厂商同密钥、仅协议不同的变体，对非研发用户只会造成困惑。
-            p.id !== 'openai-responses'
+            // 仅协议不同的变体与小众订阅网关不进引导卡，设置页仍可选。
+            p.id !== 'openai-responses' &&
+            p.id !== 'opencode-go'
         )
         .sort((a, b) => rank(a.id) - rank(b.id)),
     [providers]

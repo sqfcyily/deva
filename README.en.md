@@ -90,8 +90,6 @@ Preset providers: Anthropic, OpenAI, Google Gemini, DeepSeek, Kimi, Zhipu GLM, Q
 | OpenAI Chat Completions | Compatible with most providers |
 | OpenAI Responses | OpenAI's newer API |
 
-One OpenCode Go provider covers its entire catalog (Console translates across protocols), and "Fetch models" pulls the full list. The gateway requires a stable `x-opencode-session` header per conversation and fails with `MissingSessionID` without it; Deva sends it automatically.
-
 Reasoning effort shows only the levels a model supports and is hidden for models without it.
 
 ## Design
