@@ -1512,6 +1512,9 @@ body.cf-resizing-y * {
   padding: var(--space-5) 0;
   /* 消息里吸顶元素（如展开的思考标题）的 top：抵掉上内边距，贴住可视区上沿，不留一条透出正文的缝 */
   --sticky-top: calc(-1 * var(--space-5));
+  /* 文字大小倍率（见 tokens.css --chat-scale）：对话内容（回复、用户消息、思考、执行步骤）按它缩放；
+     角色名、折叠条标题、卡片与按钮仍是固定字号，不引用它 */
+  --cs: var(--chat-scale, 1);
 }
 
 /* ---- 对话轮次索引（右侧导航） ---- */
@@ -1654,7 +1657,7 @@ body.cf-resizing-y * {
   color: var(--fg);
 }
 .cf-msg__text {
-  font-size: 13.5px;
+  font-size: calc(13.5px * var(--cs, 1));
   line-height: 1.62;
   color: var(--fg);
   white-space: pre-wrap;
@@ -2166,7 +2169,9 @@ body.cf-resizing-y * {
   min-height: 44px;
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 13.5px;
+  /* 输入的字与对话内容同步缩放（文字大小，见 tokens.css --chat-scale）；输入框高度不变 */
+  --cs: var(--chat-scale, 1);
+  font-size: calc(13.5px * var(--cs));
   line-height: 1.5;
 }
 .cf-draft__input {

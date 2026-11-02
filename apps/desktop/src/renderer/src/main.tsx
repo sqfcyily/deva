@@ -13,6 +13,10 @@ import { WorkspaceProvider } from './store/workspace'
 import { ChatProvider } from './store/chat'
 import { TasksProvider } from './store/tasks'
 import { ProfileProvider } from './store/profile'
+import { applyChatFontSize, readChatFontSize } from './theme/chatFontSize'
+
+// 文字大小须在首帧前生效，否则长对话会先按标准字号排一遍再跳
+applyChatFontSize(readChatFontSize())
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

@@ -78,6 +78,23 @@
   color-scheme: light;
 }
 
+/*
+ * 文字大小：设置 → 通用「文字大小」写入 <html data-chat-fs>（小 / 标准 / 大 / 特大），默认「标准」即 1 倍。
+ * 倍率以回复正文为基准（13 / 14 / 15.5 / 17px）；只在对话区生效（.cf-msgs / .cf-draft 取作 --cs，见 redesign.css）。
+ */
+:root {
+  --chat-scale: 1;
+}
+:root[data-chat-fs='sm'] {
+  --chat-scale: calc(13 / 14);
+}
+:root[data-chat-fs='lg'] {
+  --chat-scale: calc(15.5 / 14);
+}
+:root[data-chat-fs='xl'] {
+  --chat-scale: calc(17 / 14);
+}
+
 :root[data-theme='dark'] {
   --bg: #1e1e20;
   --bg-panel: #252528;

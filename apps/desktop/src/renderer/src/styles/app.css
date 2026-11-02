@@ -760,8 +760,9 @@ textarea {
   margin-bottom: 0;
 }
 /* ===== 助手 Markdown 正文（GFM）===== */
+/* 字号与段距乘以「文字大小」倍率 --cs：只在对话区（.cf-msgs / .cf-draft，见 redesign.css）有值，别处的 Markdown 回落 1 倍 */
 .md {
-  font-size: 14px;
+  font-size: calc(14px * var(--cs, 1));
   line-height: 1.65;
   color: var(--fg);
   word-break: break-word;
@@ -774,15 +775,15 @@ textarea {
   margin-bottom: 0;
 }
 .md p {
-  margin: 0 0 var(--space-3);
+  margin: 0 0 calc(var(--space-3) * var(--cs, 1));
 }
 .md ul,
 .md ol {
-  margin: 0 0 var(--space-3);
+  margin: 0 0 calc(var(--space-3) * var(--cs, 1));
   padding-left: 1.5em;
 }
 .md li {
-  margin: 2px 0;
+  margin: calc(2px * var(--cs, 1)) 0;
 }
 .md li > ul,
 .md li > ol {
@@ -797,7 +798,7 @@ textarea {
 .md h4,
 .md h5,
 .md h6 {
-  margin: var(--space-4) 0 var(--space-2);
+  margin: calc(var(--space-4) * var(--cs, 1)) 0 calc(var(--space-2) * var(--cs, 1));
   font-weight: 650;
   line-height: 1.3;
 }
@@ -831,7 +832,7 @@ textarea {
   font-weight: 650;
 }
 .md blockquote {
-  margin: 0 0 var(--space-3);
+  margin: 0 0 calc(var(--space-3) * var(--cs, 1));
   padding: 2px 0 2px var(--space-3);
   border-left: 3px solid var(--border-strong);
   color: var(--fg-muted);
@@ -842,7 +843,7 @@ textarea {
 .md hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: var(--space-4) 0;
+  margin: calc(var(--space-4) * var(--cs, 1)) 0;
 }
 .md img {
   max-width: 100%;
@@ -855,13 +856,13 @@ textarea {
   max-width: 100%;
   overflow-x: auto;
   border-collapse: collapse;
-  margin: 0 0 var(--space-3);
-  font-size: 13px;
+  margin: 0 0 calc(var(--space-3) * var(--cs, 1));
+  font-size: calc(13px * var(--cs, 1));
 }
 .md th,
 .md td {
   border: 1px solid var(--border);
-  padding: 6px 10px;
+  padding: calc(6px * var(--cs, 1)) calc(10px * var(--cs, 1));
   text-align: left;
 }
 .md th {
@@ -888,7 +889,9 @@ textarea {
   border-radius: 4px;
   background: var(--bg-inset);
   border: 1px solid var(--border);
-  word-break: break-all;
+  /* 短代码整段换到下一行，放不下一整行时才断开；break-all 会把 git:status 这类短代码在行尾拆成两半 */
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 /* 思考块弱化配色 */
 .md--muted,
@@ -898,7 +901,7 @@ textarea {
 
 /* ===== 代码块：DeepSeek 式「语言名 + 复制」头部 ===== */
 .md-code {
-  margin: 0 0 var(--space-3);
+  margin: 0 0 calc(var(--space-3) * var(--cs, 1));
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-inset);
@@ -941,7 +944,7 @@ textarea {
   padding: var(--space-3);
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--cs, 1));
   line-height: 1.55;
   color: var(--fg);
 }
@@ -1260,7 +1263,7 @@ textarea {
   content: '';
   position: absolute;
   left: 9.5px;
-  top: 21px;
+  top: calc(22px * var(--cs, 1) - 1px);
   bottom: -1px;
   width: 1px;
   background: var(--border-strong);
@@ -1269,7 +1272,7 @@ textarea {
   display: grid;
   place-items: center;
   width: 20px;
-  height: 22px;
+  height: calc(22px * var(--cs, 1));
   color: var(--fg-subtle);
 }
 .tl__item.is-run > .tl__node {
@@ -1295,8 +1298,8 @@ textarea {
   gap: 6px;
   min-width: 0;
   max-width: 100%;
-  font-size: 13px;
-  line-height: 22px;
+  font-size: calc(13px * var(--cs, 1));
+  line-height: calc(22px * var(--cs, 1));
   color: var(--fg-muted);
 }
 /* 可展开的行：悬停底色贴着内容走，左右各让出 6px 以免文字贴边 */
@@ -1309,8 +1312,8 @@ button.tl__line {
   border-radius: var(--radius-sm);
   background: transparent;
   font: inherit;
-  font-size: 13px;
-  line-height: 22px;
+  font-size: calc(13px * var(--cs, 1));
+  line-height: calc(22px * var(--cs, 1));
   color: var(--fg-muted);
   text-align: left;
   cursor: pointer;
@@ -1354,16 +1357,16 @@ button.tl__line:hover {
 }
 .tl__obj {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--cs, 1));
   /* 命令与路径要按原样显示：等宽字体的连字会把 => 画成 ⇒ */
   font-variant-ligatures: none;
 }
 .tl__extra {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--cs, 1));
   color: var(--fg-subtle);
 }
 .tl__tag {
-  font-size: 12px;
+  font-size: calc(12px * var(--cs, 1));
   color: var(--accent);
 }
 .tl__shimmer {
@@ -1402,7 +1405,7 @@ button.tl__line:hover {
   margin-top: var(--space-1);
 }
 .tl__think .md {
-  font-size: 13px;
+  font-size: calc(13px * var(--cs, 1));
 }
 /*
  * 展开后吸在对话区顶部的标题行：工作过程折叠条（角色名 + 已处理 …）与时间轴上的思考节点（💡 已思考），长内容
@@ -1450,15 +1453,15 @@ button.tl__line:hover {
   display: grid;
   place-items: center;
   width: 20px;
-  height: 22px;
+  height: calc(22px * var(--cs, 1));
   color: var(--fg-subtle);
 }
 .tl__item.is-run > .tl__main > .tl__think-head > .tl__think-icon {
   color: var(--accent);
 }
-/* 思考的实时小窗：最多 4 行（13px × 1.6），超出时停在最新内容、上沿渐隐 */
+/* 思考的实时小窗：最多 4 行（13px × 文字大小倍率 × 1.6），超出时停在最新内容、上沿渐隐 */
 .tl__think-live {
-  max-height: calc(13px * 1.6 * 4);
+  max-height: calc(13px * var(--cs, 1) * 1.6 * 4);
   overflow: hidden;
 }
 .tl__think-live .md {
@@ -1478,10 +1481,10 @@ button.tl__line:hover {
 .tl__cmd-body {
   margin: 0;
   padding: 6px var(--space-3);
-  max-height: calc(12px * 1.5 * 10 + 12px);
+  max-height: calc(12px * var(--cs, 1) * 1.5 * 10 + 12px);
   overflow-y: auto;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--cs, 1));
   line-height: 1.5;
   font-variant-ligatures: none;
   color: var(--fg);
@@ -1497,12 +1500,12 @@ button.tl__line:hover {
   padding-bottom: var(--space-1);
 }
 .tl__qa-q {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--cs, 1));
   line-height: 1.6;
   color: var(--fg-subtle);
 }
 .tl__qa-a {
-  font-size: 13px;
+  font-size: calc(13px * var(--cs, 1));
   line-height: 1.6;
   color: var(--fg-muted);
   white-space: pre-wrap;
@@ -1510,7 +1513,7 @@ button.tl__line:hover {
 }
 /* 已决计划展开后的全文与回复：标题压到正文大小、去掉下划线，别在时间轴里显得比回复还重 */
 .tl__plan .md {
-  font-size: 13px;
+  font-size: calc(13px * var(--cs, 1));
 }
 .tl__plan .md :is(h1, h2, h3, h4, h5, h6) {
   margin: var(--space-2) 0 var(--space-1);
@@ -1522,7 +1525,7 @@ button.tl__line:hover {
 }
 .tl__feedback {
   margin-top: var(--space-2);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--cs, 1));
   line-height: 1.6;
   color: var(--fg-muted);
   white-space: pre-wrap;
@@ -1533,13 +1536,13 @@ button.tl__line:hover {
   color: var(--fg-subtle);
 }
 .tl__item--more .tl__line {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--cs, 1));
   color: var(--fg-subtle);
 }
 /* 中间说明节点：正文弱一档，首行与节点对齐 */
 .tl__item--note .md {
-  font-size: 13px;
-  line-height: 22px;
+  font-size: calc(13px * var(--cs, 1));
+  line-height: calc(22px * var(--cs, 1));
   color: var(--fg-muted);
 }
 /* 子智能体展开后的内部步骤：每步一行，带小图标 */
@@ -1548,12 +1551,12 @@ button.tl__line:hover {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  font-size: 12.5px;
-  line-height: 24px;
+  font-size: calc(12.5px * var(--cs, 1));
+  line-height: calc(24px * var(--cs, 1));
   color: var(--fg-muted);
 }
 .tl__sub .tl__obj {
-  font-size: 12px;
+  font-size: calc(12px * var(--cs, 1));
 }
 .tl__sub-icon {
   display: grid;
@@ -1568,7 +1571,7 @@ button.tl__line:hover {
   color: var(--danger);
 }
 .tl__task {
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--cs, 1));
   line-height: 1.6;
   color: var(--fg-subtle);
   white-space: pre-wrap;
@@ -3033,7 +3036,7 @@ button.tl__line:hover {
 }
 /* 过程中夹着的正文是中间说明，不是最终回复：字号与颜色都弱一档 */
 .msg__process-body .md {
-  font-size: 13px;
+  font-size: calc(13px * var(--cs, 1));
   color: var(--fg-muted);
 }
 /* 「已压缩」提示：居中的一行胶囊，点开在下方展开摘要正文（默认折叠） */

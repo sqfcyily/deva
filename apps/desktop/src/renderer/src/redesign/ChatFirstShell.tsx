@@ -141,6 +141,7 @@ import {
   type AvatarSpec
 } from '../components/humation'
 import { useTheme } from '../theme/ThemeContext'
+import { readChatFontSize, saveChatFontSize, type ChatFontSize } from '../theme/chatFontSize'
 import {
   BlockView,
   CompactionNotice,
@@ -5706,6 +5707,13 @@ function GeneralPane(): React.JSX.Element {
     setCloseToTray(next)
     void window.deva?.config?.set?.({ closeToTray: next })
   }
+  // 文字大小：点选即生效（写 <html data-chat-fs>）并落盘，见 theme/chatFontSize.ts
+  const [chatFontSize, setChatFontSize] = useState<ChatFontSize>(readChatFontSize)
+  const pickChatFontSize = (v: string): void => {
+    const next = v as ChatFontSize
+    setChatFontSize(next)
+    saveChatFontSize(next)
+  }
   return (
     <>
       <h2 className="cf-pane__title">{t('settings.general')}</h2>
@@ -5732,6 +5740,19 @@ function GeneralPane(): React.JSX.Element {
               { v: 'system', label: t('settings.themeSystem') },
               { v: 'light', label: t('settings.themeLight') },
               { v: 'dark', label: t('settings.themeDark') }
+            ]}
+          />
+        </div>
+        <div className="cf-set__row">
+          <div className="cf-set__label">{t('settings.chatFontSize')}</div>
+          <Segmented
+            value={chatFontSize}
+            onChange={pickChatFontSize}
+            options={[
+              { v: 'sm', label: t('settings.chatFontSm') },
+              { v: 'md', label: t('settings.chatFontMd') },
+              { v: 'lg', label: t('settings.chatFontLg') },
+              { v: 'xl', label: t('settings.chatFontXl') }
             ]}
           />
         </div>
