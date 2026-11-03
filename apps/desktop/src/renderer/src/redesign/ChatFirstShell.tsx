@@ -1191,6 +1191,48 @@ function Rail({
     const ids = personas.map((p) => p.id)
     onReorderPersonas([id, ...ids.filter((x) => x !== id)])
   }
+  // 归档时提示去向：复制出这一行，像窗口最小化那样缩小飞进搜索行的 +（已归档对话从 + 浮层底部进入），
+  // 落进后 + 轻跳一下。须在归档前调用（行还在列表里才量得到位置）；替身放在列表栏里以沿用其字体，
+  // fixed 定位、不接收鼠标，按时长移除（窗口在后台时动画可能不推进，不等 onfinish）。减少动态效果时不播。
+  const flyToArchive = (id: string): void => {
+    const rail = asideRef.current
+    if (!rail || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const row = rail.querySelector<HTMLElement>(`[data-thread="${CSS.escape(id)}"]`)
+    const plus = rail.querySelector<HTMLElement>('[data-archive-target]')
+    if (!row || !plus) return
+    const r = row.getBoundingClientRect()
+    const p = plus.getBoundingClientRect()
+    const ghost = row.cloneNode(true) as HTMLElement
+    ghost.removeAttribute('data-thread')
+    ghost.classList.add('cf-thread--ghost')
+    ghost.setAttribute('aria-hidden', 'true')
+    Object.assign(ghost.style, {
+      left: `${r.left}px`,
+      top: `${r.top}px`,
+      width: `${r.width}px`,
+      height: `${r.height}px`
+    })
+    rail.appendChild(ghost)
+    const dx = p.left + p.width / 2 - (r.left + r.width / 2)
+    const dy = p.top + p.height / 2 - (r.top + r.height / 2)
+    const DURATION = 380
+    ghost.animate(
+      [
+        { transform: 'translate(0, 0) scale(1)', opacity: 1 },
+        { transform: `translate(${dx}px, ${dy}px) scale(${p.width / r.width})`, opacity: 0.15 }
+      ],
+      { duration: DURATION, easing: 'cubic-bezier(.5, 0, .75, 0)', fill: 'forwards' }
+    )
+    window.setTimeout(() => {
+      ghost.remove()
+      rail
+        .querySelector<HTMLElement>('[data-archive-target]')
+        ?.animate(
+          [{ transform: 'scale(1)' }, { transform: 'scale(1.15)' }, { transform: 'scale(1)' }],
+          { duration: 240, easing: 'ease-out' }
+        )
+    }, DURATION + 10)
+  }
   // 对话行（对话列表与已归档对话共用）：右键菜单记下是否已归档，菜单项随之不同。
   const threadRow = (s: SessionMeta): React.JSX.Element => (
     <ThreadRow
@@ -1451,7 +1493,10 @@ function Rail({
                   {
                     label: t('cf.archive'),
                     icon: <Archive size={14} />,
-                    onClick: () => onArchiveThread(menu.id, menu.title)
+                    onClick: () => {
+                      flyToArchive(menu.id)
+                      onArchiveThread(menu.id, menu.title)
+                    }
                   },
                   {
                     label: t('cf.deleteChat'),
@@ -2410,6 +2455,8 @@ function NewChatMenu({
     <div className="cf-addmenu" {...hoverProps}>
       <button
         className="cf-rail__addbtn"
+        // 归档动画的落点（见 Rail 的 flyToArchive）。
+        data-archive-target=""
         title={t('cf.newChat')}
         aria-label={t('cf.newChat')}
         aria-haspopup="menu"
@@ -2531,6 +2578,7 @@ function ThreadRow({
   return (
     <button
       className={`cf-thread${active ? ' is-active' : ''}`}
+      data-thread={session.id}
       onClick={onClick}
       onContextMenu={onContext}
     >

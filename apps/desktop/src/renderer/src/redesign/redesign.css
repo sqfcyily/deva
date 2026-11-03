@@ -706,6 +706,16 @@ body.cf-resizing-y * {
 .cf-thread.is-active {
   background: var(--bg-selected);
 }
+/* 归档时飞进 + 的对话行替身（Rail 的 flyToArchive 克隆生成，动画结束即移除）。
+   选中底色是半透明的，下面一行已上移补位，故垫一层栏底色，免得两行字叠在一起。 */
+.cf-thread.cf-thread--ghost {
+  position: fixed;
+  z-index: 40;
+  margin: 0;
+  background: linear-gradient(var(--bg-selected), var(--bg-selected)), var(--bg-panel);
+  pointer-events: none;
+  transform-origin: center;
+}
 .cf-thread__main {
   min-width: 0;
 }
