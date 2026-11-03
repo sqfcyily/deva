@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, nativeTheme, Tray, Menu } from 'ele
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { getConfig, registerConfigIpc } from './services/config'
-import { getAppIcon } from './services/tray-icon'
+import { getAppIcon, getTrayIcon } from './services/tray-icon'
 import { registerWorkspaceIpc } from './services/workspace'
 import { registerSecretsIpc } from './services/secrets'
 import { registerProviderIpc } from './services/provider'
@@ -225,14 +225,14 @@ function showMainWindow(): void {
 }
 
 /**
- * 建系统托盘（幂等）：图标运行期生成（tray-icon.ts，无二进制资产）。
+ * 建系统托盘（幂等）：图标运行期生成（tray-icon.ts，无二进制资产；macOS 为单色模板图）。
  * 菜单——显示 Deva / 定时任务概览〔直达 Tasks 标签〕/ 退出；左键切换窗口可见。
  * 菜单文案按启动时 config.locale 取中/英（运行时改语言需重启方更新，可接受）。
  */
 function createTray(): void {
   if (tray) return
   try {
-    tray = new Tray(getAppIcon())
+    tray = new Tray(getTrayIcon())
   } catch {
     tray = null // 极端环境建托盘失败：静默降级（不影响调度 / 通知 / 主功能）
     return

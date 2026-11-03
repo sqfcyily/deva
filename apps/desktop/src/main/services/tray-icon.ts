@@ -6,7 +6,8 @@ import { deflateSync } from 'zlib'
  *
  * 遵「免装铁律」：只用内置 `zlib` 手写最小 PNG（RGBA 真彩 + alpha），
  * 画 Deva 标志（「!」作 D 的竖笔 + 半圆），与安装包图标 build/icon.ico 保持一致。
- * 生成 32×32 逻辑像素 PNG（附 2x）交 `nativeImage`；Windows 托盘会自动缩放到 16px。
+ * - 应用图标：32×32 逻辑像素彩色 PNG（附 2x）；Windows / Linux 托盘也用它（Windows 自动缩放到 16px）。
+ * - macOS 菜单栏：另生成只有「!D」字形的单色模板图（见 `getTrayIcon`），由系统按菜单栏深浅着色。
  * 全程纯 JS、零第三方依赖，dev 与打包行为一致（不经 electron-vite `?asset` 资产管线，
  * 免去二进制资产的类型声明与打包路径问题）。
  */
@@ -153,4 +154,59 @@ export function getAppIcon(): NativeImage {
     cached = nativeImage.createEmpty()
   }
   return cached
+}
+
+// ── macOS 菜单栏模板图（纯字形，系统着色）─────────────────────────────────
+
+/** 字形外接框高度（1024 画布坐标 y 246–778；x 285–739），外接框中心恰为 (512, 512)。 */
+const GLYPH_H = 532
+
+/**
+ * 生成纯字形 RGBA 像素：无底板，RGB 恒为 0（黑），只写 alpha——模板图只看 alpha。
+ * `size` 为画布边长（px），字形高 `glyphH`（px）并居中；ss×ss 超采样抗锯齿。
+ * 横向微移使竖笔左边缘落在整像素上，1x 屏上竖笔不发虚（纵向在 18/16 下本就对齐）。
+ */
+function drawGlyph(size: number, glyphH: number, ss = 8): Uint8Array {
+  const px = new Uint8Array(size * size * 4)
+  const k = GLYPH_H / glyphH // 每像素对应的画布单位
+  const left = size / 2 - (512 - 285) / k // 竖笔左边缘（x=285）所在像素位置
+  const dx = Math.round(left) - left
+  const n = ss * ss
+  for (let py = 0; py < size; py++) {
+    for (let pxl = 0; pxl < size; pxl++) {
+      let cov = 0
+      for (let sy = 0; sy < ss; sy++) {
+        for (let sx = 0; sx < ss; sx++) {
+          const x = 512 + (pxl + (sx + 0.5) / ss - size / 2 - dx) * k
+          const y = 512 + (py + (sy + 0.5) / ss - size / 2) * k
+          if (inShape(x, y)) cov++
+        }
+      }
+      px[(py * size + pxl) * 4 + 3] = Math.round((cov / n) * 255)
+    }
+  }
+  return px
+}
+
+let trayCached: NativeImage | null = null
+
+/**
+ * 取托盘图标（首次生成后缓存）。
+ * - macOS：18pt 画布、字形高 16pt 的单色模板图（附 2x），与系统及其他应用的菜单栏图标同尺寸；
+ *   `setTemplateImage(true)` 后由系统按浅色 / 深色 / 壁纸染色菜单栏及点开高亮自动着色。
+ *   不能用彩色应用图标：32px 会按 32pt 显示，几乎撑满菜单栏，且颜色不随菜单栏变化。
+ * - 其它平台：沿用彩色应用图标。
+ */
+export function getTrayIcon(): NativeImage {
+  if (process.platform !== 'darwin') return getAppIcon()
+  if (trayCached) return trayCached
+  try {
+    const img = nativeImage.createFromBuffer(encodePng(18, 18, drawGlyph(18, 16)))
+    img.addRepresentation({ scaleFactor: 2, buffer: encodePng(36, 36, drawGlyph(36, 32, 4)) })
+    img.setTemplateImage(true)
+    trayCached = img
+  } catch {
+    trayCached = nativeImage.createEmpty()
+  }
+  return trayCached
 }
