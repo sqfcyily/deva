@@ -262,6 +262,59 @@ body.cf-resizing-y * {
   /* 搜索行整体可拖拽，但「添加角色」入口需保留点击/悬停，故排除出拖拽区。 */
   -webkit-app-region: no-drag;
 }
+/*
+ * 归档角标：右键归档后在「新建对话」+ 右上角短暂亮起（主题色圆底 + 归档图标），提示已归档对话在 + 里找回。
+ * 外圈垫一道栏底色把它与按钮边框分开。亮起带一点回弹，熄灭淡出缩小；不接收鼠标，不挡 + 的悬停与点击。
+ */
+.cf-addmenu__badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-fg);
+  box-shadow: 0 0 0 2px var(--bg-panel);
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(0.5);
+  visibility: hidden;
+  transition:
+    opacity 0.18s ease-in,
+    transform 0.18s ease-in,
+    visibility 0s linear 0.18s;
+}
+.cf-addmenu__badge.is-on {
+  opacity: 1;
+  transform: none;
+  visibility: visible;
+  transition: none;
+  animation: cf-addmenu-badge-in 0.26s ease-out;
+}
+@keyframes cf-addmenu-badge-in {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-addmenu__badge,
+  .cf-addmenu__badge.is-on {
+    transition: none;
+    animation: none;
+  }
+}
 .cf-addmenu__pop {
   position: absolute;
   top: calc(100% + 6px);
@@ -371,6 +424,13 @@ body.cf-resizing-y * {
   color: var(--fg-muted);
 }
 .cf-addmenu__item:hover .cf-addmenu__icon {
+  color: var(--accent);
+}
+/* 归档角标亮着时，浮层底部「已归档对话」一行整行标主题色字，与 + 上的角标呼应 */
+.cf-addmenu__item.is-hint,
+.cf-addmenu__item.is-hint .cf-addmenu__icon,
+.cf-addmenu__item.is-hint .cf-addmenu__count,
+.cf-addmenu__item.is-hint .cf-addmenu__chev {
   color: var(--accent);
 }
 @media (prefers-reduced-motion: reduce) {
@@ -705,16 +765,6 @@ body.cf-resizing-y * {
 }
 .cf-thread.is-active {
   background: var(--bg-selected);
-}
-/* 归档时飞进 + 的对话行替身（Rail 的 flyToArchive 克隆生成，动画结束即移除）。
-   选中底色是半透明的，下面一行已上移补位，故垫一层栏底色，免得两行字叠在一起。 */
-.cf-thread.cf-thread--ghost {
-  position: fixed;
-  z-index: 40;
-  margin: 0;
-  background: linear-gradient(var(--bg-selected), var(--bg-selected)), var(--bg-panel);
-  pointer-events: none;
-  transform-origin: center;
 }
 .cf-thread__main {
   min-width: 0;

@@ -1015,6 +1015,8 @@ function Rail({
   const [filterOpen, setFilterOpen] = useState(false)
   // 已归档对话：从「新建对话」浮层底部进入，在列表这一栏里列出，顶部「←」返回。已归档的不进列表、搜索与筛选。
   const [archiveView, setArchiveView] = useState(false)
+  // 右键归档的次数：每归档一次加一，NewChatMenu 据此在 + 右上角短暂亮一枚归档角标，提示去这里找回。
+  const [archiveHint, setArchiveHint] = useState(0)
   const liveSessions = useMemo(() => sessions.filter((s) => !s.archived), [sessions])
   const archivedSessions = useMemo(
     () => sessions.filter((s) => s.archived).sort((a, b) => b.updatedAt - a.updatedAt),
@@ -1191,48 +1193,6 @@ function Rail({
     const ids = personas.map((p) => p.id)
     onReorderPersonas([id, ...ids.filter((x) => x !== id)])
   }
-  // 归档时提示去向：复制出这一行，像窗口最小化那样缩小飞进搜索行的 +（已归档对话从 + 浮层底部进入），
-  // 落进后 + 轻跳一下。须在归档前调用（行还在列表里才量得到位置）；替身放在列表栏里以沿用其字体，
-  // fixed 定位、不接收鼠标，按时长移除（窗口在后台时动画可能不推进，不等 onfinish）。减少动态效果时不播。
-  const flyToArchive = (id: string): void => {
-    const rail = asideRef.current
-    if (!rail || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    const row = rail.querySelector<HTMLElement>(`[data-thread="${CSS.escape(id)}"]`)
-    const plus = rail.querySelector<HTMLElement>('[data-archive-target]')
-    if (!row || !plus) return
-    const r = row.getBoundingClientRect()
-    const p = plus.getBoundingClientRect()
-    const ghost = row.cloneNode(true) as HTMLElement
-    ghost.removeAttribute('data-thread')
-    ghost.classList.add('cf-thread--ghost')
-    ghost.setAttribute('aria-hidden', 'true')
-    Object.assign(ghost.style, {
-      left: `${r.left}px`,
-      top: `${r.top}px`,
-      width: `${r.width}px`,
-      height: `${r.height}px`
-    })
-    rail.appendChild(ghost)
-    const dx = p.left + p.width / 2 - (r.left + r.width / 2)
-    const dy = p.top + p.height / 2 - (r.top + r.height / 2)
-    const DURATION = 380
-    ghost.animate(
-      [
-        { transform: 'translate(0, 0) scale(1)', opacity: 1 },
-        { transform: `translate(${dx}px, ${dy}px) scale(${p.width / r.width})`, opacity: 0.15 }
-      ],
-      { duration: DURATION, easing: 'cubic-bezier(.5, 0, .75, 0)', fill: 'forwards' }
-    )
-    window.setTimeout(() => {
-      ghost.remove()
-      rail
-        .querySelector<HTMLElement>('[data-archive-target]')
-        ?.animate(
-          [{ transform: 'scale(1)' }, { transform: 'scale(1.15)' }, { transform: 'scale(1)' }],
-          { duration: 240, easing: 'ease-out' }
-        )
-    }, DURATION + 10)
-  }
   // 对话行（对话列表与已归档对话共用）：右键菜单记下是否已归档，菜单项随之不同。
   const threadRow = (s: SessionMeta): React.JSX.Element => (
     <ThreadRow
@@ -1334,6 +1294,7 @@ function Rail({
             <NewChatMenu
               personas={personas}
               archivedCount={archivedSessions.length}
+              archiveHint={archiveHint}
               onStart={(id) => startFresh(() => onStartPersona(id))}
               onOpenArchive={() => {
                 setFilterOpen(false)
@@ -1494,7 +1455,7 @@ function Rail({
                     label: t('cf.archive'),
                     icon: <Archive size={14} />,
                     onClick: () => {
-                      flyToArchive(menu.id)
+                      setArchiveHint((n) => n + 1)
                       onArchiveThread(menu.id, menu.title)
                     }
                   },
@@ -2441,22 +2402,59 @@ function useHoverMenu(): {
 function NewChatMenu({
   personas,
   archivedCount,
+  archiveHint,
   onStart,
   onOpenArchive
 }: {
   personas: Persona[]
   archivedCount: number
+  /** 右键归档的次数（Rail 每归档一次加一）；变化时在 + 右上角短暂亮归档角标。 */
+  archiveHint: number
   onStart: (personaId: string) => void
   onOpenArchive: () => void
 }): React.JSX.Element {
   const { t } = useI18n()
   const { open, hoverProps, show, choose } = useHoverMenu()
+  // 归档角标：亮约 1.5 秒后淡出；连续归档重新计时并轻跳一下。鼠标停在 + / 浮层上时一直亮着（浮层底部
+  // 「已归档对话」同时标主题色），移开即熄。只认挂载后的变化——切 tab、进出已归档视图会重新挂载本组件，
+  // 不能把之前的计数当成新归档。撤销到一条已归档都不剩时也熄（浮层里已没有那一行）。
+  const [hint, setHint] = useState(false)
+  const seenHint = useRef(archiveHint)
+  const hovered = useRef(false)
+  const badgeRef = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    if (archiveHint === seenHint.current) return
+    seenHint.current = archiveHint
+    hovered.current = false
+    if (hint && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      badgeRef.current?.animate(
+        [{ transform: 'scale(1)' }, { transform: 'scale(1.2)' }, { transform: 'scale(1)' }],
+        { duration: 220, easing: 'ease-out' }
+      )
+    }
+    setHint(true)
+    // 只随归档次数触发；hint 仅用来判断是否已经亮着
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [archiveHint])
+  useEffect(() => {
+    if (!hint) return
+    if (open) {
+      hovered.current = true
+      return
+    }
+    if (hovered.current) {
+      hovered.current = false
+      setHint(false)
+      return
+    }
+    const timer = window.setTimeout(() => setHint(false), 1500)
+    return () => window.clearTimeout(timer)
+  }, [hint, open, archiveHint])
+  const hinting = hint && archivedCount > 0
   return (
     <div className="cf-addmenu" {...hoverProps}>
       <button
         className="cf-rail__addbtn"
-        // 归档动画的落点（见 Rail 的 flyToArchive）。
-        data-archive-target=""
         title={t('cf.newChat')}
         aria-label={t('cf.newChat')}
         aria-haspopup="menu"
@@ -2465,6 +2463,9 @@ function NewChatMenu({
       >
         <Plus size={16} />
       </button>
+      <span ref={badgeRef} className={`cf-addmenu__badge${hinting ? ' is-on' : ''}`} aria-hidden="true">
+        <Archive size={10} strokeWidth={2.6} />
+      </span>
       {open && (personas.length > 0 || archivedCount > 0) && (
         <div className="cf-addmenu__pop cf-addmenu__pop--scroll" role="menu">
           {personas.length > 0 && (
@@ -2492,7 +2493,11 @@ function NewChatMenu({
           {archivedCount > 0 && (
             <>
               {personas.length > 0 && <div className="cf-addmenu__sep" />}
-              <button className="cf-addmenu__item" role="menuitem" onClick={() => choose(onOpenArchive)}>
+              <button
+                className={`cf-addmenu__item${hinting ? ' is-hint' : ''}`}
+                role="menuitem"
+                onClick={() => choose(onOpenArchive)}
+              >
                 <Archive size={15} className="cf-addmenu__icon" />
                 <span className="cf-addmenu__label">{t('cf.archivedChats')}</span>
                 <span className="cf-addmenu__count">{archivedCount}</span>
@@ -2578,7 +2583,6 @@ function ThreadRow({
   return (
     <button
       className={`cf-thread${active ? ' is-active' : ''}`}
-      data-thread={session.id}
       onClick={onClick}
       onContextMenu={onContext}
     >
