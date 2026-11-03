@@ -3,6 +3,7 @@ import { ChevronUp, Loader2, Square } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useChat, type ChatBlock } from '../../store/chat'
 import { ToolText, subagentTitle } from './blocks'
+import { useDockOrder } from './dockOrder'
 
 type SubagentBlock = Extract<ChatBlock, { kind: 'subagent' }>
 
@@ -63,6 +64,7 @@ export function BackgroundCapsule(): React.JSX.Element | null {
     }
   }, [open])
 
+  const order = useDockOrder(tasks.length > 0, currentSessionId)
   if (tasks.length === 0) return null
 
   const stop = (ids: string[]): void => {
@@ -89,7 +91,7 @@ export function BackgroundCapsule(): React.JSX.Element | null {
     const task = tasks[0]
     const name = subagentTitle(task, t)
     return (
-      <div className="cf-bg" ref={rootRef}>
+      <div className="cf-bg" ref={rootRef} style={{ order }}>
         <div className="cf-bg__pill">
           <Loader2 size={13} className="spin cf-bg__spin" />
           <span className="cf-bg__label">{t('chat.bg.label')}</span>
@@ -104,7 +106,7 @@ export function BackgroundCapsule(): React.JSX.Element | null {
   }
 
   return (
-    <div className={`cf-bg${open ? ' is-open' : ''}`} ref={rootRef}>
+    <div className={`cf-bg${open ? ' is-open' : ''}`} ref={rootRef} style={{ order }}>
       {open && (
         <div className="cf-todo__panel" role="dialog" aria-label={t('chat.bg.title')}>
           <div className="cf-todo__head">

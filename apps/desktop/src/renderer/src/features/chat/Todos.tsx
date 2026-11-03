@@ -3,6 +3,7 @@ import { Check, ChevronUp, Circle, CircleDot } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useChat } from '../../store/chat'
 import type { TodoItem } from '../../../../preload'
+import { useDockOrder } from './dockOrder'
 
 /**
  * 待办清单（todo_write）的界面：输入框上方的进度胶囊 + 向上展开的清单面板，以及条目列表（对话流里的
@@ -96,6 +97,7 @@ export function TodoCapsule(): React.JSX.Element | null {
     }
   }, [open])
 
+  const order = useDockOrder(!!active, currentSessionId)
   if (!active) return null
   const total = active.items.length
   const done = countDone(active.items)
@@ -105,7 +107,7 @@ export function TodoCapsule(): React.JSX.Element | null {
   const now = doing ? doing.content : next ? `${t('chat.todo.waiting')} · ${next.content}` : title
 
   return (
-    <div className={`cf-todo${open ? ' is-open' : ''}`} ref={rootRef}>
+    <div className={`cf-todo${open ? ' is-open' : ''}`} ref={rootRef} style={{ order }}>
       {open && (
         <div className="cf-todo__panel" role="dialog" aria-label={title}>
           <div className="cf-todo__head">
@@ -138,7 +140,7 @@ export function TodoCapsule(): React.JSX.Element | null {
         className="cf-todo__pill"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        title={t('chat.todo.open')}
+        title={`${now}\n${t('chat.todo.open')}`}
       >
         <ProgressRing value={done / total} />
         <span className={`cf-todo__now${doing ? ' is-doing' : ''}`}>{now}</span>

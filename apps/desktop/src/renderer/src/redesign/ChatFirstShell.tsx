@@ -93,6 +93,7 @@ import { taskErrorKey } from '../features/chat/TaskConfirmCard'
 import { TodoCapsule } from '../features/chat/Todos'
 import { BackgroundCapsule } from '../features/chat/BackgroundTasks'
 import { BrowserCapsule } from '../features/browser/BrowserCapsule'
+import { useDockOrder } from '../features/chat/dockOrder'
 import { useBrowserState } from '../features/browser/shared'
 import { ModelSetupCard } from '../features/chat/ModelSetupCard'
 import { Markdown } from '../features/chat/Markdown'
@@ -4671,6 +4672,7 @@ function InsertCapsule({ sessionId }: { sessionId: string }): React.JSX.Element 
   const { t } = useI18n()
   const { pendingInserts, withdrawInserts } = useChat()
   const [busy, setBusy] = useState(false)
+  const order = useDockOrder(pendingInserts.length > 0, sessionId)
   if (pendingInserts.length === 0) return null
   const text = pendingInserts.join('  ')
   const withdraw = (): void => {
@@ -4680,8 +4682,9 @@ function InsertCapsule({ sessionId }: { sessionId: string }): React.JSX.Element 
       .finally(() => setBusy(false))
   }
   return (
-    <div className="cf-ins">
-      <div className="cf-bg__pill cf-ins__pill" title={t('cf.insert.pendingHint')}>
+    <div className="cf-ins" style={{ order }}>
+      {/* 消息文字最多 160px（见 .cf-dock），完整内容挂在悬停上 */}
+      <div className="cf-bg__pill cf-ins__pill" title={`${text}\n${t('cf.insert.pendingHint')}`}>
         <Clock size={13} className="cf-ins__icon" />
         <span className="cf-bg__label cf-ins__label">{t('cf.insert.pending')}</span>
         <span className="cf-bg__name">{text}</span>
@@ -5128,12 +5131,16 @@ function Composer({
             <div className="cf-slash__hint">{t('cf.slash.hint')}</div>
           </div>
         )}
-        {/* 输入框上方的胶囊排：待办清单进度（有进行中的清单才出现）+ 后台任务（有后台运行的子智能体才出现）。 */}
+        {/*
+         * 输入框上方的胶囊排：待办清单、后台任务、浏览网页、插入对话，各自有内容才出现。
+         * 实际先后按出现的先后（新出现的在最右，见 useDockOrder）；这里的书写顺序只在切会话、几枚同时出现时起作用——
+         * 越常驻的越靠左，插入对话最短暂、最需要用户留意，放最后。
+         */}
         <div className="cf-dock">
-          <InsertCapsule sessionId={sessionId} />
           <TodoCapsule />
           <BackgroundCapsule />
           <BrowserCapsule sessionId={sessionId} />
+          <InsertCapsule sessionId={sessionId} />
         </div>
         <div className="cf-box">
           {/* 拖拽手柄压在输入框上边框：向上拖加高输入框。 */}

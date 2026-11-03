@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useChat } from '../../store/chat'
+import { useDockOrder } from '../chat/dockOrder'
 import { doingText, siteOf, tabTitle } from './text'
 import { PagesPanel, useBrowserState } from './shared'
 import './capsule.css'
@@ -66,6 +67,7 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
   const shown = preview ? (tabs.find((x) => x.id === preview.tab) ?? cur) : cur
   /** 预览卡正在看的标签（卡没打开为 undefined）。 */
   const previewId = preview ? shown?.id : undefined
+  const order = useDockOrder(!!(s && sessionId && cur), sessionId)
 
   useEffect(() => {
     setListOpen(false)
@@ -82,11 +84,15 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
     return () => document.removeEventListener('visibilitychange', on)
   }, [])
 
-  // 实时画面：预览卡显示且主窗口可见时推它正在看的标签
+  // 预览卡打开先取一张截图：不看可见性（实测有时窗口在前台、页面却报 hidden），保证卡片不空着
+  useEffect(() => {
+    if (!previewId) return
+    void api.thumbnail(previewId).then((src) => src && setThumb({ tab: previewId, src }))
+  }, [api, previewId])
+  // 实时画面：预览卡显示且主窗口可见时推它正在看的标签（最小化等不可见时停推，省资源）
   useEffect(() => api.onLiveFrame((f) => setFrame({ tab: f.tab, src: `data:image/jpeg;base64,${f.data}` })), [api])
   useEffect(() => {
     if (!previewId || !visible) return
-    void api.thumbnail(previewId).then((src) => src && setThumb({ tab: previewId, src }))
     void api.liveStart(previewId)
     return () => void api.liveStop()
   }, [api, previewId, visible])
@@ -199,7 +205,7 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
   }
 
   return (
-    <div className={`cf-browser${listOpen ? ' is-open' : ''}`} ref={rootRef}>
+    <div className={`cf-browser${listOpen ? ' is-open' : ''}`} ref={rootRef} style={{ order }}>
       {listOpen && multi && (
         <PagesPanel
           sessionId={sessionId}
