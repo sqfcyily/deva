@@ -3,7 +3,7 @@ import { isAbsolute, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 /**
- * 网址规范化（browser 工具的 open 与浏览器窗口地址栏共用）：补协议（本机 / 内网地址补 http，其余补 https）；
+ * 网址规范化（browser 工具的 open 用）：补协议（本机 / 内网地址补 http，其余补 https）；
  * 本机路径转 file:；拒绝 javascript: / chrome: 等。无效返回 null。
  */
 export function normalizeUrl(raw: string): string | null {

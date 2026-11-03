@@ -1,36 +1,43 @@
 /**
  * 「Deva 浏览器」窗口：前台对话的网页都放在这一个窗口里（所有对话共用，标签上带角色头像）。
  *
- * 窗口自身的 webContents 是浏览器的外框界面（标签条、地址栏、状态条，渲染层 browser.html）；每个网页是一个
+ * 浏览器只给 Deva 用：不显示网址、不能输入网址（用户要自己看可以「在系统浏览器中打开」）。
+ *
+ * 窗口自身的 webContents 是浏览器的外框界面（标签条、状态条，渲染层 browser.html）；每个网页是一个
  * WebContentsView，叠放在外框下方，当前标签放在最上面。被盖住的视图照常渲染，所以别的对话可以同时在后台标签上操作。
  *
- * 收起（用户点「收回」或关闭按钮）不是隐藏：隐藏的窗口不渲染，截图、点击、输入都会失效。收起时把窗口挪到所有
+ * 收起（用户点窗口的关闭按钮）不是隐藏：隐藏的窗口不渲染，截图、点击、输入都会失效。收起时把窗口挪到所有
  * 屏幕之外继续显示、不进任务栏；配合启动时关掉 Chromium 的窗口遮挡检测（index.ts），屏幕外的窗口也照常渲染。
  *
  * 状态（标签、当前标签、Deva 正在做什么、等用户操作）经 browser:state 推给主窗口（输入框上方的胶囊）和外框界面。
  */
 import {
   BrowserWindow,
+  clipboard,
   ipcMain,
+  Menu,
   nativeTheme,
   screen,
   shell,
   WebContentsView,
+  type MenuItemConstructorOptions,
   type Rectangle
 } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { getAppIcon } from '../tray-icon'
 import { isEn } from '../../locale'
-import { normalizeUrl } from './url'
+import { startLive, stopLive } from './live'
 import {
   allPages,
   basePage,
   browserSession,
   closePage,
+  closeSessionPages,
   currentBySession,
   markHostWindow,
   notifyPagesChanged,
+  setInUseCheck,
   setPagesChangedListener,
   setWindowPageFactory,
   type BrowserPage
@@ -44,10 +51,11 @@ import {
 } from '../../../shared/browser'
 
 const TAB_BAR = BROWSER_CHROME.tabBar
-const ADDRESS_BAR = BROWSER_CHROME.addressBar
 const STATUS_BAR = BROWSER_CHROME.statusBar
 const FRAME = BROWSER_CHROME.frame
 const DEFAULT_SIZE = { width: 1180, height: 820 }
+/** 收起且一个网页都没有时，过多久销毁窗口（外框界面本身也占一个渲染进程）；下次要用再建。 */
+const EMPTY_WINDOW_DESTROY_MS = 20_000
 
 export const HANDOFF_REASONS = ['login', 'captcha', 'upload', 'confirm', 'other'] as const
 export type HandoffReason = BrowserHandoffReason
@@ -66,6 +74,21 @@ const handoffs = new Map<
   string,
   { tab: string; reason: HandoffReason; message: string; finish: (r: HandoffResponse) => void }
 >()
+/** 主窗口胶囊上「固定」着的预览卡在看哪个标签（渲染层上报）。 */
+let pinnedPreview: string | null = null
+
+/**
+ * 用户正在看 / 正在操作的网页：等用户操作中、浏览器窗口展开着且正显示、胶囊预览卡固定着看。
+ * 闲置回收跳过它们，Deva 用 close_tab 也关不掉（会被告知用户正在看）。
+ */
+export function isPageInUse(p: BrowserPage): boolean {
+  return (
+    [...handoffs.values()].some((h) => h.tab === p.id) ||
+    (p.kind === 'window' && p.id === active && !docked && !!win && !win.isDestroyed()) ||
+    p.id === pinnedPreview
+  )
+}
+
 let mainWindowGetter: () => BrowserWindow | null = () => null
 let sessionAborter: (sessionId: string) => boolean = () => false
 
@@ -135,7 +158,25 @@ function overlay(): Electron.TitleBarOverlay | undefined {
   return undefined
 }
 
+let destroyTimer: NodeJS.Timeout | null = null
+
+/** 窗口收起、且没有网页了：稍等一会儿（Deva 可能马上又开新网页）再销毁窗口。 */
+function destroyWhenEmpty(): void {
+  if (destroyTimer || quitting || !win || win.isDestroyed() || !docked || views.size) return
+  destroyTimer = setTimeout(() => {
+    destroyTimer = null
+    if (quitting || !win || win.isDestroyed() || !docked || views.size) return
+    // destroy() 不触发 close 事件（不会被拦成「收起」），closed 里会把 win 置空
+    win.destroy()
+    win = null
+  }, EMPTY_WINDOW_DESTROY_MS)
+}
+
 function ensureWindow(): BrowserWindow {
+  if (destroyTimer) {
+    clearTimeout(destroyTimer)
+    destroyTimer = null
+  }
   if (win && !win.isDestroyed()) return win
   const off = offscreenPoint()
   const dark = nativeTheme.shouldUseDarkColors
@@ -191,12 +232,15 @@ function ensureWindow(): BrowserWindow {
   return w
 }
 
-/** 外框占的高度（顶部标签条 + 地址栏，有状态条时再加一条）。 */
+/**
+ * 外框占的高度（顶部标签条，有状态条时再加一条）。等用户操作的提示条在该对话的任一标签上都显示（如登录页点「扫码登录」
+ * 开了新标签，用户在新标签里也能点「完成，继续」）；「正在操作」只在 Deva 正在操作的那个标签上显示。外框须同一规则。
+ */
 function chromeHeight(): number {
   const tab = active
   const sid = tab ? allPages().find((p) => p.id === tab)?.sessionId : undefined
-  const strip = !!sid && (handoffs.get(sid)?.tab === tab || operating.get(sid)?.tab === tab)
-  return TAB_BAR + ADDRESS_BAR + (strip ? STATUS_BAR : 0)
+  const strip = !!sid && (handoffs.has(sid) || operating.get(sid)?.tab === tab)
+  return TAB_BAR + (strip ? STATUS_BAR : 0)
 }
 
 /** 所有网页视图叠放在外框下方，当前标签在最上面。 */
@@ -247,6 +291,7 @@ export function showWindow(tab?: string | null, focus = true): void {
 /** 收起：挪到屏幕外继续运行。 */
 export function dock(): void {
   if (!win || win.isDestroyed() || docked) return
+  const focused = win.isFocused()
   if (!win.isMinimized() && !win.isMaximized() && !win.isFullScreen()) savedBounds = win.getBounds()
   if (win.isMaximized()) win.unmaximize()
   if (win.isMinimized()) win.restore()
@@ -254,10 +299,14 @@ export function dock(): void {
   win.setSkipTaskbar(true)
   const off = offscreenPoint()
   win.setPosition(off.x, off.y)
+  // 只是挪到屏幕外、窗口仍是激活的：把焦点交还给下一个窗口（Windows 上 blur 会激活下一个可见窗口），
+  // 否则键盘输入还落在看不见的网页上
+  if (focused) win.blur()
   docked = true
-  // 等用户操作时被收起：当作用户关掉了窗口
-  for (const h of handoffs.values()) h.finish('closed')
+  // 等用户操作时收起窗口不算结束：用户可能要临时去别处找账号密码。等待只由「完成，继续」/「跳过」/ 停止 / 超时 /
+  // 关掉那个网页结束；收起后胶囊上仍是「去处理」，点了回到窗口
   push()
+  destroyWhenEmpty()
 }
 
 export function setPinned(on: boolean): void {
@@ -297,8 +346,9 @@ function createWindowPage(id: string, sessionId: string, personaId?: string): Br
   })
   views.set(id, view)
   w.contentView.addChildView(view)
-  // 窗口没打开时新标签直接成为显示的标签；打开着则不抢用户正在看的标签
-  if (!active || docked) active = id
+  // 新标签切到前面（同微信：点链接开新标签即显示新标签）。窗口打开着、而用户正看着别的对话的网页时不抢
+  const shownSession = active ? allPages().find((p) => p.id === active)?.sessionId : undefined
+  if (!active || docked || shownSession === sessionId) active = id
   layout()
   const wc = view.webContents
   for (const ev of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated'] as const)
@@ -315,6 +365,9 @@ function createWindowPage(id: string, sessionId: string, personaId?: string): Br
     for (const h of handoffs.values()) if (h.tab === id) h.finish('closed')
     layout()
     push()
+    // 最后一个标签关掉：窗口跟着关（同微信）。收起后没有网页，稍后销毁
+    if (!views.size && !docked && !quitting) dock()
+    else destroyWhenEmpty()
   })
 }
 
@@ -421,6 +474,8 @@ export function registerBrowserIpc(): void {
   if (registered) return
   registered = true
   setWindowPageFactory(createWindowPage)
+  // 闲置回收跳过：等用户操作中的网页、窗口展开着且正显示的标签
+  setInUseCheck(isPageInUse)
   // screen 只能在 app ready 之后用，故在这里（启动后调用）才挂监听
   screen.on('display-added', repositionIfDocked)
   screen.on('display-removed', repositionIfDocked)
@@ -440,6 +495,25 @@ export function registerBrowserIpc(): void {
     dock()
     return { ok: true }
   })
+  // 关闭某对话的全部网页（列表里的「全部关闭」）；正等用户操作时不关
+  ipcMain.handle('browser:close-session', (_e, sessionId: string) => {
+    if (typeof sessionId !== 'string' || handoffs.has(sessionId)) return { ok: false }
+    closeSessionPages(sessionId)
+    return { ok: true }
+  })
+  // 胶囊预览卡「固定」着看哪个标签（null = 没有固定）：用户正在看，Deva 关不掉、闲置也不回收
+  ipcMain.handle('browser:preview-pinned', (_e, tab: string | null) => {
+    pinnedPreview = typeof tab === 'string' ? tab : null
+    return { ok: true }
+  })
+  // 胶囊预览卡的实时画面：开 / 停（帧经 browser:live-frame 推给主窗口）
+  ipcMain.handle('browser:live-start', (_e, tab: string) =>
+    pageById(tab) ? startLive(String(tab), mainWindowGetter) : false
+  )
+  ipcMain.handle('browser:live-stop', () => {
+    stopLive()
+    return { ok: true }
+  })
   ipcMain.handle('browser:pin', (_e, on: boolean) => {
     setPinned(on === true)
     return { ok: true }
@@ -452,14 +526,6 @@ export function registerBrowserIpc(): void {
     if (pageById(tab)) closePage(tab)
     return { ok: true }
   })
-  ipcMain.handle('browser:navigate', (_e, tab: string, url: string) => {
-    const p = pageById(tab)
-    if (!p || typeof url !== 'string') return { ok: false }
-    const target = normalizeUrl(url)
-    if (!target) return { ok: false }
-    void p.wc.loadURL(target).catch(() => {})
-    return { ok: true }
-  })
   ipcMain.handle('browser:nav', (_e, tab: string, what: 'back' | 'forward' | 'reload' | 'stop') => {
     const p = pageById(tab)
     if (!p) return { ok: false }
@@ -470,10 +536,35 @@ export function registerBrowserIpc(): void {
     else if (what === 'stop') p.wc.stop()
     return { ok: true }
   })
-  ipcMain.handle('browser:open-external', (_e, tab: string) => {
-    const url = pageById(tab)?.wc.getURL() ?? ''
-    if (/^https?:/i.test(url)) void shell.openExternal(url)
-    return { ok: true }
+  // 标签条上的「⋯」：前进 / 刷新 / 复制链接 / 在系统浏览器中打开。用系统原生菜单（应用内的弹层会被网页视图盖住）；
+  // 文案由外框按界面语言传入。菜单关闭后才返回，外框据此显示按钮的按下状态。
+  ipcMain.handle('browser:menu', (_e, tab: string, labels: Record<string, string>, at: { x: number; y: number }) => {
+    const p = pageById(tab)
+    if (!p || !win || win.isDestroyed()) return { ok: false }
+    const text = (k: string): string => (typeof labels?.[k] === 'string' ? labels[k] : k)
+    const wc = p.wc
+    const url = wc.getURL()
+    const web = /^https?:/i.test(url)
+    const h = wc.navigationHistory
+    const alive = (): boolean => !wc.isDestroyed()
+    const items: MenuItemConstructorOptions[] = [
+      { label: text('forward'), enabled: h.canGoForward(), click: () => alive() && h.canGoForward() && h.goForward() },
+      wc.isLoading()
+        ? { label: text('stopLoading'), click: () => alive() && wc.stop() }
+        : { label: text('reload'), click: () => alive() && wc.reload() },
+      { type: 'separator' },
+      { label: text('copyLink'), enabled: web, click: () => clipboard.writeText(url) },
+      { label: text('openExternal'), enabled: web, click: () => void shell.openExternal(url) }
+    ]
+    const w = win
+    return new Promise((resolve) => {
+      Menu.buildFromTemplate(items).popup({
+        window: w,
+        x: Math.round(Number(at?.x) || 0),
+        y: Math.round(Number(at?.y) || 0),
+        callback: () => resolve({ ok: true })
+      })
+    })
   })
   // 胶囊悬停预览：网页当前画面（宽 480）
   ipcMain.handle('browser:thumbnail', async (_e, tab: string) => {

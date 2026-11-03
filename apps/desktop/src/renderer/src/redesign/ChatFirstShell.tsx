@@ -38,6 +38,7 @@ import {
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
+  Globe,
   Image as ImageIcon,
   Info,
   Lightbulb,
@@ -92,6 +93,7 @@ import { taskErrorKey } from '../features/chat/TaskConfirmCard'
 import { TodoCapsule } from '../features/chat/Todos'
 import { BackgroundCapsule } from '../features/chat/BackgroundTasks'
 import { BrowserCapsule } from '../features/browser/BrowserCapsule'
+import { useBrowserState } from '../features/browser/shared'
 import { ModelSetupCard } from '../features/chat/ModelSetupCard'
 import { Markdown } from '../features/chat/Markdown'
 import {
@@ -1017,6 +1019,13 @@ function Rail({
   const [archiveView, setArchiveView] = useState(false)
   // 右键归档的次数：每归档一次加一，NewChatMenu 据此在 + 右上角短暂亮一枚归档角标，提示去这里找回。
   const [archiveHint, setArchiveHint] = useState(0)
+  // 各对话在内置浏览器里开着几个网页（对话行上打地球徽标）；整栏订阅一次，不让每行各自监听
+  const browserState = useBrowserState()
+  const browserPages = useMemo(() => {
+    const n: Record<string, number> = {}
+    for (const tab of browserState?.tabs ?? []) n[tab.sessionId] = (n[tab.sessionId] ?? 0) + 1
+    return n
+  }, [browserState?.tabs])
   const liveSessions = useMemo(() => sessions.filter((s) => !s.archived), [sessions])
   const archivedSessions = useMemo(
     () => sessions.filter((s) => s.archived).sort((a, b) => b.updatedAt - a.updatedAt),
@@ -1200,6 +1209,7 @@ function Rail({
       session={s}
       owner={personas.find((p) => p.id === s.personaId)}
       state={sessionStates[s.id]}
+      browserPages={browserPages[s.id] ?? 0}
       active={s.id === currentSessionId}
       onClick={() => onOpenThread(s.id)}
       onContext={(e) => {
@@ -2563,6 +2573,7 @@ function ThreadRow({
   session,
   owner,
   state,
+  browserPages,
   active,
   onClick,
   onContext
@@ -2570,6 +2581,8 @@ function ThreadRow({
   session: SessionMeta
   owner?: Persona
   state?: SessionLiveState
+  /** 这个对话在内置浏览器里开着几个网页（>0 时标题旁打地球徽标）。 */
+  browserPages: number
   active: boolean
   onClick: () => void
   onContext: (e: React.MouseEvent) => void
@@ -2599,27 +2612,43 @@ function ThreadRow({
         {/* 上：对话标题与时间（主视觉，醒目显示对话内容）；下：角色名，挂了文件夹则换成文件夹名（悬停看完整路径，角色看头像）。 */}
         <div className="cf-thread__top">
           <span className="cf-thread__title">{session.title || t('chat.untitled')}</span>
-          {isTask && (
-            <span className="cf-thread__badge" title={t('cf.tabTasks')}>
-              <AlarmClock size={11} />
-            </span>
-          )}
           <span className="cf-thread__time">{rel(session.updatedAt)}</span>
         </div>
-        {/* 这个会话里有没发出的内容（且不是正在看的会话）：下行换成红色「[草稿]」+ 内容开头，提醒切回去接着写。 */}
-        {draft && !active ? (
-          <div className="cf-thread__owner">
-            <span className="cf-thread__draft">{t('cf.draftTag')}</span>
-            {draft}
-          </div>
-        ) : session.focusRoot ? (
-          <div className="cf-thread__owner cf-thread__owner--ws" title={session.focusRoot}>
-            <Folder size={11} />
-            <span className="cf-thread__wsname">{basename(session.focusRoot)}</span>
-          </div>
-        ) : (
-          <div className="cf-thread__owner">{owner?.name ?? ''}</div>
-        )}
+        {/* 下行：左边是角色名 / 文件夹名 / 草稿，右边是状态图标，与上方时间右缘对齐（右侧一列：上时间、下状态）。 */}
+        <div className="cf-thread__sub">
+          {/* 这个会话里有没发出的内容（且不是正在看的会话）：下行换成红色「[草稿]」+ 内容开头，提醒切回去接着写。 */}
+          {draft && !active ? (
+            <div className="cf-thread__owner">
+              <span className="cf-thread__draft">{t('cf.draftTag')}</span>
+              {draft}
+            </div>
+          ) : session.focusRoot ? (
+            <div className="cf-thread__owner cf-thread__owner--ws" title={session.focusRoot}>
+              <Folder size={11} />
+              <span className="cf-thread__wsname">{basename(session.focusRoot)}</span>
+            </div>
+          ) : (
+            <div className="cf-thread__owner">{owner?.name ?? ''}</div>
+          )}
+          {(isTask || browserPages > 0) && (
+            <span className="cf-thread__badges">
+              {isTask && (
+                <span className="cf-thread__badge" title={t('cf.tabTasks')}>
+                  <AlarmClock size={13} />
+                </span>
+              )}
+              {/* 开着内置浏览器的网页。地球是满圆，比闹钟显大，缩 1px 让两者观感一致 */}
+              {browserPages > 0 && (
+                <span
+                  className="cf-thread__badge"
+                  title={t('browser.threadBadge').replace('{n}', String(browserPages))}
+                >
+                  <Globe size={12} />
+                </span>
+              )}
+            </span>
+          )}
+        </div>
       </div>
     </button>
   )
@@ -3943,7 +3972,13 @@ function Conversation({
     const inner = el?.firstElementChild
     if (!el || !inner || !isTail) return
     const ro = new ResizeObserver(() => {
-      if (stickRef.current || el.scrollHeight - el.scrollTop - el.clientHeight > BOTTOM_THRESHOLD) return
+      // 贴底时可视区变矮（如输入框上方多出一排胶囊：浏览器 / 待办 / 后台任务）：立刻贴回底部。否则最新的步骤、思考
+      // 被挤到可视区下面，要等下一次内容更新才滚回来——Deva 正在执行耗时的步骤时，那一行会一直被挡着
+      if (stickRef.current) {
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) el.scrollTop = el.scrollHeight
+        return
+      }
+      if (el.scrollHeight - el.scrollTop - el.clientHeight > BOTTOM_THRESHOLD) return
       stickRef.current = true
       setAtBottom(true)
     })

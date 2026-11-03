@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { EffortLevel } from '../shared/effort'
 import type { UpdateState } from '../shared/update'
 import type { DeliverableInfo } from '../shared/deliverables'
-import type { BrowserUiState } from '../shared/browser'
+import type { BrowserLiveFrame, BrowserUiState } from '../shared/browser'
 
 /** 目录项（单层）。 */
 export interface DirEntry {
@@ -1278,14 +1278,31 @@ const api = {
       ipcRenderer.invoke('browser:open', opts),
     /** 收起到胶囊（网页继续在后台运行）。 */
     dock: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:dock'),
+    /** 关闭某对话打开的全部网页（正等用户操作时不关，返回 ok:false）。 */
+    closeSession: (sessionId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('browser:close-session', sessionId),
+    /** 胶囊预览卡「固定」着看哪个标签（null = 没固定）：用户正在看，Deva 关不掉、闲置也不回收。 */
+    setPreviewPinned: (tab: string | null): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('browser:preview-pinned', tab),
+    /** 预览卡开始显示某个标签的实时画面（同一时间只推一个标签）；帧经 onLiveFrame 到达。 */
+    liveStart: (tab: string): Promise<boolean> => ipcRenderer.invoke('browser:live-start', tab),
+    liveStop: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:live-stop'),
+    onLiveFrame: (cb: (frame: BrowserLiveFrame) => void): (() => void) => {
+      const listener = (_e: unknown, frame: BrowserLiveFrame): void => cb(frame)
+      ipcRenderer.on('browser:live-frame', listener)
+      return () => ipcRenderer.removeListener('browser:live-frame', listener)
+    },
     pin: (on: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:pin', on),
     activate: (tab: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:activate', tab),
     closeTab: (tab: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:close-tab', tab),
-    navigate: (tab: string, url: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('browser:navigate', tab, url),
     nav: (tab: string, what: 'back' | 'forward' | 'reload' | 'stop'): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('browser:nav', tab, what),
-    openExternal: (tab: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('browser:open-external', tab),
+    /**
+     * 标签条「⋯」的系统菜单（前进 / 刷新 / 复制链接 / 在系统浏览器中打开），弹在窗口内坐标 at；菜单关闭后才返回。
+     * labels 是各项文案（forward、reload、stopLoading、copyLink、openExternal），由外框按界面语言传入。
+     */
+    menu: (tab: string, labels: Record<string, string>, at: { x: number; y: number }): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('browser:menu', tab, labels, at),
     /** 网页当前画面的缩略图（data URL，宽 480）；取不到返回 null。 */
     thumbnail: (tab: string): Promise<string | null> => ipcRenderer.invoke('browser:thumbnail', tab),
     /** 等用户操作时的「完成，继续」/「跳过」。 */

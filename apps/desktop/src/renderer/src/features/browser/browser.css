@@ -1,6 +1,6 @@
 /*
  * 「Deva 浏览器」窗口外框。高度须与 shared/browser.ts 的 BROWSER_CHROME 一致：
- * 标签条 40 + 地址栏 42 + 状态条 36（有时）；网页视图由主进程叠放在外框下方，四周留 2px 画边框。
+ * 标签条 40 + 状态条 36（有时）；网页视图由主进程叠放在外框下方，四周留 2px 画边框。不显示网址，没有地址栏。
  */
 html,
 body,
@@ -38,6 +38,20 @@ body {
 }
 .bc.is-mac .bc-tabs {
   padding: 0 8px 0 80px;
+}
+/* 左侧后退（其余导航收在「⋯」里） */
+.bc-tabs__nav {
+  flex: none;
+  display: flex;
+  align-self: center;
+  -webkit-app-region: no-drag;
+}
+.bc-tabs__sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  align-self: center;
+  background: var(--border-strong);
 }
 .bc-tabs__list {
   flex: 1;
@@ -163,52 +177,10 @@ body {
   color: var(--accent);
   background: var(--accent-tint);
 }
-
-/* 地址栏 */
-.bc-bar {
-  flex: none;
-  height: 42px;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border);
-}
-.bc-addr {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
-  margin: 0 6px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: var(--bg);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--fg-subtle);
-}
-.bc-addr:focus-within {
-  border-color: var(--accent);
-}
-.bc-addr > svg {
-  flex: none;
-}
-.bc-addr input {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  outline: none;
-  background: transparent;
+/* 「⋯」菜单打开期间 */
+.bc-ib.is-press {
+  background: var(--bg-hover);
   color: var(--fg);
-  font: inherit;
-  font-size: 12.5px;
-  user-select: text;
-}
-.bc-addr input:disabled {
-  color: var(--fg-subtle);
 }
 
 /* 状态条：Deva 正在操作 / 等你操作 */
@@ -253,6 +225,29 @@ body {
 .bc-strip__text b {
   color: var(--fg);
   font-weight: 600;
+}
+/* 等你操作时的站点（https 带锁；未加密显示警示） */
+.bc-site {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  margin-left: 8px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+.bc-site > svg {
+  flex: none;
+  color: var(--success);
+}
+.bc-site.is-insecure > svg {
+  color: var(--warning);
 }
 .bc-btn {
   flex: none;

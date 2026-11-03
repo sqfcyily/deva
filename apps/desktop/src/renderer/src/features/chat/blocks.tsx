@@ -116,6 +116,8 @@ const BROWSER_META: Record<string, { key: string; icon: LucideIcon }> = {
   tabs: { key: 'browserTabs', icon: AppWindow },
   switch_tab: { key: 'browserSwitchTab', icon: AppWindow },
   close_tab: { key: 'browserCloseTab', icon: AppWindow },
+  // 把窗口弹给用户看：对用户来说就是「打开网页」（结果说明里是网页标题）
+  show: { key: 'browserOpen', icon: Globe },
   dialog: { key: 'browserDialog', icon: MessageSquare }
 }
 
@@ -138,7 +140,10 @@ function toolMeta(name: string, args?: unknown): { key: string; icon: LucideIcon
   return TOOL_META[name]
 }
 
-/** browser 各动作在工具行上显示的对象：打开的网址、输入的文字、按键、等待的文字、脚本、标签编号。 */
+/**
+ * browser 各动作在工具行上显示的对象：打开的网址、输入的文字、按键、等待的文字、脚本。
+ * 切换 / 关闭标签不显示标签编号（p1 之类是内部编号，对用户没有意义）：结果说明里是网页标题。
+ */
 function browserObject(args: unknown): { text: string; full: string } | null {
   const a = (args ?? {}) as Record<string, unknown>
   const pick = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
@@ -156,10 +161,6 @@ function browserObject(args: unknown): { text: string; full: string } | null {
       break
     case 'evaluate':
       text = pick(a.script)
-      break
-    case 'switch_tab':
-    case 'close_tab':
-      text = pick(a.tab)
       break
   }
   return text ? { text: text.replace(/\s+/g, ' '), full: text } : null

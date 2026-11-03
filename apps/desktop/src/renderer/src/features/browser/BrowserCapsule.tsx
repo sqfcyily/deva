@@ -5,16 +5,17 @@ import {
   Globe,
   Hand,
   KeyRound,
+  Pin,
+  PinOff,
   ShieldCheck,
-  Square,
-  SquareArrowOutUpRight,
   Upload,
+  X,
   type LucideIcon
 } from 'lucide-react'
-import type { BrowserUiState } from '../../../../shared/browser'
 import { useI18n } from '../../i18n/i18n'
 import { useChat } from '../../store/chat'
-import { displayUrl, doingText, tabTitle } from './text'
+import { doingText, siteOf, tabTitle } from './text'
+import { PagesPanel, useBrowserState } from './shared'
 import './capsule.css'
 
 const HANDOFF_ICON: Record<string, LucideIcon> = {
@@ -28,44 +29,82 @@ const HANDOFF_ICON: Record<string, LucideIcon> = {
 /** 悬停多久浮出预览（鼠标路过不弹）。 */
 const PREVIEW_DELAY = 300
 
-/** 预览卡：看哪个标签；pinned = 点击打开的（鼠标移开不收，点外面或再点胶囊才收）。 */
+/**
+ * 预览卡：tab = 看哪个标签，null 表示跟着 Deva（等你操作的 → 正在操作的 → 当前标签）。
+ * mode：hover = 悬停浮出（移开即收）；open = 点胶囊打开（移开不收，点别处 / Esc / 再点胶囊收）；
+ * pinned = 卡上点了「固定」（点别处、打字都不收，可以边聊边看；取消固定或再点胶囊才收）。
+ */
 interface Preview {
-  tab: string
-  img: string | null
-  pinned: boolean
+  tab: string | null
+  mode: 'hover' | 'open' | 'pinned'
 }
 
 /**
  * 内置浏览器胶囊（输入框正上方，与待办清单 / 后台任务胶囊同一排）：本对话在浏览器里打开过网页才出现。
- * 显示 Deva 此刻在网页上做什么（可停止）、等你操作时的提示（「去处理」打开窗口）。
- * 悬停或点击胶囊浮出预览卡（网页缩略图、标题、网址），卡上的图标按钮才在「Deva 浏览器」窗口中打开——
- * 点胶囊本身不打开窗口。右侧箭头列出本对话打开的全部网页，点一行切到它的预览。
+ * 显示 Deva 此刻在网页上做什么（停止用输入框的停止键，这里不重复放）、等你操作时的提示（「去处理」打开窗口）。
+ * 悬停或点胶囊浮出预览卡：网页的实时画面（主进程按 CDP 推送，只在卡显示时推；点画面在「Deva 浏览器」窗口中打开）、
+ * 标题（不显示网址，悬停标题看站点）、固定、关闭（关掉这个网页）。有两个以上网页时右侧出箭头，列出本对话打开的全部网页：
+ * 点一行预览它，✕ 关掉它，标题右侧「全部关闭」；只有一个网页时没有箭头，关网页用卡上的「关闭」。
  */
 export function BrowserCapsule({ sessionId }: { sessionId: string | null }): React.JSX.Element | null {
   const { t } = useI18n()
-  const { stop, streaming } = useChat()
-  const [s, setS] = useState<BrowserUiState | null>(null)
+  const { streaming } = useChat()
+  const s = useBrowserState()
+  const api = window.deva.browser
   const [listOpen, setListOpen] = useState(false)
   const [preview, setPreview] = useState<Preview | null>(null)
+  /** 打开预览时先放一张截图（实时画面的首帧到之前不空着）。 */
+  const [thumb, setThumb] = useState<{ tab: string; src: string } | null>(null)
+  const [frame, setFrame] = useState<{ tab: string; src: string } | null>(null)
+  const [visible, setVisible] = useState(document.visibilityState === 'visible')
   const hoverTimer = useRef<number | undefined>(undefined)
   const rootRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    void window.deva.browser.getState().then(setS)
-    return window.deva.browser.onState(setS)
-  }, [])
+  const tabs = s && sessionId ? s.tabs.filter((x) => x.sessionId === sessionId) : []
+  const focusId = s && sessionId ? (s.handoff[sessionId]?.tab ?? s.operating[sessionId]?.tab ?? s.current[sessionId]) : undefined
+  const cur = tabs.find((x) => x.id === focusId) ?? tabs[tabs.length - 1]
+  const shown = preview ? (tabs.find((x) => x.id === preview.tab) ?? cur) : cur
+  /** 预览卡正在看的标签（卡没打开为 undefined）。 */
+  const previewId = preview ? shown?.id : undefined
+
   useEffect(() => {
     setListOpen(false)
     setPreview(null)
   }, [sessionId])
+  // 关到只剩一个网页：箭头没了，列表一并收起
+  useEffect(() => {
+    if (tabs.length <= 1) setListOpen(false)
+  }, [tabs.length])
 
-  // 列表或点开的预览卡：点外面关闭；Esc 关闭并截住（不让输入框把它算作一次 Esc）
-  const popupOpen = listOpen || !!preview?.pinned
+  useEffect(() => {
+    const on = (): void => setVisible(document.visibilityState === 'visible')
+    document.addEventListener('visibilitychange', on)
+    return () => document.removeEventListener('visibilitychange', on)
+  }, [])
+
+  // 实时画面：预览卡显示且主窗口可见时推它正在看的标签
+  useEffect(() => api.onLiveFrame((f) => setFrame({ tab: f.tab, src: `data:image/jpeg;base64,${f.data}` })), [api])
+  useEffect(() => {
+    if (!previewId || !visible) return
+    void api.thumbnail(previewId).then((src) => src && setThumb({ tab: previewId, src }))
+    void api.liveStart(previewId)
+    return () => void api.liveStop()
+  }, [api, previewId, visible])
+
+  // 固定着的预览卡在看哪个标签：告诉主进程（用户正在看，Deva 关不掉、闲置也不回收）
+  const pinnedTab = preview?.mode === 'pinned' ? (previewId ?? null) : null
+  useEffect(() => {
+    void api.setPreviewPinned(pinnedTab)
+  }, [api, pinnedTab])
+  useEffect(() => () => void api.setPreviewPinned(null), [api])
+
+  // 列表或点开（未固定）的预览卡：点外面关闭；Esc 关闭并截住（不让输入框把它算作一次 Esc）。固定的卡不受影响
+  const popupOpen = listOpen || preview?.mode === 'open'
   useEffect(() => {
     if (!popupOpen) return
     const close = (): void => {
       setListOpen(false)
-      setPreview(null)
+      setPreview((p) => (p?.mode === 'pinned' ? p : null))
     }
     const onDown = (e: MouseEvent): void => {
       if (!rootRef.current?.contains(e.target as Node)) close()
@@ -84,14 +123,9 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
   }, [popupOpen])
   useEffect(() => () => window.clearTimeout(hoverTimer.current), [])
 
-  if (!s || !sessionId) return null
-  const tabs = s.tabs.filter((x) => x.sessionId === sessionId)
-  if (tabs.length === 0) return null
-  const cur = tabs.find((x) => x.id === s.current[sessionId]) ?? tabs[tabs.length - 1]
+  if (!s || !sessionId || !cur || !shown) return null
   const op = s.operating[sessionId]
   const ho = s.handoff[sessionId]
-  const api = window.deva.browser
-  const shown = preview ? (tabs.find((x) => x.id === preview.tab) ?? cur) : cur
 
   const openWindow = (tab?: string): void => {
     window.clearTimeout(hoverTimer.current)
@@ -99,28 +133,34 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
     setPreview(null)
     void api.open({ tab: tab ?? cur.id })
   }
-  /** 打开某个标签的预览卡并取它此刻的缩略图。 */
-  const showPreview = (tab: string, pinned: boolean): void => {
+  /** 打开预览卡；tab 为 null 时跟着 Deva。 */
+  const showPreview = (tab: string | null, mode: Preview['mode']): void => {
     window.clearTimeout(hoverTimer.current)
     setListOpen(false)
-    setPreview({ tab, img: null, pinned })
-    void api.thumbnail(tab).then((img) => setPreview((p) => (p && p.tab === tab ? { ...p, img } : p)))
+    setPreview({ tab, mode })
   }
   const hoverIn = (): void => {
-    if (listOpen || preview?.pinned) return
+    if (listOpen || preview) return
     window.clearTimeout(hoverTimer.current)
-    hoverTimer.current = window.setTimeout(() => showPreview(cur.id, false), PREVIEW_DELAY)
+    hoverTimer.current = window.setTimeout(() => showPreview(null, 'hover'), PREVIEW_DELAY)
   }
   const hoverOut = (): void => {
     window.clearTimeout(hoverTimer.current)
-    // 移进预览卡不收（下方有 8px 桥接区）；点开的不随鼠标收
-    hoverTimer.current = window.setTimeout(() => setPreview((p) => (p?.pinned ? p : null)), 150)
+    // 移进预览卡不收（下方有 8px 桥接区）；只有悬停浮出的随鼠标收
+    hoverTimer.current = window.setTimeout(() => setPreview((p) => (p?.mode === 'hover' ? null : p)), 150)
   }
-  /** 点胶囊：切换点开的预览卡（不打开窗口）。 */
+  /** 点胶囊：打开（不固定）/ 收起预览卡（不打开窗口）。 */
   const toggle = (): void => {
-    if (preview?.pinned) setPreview(null)
-    else showPreview(cur.id, true)
+    if (preview && preview.mode !== 'hover') setPreview(null)
+    else showPreview(preview?.tab ?? null, 'open')
   }
+
+  const img = frame?.tab === shown.id ? frame.src : thumb?.tab === shown.id ? thumb.src : null
+  const openLabel = s.open ? t('browser.switchWindow') : t('browser.openWindow')
+  /** Deva 正在用（本轮进行中 / 正在操作 / 等你操作）时不给关网页（卡上「关闭」与列表同一规则）。 */
+  const locked = streaming || !!op || !!ho
+  /** 只有一个网页：不要右侧箭头（列表），关网页用卡上的「关闭」。 */
+  const multi = tabs.length > 1
 
   let body: React.JSX.Element
   if (ho) {
@@ -145,21 +185,8 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
     body = (
       <>
         <Globe size={14} className="cf-browser__icon is-live" />
+        {/* 不放「停止」：就在输入框的停止键正上方，重复且容易误点 */}
         <span className="cf-browser__text tl__shimmer">{doingText(t, op.action, op.label)}</span>
-        {streaming && (
-          <button
-            type="button"
-            className="cf-browser__btn"
-            title={t('browser.stopHint')}
-            onClick={(e) => {
-              e.stopPropagation()
-              stop()
-            }}
-          >
-            <Square size={9} />
-            {t('browser.stop')}
-          </button>
-        )}
       </>
     )
   } else {
@@ -173,50 +200,59 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
 
   return (
     <div className={`cf-browser${listOpen ? ' is-open' : ''}`} ref={rootRef}>
-      {listOpen && (
-        <div className="cf-todo__panel" role="dialog" aria-label={t('browser.pages')}>
-          <div className="cf-todo__head">
-            <span className="cf-todo__title">{t('browser.pages')}</span>
-            <span className="cf-browser__hint">{t('browser.pagesHint')}</span>
-          </div>
-          <div className="cf-todo__scroll cf-browser__list">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                className={`cf-browser__row${tab.id === cur.id ? ' is-on' : ''}`}
-                onClick={() => showPreview(tab.id, true)}
-              >
-                <Globe size={13} />
-                <span className="cf-browser__row-title">{tabTitle(t, tab)}</span>
-                <span className="cf-browser__row-url">{displayUrl(tab.url)}</span>
-              </button>
-            ))}
-          </div>
-        </div>
+      {listOpen && multi && (
+        <PagesPanel
+          sessionId={sessionId}
+          tabs={tabs}
+          current={cur.id}
+          locked={locked}
+          onPick={(tab) => showPreview(tab, 'open')}
+        />
       )}
       {preview && !listOpen && (
         <div
-          className="cf-browser__preview"
+          className={`cf-browser__preview${preview.mode === 'pinned' ? ' is-pinned' : ''}`}
           onMouseEnter={() => window.clearTimeout(hoverTimer.current)}
           onMouseLeave={hoverOut}
         >
-          <div className="cf-browser__shot">
-            {preview.img ? <img src={preview.img} alt="" draggable={false} /> : <span className="cf-browser__shot-empty" />}
-          </div>
+          {/* 点画面 = 在独立窗口中打开（悬停时画面中间出提示） */}
+          <button
+            type="button"
+            className={`cf-browser__shot${op?.tab === shown.id ? ' is-op' : ''}${ho?.tab === shown.id ? ' is-ho' : ''}`}
+            aria-label={openLabel}
+            onClick={() => openWindow(shown.id)}
+          >
+            {img ? <img src={img} alt="" draggable={false} /> : <span className="cf-browser__shot-empty" />}
+            <span className="cf-browser__shot-tip">{openLabel}</span>
+          </button>
           <div className="cf-browser__meta">
-            <div className="cf-browser__meta-text">
-              <span className="cf-browser__meta-title">{tabTitle(t, shown)}</span>
-              <span className="cf-browser__meta-url">{displayUrl(shown.url)}</span>
-            </div>
+            {/* 不显示网址（同独立窗口）；悬停标题看站点 */}
+            <span className="cf-browser__meta-title" title={[tabTitle(t, shown), siteOf(shown.url)?.host].filter(Boolean).join('\n')}>
+              {tabTitle(t, shown)}
+            </span>
+            <button
+              type="button"
+              className={`cf-browser__open${preview.mode === 'pinned' ? ' is-on' : ''}`}
+              aria-pressed={preview.mode === 'pinned'}
+              title={preview.mode === 'pinned' ? t('browser.unpinPreview') : t('browser.pinPreview')}
+              aria-label={preview.mode === 'pinned' ? t('browser.unpinPreview') : t('browser.pinPreview')}
+              onClick={() => setPreview((p) => (p ? { ...p, mode: p.mode === 'pinned' ? 'open' : 'pinned' } : p))}
+            >
+              {preview.mode === 'pinned' ? <PinOff size={15} /> : <Pin size={15} />}
+            </button>
+            {/* 关闭：关掉这个网页（卡随之收起；最后一个网页关掉后胶囊也消失）。Deva 正在用时置灰 */}
             <button
               type="button"
               className="cf-browser__open"
-              title={s.open ? t('browser.switchWindow') : t('browser.openWindow')}
-              aria-label={s.open ? t('browser.switchWindow') : t('browser.openWindow')}
-              onClick={() => openWindow(shown.id)}
+              disabled={locked}
+              title={locked ? t('browser.closeLocked') : t('browser.closePage')}
+              aria-label={t('browser.closePage')}
+              onClick={() => {
+                setPreview(null)
+                void api.closeTab(shown.id)
+              }}
             >
-              <SquareArrowOutUpRight size={15} />
+              <X size={15} />
             </button>
           </div>
         </div>
@@ -226,7 +262,7 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
           className="cf-browser__main"
           role="button"
           tabIndex={0}
-          aria-expanded={!!preview?.pinned}
+          aria-expanded={!!preview && preview.mode !== 'hover'}
           onClick={toggle}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
@@ -239,20 +275,22 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
         >
           {body}
         </div>
-        <button
-          type="button"
-          className="cf-browser__more"
-          aria-expanded={listOpen}
-          title={t('browser.pages')}
-          onClick={() => {
-            window.clearTimeout(hoverTimer.current)
-            setPreview(null)
-            setListOpen((v) => !v)
-          }}
-        >
-          {tabs.length > 1 && <span className="cf-browser__count">{tabs.length}</span>}
-          <ChevronUp size={14} />
-        </button>
+        {multi && (
+          <button
+            type="button"
+            className="cf-browser__more"
+            aria-expanded={listOpen}
+            title={t('browser.pages')}
+            onClick={() => {
+              window.clearTimeout(hoverTimer.current)
+              setPreview(null)
+              setListOpen((v) => !v)
+            }}
+          >
+            <span className="cf-browser__count">{tabs.length}</span>
+            <ChevronUp size={14} />
+          </button>
+        )}
       </div>
     </div>
   )

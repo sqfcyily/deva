@@ -42,7 +42,21 @@ export function tabTitle(t: (key: string) => string, tab: { title: string; url: 
   return tab.url || t('browser.untitled')
 }
 
-/** 地址栏 / 列表里显示的网址：解码中文，去掉 http(s):// 前缀。 */
+/**
+ * 网页所在的站点（主机名，国际化域名保持 xn-- 编码，仿冒域名更容易看出来）与是否加密；非 http(s) 网页返回 null。
+ * 等用户登录时的提示条、标签悬停提示用。
+ */
+export function siteOf(url: string): { host: string; secure: boolean } | null {
+  try {
+    const u = new URL(url)
+    if (u.protocol === 'https:' || u.protocol === 'http:') return { host: u.host, secure: u.protocol === 'https:' }
+  } catch {
+    /* 非标准网址 */
+  }
+  return null
+}
+
+/** 胶囊列表里显示的网址：解码中文，去掉 http(s):// 前缀。 */
 export function displayUrl(url: string): string {
   let s = url
   try {

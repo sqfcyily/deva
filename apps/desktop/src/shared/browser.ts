@@ -33,10 +33,16 @@ export interface BrowserUiState {
   handoff: Record<string, { tab: string; reason: BrowserHandoffReason; message: string }>
 }
 
-/** 浏览器外框各部分高度（主进程按它摆放网页视图，外框 CSS 须一致）。 */
+/** 预览卡实时画面的一帧（主进程经 browser:live-frame 推给主窗口）。 */
+export interface BrowserLiveFrame {
+  tab: string
+  /** JPEG 的 base64。 */
+  data: string
+}
+
+/** 浏览器外框各部分高度（主进程按它摆放网页视图，外框 CSS 须一致）。不显示网址，所以没有地址栏。 */
 export const BROWSER_CHROME = {
   tabBar: 40,
-  addressBar: 42,
   statusBar: 36,
   /** 网页四周留出的边距：Deva 操作时外框在这里画主题色边框。 */
   frame: 2

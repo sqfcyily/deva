@@ -33,6 +33,11 @@
   border-radius: var(--radius-full) 0 0 var(--radius-full);
   cursor: pointer;
 }
+/* 只有一个网页时没有右侧箭头：左段就是整颗胶囊 */
+.cf-browser__main:last-child {
+  padding-right: 12px;
+  border-radius: var(--radius-full);
+}
 .cf-browser__main:hover {
   color: var(--fg);
 }
@@ -146,10 +151,48 @@
   }
 }
 .cf-browser__shot {
+  position: relative;
   display: block;
   width: 100%;
+  padding: 0;
+  border: 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-inset);
+  cursor: pointer;
+}
+/* 悬停画面：中间出「在独立窗口中打开」 */
+.cf-browser__shot-tip {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 1;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(20, 20, 26, 0.72);
+  color: #fff;
+  font-size: 11.5px;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  transition: opacity 0.12s;
+  pointer-events: none;
+}
+.cf-browser__shot:hover .cf-browser__shot-tip,
+.cf-browser__shot:focus-visible .cf-browser__shot-tip {
+  opacity: 1;
+}
+/* 实时画面：Deva 正在操作时主题色内框、等你操作时警示色内框（同独立窗口） */
+.cf-browser__shot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cf-browser__shot.is-op::after {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.cf-browser__shot.is-ho::after {
+  box-shadow: inset 0 0 0 2px var(--warning);
 }
 .cf-browser__shot img {
   display: block;
@@ -166,18 +209,11 @@
 .cf-browser__meta {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 8px 10px 12px;
+  gap: 6px;
+  padding: 8px 8px 8px 12px;
   min-width: 0;
 }
-.cf-browser__meta-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-/* 在独立窗口中打开 */
+/* 卡上的图标按钮（固定 / 关闭） */
 .cf-browser__open {
   flex: none;
   width: 30px;
@@ -191,23 +227,29 @@
   color: var(--fg-muted);
   cursor: pointer;
 }
-.cf-browser__open:hover {
+.cf-browser__open:hover:not(:disabled) {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
   background: var(--accent-tint);
 }
+/* 固定按钮：固定时高亮（同独立窗口标题栏的置顶） */
+.cf-browser__open.is-on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--accent-tint);
+}
+/* 关闭网页：Deva 正在用时置灰 */
+.cf-browser__open:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .cf-browser__meta-title {
+  flex: 1;
+  min-width: 0;
+  margin-right: 4px;
   font-size: 12.5px;
   font-weight: 600;
   color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.cf-browser__meta-url {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--fg-subtle);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -218,10 +260,6 @@
   right: auto;
   width: 440px;
   max-width: calc(100vw - 48px);
-}
-.cf-browser__hint {
-  font-size: 11.5px;
-  color: var(--fg-subtle);
 }
 .cf-browser__list {
   display: flex;
@@ -270,4 +308,24 @@
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--fg-subtle);
+}
+
+/* 列表：每行 ✕（「全部关闭」在标题右侧，用 .cf-todo__cancel） */
+.cf-browser__row-x {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin: -2px -2px -2px 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.cf-browser__row-x:hover {
+  color: var(--fg);
+  background: var(--bg-hover);
 }

@@ -790,9 +790,17 @@ body.cf-resizing-y * {
   font-size: 11px;
   color: var(--fg-subtle);
 }
-/* 下行：角色名。副色号 + 常规字重，作为次要行。 */
-.cf-thread__owner {
+/* 下行：左边文字、右边状态图标（定时任务 / 内置浏览器开着网页），图标右缘与上方时间对齐。 */
+.cf-thread__sub {
   margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* 下行文字：角色名（或文件夹名、草稿）。副色号 + 常规字重，作为次要行；过长省略，给右侧图标让位。 */
+.cf-thread__owner {
+  flex: 1;
+  min-width: 0;
   font-size: 11px;
   color: var(--fg-subtle);
   overflow: hidden;
@@ -3822,11 +3830,18 @@ body.cf-resizing-y * {
 /* 滚动条：统一走 styles/app.css 的全局细滚动条，这里不再单独设置。 */
 
 /* ---------------------------- 对话行「⏰ 定时」徽标（任务独占会话） ---------------------------- */
+/* 对话行下行右侧的状态图标：与下行文字同为灰色，不和标题抢视线 */
+.cf-thread__badges {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-subtle);
+}
 .cf-thread__badge {
   display: inline-flex;
   align-items: center;
   flex: none;
-  color: var(--accent);
 }
 
 /* ---------------------------- 定时任务标签页（左列表 + 右详情） ---------------------------- */

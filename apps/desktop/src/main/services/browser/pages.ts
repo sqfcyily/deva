@@ -18,12 +18,12 @@ import { DIALOG_SHIM } from './page-scripts'
 export const BROWSER_PARTITION = 'persist:deva-browser'
 /** 网页视口尺寸（CSS 像素）。 */
 export const VIEWPORT = { width: 1280, height: 800 }
-/** 每个对话最多同时开的网页数；超出时关掉最久没用的。 */
-const MAX_PAGES_PER_SESSION = 6
+/** 每个对话最多同时开的网页数；超出时关掉最久没用的。每个网页是一个独立的渲染进程，上限从严。 */
+const MAX_PAGES_PER_SESSION = 3
 /** 全部对话合计上限。 */
-const MAX_PAGES_TOTAL = 16
-/** 闲置多久自动关闭。 */
-const IDLE_CLOSE_MS = 30 * 60_000
+const MAX_PAGES_TOTAL = 6
+/** 闲置多久自动关闭（登录状态存在分区里，关掉后重开不用重新登录）。 */
+export const IDLE_CLOSE_MS = 10 * 60_000
 const CDP_TIMEOUT_MS = 15_000
 
 export interface BrowserPage {
@@ -50,6 +50,18 @@ export interface BrowserPage {
   inflight: Map<string, number>
 }
 
+/**
+ * 网页的细滚动条（同 Deva 界面：8px、圆角、轨道透明）。滑块用半透明中性灰，浅色、深色网页上都看得清。
+ * 只用 ::-webkit-scrollbar：网站若设了标准的 scrollbar-width / scrollbar-color，Chromium 会以网站的为准。
+ */
+const SCROLLBAR_CSS = `
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.45); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.7); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+`
+
 /** 计入「页面还在加载数据」的请求类型。 */
 const TRACKED_TYPES = new Set(['Document', 'XHR', 'Fetch'])
 
@@ -69,6 +81,12 @@ export function markHostWindow(win: BrowserWindow): void {
 let windowPageFactory: ((id: string, sessionId: string, personaId?: string) => BrowserPage) | null = null
 export function setWindowPageFactory(fn: typeof windowPageFactory): void {
   windowPageFactory = fn
+}
+
+/** 正在用、不能按闲置回收的网页（等用户操作中、窗口展开着且正显示的标签），由 host.ts 注入。 */
+let inUse: (page: BrowserPage) => boolean = () => false
+export function setInUseCheck(fn: typeof inUse): void {
+  inUse = fn
 }
 
 /** 网页增删、当前标签变化、标题 / 网址 / 加载状态变化时通知（浏览器窗口与胶囊据此刷新）。 */
@@ -137,8 +155,12 @@ function startReaper(): void {
   if (reaper) return
   reaper = setInterval(() => {
     const now = Date.now()
-    for (const p of [...pages.values()]) if (now - p.lastUsed > IDLE_CLOSE_MS) closePage(p.id)
-  }, 5 * 60_000)
+    for (const p of [...pages.values()]) {
+      // 正在用的网页从「不再用」那一刻起重新计时
+      if (inUse(p)) p.lastUsed = now
+      else if (now - p.lastUsed > IDLE_CLOSE_MS) closePage(p.id)
+    }
+  }, 60_000)
   reaper.unref?.()
 }
 
@@ -183,6 +205,20 @@ export function basePage(
   dispose: () => void
 ): BrowserPage {
   wc.setAudioMuted(kind === 'offscreen')
+  // 网页滚动条换成和 Deva 界面一致的细滚动条。以「用户样式表」注入：优先级低于网站自己的样式，网站自定义过滚动条的保留原样。
+  // 每个新文档加载完注入一次（换页后旧样式随文档失效）
+  wc.on('dom-ready', () => {
+    void wc.insertCSS(SCROLLBAR_CSS, { cssOrigin: 'user' }).catch(() => {})
+  })
+  // 初始化用的 about:blank 不留在历史里：第一次真正导航后删掉，否则网页第一页也能「后退」到一片空白
+  const dropBlank = (): void => {
+    const h = wc.navigationHistory
+    if (h.length() > 1 && h.getActiveIndex() > 0 && h.getEntryAtIndex(0)?.url === 'about:blank') {
+      h.removeEntryAtIndex(0)
+      wc.off('did-navigate', dropBlank)
+    }
+  }
+  wc.on('did-navigate', dropBlank)
   return {
     id,
     sessionId,
@@ -244,8 +280,10 @@ function enforceLimits(sessionId: string): void {
   if (all.length >= MAX_PAGES_TOTAL) closePage(lru(all).id)
 }
 
+/** 最久没用的网页；正在用的（如等用户登录）尽量不选。 */
 function lru(list: BrowserPage[]): BrowserPage {
-  return list.reduce((a, b) => (a.lastUsed <= b.lastUsed ? a : b))
+  const idle = list.filter((p) => !inUse(p))
+  return (idle.length ? idle : list).reduce((a, b) => (a.lastUsed <= b.lastUsed ? a : b))
 }
 
 /** 某对话的全部标签（按打开先后）。 */
