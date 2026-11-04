@@ -131,7 +131,7 @@ import {
 /**
  * 会话编排（Agent 主循环）。
  * 流式生成 → 收集工具调用 → 过权限闸门 → 执行 → 结果回灌 → 继续，直至模型不再调用工具
- * （主轮与子智能体都不设步数上限，对标 Claude Code 的 agentic loop；仅定时任务另设上限）。
+ * （主轮、子智能体与定时任务都不设步数上限，对标 Claude Code 的 agentic loop）。
  * 对话历史只存主进程（sessions），渲染层仅发新用户文本；工具/密钥/文件访问都在主进程内闭环。
  */
 
@@ -1107,10 +1107,6 @@ export type ChatStreamEvent =
   /** durationMs：本轮耗时（扣除等用户处置的时间），渲染层据此给工作过程折叠条显示「已处理 X」。 */
   | { type: 'done'; stopReason: StopReason; durationMs?: number }
 
-// 主对话与子智能体的单轮工具步数上限：Infinity = 不设上限，一直循环到模型不再调用工具为止（对标
-// Claude Code 的 agentic loop）。天然刹车 = 用户随时可中止（主轮的停止键；后台子智能体在其 Task 卡上
-// 单独停止）+ 主轮接近上下文上限时自动压缩（compaction）。仅定时任务的密封执行另设上限。
-const MAX_STEPS = Infinity
 /**
  * 单个步骤因可重试错误（断网 / 空闲僵死 / 429 / 5xx）自动重连的最大次数。退避 1s→2s→4s… 封顶
  * RECONNECT_MAX_DELAY_MS，服务端给了 retry-after 则以它为准（同样封顶）。合计约 1.5 分钟的耐心，
@@ -1971,8 +1967,6 @@ interface AgentLoopArgs {
   ctx: ToolContext
   /** 取消控制器：其 signal 贯穿流式与工具执行。 */
   controller: AbortController
-  /** 单轮最大工具步数（主轮与子轮 MAX_STEPS=Infinity，定时任务另设上限）。 */
-  maxSteps: number
   /** 递归深度：0=主轮，1=子智能体（限制再派生；Phase 4 用）。 */
   depth: number
   /**
@@ -2277,7 +2271,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       effort,
       ctx,
       controller,
-      maxSteps,
       depth,
       interactive,
       allowAskUser,
@@ -2409,7 +2402,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           effort,
           ctx: bg ?{ workspaceRoot: ctx.workspaceRoot, signal: bg.signal } : ctx,
           controller: bg ?? controller,
-          maxSteps: MAX_STEPS,
           depth: depth + 1,
           // 子智能体仍在用户在场时运行，其每次工具调用照常过交互权限闸门。
           interactive: true,
@@ -2646,7 +2638,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const listsMemory = depth === 0
     const offeredTools = new Set(tools.map((t) => t.name))
 
-    for (let step = 0; step < maxSteps; step++) {
+    // 不设步数上限：一直循环到模型不再调用工具为止（对标 Claude Code 的 agentic loop）。天然刹车 = 用户
+    // 随时可中止（停止键；后台子智能体在其 Task 卡上单独停止）+ 接近上下文上限时自动压缩 + 连续截断收场。
+    for (let step = 0; ; step++) {
       // 轮中压缩：第 2 步起每步请求前检查（第 1 步之前调用方已在轮开头查过）。此刻上一步的工具
       // 结果已全部回灌（并行子智能体也已等齐），历史里没有悬空的 tool_use，可以安全改写。
       if (
@@ -3345,13 +3339,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       // 连续截断到上限：失败结果已回灌（历史里没有悬空调用），就此收场，渲染层照常显示「已截断」。
       if (truncatedStreak >= MAX_TRUNCATED_STREAK) return { text: finalText, stopReason: 'max_tokens' }
     }
-
-    // 达到步数上限（只有定时任务设了有限上限；主轮与子智能体为 Infinity，走不到这里）。
-    const stepLimit = isEn()
-      ? `Reached the maximum number of tool steps per turn (${maxSteps}), so the reply was stopped.`
-      : `已达到单轮最大工具步数（${maxSteps}），已停止。`
-    emit(turnId, sessionId, { type: 'error', kind: 'server', message: stepLimit })
-    return { text: finalText, stopReason: 'end_turn' }
   }
 
   /**
@@ -3585,7 +3572,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         effort: session.effort,
         ctx,
         controller,
-        maxSteps: MAX_STEPS,
         depth: 0,
         interactive: true,
         allowAskUser: true,
@@ -3719,6 +3705,23 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const auth = task.auth
     const sessionId = task.sessionId
     busySessions.set(sessionId, turnId)
+
+    // 模型选择：先严格解析信封模型，失败再回落全局默认；两者皆无 → 记错误运行，不发起、不污染对话。
+    // 必须先于 ensureSession：首次触发时它会往索引里登记一条空对话，就此返回的话这条空记录会随别的对话
+    // 保存写进 _index.json，列表多出一条点开空白的「新对话」。
+    const turnModel = resolveModelRefOrNull(auth.modelRef) ?? resolveDefaultModel()
+    if (!turnModel) {
+      activeTurns.delete(turnId)
+      busySessions.delete(sessionId)
+      return {
+        stopReason: 'error',
+        text: '',
+        errorMessage: isEn()
+          ? 'No default model is available, so the scheduled task could not run. Choose a default model in Settings.'
+          : '未配置可用的默认模型，无法执行定时任务（请在设置中选定默认模型）。'
+      }
+    }
+
     // 本次触发会改写该会话的消息：此前的回滚快照随之失效（撤销会把这一轮一并抹掉）。
     pendingUndo.delete(sessionId)
     // 密封任务无固定工作目录：相对路径回落进程 cwd，文件操作应用绝对路径。读写不设路径限制。
@@ -3733,20 +3736,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 首次触发派生标题（沿用任务标题；缺失则从 prompt 派生）。
     if (!session.title) session.title = task.title || deriveTitle(task.prompt)
 
-    // 模型选择：先严格解析信封模型，失败再回落全局默认；两者皆无 → 记错误运行，不发起、不污染对话。
-    const turnModel = resolveModelRefOrNull(auth.modelRef) ?? resolveDefaultModel()
-    if (!turnModel) {
-      activeTurns.delete(turnId)
-      busySessions.delete(sessionId)
-      return {
-        stopReason: 'error',
-        text: '',
-        errorMessage: isEn()
-          ? 'No default model is available, so the scheduled task could not run. Choose a default model in Settings.'
-          : '未配置可用的默认模型，无法执行定时任务（请在设置中选定默认模型）。'
-      }
-    }
-
     const ctx: ToolContext = { workspaceRoot: effectiveRoot, signal: controller.signal, sessionId }
     const personas =
       persona && persona.prompt.trim() ? [{ name: persona.name, prompt: persona.prompt }] : []
@@ -3756,6 +3745,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     repairDanglingToolUses(session)
     const history = session.messages
     history.push({ role: 'user', content: task.prompt })
+    // 先落盘再发 turn_start（同 sendMessage）：渲染层收到即重拉列表，列表读的是索引——不落盘，首次触发的
+    // 对话在运行期间一直显示「新对话」，要等回合结束才出现任务标题。
+    session.updatedAt = Date.now()
+    saveProject(sessionId)
     emitTurnStart(turnId, sessionId, history)
 
     // 自动压缩：任务多次触发累积于同一会话，接近窗口即先摘要替换早期历史（失败/无需都不阻断本轮）。
@@ -3805,7 +3798,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         model: turnModel,
         ctx,
         controller,
-        maxSteps: 15,
         depth: 0,
         // ★ 密封无头执行：绝不弹窗 / 不 ask_user / 不 exit_plan / 不派生子智能体。
         interactive: false,
@@ -4073,8 +4065,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   )
 
   // 归档 / 取消归档：只改这一个标记并落盘，不动 updatedAt（列表顺序不变）。尚未建档的惰性会话回 ok:false。
+  // 进行中的对话不能归档（界面上菜单已灰显；这里兜住菜单打开后回合才开始的情形，返回 false 渲染层即按清单复原）。
   ipcMain.handle('chat:set-archived', (_e, payload: ChatSetArchivedRequest): { ok: boolean } => ({
-    ok: setSessionArchived(payload.sessionId, payload.archived === true)
+    ok:
+      !(payload.archived === true && busySessions.has(payload.sessionId)) &&
+      setSessionArchived(payload.sessionId, payload.archived === true)
   }))
 
   // 左侧会话列表：一次列全部（对话无项目/分桶概念）。IPC 仍收 workspaceRoot 以兼容渲染层调用签名，忽略即可。
@@ -4211,6 +4206,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle(
     'chat:delete-session',
     (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
+      // 正在进行的回合先中止（本机发起 / 手机端 / 定时任务一视同仁）：不然它在后台照常调模型、执行工具，
+      // 结果却写不回已删除的对话。渲染层不必先发 abort——没打开过的对话它根本不知道回合 id。
+      const turnId = busySessions.get(sessionId)
+      if (turnId) abortTurn(turnId)
       cancelBackground(sessionId)
       closeSessionPages(sessionId)
       deleteStoredSession(sessionId)

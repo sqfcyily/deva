@@ -174,8 +174,9 @@ async function fireOnce(id: string, manual: boolean, missed: number): Promise<vo
     autoPaused = applied?.autoPausedError ?? false
   }
 
-  // 通知取善后后的最新记录（title 可能已被首轮派生）。
-  notifyForRun(getTask(id) ?? task, run, autoPaused)
+  // 通知取善后后的最新记录（title 可能已被首轮派生）。被中止的（停止键 / 删除对话）不弹：是用户自己停的，
+  // 何况删除对话时点通知只会落到一个已不存在的对话上。
+  if (res.stopReason !== 'aborted') notifyForRun(getTask(id) ?? task, run, autoPaused)
 }
 
 // ── 串行队列 ──────────────────────────────────────────────────────────────────

@@ -363,14 +363,15 @@ export function ChatFirstShell(): React.JSX.Element {
   useEffect(() => onInsertsReturned(restoreToComposer), [onInsertsReturned])
 
   const [railTab, setRailTab] = useState<RailTab>('chats')
-  // 图标栏「对话」按钮的红点：其他对话有新消息或待你处理时亮起（与头像红点同口径）。
-  const chatAlert = useMemo(
-    () =>
-      Object.entries(sessionStates).some(
-        ([id, st]) => id !== currentSessionId && (st.unread || st.attention)
-      ),
-    [sessionStates, currentSessionId]
-  )
+  // 图标栏「对话」按钮的红点：其他对话有新消息或待你处理时亮起（与头像红点同口径）。只认列表里看得到的对话：
+  // 删除正在跑的对话时回合被中止，随后的 done 仍会给它记一条未读；已归档的不再提醒（含仍待确认的名片）。
+  // 不过滤就成了点开找不到的红点。
+  const chatAlert = useMemo(() => {
+    const visible = new Set(storedSessions.filter((s) => !s.archived).map((s) => s.id))
+    return Object.entries(sessionStates).some(
+      ([id, st]) => id !== currentSessionId && visible.has(id) && (st.unread || st.attention)
+    )
+  }, [sessionStates, currentSessionId, storedSessions])
   // 左侧对话面板宽（可拖动）：存的是用户意图值，渲染时按窗口宽再夹取——窗口缩小时自动收窄、放大后复原。
   const viewport = useViewport()
   const trafficLights = useTrafficLights()
@@ -1465,6 +1466,10 @@ function Rail({
                   {
                     label: t('cf.archive'),
                     icon: <Archive size={14} />,
+                    // 进行中不能归档（灰显 + 悬停说明）：归档后它在看不见的地方跑完，红点却指向列表里找不到的对话。
+                    // 反过来已归档的对话一开始新一轮就会移回列表（主进程 emitTurnStart），故「进行中」与「已归档」互斥。
+                    disabled: sessionStates[menu.id]?.streaming === true,
+                    title: sessionStates[menu.id]?.streaming ? t('cf.archiveBusy') : undefined,
                     onClick: () => {
                       setArchiveHint((n) => n + 1)
                       onArchiveThread(menu.id, menu.title)
@@ -2601,13 +2606,13 @@ function ThreadRow({
       onContextMenu={onContext}
     >
       {/* 对话中（streaming）→ 头像上一道扫光指示；有新消息 / 待你处理 → 右上角红点。
-          正在查看的对话不打红点（内容就在眼前）。 */}
+          正在查看的对话不打红点（内容就在眼前），已归档的也不打（归档即不再提醒）。 */}
       <Avatar
         persona={owner}
         size={38}
         busy={state?.streaming}
-        attention={!active && state?.attention}
-        unread={!active && state?.unread}
+        attention={!active && !session.archived && state?.attention}
+        unread={!active && !session.archived && state?.unread}
       />
       <div className="cf-thread__main">
         {/* 上：对话标题与时间（主视觉，醒目显示对话内容）；下：角色名，挂了文件夹则换成文件夹名（悬停看完整路径，角色看头像）。 */}
@@ -3189,8 +3194,9 @@ function TaskRailRow({
 const HISTORY_PREVIEW = 5
 
 /**
- * 右详情面（对齐角色资料卡 .cf-profile）：展示选中任务的类型/状态、日程与运行信息、任务指令、
- * 运行历史，以及操作（编辑·暂停/恢复·立即运行·删除）。日程人读摘要经 useSchedulePreview 权威求值。
+ * 右详情面（对齐角色资料卡 .cf-profile）：展示选中任务的类型/状态、日程与运行信息、运行历史，
+ * 以及操作（编辑·暂停/恢复·立即运行·删除）。任务指令不在此展示，点「编辑」查看。
+ * 日程人读摘要经 useSchedulePreview 权威求值。
  */
 function TaskDetail({
   task,
@@ -3227,9 +3233,6 @@ function TaskDetail({
   // 默认只列最近 HISTORY_PREVIEW 次，超出时给「展开全部」开关（组件按 task.id 取 key，切任务即复位收起）。
   const [historyAll, setHistoryAll] = useState(false)
   const shownHistory = historyAll ? history : history.slice(0, HISTORY_PREVIEW)
-
-  // 任务指令可能很长（占位过多），做成折叠面板：标题行作开关，默认收起（不渲染指令体），点击可展开/再收起。
-  const [promptOpen, setPromptOpen] = useState(false)
 
   return (
     <main className="cf-conv">
@@ -3287,19 +3290,6 @@ function TaskDetail({
               <span className="cf-profile__k">{t('tasks.fModel')}</span>
               <span className="cf-profile__v">{modelLabel}</span>
             </div>
-          </div>
-
-          <div className="cf-tdetail__section">
-            <button
-              type="button"
-              className="cf-tdetail__prompthead"
-              onClick={() => setPromptOpen((v) => !v)}
-              aria-expanded={promptOpen}
-            >
-              <ChevronRight size={14} className={`cf-tdetail__chev${promptOpen ? ' is-open' : ''}`} />
-              <span className="cf-profile__convs-label">{t('tasks.fPrompt')}</span>
-            </button>
-            {promptOpen && <div className="cf-tdetail__prompt">{task.prompt}</div>}
           </div>
 
           <div className="cf-tdetail__actions">

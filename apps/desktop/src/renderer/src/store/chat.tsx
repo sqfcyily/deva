@@ -1055,6 +1055,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   >(() => new Map())
   // 未读会话（键=sessionId）：不在查看时有回合完成即记入，切进该会话即清除。
   const [unread, setUnread] = useState<ReadonlySet<string>>(() => new Set())
+  // 别处发起、正在进行的回合（键=sessionId；定时任务 / 手机端）：turn_start 记入、done 移除。本层没缓存的
+  // 会话没有 runtime，列表头像的忙碌动效靠它；不然要点开（attachSession 建了 runtime）才看得到。
+  const [bgStreaming, setBgStreaming] = useState<ReadonlySet<string>>(() => new Set())
   // 每秒自增以触发重渲染，刷新当前所视会话「已用秒数」（不绑定变量，仅需其副作用）。
   const [, setTick] = useState(0)
 
@@ -1338,6 +1341,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       if (ev.type === 'turn_start') {
         void refreshSessions() // 新会话 / 标题 / 排序
         if (localStreaming) return
+        setBgStreaming((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)))
         if (runtimesRef.current.has(sid)) {
           const [userMsg] = displayToMessages([{ role: 'user', ...ev.user }])
           patchRuntime(sid, (r) => ({
@@ -1405,6 +1409,12 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       if (ev.type === 'done') {
         const compacted = compactedSids.delete(sid)
         const compactDrop = compactDropSids.delete(sid)
+        setBgStreaming((prev) => {
+          if (!prev.has(sid)) return prev
+          const next = new Set(prev)
+          next.delete(sid)
+          return next
+        })
         // 不在查看的会话完成了一轮（本层发起后切走的 / 定时任务等后台回合）→ 记未读。
         // compactDrop（/compact 无可压或失败）没有新内容，不算。
         if (sessionIdRef.current !== sid && !compactDrop)
@@ -1546,16 +1556,22 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         }
       : IDLE_STATUS
 
-  // 各会话活动态摘要（左侧列表角标用）；仅 runtimes / 未读集变化时重算。
-  // 后台回合完成后 runtime 会被丢弃，故未读会话可能没有 runtime，单独补一条。
+  // 各会话活动态摘要（左侧列表角标用）；仅 runtimes / 未读集 / 后台进行中集变化时重算。
+  // 后台回合没缓存 runtime（进行中靠 bgStreaming，完成后 runtime 也会被丢弃），这类会话单独补一条。
   const sessionStates = useMemo<Record<string, SessionLiveState>>(() => {
     const out: Record<string, SessionLiveState> = {}
     for (const [id, r] of runtimes)
-      out[id] = { streaming: r.streaming, attention: hasAttention(r.messages), unread: unread.has(id) }
+      out[id] = {
+        streaming: r.streaming || bgStreaming.has(id),
+        attention: hasAttention(r.messages),
+        unread: unread.has(id)
+      }
+    for (const id of bgStreaming)
+      if (!out[id]) out[id] = { streaming: true, attention: false, unread: unread.has(id) }
     for (const id of unread)
       if (!out[id]) out[id] = { streaming: false, attention: false, unread: true }
     return out
-  }, [runtimes, unread])
+  }, [runtimes, unread, bgStreaming])
 
   // 当前对话的绑定读出（覆盖层优先于已落库 SessionMeta）：驱动对话优先外壳的头像 / 工作区 chip。
   // 覆盖层承载「尚未落库」（新会话首发前）或「刚 mount/unmount」的值；落库真值来自 listSessions。
@@ -1870,9 +1886,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     const deleteSession = (id: string): void => {
-      // 删除正在跑的会话：先中止其回合，再落盘删除并移除其活动态。
-      const turnId = runtimesRef.current.get(id)?.turnId
-      if (turnId) void window.deva.chat.abort(turnId)
+      // 删除正在跑的会话：主进程删除时先中止其回合（含本层没打开过的后台回合），这里只移除其活动态。
       void (async () => {
         await window.deva.chat.deleteSession(id, projectPathRef.current)
         dropRuntime(id)
@@ -1906,11 +1920,18 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     // 归档 / 取消归档：先就地改标记（列表立刻移走 / 移回），再落盘；失败（尚未建档）则以主进程清单为准。
-    // 归档的是当前对话：右侧随之离开，与删除一样打开列表第一条。
+    // 归档的是当前对话：右侧随之离开，与删除一样打开列表第一条。归档即清掉它的未读（取消归档也不恢复）。
     const setArchived = (id: string, archived: boolean): void => {
       setSessions((list) =>
         list.map((s) => (s.id === id ? { ...s, archived: archived || undefined } : s))
       )
+      if (archived)
+        setUnread((prev) => {
+          if (!prev.has(id)) return prev
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
       if (archived && id === sessionIdRef.current)
         openFirstSession(sessions.filter((s) => s.id !== id))
       void (async () => {
@@ -1919,16 +1940,13 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })()
     }
 
-    // 批量删除（删角色时清其名下全部对话）：中止各自在跑回合 → 逐条落盘删除 → 清绑定覆盖层 →
+    // 批量删除（删角色时清其名下全部对话）：逐条落盘删除（主进程顺带中止在跑回合）→ 清绑定覆盖层 →
     // 只刷新一次列表；当前会话若在删除集内，打开列表第一条或起新会话。与单条 deleteSession 同语义，
     // 但合并刷新、避免 N 条并发各自 listSessions/切换互相打架。
     const deleteSessions = (ids: string[]): void => {
       if (ids.length === 0) return
       const idSet = new Set(ids)
-      for (const id of ids) {
-        const turnId = runtimesRef.current.get(id)?.turnId
-        if (turnId) void window.deva.chat.abort(turnId)
-      }
+      // 正在跑的回合由主进程删除时一并中止（见 deleteSession）。
       void (async () => {
         const path = projectPathRef.current
         for (const id of ids) {

@@ -1160,6 +1160,7 @@ const zhCN: MessageTree = {
     deletePersonaConfirmWithChats:
       '删除后该角色不可恢复，与其关联的 {count} 个对话也将一并永久删除，此操作无法撤销。',
     deletePersonaLocked: '系统默认角色，不可删除',
+    archiveBusy: '对话进行中，停止或完成后才能归档',
     editorNewTitle: '新建角色',
     editorEditTitle: '编辑角色',
     editorProposeTitle: '确认角色名片',
@@ -2431,6 +2432,7 @@ const en: MessageTree = {
     deletePersonaConfirmWithChats:
       'This persona will be permanently removed, along with its {count} associated conversation(s). This cannot be undone.',
     deletePersonaLocked: 'Default persona — cannot be deleted',
+    archiveBusy: 'This chat is running. Stop it or wait until it finishes to archive it.',
     editorNewTitle: 'New persona',
     editorEditTitle: 'Edit persona',
     editorProposeTitle: 'Confirm agent card',

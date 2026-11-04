@@ -4051,54 +4051,10 @@ body.cf-resizing-y * {
   color: var(--warning);
 }
 
-/* 详情分节（任务指令 / 运行历史）：复用 .cf-profile__convs-label 作小标题。 */
+/* 详情分节（运行历史）：复用 .cf-profile__convs-label 作小标题。 */
 .cf-tdetail__section {
   width: 100%;
   margin-top: var(--space-5);
-}
-.cf-tdetail__prompt {
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-panel);
-  color: var(--fg);
-  font-size: 12.5px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-/* 指令折叠面板：小标题行作展开/收起开关（左侧披露箭头 + 复用 .cf-profile__convs-label 文本），
-   按钮外观归零、整行可点、悬停给底色；展开时才渲染指令体（.cf-tdetail__prompt）。 */
-.cf-tdetail__prompthead {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  margin: 0 calc(var(--space-2) * -1);
-  width: calc(100% + var(--space-2) * 2);
-  border: none;
-  border-radius: var(--radius-sm);
-  background: none;
-  cursor: pointer;
-  color: inherit;
-  text-align: left;
-}
-.cf-tdetail__prompthead:hover {
-  background: var(--bg-hover);
-}
-.cf-tdetail__prompthead .cf-profile__convs-label {
-  margin-bottom: 0;
-}
-.cf-tdetail__chev {
-  color: var(--fg-subtle);
-  flex-shrink: 0;
-  transition: transform 0.15s ease;
-}
-.cf-tdetail__chev.is-open {
-  transform: rotate(90deg);
-}
-.cf-tdetail__prompthead + .cf-tdetail__prompt {
-  margin-top: var(--space-2);
 }
 
 /* 操作按钮行（对齐 .cf-profile__actions，但可容纳 4 个动作、自动换行）。 */
