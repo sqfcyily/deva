@@ -1,3 +1,4 @@
+import { app } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync, promises as fs, type Dirent } from 'fs'
 import { homedir } from 'node:os'
@@ -1604,7 +1605,7 @@ export async function executeTool(
           signal: controller.signal,
           redirect: 'follow',
           headers: {
-            'user-agent': 'Deva/0.1 (+https://github.com/deva)',
+            'user-agent': `Deva/${app.getVersion()} (+https://github.com/sqfcyily/deva)`,
             accept: 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8'
           }
         })

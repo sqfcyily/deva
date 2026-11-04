@@ -11,7 +11,7 @@ import { app } from 'electron'
  *  2. **用自有 User-Agent 表明身份**（如 `my-agent/1.0`），而不是 SDK / HTTP 库的默认名，让网关
  *     认得出这是编码 agent 的正常流量。
  *
- * 两项都只对 opencode.ai 的推理端点生效：其余服务商的请求头与改造前逐字节一致。
+ * 第 2 项已推广到所有服务商（见 providerHeaders）；会话头只对 opencode.ai 的推理端点加。
  */
 
 /** 兜底会话 id：不经对话的单次调用（拉取模型清单、生成提交信息）用它。进程内稳定、每次启动不同。 */
@@ -31,16 +31,16 @@ function isOpencodeInference(baseURL: string): boolean {
 }
 
 /**
- * 本次请求要追加的服务商专有头（无须追加时为空对象，适配器原样并进 fetch headers 即可）。
+ * 模型请求（对话流式与拉取模型清单）要追加的请求头，适配器原样并进 fetch headers 即可：
+ *  · 所有服务商都带 `user-agent: deva/<版本>` 自报身份——不带就是 Node fetch 的默认值 `node`，网关、
+ *    中转服务与服务商后台都分不出是哪个工具在调用（issue #33）。版本号与更新器 / MCP 客户端同源。
+ *  · opencode.ai 的推理端点另加 `x-opencode-session`（见文件头）。
  * @param sessionId 所属对话 id；缺省（不经对话的一次性调用）退回本次运行 id。
  */
 export function providerHeaders(baseURL: string, sessionId?: string): Record<string, string> {
-  if (!isOpencodeInference(baseURL)) return {}
-  // UA 版本号与更新器 / MCP 客户端同源，取自 app.getVersion()。
-  return {
-    'user-agent': `deva/${app.getVersion()}`,
-    'x-opencode-session': sessionId?.trim() || runSessionId
-  }
+  const ua = { 'user-agent': `deva/${app.getVersion()}` }
+  if (!isOpencodeInference(baseURL)) return ua
+  return { ...ua, 'x-opencode-session': sessionId?.trim() || runSessionId }
 }
 
 /** 推理网关里紧跟在套餐段之后的 API 段（见官方 Base URLs 一节）。 */
