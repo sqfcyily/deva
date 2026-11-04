@@ -14,12 +14,12 @@ export interface TextPart {
    */
   listing?: ListingRecord
 }
-/** 随消息下发的清单种类。 */
-export type ListingKind = 'skills' | 'memory'
+/** 随消息下发的清单种类。guide：复杂工具的详细用法（首次用到时附上，见 listing.ts toolGuidePart）。 */
+export type ListingKind = 'skills' | 'memory' | 'guide'
 /** 清单块的结构化记录：本块告知（新增或更新）的条目及其内容摘要、本块告知移除的条目。 */
 export interface ListingRecord {
   kind: ListingKind
-  /** key：技能名 / 记忆 id。 */
+  /** key：技能名 / 记忆 id / 工具名。 */
   listed: { key: string; digest: string }[]
   removed?: string[]
 }

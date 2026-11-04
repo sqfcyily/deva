@@ -22,8 +22,16 @@ export const VIEWPORT = { width: 1280, height: 800 }
 const MAX_PAGES_PER_SESSION = 3
 /** 全部对话合计上限。 */
 const MAX_PAGES_TOTAL = 6
-/** 闲置多久自动关闭（登录状态存在分区里，关掉后重开不用重新登录）。 */
+/** 弹给用户看过的网页闲置多久自动关闭（登录状态存在分区里，关掉后重开不用重新登录）。 */
 export const IDLE_CLOSE_MS = 10 * 60_000
+/**
+ * 没弹给用户看过的网页（后台网页）：对话没有进行中的回合后，闲置多久关闭。用户看不到后台网页，也就不知道它还占着
+ * 内存，所以不靠模型自觉关，由这里兜底；留几分钟是给「需要搜索什么吗？」这类收尾后用户马上接着说的情况。
+ * 回合进行中仍按 IDLE_CLOSE_MS（模型可能在做别的步骤，回头还要用）。
+ */
+export const BACKGROUND_CLOSE_MS = 3 * 60_000
+/** 回收检查间隔。 */
+const REAP_INTERVAL_MS = 30_000
 const CDP_TIMEOUT_MS = 15_000
 
 export interface BrowserPage {
@@ -92,6 +100,23 @@ export function setWindowPageFactory(fn: typeof windowPageFactory): void {
 let inUse: (page: BrowserPage) => boolean = () => false
 export function setInUseCheck(fn: typeof inUse): void {
   inUse = fn
+}
+
+/** 对话是否有进行中的回合（含它的后台子智能体），由 chat.ts 注入；没注入时（如测试）视为没有。 */
+let sessionBusy: (sessionId: string) => boolean = () => false
+export function setSessionBusyCheck(fn: typeof sessionBusy): void {
+  sessionBusy = fn
+}
+
+/** 闲置多久关闭：后台网页在对话没有进行中的回合后按 BACKGROUND_CLOSE_MS，其余按 IDLE_CLOSE_MS。 */
+function idleLimit(p: BrowserPage): number {
+  return !p.shown && !sessionBusy(p.sessionId) ? BACKGROUND_CLOSE_MS : IDLE_CLOSE_MS
+}
+
+/** 对话的回合结束：后台网页从此刻起计时（回合里很久没用的，也留足收尾后用户接着说的时间）。 */
+export function markTurnEnded(sessionId: string): void {
+  const now = Date.now()
+  for (const p of pages.values()) if (p.sessionId === sessionId && !p.shown) p.lastUsed = Math.max(p.lastUsed, now)
 }
 
 /** 网页增删、当前标签变化、标题 / 网址 / 加载状态变化时通知（浏览器窗口与胶囊据此刷新）。 */
@@ -163,9 +188,9 @@ function startReaper(): void {
     for (const p of [...pages.values()]) {
       // 正在用的网页从「不再用」那一刻起重新计时
       if (inUse(p)) p.lastUsed = now
-      else if (now - p.lastUsed > IDLE_CLOSE_MS) closePage(p.id)
+      else if (now - p.lastUsed > idleLimit(p)) closePage(p.id)
     }
-  }, 60_000)
+  }, REAP_INTERVAL_MS)
   reaper.unref?.()
 }
 

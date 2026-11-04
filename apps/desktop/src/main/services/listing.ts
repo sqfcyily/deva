@@ -1,5 +1,6 @@
 /**
- * 清单随消息下发（对标 Claude Code 的 skill_listing / deferred_tools_delta 附件）：技能清单与记忆条目。
+ * 清单随消息下发（对标 Claude Code 的 skill_listing / deferred_tools_delta 附件）：技能清单、记忆条目，
+ * 以及复杂工具首次用到时的详细用法（toolGuidePart）。
  *
  * 提示缓存按前缀字节匹配，渲染顺序是 tools → system → messages：这类会变的清单若写在工具描述或系统提示词里，
  * 装一个技能、记一条记忆，下一轮整段历史都得重新写缓存。故工具描述与系统提示词只写固定说明，清单改为
@@ -191,4 +192,34 @@ export function memoryWrittenRecord(entry: MemoryEntry): ListingRecord {
 /** memory_delete 成功：工具结果里已写明删除，记为已告知。 */
 export function memoryDeletedRecord(id: string): ListingRecord {
   return { kind: 'memory', listed: [], removed: [id] }
+}
+
+// ── 工具详细用法 ──────────────────────────────────────────────────────────────
+
+/**
+ * 复杂工具的详细用法，首次用到时随该步结果附上一次（同技能：平时只有描述，用时才加载正文）。
+ * 工具描述只留决定「用不用、选哪个动作」所需的内容，其余放这里：工具表不变，提示缓存前缀不受影响。
+ * 已告知状态同样从历史折叠：压缩 / 删轮抹掉后，下次再用到时自动补发；用法文案改了（摘要变）也会重发。
+ * 只在末条消息带着该工具本步的结果时给出，否则返回 null。
+ */
+export function toolGuidePart(history: Message[], tool: string, guide: string): TextPart | null {
+  const last = history[history.length - 1]
+  if (!last || last.role !== 'user' || typeof last.content === 'string') return null
+  const ids = new Set<string>()
+  for (const p of last.content) if (p.type === 'tool_result') ids.add(p.toolUseId)
+  if (!ids.size) return null
+  // 本步结果对应的调用在紧挨着的上一条助手消息里
+  const prev = history[history.length - 2]
+  const used =
+    prev?.role === 'assistant' &&
+    typeof prev.content !== 'string' &&
+    prev.content.some((p) => p.type === 'tool_use' && p.name === tool && ids.has(p.id))
+  if (!used) return null
+  const digest = digestOf(guide)
+  if (announced(history, 'guide').get(tool) === digest) return null
+  return {
+    type: 'text',
+    text: `${guide}\n（以上是 ${tool} 工具的详细用法，由系统在你首次用到它时自动附带，不是用户发来的消息。）`,
+    listing: { kind: 'guide', listed: [{ key: tool, digest }] }
+  }
 }

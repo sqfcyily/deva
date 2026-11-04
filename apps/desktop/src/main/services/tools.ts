@@ -99,7 +99,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'web_fetch',
     description:
-      '获取一个网页 / HTTP(S) 资源并转为可读文本：HTML 自动去标签、解码实体、保留正文；JSON / 纯文本原样返回。用于查在线文档、读网页、取 API 响应。仅支持 http/https，有超时与大小上限，超长内容会截断。',
+      '获取一个网页 / HTTP(S) 资源并转为可读文本：HTML 自动去标签、解码实体、保留正文；JSON / 纯文本原样返回。用于查在线文档、读网页、取 API 响应。仅支持 http/https，有超时与大小上限，超长内容会截断。内容靠 JS 渲染、要登录或要交互的网页用 browser。',
     inputSchema: {
       type: 'object',
       properties: {

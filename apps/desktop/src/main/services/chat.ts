@@ -28,7 +28,7 @@ import {
   type ToolResult
 } from './tools'
 import { enabledSkillSummaries, loadSkillInstructionsByName, skillsDir } from './skills'
-import { attachListing, memoryListingPart, skillListingPart } from './listing'
+import { attachListing, memoryListingPart, skillListingPart, toolGuidePart } from './listing'
 import { memoryPromptSection } from './memory'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
 import {
@@ -91,7 +91,14 @@ import {
 import { trimHistoryImages } from './image-trim'
 import { ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
 import { isEn } from '../locale'
-import { clearBrowserOperating, closeSessionPages, setSessionAborter } from './browser'
+import {
+  BROWSER_GUIDE,
+  clearBrowserOperating,
+  closeSessionPages,
+  markBrowserTurnEnded,
+  setBrowserSessionBusyCheck,
+  setSessionAborter
+} from './browser'
 import {
   applyFiles,
   buildRestoreNote,
@@ -2579,6 +2586,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       void runSubagentLoop(rec, tc, bg)
         .then((r) => {
           backgroundSubagents.delete(tc.id)
+          // 它开的后台网页同回合结束一样计时（用户停止的不会自动起轮，见下）
+          markBrowserTurnEnded(sessionId)
           if (entry.silent) {
             // 所在轮次 / 会话已被删：它刚落盘的记录同样作废（删除那一刻它还在跑，剪枝跳过了它）。
             // 退出途中被中止的不算，记录留着，重启后仍可续聊。
@@ -2786,6 +2795,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // 压缩自愈后的重发也能补上被摘要掉的清单。
         if (listsSkills) attachListing(history, (h) => skillListingPart(h, enabledSkillSummaries(personaId)))
         if (listsMemory) attachListing(history, (h) => memoryListingPart(h, ctx.workspaceRoot))
+        // 复杂工具的详细用法：本步结果里有它、且历史里还没告知过时附上一次（任何深度都给：子智能体的历史是独立的）。
+        if (offeredTools.has('browser')) attachListing(history, (h) => toolGuidePart(h, 'browser', BROWSER_GUIDE))
 
         for await (const ev of streamChat(
           { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
@@ -3799,8 +3810,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       session.updatedAt = Date.now()
       saveProject(sessionId)
       busySessions.delete(sessionId)
-      // 本轮结束：浏览器窗口 / 胶囊上的「正在操作」立即收起（不等空闲计时）
+      // 本轮结束：浏览器窗口 / 胶囊上的「正在操作」立即收起（不等空闲计时）；后台网页从此刻起按短时限计时
       clearBrowserOperating(sessionId)
+      markBrowserTurnEnded(sessionId)
       insertableTurns.delete(turnId)
       collectBlobs(session)
       // 还有来不及送达的插入消息、本轮又是正常结束：马上作为下一轮发出（见 flushInserts），这一轮不算回复完成。
@@ -4326,6 +4338,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 待决问答回灌「用户取消了本次询问」，计划审阅记取消，挂载请求按「未挂载」解开。
     releasePending(turnId)
   }
+
+  // 内置浏览器：对话有进行中的回合或后台子智能体时，后台网页不按短时限回收（见 browser/pages.ts BACKGROUND_CLOSE_MS）
+  setBrowserSessionBusyCheck(
+    (sessionId) => busySessions.has(sessionId) || [...backgroundSubagents.values()].some((b) => b.sessionId === sessionId)
+  )
 
   // 内置浏览器窗口里的「停止」：按对话停止它正在进行的回合
   setSessionAborter((sessionId) => {
