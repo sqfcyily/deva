@@ -166,7 +166,7 @@ export type DisplayBlock =
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error' | 'running'; summary?: string }
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
+      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
   /** 较早历史已压缩：一行提示，摘要正文（已去掉写给模型的开头）默认折叠。 */
   | { kind: 'compaction'; summary: string }

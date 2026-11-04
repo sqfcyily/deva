@@ -55,6 +55,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
+import { REPEAT_STOP, TASK_MAX_STEPS } from '../../../../shared/limits'
 import { useExtensions } from '../../store/extensions'
 import type { ChatBlock, ChatMessage, StreamStatus, ToolStatus } from '../../store/chat'
 import { CopyButton, Markdown } from './Markdown'
@@ -579,12 +580,16 @@ export function BlockView({
       empty: 'chat.notice.empty',
       refused: 'chat.notice.refused',
       restored: 'chat.notice.restored',
-      aborted: 'chat.notice.aborted'
+      aborted: 'chat.notice.aborted',
+      step_limit: 'chat.notice.stepLimit',
+      repeated: 'chat.notice.repeated'
     }
+    // 文案里的 {n}：阈值与主进程判定共用 shared/limits.ts。
+    const n = block.code === 'repeated' ? REPEAT_STOP : TASK_MAX_STEPS
     return (
       <div className="msg__notice">
         <Info size={14} />
-        <span>{t(NOTICE_KEY[block.code])}</span>
+        <span>{t(NOTICE_KEY[block.code]).replace('{n}', String(n))}</span>
       </div>
     )
   }

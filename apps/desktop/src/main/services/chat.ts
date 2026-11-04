@@ -1,6 +1,6 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import { onChatEvent, onSessionsChanged, publishChatEvent } from './chat-bus'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { streamChat } from '../providers'
@@ -15,6 +15,7 @@ import {
 } from '../providers/types'
 import { clampEffort, effortRequest, type EffortRequest } from '../../shared/effort'
 import { OUTPUT_BUDGET_SAFE, autoOutputBudget } from '../../shared/context'
+import { REPEAT_STOP, REPEAT_WARN, TASK_MAX_STEPS } from '../../shared/limits'
 import {
   executeTool,
   isMcpTool,
@@ -331,7 +332,7 @@ type DisplayBlock =
    */
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
+      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
   /** 较早历史已压缩（由 messages 里的摘要标记还原）：一行提示，摘要正文默认折叠。 */
   | { kind: 'compaction'; summary: string }
@@ -1176,6 +1177,48 @@ function truncatedNudge(hadText: boolean): string {
         '大段内容写入文件并分段（write_file + append）。'
 }
 
+/** 定时任务到达步数上限后的收尾请求：不再执行工具，让模型就已有结果给出总结（见 AgentLoopArgs.maxSteps）。 */
+function stepLimitNudge(max: number): string {
+  return (
+    `${AUTO_MARKER}
+（系统提示）本次运行已达到步数上限（${max} 步），不能再调用工具，即使调用也不会执行。` +
+    '请基于目前已有的结果直接给出最终总结：说明已完成的部分、尚未完成的部分及原因。'
+  )
+}
+
+/** 原地打转提醒：附在第 REPEAT_WARN 次起的工具结果之后（照常执行，不打断）。 */
+function repeatReminder(tool: string, count: number): string {
+  return (
+    `\n\n（系统提示）你已用相同参数连续 ${count} 次调用 ${tool}，结果都没有变化。` +
+    `请换个做法，或直接基于已有结果给出结论；连续 ${REPEAT_STOP} 次将停止调用工具。`
+  )
+}
+
+/** 原地打转到 REPEAT_STOP 次后的收尾请求：同 stepLimitNudge，不再执行工具，让模型说明卡在哪里。 */
+function repeatStopNudge(tool: string, count: number): string {
+  return (
+    `${AUTO_MARKER}
+（系统提示）你已用相同参数连续 ${count} 次调用 ${tool}，结果都没有变化，工具调用已停止，即使调用也不会执行。` +
+    '请基于目前已有的结果直接给出回复：说明已完成的部分、卡在哪里，以及建议的下一步。'
+  )
+}
+
+/**
+ * 一次工具调用的指纹（工具名 + 参数 + 结果，含错误标记与图片）：原地打转判定用。取哈希而非拼接原文，
+ * 免得截图等大结果在内存里多留一份。
+ */
+function callFingerprint(
+  name: string,
+  args: unknown,
+  r: Extract<ContentPart, { type: 'tool_result' }>
+): string {
+  const h = createHash('sha1')
+  h.update(name).update('\0').update(JSON.stringify(args) ?? '').update('\0')
+  h.update(r.isError ? '1' : '0').update(r.content)
+  for (const img of r.images ?? []) h.update('\0').update(img.data)
+  return h.digest('hex')
+}
+
 /** 本轮自然结束却没有任何可见输出时的追问（每轮最多一次）。 */
 const EMPTY_NUDGE =
   `${AUTO_MARKER}
@@ -1514,7 +1557,7 @@ export interface ScheduledTurnResult {
   stopReason: StopReason
   /** 末轮可见文本（供 scheduler 派生运行摘要）。 */
   text: string
-  /** 失败原因（stopReason==='error' 时）。 */
+  /** 失败原因（stopReason 为 'error'、'step_limit' 或 'repeated' 时）。 */
   errorMessage?: string
 }
 
@@ -1967,6 +2010,11 @@ interface AgentLoopArgs {
   ctx: ToolContext
   /** 取消控制器：其 signal 贯穿流式与工具执行。 */
   controller: AbortController
+  /**
+   * 步数上限（缺省 = 不设上限）。只有定时任务传（TASK_MAX_STEPS）：走满这么多步后再给一次收尾请求——
+   * 注入 stepLimitNudge、本步的工具调用一律不执行，随即以 'step_limit' 结束。
+   */
+  maxSteps?: number
   /** 递归深度：0=主轮，1=子智能体（限制再派生；Phase 4 用）。 */
   depth: number
   /**
@@ -2271,6 +2319,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       effort,
       ctx,
       controller,
+      maxSteps,
       depth,
       interactive,
       allowAskUser,
@@ -2568,7 +2617,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       calls: { id: string; name: string }[],
       resultParts: ContentPart[],
       subRuns: Map<string, Promise<{ conclusion: string; isErr: boolean }>>,
-      reason: 'aborted' | 'error'
+      reason: 'aborted' | 'error' | 'step_limit' | 'repeated'
     ): Promise<void> {
       const have = new Set<string>()
       for (const p of resultParts) if (p.type === 'tool_result') have.add(p.toolUseId)
@@ -2593,7 +2642,18 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         else if (tc.name === 'todo_write') {
           // 未执行：清单维持原状，对话流里本就没有它的卡，无需收敛。
         } else {
-          const label = reason === 'aborted' ? '未执行（已中止）' : '未执行'
+          const label =
+            reason === 'aborted'
+              ? '未执行（已中止）'
+              : reason === 'step_limit'
+                ? isEn()
+                  ? 'Not run (step limit reached)'
+                  : '未执行（已达到步数上限）'
+                : reason === 'repeated'
+                  ? isEn()
+                    ? 'Not run (repeated calls stopped)'
+                    : '未执行（重复调用已停止）'
+                  : '未执行'
           args.onToolSummary?.(tc.id, label)
           emit(turnId, sessionId, {
             type: 'tool_result',
@@ -2610,7 +2670,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           content:
             reason === 'aborted'
               ? '用户中止了本轮，此工具调用未执行。'
-              : '本轮因错误中断，此工具调用未执行。',
+              : reason === 'step_limit'
+                ? '已达到本次运行的步数上限，此工具调用未执行。'
+                : reason === 'repeated'
+                  ? '相同的调用连续多次没有进展，工具调用已停止，此工具调用未执行。'
+                  : '本轮因错误中断，此工具调用未执行。',
           isError: true
         })
       }
@@ -2637,9 +2701,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const listsSkills = depth === 0 && tools.some((t) => t.name === 'skill')
     const listsMemory = depth === 0
     const offeredTools = new Set(tools.map((t) => t.name))
+    // 原地打转计数（见 shared/limits.ts）：最近一次调用的指纹及其连续次数，跨步累计，任一处不同即重来。
+    let repeat = { key: '', count: 0, tool: '' }
+    // 已打转到 REPEAT_STOP 次的那次调用：非空即下一步改发收尾请求。
+    let stuckOn: { tool: string; count: number } | null = null
 
-    // 不设步数上限：一直循环到模型不再调用工具为止（对标 Claude Code 的 agentic loop）。天然刹车 = 用户
-    // 随时可中止（停止键；后台子智能体在其 Task 卡上单独停止）+ 接近上下文上限时自动压缩 + 连续截断收场。
+    // 主对话与子智能体不设步数上限：一直循环到模型不再调用工具为止（对标 Claude Code 的 agentic loop）。
+    // 天然刹车 = 用户随时可中止（停止键；后台子智能体在其 Task 卡上单独停止）+ 接近上下文上限时自动压缩 +
+    // 连续截断收场 + 原地打转收场。定时任务无人值守，另设 maxSteps（见 AgentLoopArgs.maxSteps）。
     for (let step = 0; ; step++) {
       // 轮中压缩：第 2 步起每步请求前检查（第 1 步之前调用方已在轮开头查过）。此刻上一步的工具
       // 结果已全部回灌（并行子智能体也已等齐），历史里没有悬空的 tool_use，可以安全改写。
@@ -2651,6 +2720,17 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         (await args.compact())
       )
         usedInput = 0 // 历史已改写，旧读数作废：回退估算，直到本步拿到新读数
+
+      // 原地打转到上限 / 已走满 maxSteps 步：本步是收尾请求。引导以 AUTO_MARKER 开头（不成气泡、不算轮起点），
+      // 紧跟在上一步的工具结果之后；工具表照常带上（历史里有 tool_use 时 Anthropic 要求必须带），本步的调用一律不执行。
+      const wrapUp: 'repeated' | 'step_limit' | null = stuckOn
+        ? 'repeated'
+        : maxSteps !== undefined && step >= maxSteps
+          ? 'step_limit'
+          : null
+      if (stuckOn) history.push({ role: 'user', content: repeatStopNudge(stuckOn.tool, stuckOn.count) })
+      else if (wrapUp === 'step_limit')
+        history.push({ role: 'user', content: stepLimitNudge(maxSteps as number) })
 
       let assistantText = ''
       // truncated = 参数残缺时已写出的字符数、cause = 残缺原因：这种调用只记录、不执行（见下方工具循环）。
@@ -2923,6 +3003,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const stepVisible = assistantText.trim() !== '' || toolCalls.length > 0
       if (stepVisible) producedVisible = true
       args.onStep?.()
+      // 收尾请求答完即停：模型仍调了工具就补「未执行」结果（历史里不留悬空调用），也不再走截断续写 / 空回合追问。
+      if (wrapUp) {
+        if (toolCalls.length) {
+          const parts: ContentPart[] = []
+          await fillUnrun(toolCalls, parts, new Map(), wrapUp)
+          history.push({ role: 'user', content: parts })
+          args.onStep?.()
+        }
+        return { text: finalText, stopReason: wrapUp }
+      }
       if (toolCalls.length === 0) {
         // 自愈③：输出撞上长度上限、本步却没有工具调用（只思考 / 正文写到一半）——不交还用户等
         // 「继续」，注入引导让模型续写或拆小，与工具参数截断共用连续计数，连续失败才兜底收场。
@@ -3322,6 +3412,21 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       }
       const abortedHere = controller.signal.aborted
       if (abortedHere) await fillUnrun(toolCalls, resultParts, subRuns, 'aborted')
+      // 原地打转判定（见 shared/limits.ts）：按调用原序比对指纹，算在附提醒之前（提醒不进指纹）。到 REPEAT_STOP 次
+      // 就不再附提醒——下一步开头 wrapUp 改发收尾请求。中止时不计（结果是「未执行」占位，不代表模型的选择）。
+      if (!abortedHere)
+        for (const tc of toolCalls) {
+          const part = resultParts.find(
+            (p): p is Extract<ContentPart, { type: 'tool_result' }> =>
+              p.type === 'tool_result' && p.toolUseId === tc.id
+          )
+          if (!part) continue
+          const key = callFingerprint(tc.name, tc.args, part)
+          repeat = key === repeat.key ? { ...repeat, count: repeat.count + 1 } : { key, count: 1, tool: tc.name }
+          // 记下而非现读 repeat：同一步里排在后面的不同调用会把计数清零。
+          if (repeat.count >= REPEAT_STOP) stuckOn ??= { tool: tc.name, count: repeat.count }
+          else if (repeat.count >= REPEAT_WARN) part.content += repeatReminder(tc.name, repeat.count)
+        }
       // 期间结束的后台子智能体：通知附在本步工具结果之后（tool_result 在前），模型下一步即可看到。
       // 中止时不取，留给下一轮。
       const notices = abortedHere ? null : (args.takeNotices?.() ?? null)
@@ -3511,12 +3616,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // max_tokens 记截断，refusal（模型拒绝 / 内容策略拦截）无正文时记「被拒绝」——绝不并进空回合，
     // 否则会把一次拒绝谎报成「上下文接近上限」；自然结束却无可见回复才记空回合；
     // aborted（用户主动停止）记「已中止」——中止前产出的半截内容已随历史落盘，重开后须看得出
-    // 这一轮是被打断的，而不是模型只答了这么多。
+    // 这一轮是被打断的，而不是模型只答了这么多；repeated（原地打转被停下）记一条说明。
     const recordTurnNotice = (stopReason: StopReason, errorMessage?: string): void => {
       const after = history.length
       const notices = (session.notices ??= [])
       if (stopReason === 'error') notices.push({ after, kind: 'error', message: errorMessage })
       else if (stopReason === 'aborted') notices.push({ after, kind: 'notice', code: 'aborted' })
+      else if (stopReason === 'repeated') notices.push({ after, kind: 'notice', code: 'repeated' })
       else if (stopReason === 'max_tokens') notices.push({ after, kind: 'notice', code: 'truncated' })
       // 拒绝：模型给了拒绝正文就无须再加提示（正文自己解释了），只在通篇为空时补一条。
       else if (stopReason === 'refusal') {
@@ -3798,6 +3904,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         model: turnModel,
         ctx,
         controller,
+        // 无人值守：设步数上限，免得兜圈子一直跑（见 shared/tasks.ts）。
+        maxSteps: TASK_MAX_STEPS,
         depth: 0,
         // ★ 密封无头执行：绝不弹窗 / 不 ask_user / 不 exit_plan / 不派生子智能体。
         interactive: false,
@@ -3813,8 +3921,22 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           lastInput = 0
         })
       })
+      // 达到步数上限 / 原地打转被停下：对话里留一行提示（落进 notices 边车，重开仍在；须先于 done——渲染层收到
+      // 即按主进程重载），运行记录记失败并写明原因。
+      let failReason = errorMessage
+      if (stopReason === 'step_limit' || stopReason === 'repeated') {
+        ;(session.notices ??= []).push({ after: history.length, kind: 'notice', code: stopReason })
+        failReason =
+          stopReason === 'step_limit'
+            ? isEn()
+              ? `Reached the step limit for a single run (${TASK_MAX_STEPS} steps); the task may be unfinished.`
+              : `已达到单次运行的步数上限（${TASK_MAX_STEPS} 步），任务可能未完成。`
+            : isEn()
+              ? `The same tool was called ${REPEAT_STOP} times in a row with identical arguments and results, so the run was stopped; the task may be unfinished.`
+              : `同一工具以相同参数连续调用 ${REPEAT_STOP} 次且结果不变，已停止，任务可能未完成。`
+      }
       emit(turnId, sessionId, { type: 'done', stopReason, durationMs: finishDuration() })
-      result = { stopReason, text, errorMessage }
+      result = { stopReason, text, errorMessage: failReason }
     } catch (e) {
       const message = (e as Error)?.message ?? String(e)
       emit(turnId, sessionId, { type: 'error', kind: 'unknown', message })

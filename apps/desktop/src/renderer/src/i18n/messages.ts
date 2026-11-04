@@ -250,7 +250,9 @@ const zhCN: MessageTree = {
         '服务商返回该模型的实际上下文上限约为 {n}，此后将按此判断何时压缩。可在「设置 › 模型」中调整该模型的上下文窗口。',
       outputLimitRejected: '服务商不接受所设的最大输出长度，已按 {n} 重发。可在「设置 › 模型」中调整。',
       restored: '已将代码回滚到较早的检查点，对话保留；下一条消息会告知模型这些文件已恢复。',
-      aborted: '已停止本轮回复，以上为停止前已产出的内容。'
+      aborted: '已停止本轮回复，以上为停止前已产出的内容。',
+      stepLimit: '本次运行已达到步数上限（{n} 步），已停止调用工具并给出总结，任务可能未完成。',
+      repeated: '同一工具以相同参数连续调用 {n} 次且结果没有变化，已停止调用工具并给出总结。'
     },
     noModel: '尚未选择模型，请先在「设置 › 模型」添加并启用模型，再从输入框上方的模型选择器中选择。',
     noKey: '该模型尚未配置 API 密钥，请在「设置 › 模型」中填写。',
@@ -1522,7 +1524,11 @@ const en: MessageTree = {
         'The provider rejected the configured max output length; retried with {n}. You can adjust it under Settings › Models.',
       restored:
         'Code was rolled back to an earlier checkpoint; the conversation is kept. Your next message will tell the model which files were restored.',
-      aborted: 'Response stopped. Everything above was produced before stopping.'
+      aborted: 'Response stopped. Everything above was produced before stopping.',
+      stepLimit:
+        'This run reached the step limit ({n} steps). Tool calls stopped and a summary was given; the task may be unfinished.',
+      repeated:
+        'The same tool was called {n} times in a row with identical arguments and results, so tool calls stopped and a summary was given.'
     },
     noModel:
       'No model selected — add and enable a model under Settings › Models, then pick it from the model selector above the input box.',

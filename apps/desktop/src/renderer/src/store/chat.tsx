@@ -198,7 +198,7 @@ export type ChatBlock =
    */
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
+      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
   /** 较早历史已压缩为摘要（只来自主进程重建）：一行提示，摘要正文默认折叠、点开才显示。 */
   | { kind: 'compaction'; summary: string }
@@ -278,7 +278,7 @@ type DisplayBlock =
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error' | 'running'; summary?: string }
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
+      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
   | { kind: 'compaction'; summary: string }
   | { kind: 'error'; message: string }
@@ -888,12 +888,16 @@ function hasVisibleAnswer(blocks: ChatBlock[]): boolean {
  *   通篇为空才补一条「被拒绝」。**绝不并入空回合**：那会把拒绝谎报成上下文问题，误导排查；
  * - 自然结束（end_turn/stop）却通篇无可见回复：本轮未产生回复（原因不确定，文案不臆断）；
  * - aborted（用户主动停止）：标一条「已中止」——中止前的半截内容会随历史保留，得看得出是被打断的；
+ * - step_limit（定时任务达到步数上限）：标一条「已达到步数上限」——任务可能没做完；
+ * - repeated（同一工具同参数同结果连续出现到上限，被停下）：标一条说明；
  * - error（已另有红色错误块）不重复提示。
- * 与主进程 recordTurnNotice 同一套规则，故重开对话后所见一致。
+ * 与主进程 recordTurnNotice / runScheduledTurn 同一套规则，故重开对话后所见一致。
  * 无需补提示时返回原数组引用（updateLastAssistant 据引用相等短路，不触发无谓重渲染）。
  */
 function appendTerminalNotice(blocks: ChatBlock[], stopReason: string): ChatBlock[] {
   if (stopReason === 'aborted') return [...blocks, { kind: 'notice', code: 'aborted' }]
+  if (stopReason === 'step_limit') return [...blocks, { kind: 'notice', code: 'step_limit' }]
+  if (stopReason === 'repeated') return [...blocks, { kind: 'notice', code: 'repeated' }]
   if (stopReason === 'max_tokens') return [...blocks, { kind: 'notice', code: 'truncated' }]
   if (stopReason === 'refusal')
     return hasVisibleAnswer(blocks) ? blocks : [...blocks, { kind: 'notice', code: 'refused' }]

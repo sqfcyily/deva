@@ -526,7 +526,11 @@ function finishTurn(t: TurnTrack, stopReason: string): void {
       ? '回复达到长度上限被截断'
       : stopReason === 'refusal'
         ? '模型拒绝回答或被内容策略拦截'
-        : undefined
+        : stopReason === 'step_limit'
+          ? '达到单次运行的步数上限，任务可能未完成'
+          : stopReason === 'repeated'
+            ? '相同的工具调用连续多次没有进展，已停止'
+            : undefined
   if (t.status === 'done' && !hasVisible(t) && t.eager) t.blocks.push({ kind: 'notice', text: '本轮没有产生回复。' })
   if (sessionTurn.get(t.sessionId) === t.turnId) sessionTurn.delete(t.sessionId)
   // 回合结束仍未决的交互卡：主进程已按取消解开，卡片收成「已结束」。

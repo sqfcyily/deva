@@ -158,7 +158,9 @@ async function fireOnce(id: string, manual: boolean, missed: number): Promise<vo
     res = { stopReason: 'error', text: '', errorMessage: (e as Error)?.message ?? String(e) }
   }
   const finishedAt = Date.now()
-  const ok = res.stopReason !== 'error'
+  // 达到步数上限、原地打转被停下也记失败：任务没做完（原因由 runScheduledTurn 写进 errorMessage）；
+  // 连续失败照常退避、自动暂停。
+  const ok = res.stopReason !== 'error' && res.stopReason !== 'step_limit' && res.stopReason !== 'repeated'
   const run: TaskRun = {
     firedAt,
     finishedAt,

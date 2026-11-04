@@ -187,7 +187,7 @@ export interface StoredNotice {
   /** kind='error' 时的错误文案。 */
   message?: string
   /** kind='notice' 时的提示码（aborted=用户中止了本轮，其前内容为中止前已产出的部分）。 */
-  code?: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted'
+  code?: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
 }
 
 /** 会话元信息（左侧列表用，不含正文）。 */
