@@ -158,27 +158,31 @@ async function fireOnce(id: string, manual: boolean, missed: number): Promise<vo
     res = { stopReason: 'error', text: '', errorMessage: (e as Error)?.message ?? String(e) }
   }
   const finishedAt = Date.now()
+  // 被中止（停止键 / 删除任务对话 / 退出应用）：单独记「已中止」——没做完，但也不是失败，不计入连续失败。
+  const aborted = res.stopReason === 'aborted'
   // 达到步数上限、原地打转被停下也记失败：任务没做完（原因由 runScheduledTurn 写进 errorMessage）；
   // 连续失败照常退避、自动暂停。
-  const ok = res.stopReason !== 'error' && res.stopReason !== 'step_limit' && res.stopReason !== 'repeated'
+  const ok =
+    !aborted && res.stopReason !== 'error' && res.stopReason !== 'step_limit' && res.stopReason !== 'repeated'
   const run: TaskRun = {
     firedAt,
     finishedAt,
-    status: ok ? 'ok' : 'error',
-    summary: ok ? firstLine(res.text) || undefined : undefined,
-    error: ok ? undefined : res.errorMessage || '执行失败'
+    status: aborted ? 'aborted' : ok ? 'ok' : 'error',
+    // 被中止：摘要写中止说明（手动停止 / 对话被删除 / 应用退出，见 runScheduledTurn），不写失败原因。
+    summary: ok ? firstLine(res.text) || undefined : aborted ? res.errorMessage : undefined,
+    error: ok || aborted ? undefined : res.errorMessage || '执行失败'
   }
   appendRun(id, run)
 
   let autoPaused = false
   if (!manual) {
-    const applied = applyRunResult(id, { ok }, firedAt)
+    const applied = applyRunResult(id, { ok, aborted }, firedAt)
     autoPaused = applied?.autoPausedError ?? false
   }
 
-  // 通知取善后后的最新记录（title 可能已被首轮派生）。被中止的（停止键 / 删除对话）不弹：是用户自己停的，
+  // 通知取善后后的最新记录（title 可能已被首轮派生）。被中止的不弹：是用户自己停的，
   // 何况删除对话时点通知只会落到一个已不存在的对话上。
-  if (res.stopReason !== 'aborted') notifyForRun(getTask(id) ?? task, run, autoPaused)
+  if (!aborted) notifyForRun(getTask(id) ?? task, run, autoPaused)
 }
 
 // ── 串行队列 ──────────────────────────────────────────────────────────────────

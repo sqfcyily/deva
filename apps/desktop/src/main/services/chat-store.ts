@@ -429,6 +429,28 @@ export function rebindSessionPersona(id: string, from: string, to: string): bool
   return true
 }
 
+/**
+ * 定时任务改了角色 / 模型：同步到它的独占对话（两边以同一个为准，见 tasks.ts updateTask）。对话不存在
+ * （任务从没运行过）则什么都不做。personaId 缺省 = 不动；model 空串 = 跟随全局默认。
+ * 返回是否改动。不动 updatedAt，列表顺序不变。
+ */
+export function syncSessionBinding(id: string, b: { personaId?: string; model: string }): boolean {
+  if (!ensureIndex().has(id)) return false
+  const s = loadSessionFile(id)
+  if (!s) return false
+  let changed = false
+  if (b.personaId && s.personaId !== b.personaId) {
+    s.personaId = b.personaId
+    changed = true
+  }
+  if ((s.model ?? '') !== b.model) {
+    s.model = b.model
+    changed = true
+  }
+  if (changed) save(id)
+  return changed
+}
+
 /** 归档 / 取消归档并落盘，返回是否找到该对话。不动 updatedAt（列表顺序不变）。 */
 export function setSessionArchived(id: string, archived: boolean): boolean {
   const s = loadSessionFile(id)

@@ -3193,6 +3193,67 @@ function TaskRailRow({
 /** 任务详情运行历史默认展示的条数（最近 N 次），超出折叠在「展开全部」后。 */
 const HISTORY_PREVIEW = 5
 
+type TaskRunStatus = TaskRecord['runs'][number]['status']
+
+/**
+ * 运行状态图标的圆内符号（圆框共用）：对勾 / 叉 / i（中止）/ 双箭头（追赶跳过）。
+ * 中止与对话里「已停止本轮回复」的提示同一个图标（lucide Info）、同为黄色，两处说的是同一件事。
+ */
+const RUN_ICON_MARK: Record<TaskRunStatus, React.ReactNode> = {
+  ok: <path d="m9 12 2 2 4-4" />,
+  error: (
+    <>
+      <path d="m15 9-6 6" />
+      <path d="m9 9 6 6" />
+    </>
+  ),
+  aborted: (
+    <>
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </>
+  ),
+  skipped: (
+    <>
+      <path d="m8 9 3 3-3 3" />
+      <path d="m13 9 3 3-3 3" />
+    </>
+  )
+}
+
+/**
+ * 运行状态图标（任务详情「上次」与运行历史共用，对比稿 design/run-status-icons.html 方案 A）：同宽线框圆形，
+ * 文字徽标长短不一会把后面的摘要挤得对不齐。悬停显示状态文字，失败时连同原因。
+ */
+function RunStatusIcon({
+  status,
+  label,
+  detail
+}: {
+  status: TaskRunStatus
+  label: string
+  detail?: string
+}): React.JSX.Element {
+  const title = detail ? `${label}：${detail}` : label
+  return (
+    <span className={`cf-runicon is-${status}`} role="img" aria-label={title} title={title}>
+      <svg
+        viewBox="0 0 24 24"
+        width={14}
+        height={14}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <circle cx="12" cy="12" r="10" />
+        {RUN_ICON_MARK[status]}
+      </svg>
+    </span>
+  )
+}
+
 /**
  * 右详情面（对齐角色资料卡 .cf-profile）：展示选中任务的类型/状态、日程与运行信息、运行历史，
  * 以及操作（编辑·暂停/恢复·立即运行·删除）。任务指令不在此展示，点「编辑」查看。
@@ -3220,14 +3281,14 @@ function TaskDetail({
   const desc = useSchedulePreview(task.schedule)
 
   const lastRun = task.runs.length > 0 ? task.runs[task.runs.length - 1] : undefined
-  const lastKey =
-    lastRun?.status === 'ok'
+  const runKey = (s: TaskRunStatus): string =>
+    s === 'ok'
       ? 'tasks.runOk'
-      : lastRun?.status === 'skipped'
+      : s === 'skipped'
         ? 'tasks.runSkipped'
-        : 'tasks.runError'
-  const runKey = (s: 'ok' | 'error' | 'skipped'): string =>
-    s === 'ok' ? 'tasks.runOk' : s === 'skipped' ? 'tasks.runSkipped' : 'tasks.runError'
+        : s === 'aborted'
+          ? 'tasks.runAborted'
+          : 'tasks.runError'
   // 运行历史按时间降序（最近在上）。
   const history = useMemo(() => [...task.runs].reverse(), [task.runs])
   // 默认只列最近 HISTORY_PREVIEW 次，超出时给「展开全部」开关（组件按 task.id 取 key，切任务即复位收起）。
@@ -3267,15 +3328,16 @@ function TaskDetail({
             <div className="cf-profile__row">
               <span className="cf-profile__k">{t('tasks.lastRun')}</span>
               <span className="cf-profile__v">
-                {task.lastRunAt ? (
+                {/* 时间与状态都取运行历史的最后一条（含「立即运行」）：task.lastRunAt 只在按日程触发时更新，
+                    拿它配最后一条的状态会对不上。 */}
+                {lastRun ? (
                   <>
-                    {rel(task.lastRunAt)}
-                    <span
-                      className={`cf-runbadge is-${lastRun?.status ?? 'error'}`}
-                      title={lastRun?.error || undefined}
-                    >
-                      {t(lastKey)}
-                    </span>
+                    {rel(lastRun.firedAt)}
+                    <RunStatusIcon
+                      status={lastRun.status}
+                      label={t(runKey(lastRun.status))}
+                      detail={lastRun.error}
+                    />
                   </>
                 ) : (
                   t('tasks.lastNever')
@@ -3320,17 +3382,17 @@ function TaskDetail({
             {history.length === 0 ? (
               <div className="cf-empty">{t('tasks.historyEmpty')}</div>
             ) : (
-              shownHistory.map((run, i) => (
-                <div key={i} className="cf-trun">
-                  <span className="cf-trun__time">{fmtAbs(run.firedAt, locale)}</span>
-                  <span className={`cf-runbadge is-${run.status}`} title={run.error || undefined}>
-                    {t(runKey(run.status))}
-                  </span>
-                  {(run.summary || run.error) && (
-                    <span className="cf-trun__msg">{run.summary || run.error}</span>
-                  )}
-                </div>
-              ))
+              <div className="cf-truns">
+                {shownHistory.map((run, i) => (
+                  <div key={i} className="cf-trun">
+                    <span className="cf-trun__time">{fmtAbs(run.firedAt, locale)}</span>
+                    <RunStatusIcon status={run.status} label={t(runKey(run.status))} detail={run.error} />
+                    {(run.summary || run.error) && (
+                      <span className="cf-trun__msg">{run.summary || run.error}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
             {history.length > HISTORY_PREVIEW && (
               <button

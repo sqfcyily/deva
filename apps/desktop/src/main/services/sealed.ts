@@ -4,7 +4,7 @@ import { isMcpTool, toolCategory } from './tools'
  * 密封无头执行的权限判定（纯函数，无 IPC、可单测）。
  *
  * 定时任务「创建时批准、执行时零交互」：触发执行时**绝不再弹任何确认**。本函数给出放行/拒绝——
- * 绝不弹窗、绝不挂起；拒绝时给清晰 tool_result 让模型改道（而非整轮硬失败）。
+ * 绝不弹窗、绝不挂起；拒绝时给清晰 tool_result 让模型改道（而非整轮硬失败）。定时任务里派出的子智能体同样走这里。
  *
  * 文件读写与命令执行均不设任何限制（2026-10-09 起）；只拒绝「交互/创建类」工具与未知工具名。
  */
@@ -17,10 +17,12 @@ export interface SealedVerdict {
 
 /**
  * 密封执行永不放行的交互/创建类工具（无人在场无从交互/审阅，或不得创建持久实体）。
- * ask_user/run_subagent 在循环内受 allowAskUser/allowSubagents 门关闭后会落到闸门，须在此显式拒绝；
- * propose_agent/create_* 已被 buildSealedTools 从可见工具剔除，列此为纵深防御；
+ * ask_user 在循环内受 allowAskUser 门关闭后会落到闸门，须在此显式拒绝；
+ * propose_agent、create_* 与记忆写删已从定时任务的工具表剔除（chat.ts UNATTENDED_EXCLUDED），列此为纵深防御；
  * exit_plan 由循环内「闸门前特判」拦截（!interactive → 指导性 no-op），亦列此兜底。
- * 注意：`skill`（技能加载，headless-安全）已放开，不在此集。
+ * run_subagent / send_to_subagent：定时任务允许（只能前台），由循环在闸门前派发，到不了这里；子智能体自己
+ * 不能再派生，万一调用落到闸门，按此拒绝。
+ * 注意：`skill`（技能加载，headless-安全）、`todo_write` 已放开，不在此集。
  */
 const SEALED_FORBIDDEN = new Set([
   'ask_user',

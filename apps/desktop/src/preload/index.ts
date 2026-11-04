@@ -483,7 +483,7 @@ export interface TaskAuthorization {
 export interface TaskRun {
   firedAt: number
   finishedAt?: number
-  status: 'ok' | 'error' | 'skipped'
+  status: 'ok' | 'error' | 'skipped' | 'aborted'
   summary?: string
   error?: string
 }
@@ -981,7 +981,7 @@ const api = {
     createSession: (req: ChatCreateSessionRequest): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:create-session', req),
     /** 切换本对话模型并立即落库（不等下一次发送）。 */
-    setModel: (req: ChatSetModelRequest): Promise<{ ok: true }> =>
+    setModel: (req: ChatSetModelRequest): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:set-model', req),
     /** 切换本对话思考等级并立即落库（不等下一次发送）。 */
     setEffort: (req: ChatSetEffortRequest): Promise<{ ok: true }> =>

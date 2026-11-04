@@ -87,7 +87,21 @@ Deva 是一款跨平台桌面 Agent 客户端。创建角色、定时任务、�
 2. 选择服务商，填写 API 密钥，添加需要使用的模型。
 3. 在输入框上方选择模型后即可开始对话。
 
-预置服务商：Anthropic、OpenAI、Google Gemini、DeepSeek、Kimi、智谱 GLM、通义千问、OpenCode Go、Ollama。自定义服务商可选用以下任一协议，适用于中转服务与自建网关：
+预置服务商：
+
+<p>
+  <img src="https://img.shields.io/badge/Anthropic-D97757?style=flat-square" alt="Anthropic" />
+  <img src="https://img.shields.io/badge/OpenAI-10A37F?style=flat-square" alt="OpenAI" />
+  <img src="https://img.shields.io/badge/Google%20Gemini-4285F4?style=flat-square" alt="Google Gemini" />
+  <img src="https://img.shields.io/badge/DeepSeek-4D6BFE?style=flat-square" alt="DeepSeek" />
+  <img src="https://img.shields.io/badge/Kimi-16A085?style=flat-square" alt="Kimi" />
+  <img src="https://img.shields.io/badge/%E6%99%BA%E8%B0%B1%20GLM-3859FF?style=flat-square" alt="智谱 GLM" />
+  <img src="https://img.shields.io/badge/%E9%80%9A%E4%B9%89%E5%8D%83%E9%97%AE-615CED?style=flat-square" alt="通义千问" />
+  <img src="https://img.shields.io/badge/OpenCode%20Go-FF6A3D?style=flat-square" alt="OpenCode Go" />
+  <img src="https://img.shields.io/badge/Ollama-71717A?style=flat-square" alt="Ollama" />
+</p>
+
+自定义服务商可选用以下任一协议，适用于中转服务与自建网关：
 
 | 协议                      | 说明                                 |
 | ----------------------- | ---------------------------------- |
@@ -153,20 +167,27 @@ Deva 是一款跨平台桌面 Agent 客户端。创建角色、定时任务、�
 
 - 模型跟随当前对话；同一轮发起的多个子智能体并行执行。
 - `run_in_background` 使子智能体在后台运行，完成后自动通知主智能体；`send_to_subagent` 在保留原上下文的基础上继续对话。
-- 子智能体不设步数上限；当前角色可用的 MCP 工具全部附加。
+- 主对话中派发的子智能体不设步数上限；当前角色可用的 MCP 工具全部附加。
+- 定时任务中派发的子智能体只能前台运行，并与任务受同样的步数上限约束。
 - 子智能体不能提问、再派发子智能体、创建持久化实体或写入记忆。
 
 ¹ `read_file`、`list_dir`、`glob`、`grep`、`web_fetch`、`run_command`。只读约束由工具集与提示词共同实现，`run_command` 本身不受限制。
 
 ### 无人值守执行
 
-定时任务在无人在场时触发，执行环境与交互对话隔离：
+定时任务的每次运行，相当于由调度器代用户在任务专属对话中发出任务指令，执行方式与普通对话相同，仅在无人值守所必需之处有所区别：
 
-- 不提供 `ask_user`、`exit_plan`、`run_subagent` 与各类创建工具，模型基于合理默认一次性完成任务。
+- 不提供 `ask_user`、`exit_plan` 与各类创建工具，模型基于合理默认一次性完成任务；子智能体只能前台运行。
 - 记忆只读，防止任务抓取的外部内容写入用户记忆。
-- 文件读写、命令执行、技能与该角色可用的 MCP 工具照常可用。
-- 结果写入任务专属对话，并发送系统通知。
+- 单次运行最多 100 步，详见[循环保护](#循环保护)。
+- 任务对话中挂载的文件夹、项目说明、思考等级、技能与 MCP 工具均与普通对话一致；任务的角色与模型在任务设置与任务对话之间双向同步。
+- 结果写入任务专属对话，并发送系统通知；运行中的提示、错误与工具结果与普通对话一样保留在对话中。
 - 任务仅在应用运行期间执行；Windows 下关闭窗口默认驻留托盘。错过多次时只补跑最近一次。
+
+### 循环保护
+
+- **原地打转检测**：同一工具以相同参数调用、且返回结果完全相同时视为没有进展。连续第 3 次起在结果后附加提醒，连续第 5 次停止调用工具，由模型说明已完成的部分与受阻原因。适用于主对话、子智能体与定时任务。
+- **定时任务步数上限**：单次运行最多 100 步。达到上限后停止调用工具，由模型总结已完成与未完成的部分，本次运行记为失败；连续失败按既有规则推迟重试，达到阈值后自动暂停。
 
 ### 上下文与提示缓存
 
@@ -188,10 +209,10 @@ Deva 是一款跨平台桌面 Agent 客户端。创建角色、定时任务、�
 | `web_fetch`        | 获取 HTTP(S) 资源，HTML 转为纯文本                        |  ✓  |   ✓   |   ✓  |
 | `ask_user`         | 以问题卡征求决策，支持单选、多选、推荐项与可选题                        |  ✓  |   —   |   —  |
 | `exit_plan`        | 提交实施计划，由用户批准、要求完善或忽略                            |  ✓  |   —   |   —  |
-| `todo_write`       | 维护待办清单                                          |  ✓  |   —   |   —  |
+| `todo_write`       | 维护待办清单                                          |  ✓  |   —   |   ✓  |
 | `present_files`    | 以交付卡呈现成品文件                                      |  ✓  |   —   |   ✓  |
-| `run_subagent`     | 派发子智能体，前台或后台运行                                  |  ✓  |   —   |   —  |
-| `send_to_subagent` | 向已派发的子智能体继续发送消息                                 |  ✓  |   —   |   —  |
+| `run_subagent`     | 派发子智能体，前台或后台运行                                  |  ✓  |   —   |  ✓³  |
+| `send_to_subagent` | 向已派发的子智能体继续发送消息                                 |  ✓  |   —   |  ✓³  |
 | `skill`            | 按名称加载技能的完整指令                                    |  ✓  |   —   |   ✓  |
 | `memory_read`      | 读取全局与项目记忆                                       |  ✓  |   ✓   |   ✓  |
 | `memory_write`     | 写入或更新记忆                                         |  ✓  |   —   |   —  |
@@ -203,6 +224,8 @@ Deva 是一款跨平台桌面 Agent 客户端。创建角色、定时任务、�
 | MCP 工具             | 已启用、且对当前角色开放的 MCP 服务所提供的工具                      |  ✓  |   ✓   |   ✓  |
 
 ² 以 General 为准；Explore、Research、Plan 仅含只读工具集与 MCP 工具。互不依赖的只读调用在同一步内并发执行。
+
+³ 定时任务中仅能前台运行。
 
 ### 命令
 

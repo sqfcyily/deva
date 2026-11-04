@@ -47,8 +47,9 @@ export interface TaskAuthorization {
 export interface TaskRun {
   firedAt: number
   finishedAt?: number
-  status: 'ok' | 'error' | 'skipped'
-  /** ok：模型末轮可见文本首行摘要；skipped：追赶跳过说明。 */
+  /** aborted：被用户中止（停止键 / 删除任务对话 / 退出应用），不算成功也不算失败。 */
+  status: 'ok' | 'error' | 'skipped' | 'aborted'
+  /** ok：模型末轮可见文本首行摘要；skipped：追赶跳过说明；aborted：中止说明（手动停止 / 对话被删除 / 应用退出）。 */
   summary?: string
   /** error：失败原因（stopReason / 异常信息）。 */
   error?: string

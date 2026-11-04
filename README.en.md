@@ -94,7 +94,21 @@ The packages are not code-signed (macOS builds are ad-hoc signed only).
 2. Choose a provider, enter the API key and add the models you want to use.
 3. Pick a model above the input box and start chatting.
 
-Preset providers: Anthropic, OpenAI, Google Gemini, DeepSeek, Kimi, Zhipu GLM, Qwen, OpenCode Go and Ollama. Custom providers can use any of the following protocols, which covers relays and self-hosted gateways:
+Preset providers:
+
+<p>
+  <img src="https://img.shields.io/badge/Anthropic-D97757?style=flat-square" alt="Anthropic" />
+  <img src="https://img.shields.io/badge/OpenAI-10A37F?style=flat-square" alt="OpenAI" />
+  <img src="https://img.shields.io/badge/Google%20Gemini-4285F4?style=flat-square" alt="Google Gemini" />
+  <img src="https://img.shields.io/badge/DeepSeek-4D6BFE?style=flat-square" alt="DeepSeek" />
+  <img src="https://img.shields.io/badge/Kimi-16A085?style=flat-square" alt="Kimi" />
+  <img src="https://img.shields.io/badge/Zhipu%20GLM-3859FF?style=flat-square" alt="Zhipu GLM" />
+  <img src="https://img.shields.io/badge/Qwen-615CED?style=flat-square" alt="Qwen" />
+  <img src="https://img.shields.io/badge/OpenCode%20Go-FF6A3D?style=flat-square" alt="OpenCode Go" />
+  <img src="https://img.shields.io/badge/Ollama-71717A?style=flat-square" alt="Ollama" />
+</p>
+
+Custom providers can use any of the following protocols, which covers relays and self-hosted gateways:
 
 | Protocol | Notes |
 | --- | --- |
@@ -160,20 +174,27 @@ The following constraints are part of the system rules and apply to every person
 
 - Subagents use the current conversation's model; multiple subagents started in the same turn run in parallel.
 - `run_in_background` runs a subagent in the background and notifies the main agent when it finishes; `send_to_subagent` continues a conversation with its context intact.
-- Subagents have no step limit and receive every MCP tool available to the current persona.
+- Subagents started from a main conversation have no step limit and receive every MCP tool available to the current persona.
+- Subagents started by a scheduled task run only in the foreground and share the task's step limit.
 - Subagents cannot ask questions, start further subagents, create persistent entities or write memory.
 
 ¹ `read_file`, `list_dir`, `glob`, `grep`, `web_fetch`, `run_command`. Read-only behavior is enforced by the tool set and the prompt; `run_command` itself is unrestricted.
 
 ### Unattended execution
 
-Scheduled tasks fire with nobody present and run in an environment separate from interactive conversations:
+Each run of a scheduled task is equivalent to the scheduler sending the task's instruction in the task's own conversation. It runs the same way as a regular conversation, differing only where unattended execution requires it:
 
-- `ask_user`, `exit_plan`, `run_subagent` and the creation tools are unavailable; the model completes the task in one pass using reasonable defaults.
+- `ask_user`, `exit_plan` and the creation tools are unavailable; the model completes the task in one pass using reasonable defaults. Subagents run only in the foreground.
 - Memory is read-only, so external content fetched by a task cannot be written into user memory.
-- File access, commands, skills and the persona's MCP tools remain available.
-- Results are written to the task's own conversation and announced with a system notification.
+- A single run is limited to 100 steps; see [Loop safeguards](#loop-safeguards).
+- A folder mounted in the task's conversation, its project instructions, the thinking level, skills and MCP tools all behave as in a regular conversation. The task's persona and model stay in sync between the task settings and the task's conversation.
+- Results are written to the task's own conversation and announced with a system notification; notices, errors and tool results stay in the conversation as they do in a regular one.
 - Tasks run only while the app is running; on Windows, closing the window keeps the app in the tray by default. When several runs are missed, only the most recent one is caught up.
+
+### Loop safeguards
+
+- **Repetition detection**: calling the same tool with identical arguments and getting an identical result counts as no progress. From the 3rd consecutive call a reminder is appended to the result; at the 5th, tool calls stop and the model explains what was done and where it got stuck. Applies to main conversations, subagents and scheduled tasks.
+- **Scheduled task step limit**: a single run is limited to 100 steps. At the limit, tool calls stop and the model summarizes what was and wasn't done; the run is recorded as failed. Consecutive failures are retried later under the existing rules and the task is paused automatically once the threshold is reached.
 
 ### Context and prompt caching
 
@@ -195,10 +216,10 @@ Scheduled tasks fire with nobody present and run in an environment separate from
 | `web_fetch` | Fetch an HTTP(S) resource, converting HTML to plain text | ✓ | ✓ | ✓ |
 | `ask_user` | Ask for decisions via a question card: single or multi-select, recommended and optional questions | ✓ | — | — |
 | `exit_plan` | Submit an implementation plan for the user to approve, refine or dismiss | ✓ | — | — |
-| `todo_write` | Maintain the task checklist | ✓ | — | — |
+| `todo_write` | Maintain the task checklist | ✓ | — | ✓ |
 | `present_files` | Present finished files on a deliverables card | ✓ | — | ✓ |
-| `run_subagent` | Start a subagent in the foreground or background | ✓ | — | — |
-| `send_to_subagent` | Send a follow-up message to an existing subagent | ✓ | — | — |
+| `run_subagent` | Start a subagent in the foreground or background | ✓ | — | ✓³ |
+| `send_to_subagent` | Send a follow-up message to an existing subagent | ✓ | — | ✓³ |
 | `skill` | Load a skill's full instructions by name | ✓ | — | ✓ |
 | `memory_read` | Read global and project memory | ✓ | ✓ | ✓ |
 | `memory_write` | Add or update a memory | ✓ | — | — |
@@ -210,6 +231,8 @@ Scheduled tasks fire with nobody present and run in an environment separate from
 | MCP tools | Tools from MCP servers that are enabled and available to the current persona | ✓ | ✓ | ✓ |
 
 ² As for General; Explore, Research and Plan get only the read-only set plus MCP tools. Independent read-only calls in the same step run concurrently.
+
+³ Foreground only in scheduled tasks.
 
 ### Commands
 

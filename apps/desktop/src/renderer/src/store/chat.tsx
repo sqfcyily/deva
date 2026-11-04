@@ -1599,13 +1599,15 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     [currentSessionId, sessions, bindings]
   )
 
-  // 当前对话尚无自己的模型（新建时角色没设偏好模型、旧版本遗留对话、定时任务对话等）→ 把此刻显示的
+  // 当前对话尚无自己的模型（新建时角色没设偏好模型、旧版本遗留对话等）→ 把此刻显示的
   // 生效模型（即全局「最近使用」）定格为本对话模型并落库。否则它会一直隐式跟随全局：在别的对话里一切换，
   // 这里也跟着变（只有存过模型的对话不受影响，表现为「部分对话被连带切换」）。
   // 惰性未建档的会话主进程查不到会跳过，覆盖层随首发 modelRef 落库。
+  // 定时任务对话除外：它的模型与任务两边同步，没有模型 = 任务选了「跟随默认」（运行时用的正是全局最近使用，
+  // 与此处显示一致）。在这里定格会顺带把任务改成固定模型，只是打开看一眼就改了用户的设置。
   useEffect(() => {
     const sid = currentSessionId
-    if (!sid || currentBinding.model || !activeModel) return
+    if (!sid || currentBinding.model || !activeModel || sid.startsWith('task-')) return
     const ref = `${activeModel.provider.id}:${activeModel.model.id}`
     setBinding(sid, { model: ref })
     if (sessions.some((s) => s.id === sid))
@@ -1866,8 +1868,17 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       const sid = sessionIdRef.current
       setBinding(sid, { model: modelRef })
       void (async () => {
-        await window.deva.chat.setModel({ sessionId: sid, modelRef })
+        const r = await window.deva.chat.setModel({ sessionId: sid, modelRef })
         await refreshSessions()
+        // 已落库：撤掉覆盖层里的模型，此后以主进程为准——定时任务对话的模型还会被任务表单改（两边同步），
+        // 覆盖层留着会把那次改动挡住。期间又切了别的模型（覆盖层已不是这个值）就不动，等那次落库再撤。
+        if (r.ok && bindingsRef.current.get(sid)?.model === modelRef) {
+          const { model: _persisted, ...rest } = bindingsRef.current.get(sid) ?? {}
+          const map = new Map(bindingsRef.current)
+          map.set(sid, rest)
+          bindingsRef.current = map
+          setBindings(map)
+        }
       })()
     }
 

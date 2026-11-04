@@ -4,7 +4,7 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { getDevaHome } from './config'
 import { publishSessionsChanged } from './chat-bus'
-import { rebindSessionPersona } from './chat-store'
+import { rebindSessionPersona, syncSessionBinding } from './chat-store'
 import { nextRun, parseCron, isValidTimeZone, describeSchedule, parseWallIso } from './schedule'
 import {
   ERROR_PAUSE_THRESHOLD,
@@ -183,7 +183,18 @@ export function updateTask(input: TaskUpdateInput): TaskRecord | null {
   if (!t) return null
   if (typeof input.title === 'string') t.title = input.title.trim() || t.title
   if (typeof input.prompt === 'string' && input.prompt.trim()) t.prompt = input.prompt.trim()
-  if (input.auth) t.auth = sanitizeAuth({ ...t.auth, ...input.auth })
+  if (input.auth) {
+    t.auth = sanitizeAuth({ ...t.auth, ...input.auth })
+    // 角色 / 模型两边同步：任务的独占对话跟着改（对话还没建 = 从没运行过，首次运行时按任务建）。
+    // 角色为空（= 默认角色）时不动对话，运行时由 runScheduledTurn 兜成默认角色。
+    if (
+      syncSessionBinding(t.sessionId, {
+        personaId: t.auth.personaId ?? undefined,
+        model: t.auth.modelRef ?? ''
+      })
+    )
+      publishSessionsChanged()
+  }
   if (input.schedule && typeof input.schedule === 'object') {
     const sched = input.schedule
     if (isValidTimeZone(sched.tz)) {
@@ -210,6 +221,24 @@ export function updateTask(input: TaskUpdateInput): TaskRecord | null {
 export function deleteTask(id: string): void {
   ensureLoaded()
   if (cache.delete(id)) persist()
+}
+
+/**
+ * 任务对话里切换了模型（chat:set-model）：同步为任务的模型——两边以同一个为准（反向见 updateTask）。
+ * 空串 = 跟随全局默认（modelRef null）。不是任务对话 / 没变化则什么都不做。
+ */
+export function syncTaskModel(sessionId: string, modelRef: string): void {
+  ensureLoaded()
+  const ref = modelRef || null
+  for (const t of cache.values()) {
+    if (t.sessionId !== sessionId) continue
+    if (t.auth.modelRef !== ref) {
+      t.auth = sanitizeAuth({ ...t.auth, modelRef: ref })
+      t.updatedAt = Date.now()
+      persist()
+    }
+    return
+  }
 }
 
 /**
@@ -267,12 +296,13 @@ export function appendRun(id: string, run: TaskRun): TaskRecord | null {
 
 /**
  * 触发后统一善后（scheduler 专用）：写 lastRunAt、重算 nextRunAt、退避/自动暂停、once 转完成。
- * `result.ok` 决定连续错误计数的清零/累加与是否转 error 态。
+ * `result.ok` 决定连续错误计数的清零/累加与是否转 error 态；`result.aborted`（被用户中止）既不算成功也不算
+ * 失败：连续错误计数不动，一次性任务照常转完成，周期任务照常排下一次。
  * 返回 `{ task, autoPausedError }`——autoPausedError 为 true 时 scheduler 弹一次错误通知。
  */
 export function applyRunResult(
   id: string,
-  result: { ok: boolean },
+  result: { ok: boolean; aborted?: boolean },
   firedAt: number
 ): { task: TaskRecord; autoPausedError: boolean } | null {
   ensureLoaded()
@@ -280,22 +310,23 @@ export function applyRunResult(
   if (!t) return null
   const now = Date.now()
   t.lastRunAt = firedAt
+  const failed = !result.ok && !result.aborted
 
   let autoPausedError = false
   if (result.ok) {
     t.consecutiveErrors = 0
-  } else {
+  } else if (failed) {
     t.consecutiveErrors += 1
   }
 
   if (t.schedule.kind === 'once') {
     // 一次性：无论成败都不再重排（错误也不重试——避免无声反复烧 token）。
     t.nextRunAt = null
-    t.status = result.ok ? 'completed' : 'error'
-    if (!result.ok) autoPausedError = true
+    t.status = failed ? 'error' : 'completed'
+    if (failed) autoPausedError = true
   } else {
     // 周期：达阈值转 error（弹一次 + 停排），否则重算下次。
-    if (!result.ok && t.consecutiveErrors >= ERROR_PAUSE_THRESHOLD) {
+    if (failed && t.consecutiveErrors >= ERROR_PAUSE_THRESHOLD) {
       t.status = 'error'
       t.nextRunAt = null
       autoPausedError = true

@@ -4024,30 +4024,27 @@ body.cf-resizing-y * {
   flex: none;
   color: var(--fg-muted);
 }
-/* 通用运行状态徽标（右详情「上次」值 + 运行历史行共用）。 */
-.cf-runbadge {
+/* 运行状态图标（右详情「上次」值 + 运行历史行共用，见 ChatFirstShell RunStatusIcon）：同宽 14px 线框圆形，
+   颜色按状态——成功绿、失败红、跳过黄；已中止同对话里「已停止本轮回复」的提示（.msg__notice）：黄色信息图标。 */
+.cf-runicon {
   flex: none;
-  padding: 0 6px;
-  height: 15px;
-  display: inline-flex;
-  align-items: center;
-  border-radius: var(--radius-full);
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
-  background: var(--bg-inset);
-  color: var(--fg-muted);
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-subtle);
 }
-.cf-runbadge.is-ok {
-  background: color-mix(in srgb, var(--success, #2e7d32) 16%, transparent);
+.cf-runicon svg {
+  display: block;
+}
+.cf-runicon.is-ok {
   color: var(--success, #2e7d32);
 }
-.cf-runbadge.is-error {
-  background: color-mix(in srgb, var(--danger) 16%, transparent);
+.cf-runicon.is-error {
   color: var(--danger);
 }
-.cf-runbadge.is-skipped {
-  background: color-mix(in srgb, var(--warning) 16%, transparent);
+.cf-runicon.is-skipped,
+.cf-runicon.is-aborted {
   color: var(--warning);
 }
 
@@ -4102,10 +4099,18 @@ body.cf-resizing-y * {
 }
 
 /* 运行历史行：时间 | 状态徽标 | 摘要/错误。 */
+/* 运行历史：时间 | 状态图标 | 摘要三列整列对齐。日期长短不一（11月4日 / 10月31日），时间列按最长的那条定宽：
+   各行以子网格共用父网格的列，随语言自适应，不写死宽度。 */
+.cf-truns {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  column-gap: var(--space-2);
+}
 .cf-trun {
-  display: flex;
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
   align-items: center;
-  gap: var(--space-2);
   padding: 8px var(--space-3);
   border-radius: var(--radius);
 }
@@ -4113,12 +4118,11 @@ body.cf-resizing-y * {
   background: var(--bg-hover);
 }
 .cf-trun__time {
-  flex: none;
   font-size: 12px;
   color: var(--fg);
+  font-variant-numeric: tabular-nums;
 }
 .cf-trun__msg {
-  flex: 1 1 auto;
   min-width: 0;
   font-size: 11.5px;
   color: var(--fg-muted);
