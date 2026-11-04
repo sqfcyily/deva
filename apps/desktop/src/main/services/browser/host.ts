@@ -10,6 +10,7 @@
  * 屏幕之外继续显示、不进任务栏；配合启动时关掉 Chromium 的窗口遮挡检测（index.ts），屏幕外的窗口也照常渲染。
  *
  * 状态（标签、当前标签、Deva 正在做什么、等用户操作）经 browser:state 推给主窗口（输入框上方的胶囊）和外框界面。
+ * 只推用户该看到的网页（见 visibleTabs）：Deva 在后台用的网页不出现在界面上。
  */
 import {
   BrowserWindow,
@@ -54,6 +55,13 @@ const TAB_BAR = BROWSER_CHROME.tabBar
 const STATUS_BAR = BROWSER_CHROME.statusBar
 const FRAME = BROWSER_CHROME.frame
 const DEFAULT_SIZE = { width: 1180, height: 820 }
+/**
+ * 第一次展开的大小：宽高都取主窗口的同一比例（四周露出的边距成比例，看着是主窗口里居中的一个小一号的窗口）。
+ * 宽度不低于 1024（再窄网站会换成手机 / 平板布局），高度不低于 600。主窗口不在时按它的默认尺寸算。
+ */
+const FIRST_RATIO = 0.85
+const FIRST_MIN = { width: 1024, height: 600 }
+const MAIN_DEFAULT = { width: 1280, height: 820 }
 /** 收起且一个网页都没有时，过多久销毁窗口（外框界面本身也占一个渲染进程）；下次要用再建。 */
 const EMPTY_WINDOW_DESTROY_MS = 20_000
 
@@ -102,10 +110,29 @@ export function setSessionAborter(fn: (sessionId: string) => boolean): void {
 
 /* ───────── 状态推送 ───────── */
 
+/**
+ * 界面上显示哪些网页。浏览器默认在后台给 Deva 用，不打扰用户；只有这几种显示（胶囊、对话列表的地球标记、窗口标签条）：
+ * - 用户要求看过的（show 弹出过，page.shown），一直显示到关掉；
+ * - 正等用户操作的对话的全部网页（登录页弹出的新标签也要能切过去），等待结束后回到后台；
+ * - 窗口展开着、正显示在用户眼前的那个；
+ * - 胶囊上固定着看的那个。
+ * Deva 在后台打开、操作的其余网页都不显示，它做了什么看执行步骤。
+ */
+function visibleTabs(): Set<string> {
+  const open = !!win && !win.isDestroyed() && !docked
+  const out = new Set<string>()
+  for (const p of allPages()) {
+    if (p.kind !== 'window') continue
+    if (p.shown || handoffs.has(p.sessionId) || (open && p.id === active) || p.id === pinnedPreview) out.add(p.id)
+  }
+  return out
+}
+
 export function uiState(): BrowserUiState {
+  const visible = visibleTabs()
   const tabs: BrowserUiTab[] = []
   for (const p of allPages()) {
-    if (p.kind !== 'window' || p.wc.isDestroyed()) continue
+    if (p.kind !== 'window' || p.wc.isDestroyed() || !visible.has(p.id)) continue
     const h = p.wc.navigationHistory
     const url = p.wc.getURL()
     tabs.push({
@@ -124,8 +151,13 @@ export function uiState(): BrowserUiState {
     pinned,
     active,
     tabs,
-    current: currentBySession(),
-    operating: Object.fromEntries([...operating].map(([sid, o]) => [sid, { tab: o.tab, action: o.action, label: o.label }])),
+    // 当前标签、正在操作也只报显示着的网页：Deva 在后台网页上的操作不出现在胶囊上
+    current: Object.fromEntries(Object.entries(currentBySession()).filter(([, tab]) => visible.has(tab))),
+    operating: Object.fromEntries(
+      [...operating]
+        .filter(([, o]) => visible.has(o.tab))
+        .map(([sid, o]) => [sid, { tab: o.tab, action: o.action, label: o.label }])
+    ),
     handoff: Object.fromEntries([...handoffs].map(([sid, h]) => [sid, { tab: h.tab, reason: h.reason, message: h.message }]))
   }
 }
@@ -261,20 +293,38 @@ function repositionIfDocked(): void {
   }
 }
 
+/**
+ * 本次运行第一次展开时的位置大小（之后记住用户拖动后的）：主窗口等比缩小（FIRST_RATIO），在主窗口上居中，
+ * 四周露出一圈 Deva，不把它整个盖住。主窗口最小化 / 不在时，按主窗口默认尺寸算、在屏幕上居中。
+ */
+function firstBounds(main: BrowserWindow | null, w: BrowserWindow): Rectangle {
+  const mainOk = !!main && !main.isDestroyed() && !main.isMinimized()
+  const ref = mainOk ? main.getBounds() : null
+  const area = screen.getDisplayMatching(ref ?? w.getBounds()).workArea
+  const base = ref ?? MAIN_DEFAULT
+  const size = (k: 'width' | 'height'): number =>
+    Math.min(area[k] - 40, Math.max(FIRST_MIN[k], Math.round(base[k] * FIRST_RATIO)))
+  const width = size('width')
+  const height = size('height')
+  const box = ref ?? area
+  const x = box.x + Math.round((box.width - width) / 2)
+  const y = box.y + Math.round((box.height - height) / 2)
+  // 夹回屏幕工作区之内
+  return {
+    x: Math.min(Math.max(x, area.x), area.x + area.width - width),
+    y: Math.min(Math.max(y, area.y), area.y + area.height - height),
+    width,
+    height
+  }
+}
+
 /** 展开窗口并切到某个标签。focus=false 时不抢焦点（如 Deva 自己弹出时）。 */
 export function showWindow(tab?: string | null, focus = true): void {
   const w = ensureWindow()
   if (tab && views.has(tab)) active = tab
   if (docked) {
     const main = mainWindowGetter()
-    let b = savedBounds
-    if (!b) {
-      // 第一次：与主窗口同一块屏幕，居中
-      const area = screen.getDisplayMatching(main && !main.isDestroyed() ? main.getBounds() : w.getBounds()).workArea
-      const width = Math.min(DEFAULT_SIZE.width, area.width - 40)
-      const height = Math.min(DEFAULT_SIZE.height, area.height - 40)
-      b = { x: area.x + Math.round((area.width - width) / 2), y: area.y + Math.round((area.height - height) / 2), width, height }
-    }
+    const b = savedBounds ?? firstBounds(main, w)
     w.setBounds(b)
     w.setSkipTaskbar(false)
     docked = false
@@ -504,6 +554,8 @@ export function registerBrowserIpc(): void {
   // 胶囊预览卡「固定」着看哪个标签（null = 没有固定）：用户正在看，Deva 关不掉、闲置也不回收
   ipcMain.handle('browser:preview-pinned', (_e, tab: string | null) => {
     pinnedPreview = typeof tab === 'string' ? tab : null
+    // 固定着看的网页算显示中：取消固定后若已不该显示（如等待已结束），胶囊随之收起
+    push()
     return { ok: true }
   })
   // 胶囊预览卡的实时画面：开 / 停（帧经 browser:live-frame 推给主窗口）

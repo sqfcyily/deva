@@ -37,6 +37,11 @@ export interface BrowserPage {
   /** 关掉宿主（离屏窗口销毁 / 从浏览器窗口移除视图并关闭）。 */
   dispose: () => void
   lastUsed: number
+  /**
+   * 用户要求看过（browser 的 show 弹给用户看）。浏览器默认在后台给 Deva 用，界面上不显示；
+   * 弹给用户看过的网页此后一直显示在胶囊里，直到关掉（见 host.ts visibleTabs）。
+   */
+  shown: boolean
   /** 尚未告知模型的事件（弹出新标签、下载完成等），下次返回结果时附上后清空。 */
   notices: string[]
   /** CDP 是否已初始化（attach + 对话框接管）。 */
@@ -227,6 +232,7 @@ export function basePage(
     wc,
     dispose,
     lastUsed: Date.now(),
+    shown: false,
     notices: [],
     cdpReady: false,
     inflight: new Map(),

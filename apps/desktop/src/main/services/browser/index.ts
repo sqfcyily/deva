@@ -790,6 +790,8 @@ async function act(
           await operate(page, 'open', new URL(url as string).host || (url as string), signal)
           warn = await navigate(page, url as string, signal)
         }
+        // 用户要求看的网页：此后显示在胶囊里，直到关掉（后台网页不显示）
+        page.shown = true
         showWindow(page.id, true)
         const lead = `已把浏览器窗口切到 ${page.id} 弹给用户看（不用等用户，接着回复即可）。`
         return pageResult(sessionId, page, warn ? [lead, warn] : [lead], signal)
@@ -800,6 +802,7 @@ async function act(
       if (!page) fail(goneTab(id, sessionId))
       if ((page as BrowserPage).kind !== 'window')
         fail('这个网页是在后台（定时任务 / 手机端）打开的，弹不出窗口：用 show 带上 url 重新打开。')
+      ;(page as BrowserPage).shown = true
       showWindow(id, true)
       const name = pageName(page as BrowserPage)
       return { content: `已把浏览器窗口切到 ${id}（${name}）弹给用户看，不用等用户，接着回复即可。`, summary: name }

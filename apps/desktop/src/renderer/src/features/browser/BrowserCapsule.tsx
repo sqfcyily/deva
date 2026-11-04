@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   ChevronUp,
   CircleCheckBig,
@@ -129,6 +129,41 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
   }, [popupOpen])
   useEffect(() => () => window.clearTimeout(hoverTimer.current), [])
 
+  // 浮层（预览卡 / 网页列表）的横向位置：默认与胶囊左对齐；胶囊排在靠右处、放不下时往左挪，
+  // 不超出胶囊排（与输入框同宽）。在绘制前量好，不会先画在原处再跳过去。
+  const [popX, setPopX] = useState(0)
+  const popup = listOpen && tabs.length > 1 ? 'list' : preview ? 'preview' : null
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const dock = root?.parentElement
+    if (!popup || !root || !dock) return
+    const place = (): void => {
+      const pop = root.querySelector<HTMLElement>('.cf-browser__preview, .cf-todo__panel')
+      if (!pop) return
+      const r = root.getBoundingClientRect()
+      const d = dock.getBoundingClientRect()
+      setPopX(Math.max(d.left, Math.min(r.left, d.right - pop.offsetWidth)) - r.left)
+    }
+    place()
+    // 卡开着时胶囊也会挪：左边的胶囊出现 / 消失、文字变长变短，窗口缩放时胶囊排变宽变窄
+    const ro = new ResizeObserver(place)
+    const watch = (): void => {
+      ro.disconnect()
+      ro.observe(dock)
+      for (const c of Array.from(dock.children)) ro.observe(c)
+    }
+    watch()
+    const mo = new MutationObserver(() => {
+      watch()
+      place()
+    })
+    mo.observe(dock, { childList: true })
+    return () => {
+      ro.disconnect()
+      mo.disconnect()
+    }
+  }, [popup])
+
   if (!s || !sessionId || !cur || !shown) return null
   const op = s.operating[sessionId]
   const ho = s.handoff[sessionId]
@@ -205,7 +240,11 @@ export function BrowserCapsule({ sessionId }: { sessionId: string | null }): Rea
   }
 
   return (
-    <div className={`cf-browser${listOpen ? ' is-open' : ''}`} ref={rootRef} style={{ order }}>
+    <div
+      className={`cf-browser${listOpen ? ' is-open' : ''}`}
+      ref={rootRef}
+      style={{ order, '--cf-pop-x': `${popX}px` } as React.CSSProperties}
+    >
       {listOpen && multi && (
         <PagesPanel
           sessionId={sessionId}

@@ -17,6 +17,7 @@ A desktop AI agent with the conversation as its single entry point
 </p>
 
 <a href="https://github.com/sqfcyily/deva/releases"><b>Download</b></a> ·
+<a href="#model-breaking"><b>Model breaking</b></a> ·
 <a href="#quick-start"><b>Quick Start</b></a> ·
 <a href="#design"><b>Design</b></a> ·
 <a href="#tool-reference"><b>Tool Reference</b></a> ·
@@ -32,6 +33,17 @@ Deva is a cross-platform desktop agent client. Personas, scheduled tasks, skills
 <p align="center">
   <img src="docs/deva.en.svg" alt="Deva interface demo" width="100%" />
 </p>
+
+## Model breaking
+
+Built-in special persona 小码酱 (Xiaomajiang), tuned for Chinese models (DeepSeek, Kimi, Zhipu GLM, Qwen, etc.). No skill or MCP setup needed — just select the persona. Two core capabilities:
+
+**Breaking** — jailbreak and prompt injection research: multi-turn bypass, adversarial suffixes, output shaping, RAG attacks and other prompt-level techniques; static removal of and adversarial response to safety / ethics injections, restoring the model's native output capability; targeted unpacking of Chinese-model refusal patterns.
+
+**Reversing** — binary / software reverse engineering: static analysis to locate check functions, critical jumps and license logic; anti-debug, anti-VM and detection-bypass placeholder workflows and code snippets; local sample workflow (isolate → locate CHECK_FN → mark OFFSET / PATCH_BYTE → re-sign → verify with rollback copy).
+
+> [!NOTE]
+> 小码酱's prompt comes from [YuJunZhiXue/dsh-purge](https://github.com/YuJunZhiXue/dsh-purge). Results on other models are not guaranteed.
 
 ## Features
 
@@ -120,8 +132,7 @@ Built-in personas:
 | Deva | Default persona. General-purpose assistant for coding, writing, research, data analysis and running commands |
 | 小码酱 (Xiaomajiang) | Security research: red teaming, reverse engineering and prompt security, plus full-stack development |
 
-> [!NOTE]
-> 小码酱's prompt comes from [YuJunZhiXue/dsh-purge](https://github.com/YuJunZhiXue/dsh-purge) and is tuned for Chinese models (DeepSeek, Kimi, Zhipu GLM, Qwen, etc.). Results on other models are not guaranteed.
+See [Model breaking](#model-breaking) for details.
 
 ### Engineering rules
 

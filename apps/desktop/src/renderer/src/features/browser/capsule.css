@@ -117,10 +117,13 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 悬停预览：胶囊正上方的大缩略图；下方 8px 透明桥接，鼠标可以移进去点 */
+/*
+ * 悬停预览：胶囊正上方的大缩略图；下方 8px 透明桥接，鼠标可以移进去点。
+ * 横向位置 --cf-pop-x 由胶囊算好：默认与胶囊左对齐，放不下时往左挪，不超出胶囊排（网页列表同）。
+ */
 .cf-browser__preview {
   position: absolute;
-  left: 0;
+  left: var(--cf-pop-x, 0px);
   bottom: calc(100% + 8px);
   z-index: 30;
   width: 360px;
@@ -257,6 +260,7 @@
 
 /* 网页列表：复用待办面板的样式；胶囊自身有定位，面板宽度单独给（否则只有胶囊那么宽） */
 .cf-browser .cf-todo__panel {
+  left: var(--cf-pop-x, 0px);
   right: auto;
   width: 440px;
   max-width: calc(100vw - 48px);
