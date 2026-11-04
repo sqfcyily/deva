@@ -1122,9 +1122,8 @@ const zhCN: MessageTree = {
     msgCollapse: '收起',
     attach: '附加文件',
     send: '发送',
-    // 回合进行中插入当前轮：输入框的插入键、占位提示与待送达胶囊
+    // 回合进行中插入当前轮：发送键提示、占位提示与待送达胶囊
     insert: {
-      button: '插入',
       hint: '插入当前轮（Enter）：当前步骤结束后交给 {name}，来不及就在本轮结束后发出',
       placeholder: '补充或纠正，当前步骤结束后交给 {name}…',
       pending: '待插入',
@@ -2393,7 +2392,6 @@ const en: MessageTree = {
     attach: 'Attach file',
     send: 'Send',
     insert: {
-      button: 'Insert',
       hint: "Insert into the current turn (Enter): {name} gets it after the current step, or right after this turn if it's already wrapping up",
       placeholder: 'Add a note or correction — {name} gets it after the current step…',
       pending: 'Queued',

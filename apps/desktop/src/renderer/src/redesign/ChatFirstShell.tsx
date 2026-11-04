@@ -4839,8 +4839,14 @@ function Composer({
       : `跟 ${name} 说点什么…`
   const supported = pending.filter((p) => p.supported)
   const canSend = Boolean(input.trim()) || supported.length > 0
-  // 回合进行中有文字：停止键旁出现「插入」。只插文字，待发附件留在输入框里随下一条消息发出。
+  // 回合进行中有文字：唯一的按键是「发送」（插入当前轮）。只插文字，待发附件留在输入框里随下一条消息发出。
   const canInsert = streaming && Boolean(input.trim())
+  /** 上一次插入的时刻：插入后输入框清空、同一位置随即变成停止键，短时间内不认停止，防双击把任务停掉。 */
+  const insertedAtRef = useRef(0)
+  const stopTurn = (): void => {
+    if (Date.now() - insertedAtRef.current < 600) return
+    onStop()
+  }
   const mounted = Boolean(focusRoot)
 
   // 挂载工作区（放在输入区工具条，取代原顶部头部的入口）：仅未挂载态的 chip 调用，选了才挂载，取消则保持现状。
@@ -4939,6 +4945,7 @@ function Composer({
     // /compact、/rewind 是本地指令，回合进行中用不了，也不该当成消息插进去。
     if (!text.trim() || /^\/(compact|rewind)$/i.test(text.trim())) return
     const sid = sessionId
+    insertedAtRef.current = Date.now()
     composer.setText('')
     composer.clearHistory()
     void onInsert(text).then((ok) => {
@@ -5227,30 +5234,29 @@ function Composer({
             )}
             <ModelPicker />
             <EffortPicker />
-            {/* 流式输出时发送键变「停止」（点击中断本会话当前回合）：只放图标，按钮宽度不变、两态不跳动。
-                输入框有文字时停止键缩成方块挪到左边，最右换成「插入」——习惯打完字点最右边的人不会误点停止。 */}
+            {/* 回合进行中只有一枚键：输入框有文字＝「发送」（插入当前轮），空＝「停止」（只放图标，与发送同宽不跳动）。
+                有文字时不出停止，要停先清空输入框。 */}
             {streaming ? (
-              <>
+              canInsert ? (
                 <button
-                  className={`cf-send is-stop${canInsert ? ' is-square' : ''}`}
+                  className="cf-send"
+                  type="button"
+                  title={t('cf.insert.hint').replace('{name}', name)}
+                  onClick={insertNow}
+                >
+                  {t('cf.send')}
+                </button>
+              ) : (
+                <button
+                  className="cf-send is-stop"
                   type="button"
                   title={t('chat.stop')}
                   aria-label={t('chat.stop')}
-                  onClick={onStop}
+                  onClick={stopTurn}
                 >
                   <Square size={14} fill="currentColor" />
                 </button>
-                {canInsert && (
-                  <button
-                    className="cf-send is-insert"
-                    type="button"
-                    title={t('cf.insert.hint').replace('{name}', name)}
-                    onClick={insertNow}
-                  >
-                    {t('cf.insert.button')}
-                  </button>
-                )}
-              </>
+              )
             ) : (
               <button className="cf-send" type="button" disabled={!canSend} onClick={submit}>
                 {t('cf.send')}
