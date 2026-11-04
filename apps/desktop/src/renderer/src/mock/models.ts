@@ -165,6 +165,18 @@ export const seedProviders: Provider[] = [
     models: []
   },
   {
+    // Cheaper Inference：OpenAI 兼容的推理网关，一个密钥可用多家模型（点「拉取模型」取全量清单）。
+    id: 'cheaper-inference',
+    name: 'Cheaper Inference',
+    kind: 'official',
+    accent: '#2563eb',
+    adapter: 'openai',
+    apiHost: 'https://api.cheaperinference.com/v1',
+    docUrl: 'https://cheaperinference.com/docs',
+    enabled: false,
+    models: []
+  },
+  {
     id: 'ollama',
     name: 'Ollama · 本地',
     kind: 'official',

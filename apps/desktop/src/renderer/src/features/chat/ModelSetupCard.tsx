@@ -130,9 +130,10 @@ export function ModelSetupCard(): React.JSX.Element {
           (p) =>
             p.kind === 'official' &&
             (p.purpose ?? 'llm') === 'llm' &&
-            // 仅协议不同的变体与小众订阅网关不进引导卡，设置页仍可选。
+            // 仅协议不同的变体与小众网关不进引导卡，设置页仍可选。
             p.id !== 'openai-responses' &&
-            p.id !== 'opencode-go'
+            p.id !== 'opencode-go' &&
+            p.id !== 'cheaper-inference'
         )
         .sort((a, b) => rank(a.id) - rank(b.id)),
     [providers]

@@ -98,6 +98,7 @@ Deva 是一款跨平台桌面 Agent 客户端。创建角色、定时任务、�
   <img src="https://img.shields.io/badge/%E6%99%BA%E8%B0%B1%20GLM-3859FF?style=flat-square" alt="智谱 GLM" />
   <img src="https://img.shields.io/badge/%E9%80%9A%E4%B9%89%E5%8D%83%E9%97%AE-615CED?style=flat-square" alt="通义千问" />
   <img src="https://img.shields.io/badge/OpenCode%20Go-FF6A3D?style=flat-square" alt="OpenCode Go" />
+  <img src="https://img.shields.io/badge/Cheaper%20Inference-2563EB?style=flat-square" alt="Cheaper Inference" />
   <img src="https://img.shields.io/badge/Ollama-71717A?style=flat-square" alt="Ollama" />
 </p>
 

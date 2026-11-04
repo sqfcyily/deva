@@ -105,6 +105,7 @@ Preset providers:
   <img src="https://img.shields.io/badge/Zhipu%20GLM-3859FF?style=flat-square" alt="Zhipu GLM" />
   <img src="https://img.shields.io/badge/Qwen-615CED?style=flat-square" alt="Qwen" />
   <img src="https://img.shields.io/badge/OpenCode%20Go-FF6A3D?style=flat-square" alt="OpenCode Go" />
+  <img src="https://img.shields.io/badge/Cheaper%20Inference-2563EB?style=flat-square" alt="Cheaper Inference" />
   <img src="https://img.shields.io/badge/Ollama-71717A?style=flat-square" alt="Ollama" />
 </p>
 
