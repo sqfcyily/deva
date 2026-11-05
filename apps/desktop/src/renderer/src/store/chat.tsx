@@ -10,6 +10,8 @@ import {
 } from 'react'
 import type {
   EffortLevel,
+  MemberMeta,
+  MemberTask,
   TaskCreateInput,
   ResolveAutotaskResult,
   RewindApplyResult,
@@ -171,6 +173,8 @@ export type ChatBlock =
       key: string
       tool: string
       path: string
+      /** 为成员选择文件夹（不是挂载本对话的工作区）：成员名。 */
+      member?: string
       decided?: 'mounted' | 'skipped'
       /** decided='mounted' 时的已挂载目录，供卡片展示。 */
       root?: string
@@ -215,6 +219,9 @@ export type ChatBlock =
    */
   | { kind: 'insert'; text: string }
 
+/** 成员会话里正等用户处理的交互卡（提问 / 计划 / 选文件夹）：主对话输入框上方以通知行呈现，点开当场处理。 */
+export type PendingCard = Extract<ChatBlock, { kind: 'ask' | 'plan' | 'mount' }>
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -226,6 +233,10 @@ export interface ChatMessage {
    * 但展示为一行系统通知而非用户气泡，正文为通知标题。
    */
   notify?: boolean
+  /** 成员交差的通知：不显示（其后主角色的回复就是交差内容），只留作一轮的起点（轮下标 / 跳转定位照常）。 */
+  quiet?: boolean
+  /** 成员会话里主智能体派来的任务：工作记录里画成「X 派来的任务」（用户原话 + 附注）。 */
+  task?: MemberTask
   /** 助手消息：本轮耗时（毫秒，主进程计时、扣除等用户处置的时间），工作过程折叠条据此显示「已处理 X」。 */
   durationMs?: number
 }
@@ -246,6 +257,10 @@ export interface SessionMeta {
   effort?: EffortLevel
   /** 已归档（不在左侧对话列表里显示）；缺省 = 未归档。 */
   archived?: boolean
+  /** 项目成员名单（含已移除的）。成员会话本身不在 sessions 里，从这里找。 */
+  members?: MemberMeta[]
+  /** 成员会话所属的主对话 id（只出现在 store 内部的全部会话里，对外的 sessions 不含成员会话）。 */
+  parentId?: string
 }
 
 /** send 接受的附件（路径给主进程读取，名称/类型用于本地乐观气泡）。 */
@@ -277,6 +292,8 @@ export interface SessionLiveState {
   streaming: boolean
   attention: boolean
   unread: boolean
+  /** 正在进行的这一轮从何时开始（streaming 时才有）：成员卡片显示「正在做 · 38 秒」。 */
+  startedAt?: number
 }
 
 /** 与 preload/主进程 DisplayMessage 结构一致（渲染层结构化复述）。 */
@@ -308,7 +325,7 @@ type DisplayBlock =
   | { kind: 'todolist'; id: string; title: string; items: TodoItem[] }
   | { kind: 'insert'; text: string }
 type DisplayMessage =
-  | { role: 'user'; text: string; attachments: AttachChip[]; notify?: true }
+  | { role: 'user'; text: string; attachments: AttachChip[]; notify?: true; quiet?: true; task?: MemberTask }
   | { role: 'assistant'; blocks: DisplayBlock[]; durationMs?: number }
 
 /** 与 preload/主进程 ChatStreamEvent 结构一致（按既定模式在渲染层复述线缆类型）。 */
@@ -340,7 +357,8 @@ type StreamEvent =
   | { type: 'plan_review'; key: string; plan: string }
   | { type: 'todos'; state: TodoState }
   | { type: 'todo_done'; id: string; title: string; items: TodoItem[] }
-  | { type: 'mount_request'; key: string; tool: string; path: string }
+  | { type: 'mount_request'; key: string; tool: string; path: string; member?: string }
+  | { type: 'member_report' }
   | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   | { type: 'reconnecting'; attempt: number; max: number }
   | {
@@ -378,12 +396,28 @@ type StreamEvent =
     }
   | {
       type: 'turn_start'
-      user: { text: string; attachments: AttachChip[]; notify?: true }
+      user: { text: string; attachments: AttachChip[]; notify?: true; quiet?: true; task?: MemberTask }
     }
   | { type: 'insert'; text: string }
   | { type: 'inserts'; pending: string[] }
   | { type: 'inserts_returned'; text: string }
   | { type: 'done'; stopReason: string; durationMs?: number }
+
+/**
+ * 接上一轮正等用户处理的回合（attachSession）：历史里重建出的提问卡没有答复（key 是调用 id，答了也没人接）、
+ * 计划卡记作已取消——换成仍在等的那几张实时卡（pendingCards，key 能答复）。打开正等你回答的成员对话即此情形。
+ */
+function withLiveCards(msgs: ChatMessage[], cards: PendingCard[]): ChatMessage[] {
+  const last = msgs[msgs.length - 1]
+  if (!cards.length || last?.role !== 'assistant') return msgs
+  const live = new Set(cards.map((c) => c.kind))
+  const blocks = last.blocks.filter(
+    (b) =>
+      !(live.has('ask') && b.kind === 'ask' && b.answers === undefined) &&
+      !(live.has('plan') && b.kind === 'plan' && b.decided === 'cancelled')
+  )
+  return [...msgs.slice(0, -1), { ...last, blocks: [...blocks, ...cards] }]
+}
 
 /**
  * 交互卡已在别处答复（手机端 / 本层自己的答复回执）：把同 key 的卡收成已决态。
@@ -426,6 +460,8 @@ function resolveProposalCard(
 
 interface ChatContextValue {
   sessions: SessionMeta[]
+  /** 成员会话的元信息（不进左侧列表；成员卡片据此显示它用的模型等）。 */
+  memberSessions: SessionMeta[]
   currentSessionId: string
   messages: ChatMessage[]
   streaming: boolean
@@ -486,19 +522,32 @@ interface ChatContextValue {
   setSessionModel: (modelRef: string) => void
   /** 设置**当前对话**的思考等级（只改当前对话，立即落库；不动全局「最近使用」，那由调用方另记）。 */
   setSessionEffort: (level: EffortLevel) => void
-  /** 回应 ask_user 询问（每题的选中项标签或自由输入），并把该问答卡就地收敛为已答态。 */
-  respondAsk: (key: string, answers: string[]) => void
+  /**
+   * 各会话正等用户处理的交互卡（键=sessionId，见 PendingCard）：主对话据此为成员显示「在等你回答」的通知行。
+   * 卡片答复 / 在别处收敛 / 该会话本轮结束即移除。
+   */
+  pendingCards: Record<string, PendingCard[]>
+  /**
+   * 回应 ask_user 询问（每题的选中项标签或自由输入），并把该问答卡就地收敛为已答态。
+   * sessionId 缺省为当前会话；在主对话里答成员的卡时传成员会话 id。
+   */
+  respondAsk: (key: string, answers: string[], sessionId?: string) => void
   /**
    * 回应 exit_plan 计划审阅（approve=批准并执行 / keep=继续完善），并把该计划卡就地收敛为已决态。
    * approve 后主进程循环继续、按计划执行；无渲染层临时态需清除。
    */
-  respondPlan: (key: string, decision: 'approve' | 'keep' | 'ignore', feedback?: string) => void
+  respondPlan: (
+    key: string,
+    decision: 'approve' | 'keep' | 'ignore',
+    feedback?: string,
+    sessionId?: string
+  ) => void
   /**
    * 回应「请求挂载工作区」：path=用户已选目录（调用方须先经 fs.openFolder 受信）、null=暂不挂载。
    * 挂载成功时**同步更新本对话绑定覆盖层**（等价于 mountFocus）——否则下次 chat:send 会用旧覆盖层
    * 把主进程刚就地设好的 focusRoot 覆盖回去。就地把该卡收敛为终态。
    */
-  respondMount: (key: string, path: string | null) => void
+  respondMount: (key: string, path: string | null, sessionId?: string) => void
   /**
    * 落定角色名片终态（接受/拒绝）：就地把名片状态收敛为终态并持久化（防重开退回 pending / 重复建角色）。
    * 「接受」建角色的写入（personas:upsert）由编辑器直接发起，本方法只管名片状态与终态落库。
@@ -523,6 +572,11 @@ interface ChatContextValue {
    * 结论随下一轮交给模型（不为此自动起一轮）。
    */
   stopSubagent: (toolId: string) => void
+  /**
+   * 移除主对话 sessionId 的一个成员（成员卡片「移除成员」）：不再派任务给它，进行中的任务中止，成员会话保留。
+   * 名单随主进程的 sessions-changed 刷新。
+   */
+  removeMember: (sessionId: string, memberSessionId: string) => void
   /**
    * 回合进行中向当前会话插入一条消息：当前步骤结束后交给模型，来不及就在本轮结束后作为下一条发出。
    * 回合恰好已经结束则改走普通发送。返回是否发出（false 时原因已 toast，调用方把文字放回输入框）。
@@ -578,7 +632,9 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
         role: 'user',
         blocks: dm.text ? [{ kind: 'text', text: dm.text }] : [],
         attachments: dm.attachments.length ? dm.attachments : undefined,
-        ...(dm.notify ? { notify: true } : {})
+        ...(dm.notify ? { notify: true } : {}),
+        ...(dm.quiet ? { quiet: true } : {}),
+        ...(dm.task ? { task: dm.task } : {})
       }
     }
     const blocks: ChatBlock[] = dm.blocks.map((b) => {
@@ -833,7 +889,7 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       next.push({ kind: 'todolist', id: ev.id, title: ev.title, items: ev.items })
       return next
     case 'mount_request':
-      next.push({ kind: 'mount', key: ev.key, tool: ev.tool, path: ev.path })
+      next.push({ kind: 'mount', key: ev.key, tool: ev.tool, path: ev.path, ...(ev.member ? { member: ev.member } : {}) })
       return next
     case 'insert':
       next.push({ kind: 'insert', text: ev.text })
@@ -1043,10 +1099,30 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     tRef.current = t
   }, [t])
 
-  const [sessions, setSessions] = useState<SessionMeta[]>([])
+  // 主进程交来的全部会话，含成员会话（带 parentId，见 SessionMeta.parentId）。成员会话不进左侧列表，
+  // 对外只给 sessions（不含成员会话）；打开成员对话时它的模型 / 思考等级 / 文件夹从这里读。
+  const [allSessions, setSessions] = useState<SessionMeta[]>([])
+  const sessions = useMemo(() => allSessions.filter((s) => !s.parentId), [allSessions])
+  const memberSessions = useMemo(() => allSessions.filter((s) => !!s.parentId), [allSessions])
   // 初始会话清单是否已载入完成。首次 listSessions resolve 后置 true 并恒保持；
   // 渲染层据此区分「加载中」与「确认无对话」，避免启动瞬间闪现空态。
   const [currentSessionId, setCurrentSessionId] = useState<string>('')
+  // 各会话正等用户处理的交互卡（见 PendingCard）：不论本层是否缓存 / 流式该会话都记，成员的卡由此在主对话里出现。
+  const [pendingCards, setPendingCards] = useState<Record<string, PendingCard[]>>({})
+  const pendingCardsRef = useRef(pendingCards)
+  pendingCardsRef.current = pendingCards
+  const dropPendingCard = useCallback((sid: string, key?: string): void => {
+    setPendingCards((prev) => {
+      const list = prev[sid]
+      if (!list) return prev
+      const left = key === undefined ? [] : list.filter((c) => c.key !== key)
+      if (left.length === list.length) return prev
+      const next = { ...prev }
+      if (left.length) next[sid] = left
+      else delete next[sid]
+      return next
+    })
+  }, [])
   // 各会话活动态（键=sessionId）。ref 供事件回调 / 命令同步读写（不受渲染闭包过期影响），state 驱动渲染。
   const [runtimes, setRuntimes] = useState<Map<string, SessionRuntime>>(() => new Map())
   // 会话绑定覆盖层（对话优先外壳）：persona / 聚焦工作区，在会话**首发落库前**只存渲染态，首发时随
@@ -1069,6 +1145,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   // 别处发起、正在进行的回合（键=sessionId；定时任务 / 手机端）：turn_start 记入、done 移除。本层没缓存的
   // 会话没有 runtime，列表头像的忙碌动效靠它；不然要点开（attachSession 建了 runtime）才看得到。
   const [bgStreaming, setBgStreaming] = useState<ReadonlySet<string>>(() => new Set())
+  // 别处发起的回合何时开始（键=sessionId）：随 bgStreaming 一同增删，sessionStates 据此给出 startedAt。
+  const bgStartedRef = useRef(new Map<string, number>())
   // 每秒自增以触发重渲染，刷新当前所视会话「已用秒数」（不绑定变量，仅需其副作用）。
   const [, setTick] = useState(0)
 
@@ -1141,7 +1219,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         msgs[msgs.length - 1]?.role === 'assistant' ? [] : [{ id: genId(), role: 'assistant', blocks: [] }]
       patchRuntime(sid, (r) => ({
         ...r,
-        messages: [...msgs, ...tail],
+        messages: withLiveCards([...msgs, ...tail], pendingCardsRef.current[sid] ?? []),
         streaming: true,
         turnId,
         startedAt: Date.now(),
@@ -1273,7 +1351,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   const openFirstSession = useCallback(
     (list: SessionMeta[]): void => {
       const first = list
-        .filter((s) => !s.archived)
+        .filter((s) => !s.archived && !s.parentId)
         .reduce<SessionMeta | null>((a, s) => (a && a.updatedAt >= s.updatedAt ? a : s), null)
       if (!first) {
         startFresh()
@@ -1339,6 +1417,33 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 其余是本层没缓存的后台回合 —— 内容以主进程 + 磁盘为唯一真源，绝不在此凑合拼装。
       const localStreaming = runtimesRef.current.get(sid)?.streaming === true
 
+      // 交互卡另记一份到 pendingCards（不 return，照常并入气泡）：成员会话的卡没人打开着看，主对话靠它显示通知行。
+      if (ev.type === 'ask_user' || ev.type === 'plan_review' || ev.type === 'mount_request') {
+        const card: PendingCard =
+          ev.type === 'ask_user'
+            ? { kind: 'ask', key: ev.key, questions: ev.questions }
+            : ev.type === 'plan_review'
+              ? { kind: 'plan', key: ev.key, plan: ev.plan }
+              : { kind: 'mount', key: ev.key, tool: ev.tool, path: ev.path, ...(ev.member ? { member: ev.member } : {}) }
+        setPendingCards((prev) => ({
+          ...prev,
+          [sid]: [...(prev[sid] ?? []).filter((c) => c.key !== card.key), card]
+        }))
+      }
+      if (ev.type === 'interaction_resolved') dropPendingCard(sid, ev.key)
+      if (ev.type === 'done') dropPendingCard(sid)
+
+      // 成员交差已以主角色的名义记进主对话（会话级，主对话空闲时才发）：同一条新回复，不在看就记未读；缓存着该对话
+      // 就以主进程为准重载。正流式时（刚发出新一轮、主进程还没登记忙）等这一轮 done 时再重载。
+      if (ev.type === 'member_report') {
+        void refreshSessions()
+        if (sessionIdRef.current !== sid) setUnread((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)))
+        const r = runtimesRef.current.get(sid)
+        if (r?.streaming) compactedSids.add(sid)
+        else if (r) reloadIntoRuntime(sid)
+        return
+      }
+
       // 后台子智能体的过程与结局不属于任何回合（turnId 为空串）：按卡片 id 在全部消息里就地更新那张 Task 卡。
       // 没缓存该会话就不管——打开时从主进程重载，卡片状态以边车为准（子步骤不落盘，重载后只剩结论）。
       if ((ev.type === 'tool_call' || ev.type === 'tool_result') && ev.bg) {
@@ -1352,6 +1457,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       if (ev.type === 'turn_start') {
         void refreshSessions() // 新会话 / 标题 / 排序
         if (localStreaming) return
+        if (!bgStartedRef.current.has(sid)) bgStartedRef.current.set(sid, Date.now())
         setBgStreaming((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)))
         if (runtimesRef.current.has(sid)) {
           const [userMsg] = displayToMessages([{ role: 'user', ...ev.user }])
@@ -1420,6 +1526,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       if (ev.type === 'done') {
         const compacted = compactedSids.delete(sid)
         const compactDrop = compactDropSids.delete(sid)
+        bgStartedRef.current.delete(sid)
         setBgStreaming((prev) => {
           if (!prev.has(sid)) return prev
           const next = new Set(prev)
@@ -1526,7 +1633,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     attachSession,
     toast,
     setTodoState,
-    setInsertState
+    setInsertState,
+    dropPendingCard
   ])
 
   // 切到某会话时拉取其待办清单（此后的变化走 todos 事件）。拉取期间事件已先到则以事件为准。
@@ -1571,18 +1679,32 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   // 后台回合没缓存 runtime（进行中靠 bgStreaming，完成后 runtime 也会被丢弃），这类会话单独补一条。
   const sessionStates = useMemo<Record<string, SessionLiveState>>(() => {
     const out: Record<string, SessionLiveState> = {}
-    for (const [id, r] of runtimes)
+    for (const [id, r] of runtimes) {
+      const streaming = r.streaming || bgStreaming.has(id)
       out[id] = {
-        streaming: r.streaming || bgStreaming.has(id),
+        streaming,
         attention: hasAttention(r.messages),
-        unread: unread.has(id)
+        unread: unread.has(id),
+        ...(streaming ? { startedAt: r.streaming && r.startedAt ? r.startedAt : bgStartedRef.current.get(id) } : {})
       }
+    }
     for (const id of bgStreaming)
-      if (!out[id]) out[id] = { streaming: true, attention: false, unread: unread.has(id) }
+      if (!out[id])
+        out[id] = { streaming: true, attention: false, unread: unread.has(id), startedAt: bgStartedRef.current.get(id) }
     for (const id of unread)
       if (!out[id]) out[id] = { streaming: false, attention: false, unread: true }
+    // 成员在等用户处理：成员会话与它所属的主对话都算待处理（列表里主对话亮「待处理」）。
+    for (const [id, cards] of Object.entries(pendingCards)) {
+      if (!cards.length) continue
+      const parent = allSessions.find((s) => s.id === id)?.parentId
+      for (const k of parent ? [id, parent] : [id])
+        out[k] = out[k] ? { ...out[k], attention: true } : { streaming: false, attention: true, unread: unread.has(k) }
+    }
     return out
-  }, [runtimes, unread, bgStreaming])
+  }, [runtimes, unread, bgStreaming, pendingCards, allSessions])
+
+  /** 该会话是不是成员会话（见 SessionMeta.parentId）。 */
+  const isMemberSession = (id: string): boolean => allSessions.some((s) => s.id === id && !!s.parentId)
 
   // 当前对话的绑定读出（覆盖层优先于已落库 SessionMeta）：驱动对话优先外壳的头像 / 工作区 chip。
   // 覆盖层承载「尚未落库」（新会话首发前）或「刚 mount/unmount」的值；落库真值来自 listSessions。
@@ -1593,7 +1715,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     effort?: EffortLevel
   }>(
     () => {
-      const meta = sessions.find((s) => s.id === currentSessionId)
+      const meta = allSessions.find((s) => s.id === currentSessionId)
       const ov = bindings.get(currentSessionId)
       const personaId = ov?.personaId ?? meta?.personaId
       const focusRoot =
@@ -1603,7 +1725,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       const effort = ov?.effort ?? meta?.effort
       return { personaId, focusRoot: focusRoot ?? null, model, effort }
     },
-    [currentSessionId, sessions, bindings]
+    [currentSessionId, allSessions, bindings]
   )
 
   // 当前对话尚无自己的模型（新建时角色没设偏好模型、旧版本遗留对话等）→ 把此刻显示的
@@ -1614,10 +1736,11 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   // 与此处显示一致）。在这里定格会顺带把任务改成固定模型，只是打开看一眼就改了用户的设置。
   useEffect(() => {
     const sid = currentSessionId
-    if (!sid || currentBinding.model || !activeModel || sid.startsWith('task-')) return
+    // 成员会话也不定格：没亲自选过就跟随主对话（派任务时同步），在这里定格会被当成「用户选过」。
+    if (!sid || currentBinding.model || !activeModel || sid.startsWith('task-') || isMemberSession(sid)) return
     const ref = `${activeModel.provider.id}:${activeModel.model.id}`
     setBinding(sid, { model: ref })
-    if (sessions.some((s) => s.id === sid))
+    if (allSessions.some((s) => s.id === sid))
       void (async () => {
         await window.deva.chat.setModel({ sessionId: sid, modelRef: ref })
         await refreshSessions()
@@ -1631,9 +1754,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   // 对话里一切换、这里也跟着变。须等模型配置载入（ready）：此前 activeEffort 还是初值 'default'，会误定格。
   useEffect(() => {
     const sid = currentSessionId
-    if (!sid || currentBinding.effort || !modelsReady) return
+    if (!sid || currentBinding.effort || !modelsReady || isMemberSession(sid)) return
     setBinding(sid, { effort: activeEffort })
-    if (sessions.some((s) => s.id === sid))
+    if (allSessions.some((s) => s.id === sid))
       void (async () => {
         await window.deva.chat.setEffort({ sessionId: sid, effort: activeEffort })
         await refreshSessions()
@@ -1648,7 +1771,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   const draftSession = useMemo<SessionMeta | null>(() => {
     const id = currentSessionId
     if (!id) return null
-    if (sessions.some((s) => s.id === id)) return null // 已落库，无需草稿
+    if (allSessions.some((s) => s.id === id)) return null // 已落库，无需草稿（成员会话同理）
     const ov = bindings.get(id)
     if (!ov?.personaId) return null // 无绑定身份 → 不作草稿展示（如启动初未绑定的裸空会话）
     const ts = ov.createdAt ?? Date.now()
@@ -1662,7 +1785,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       model: ov.model,
       effort: ov.effort
     }
-  }, [currentSessionId, sessions, bindings])
+  }, [currentSessionId, allSessions, bindings])
 
   const value = useMemo<ChatContextValue>(() => {
     // 返回是否真的发出：false = 未发出（空输入 / 本会话正忙 / 未选模型 / IPC 失败），调用方据此把草稿放回。
@@ -1679,7 +1802,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 修复：此前只认全局默认（activeModel），用户在对话里选过模型但从未在「设置 › 模型」设默认时，
       // activeModel 为空即误报「尚未选择模型」。现按会话生效模型判定，与顶部模型选择器显示保持一致。
       const ov = bindingsRef.current.get(sid)
-      const meta = sessions.find((s) => s.id === sid)
+      const meta = allSessions.find((s) => s.id === sid)
       const sessionModelRef = ov && ov.model !== undefined ? ov.model : meta?.model
       const model = findActive(providers, sessionModelRef ?? null) ?? activeModel
 
@@ -1815,7 +1938,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       const body = text.trim()
       if (!body) return false
       const ov = bindingsRef.current.get(sid)
-      const meta = sessions.find((s) => s.id === sid)
+      const meta = allSessions.find((s) => s.id === sid)
       const sessionModelRef = ov && ov.model !== undefined ? ov.model : meta?.model
       const model = findActive(providers, sessionModelRef ?? null) ?? activeModel
       if (!model) {
@@ -1864,7 +1987,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     // 尚未建档的惰性会话由主进程跳过，仍随首发 chat:send 经 ensureSession 落库。
     const mountFocus = (path: string | null): void => {
       const sid = sessionIdRef.current
-      setBinding(sid, { focusRoot: path })
+      // 成员会话的文件夹以主进程为准（卸载 = 跟随主对话的工作目录，不是「没有目录」）：不写覆盖层，
+      // 否则覆盖层里的 null 会随下一次发送把成员的工作目录清掉。
+      if (!isMemberSession(sid)) setBinding(sid, { focusRoot: path })
       void (async () => {
         await window.deva.chat.setFocus({ sessionId: sid, focusRoot: path })
         await refreshSessions()
@@ -2041,15 +2166,23 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       return res
     }
 
-    const respondAsk = (key: string, answers: string[]): void => {
+    const respondAsk = (key: string, answers: string[], sessionId?: string): void => {
+      const sid = sessionId ?? sessionIdRef.current
       void window.deva.chat.respondAsk({ key, answers })
-      patchCardBlocks(sessionIdRef.current, (blocks) =>
+      dropPendingCard(sid, key)
+      patchCardBlocks(sid, (blocks) =>
         blocks.map((b) => (b.kind === 'ask' && b.key === key ? { ...b, answers } : b))
       )
     }
 
-    const respondPlan = (key: string, decision: 'approve' | 'keep' | 'ignore', feedback?: string): void => {
-      const sid = sessionIdRef.current
+    const respondPlan = (
+      key: string,
+      decision: 'approve' | 'keep' | 'ignore',
+      feedback?: string,
+      sessionId?: string
+    ): void => {
+      const sid = sessionId ?? sessionIdRef.current
+      dropPendingCard(sid, key)
       const fb = decision === 'keep' ? feedback?.trim() || undefined : undefined
       // 计划卡属当前所视会话 → 就地收敛为已决态（连同回复一起回显）。
       patchCardBlocks(sid, (blocks) =>
@@ -2072,11 +2205,20 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })()
     }
 
-    const respondMount = (key: string, path: string | null): void => {
+    const respondMount = (key: string, path: string | null, sessionId?: string): void => {
+      const sid = sessionId ?? sessionIdRef.current
       void window.deva.chat.respondMount({ key, path })
       // 主进程已就地把 session.focusRoot 设为该目录；渲染层覆盖层必须同步，否则下次 send 会覆盖回去。
-      if (path) setBinding(sessionIdRef.current, { focusRoot: path })
-      patchCardBlocks(sessionIdRef.current, (blocks) =>
+      // 为成员选的文件夹不是本对话的工作区、成员会话的文件夹写回名单（主进程处理），都不动覆盖层。
+      const forMember =
+        isMemberSession(sid) ||
+        (pendingCards[sid] ?? []).some((c) => c.kind === 'mount' && c.key === key && c.member) ||
+        runtimesRef.current
+          .get(sid)
+          ?.messages.some((m) => m.blocks.some((b) => b.kind === 'mount' && b.key === key && b.member))
+      dropPendingCard(sid, key)
+      if (path && !forMember) setBinding(sid, { focusRoot: path })
+      patchCardBlocks(sid, (blocks) =>
         blocks.map((b) =>
           b.kind === 'mount' && b.key === key
             ? { ...b, decided: path ? 'mounted' : 'skipped', root: path ?? undefined }
@@ -2136,8 +2278,13 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       void window.deva.chat.stopSubagent(sid, toolId).catch(() => undefined)
     }
 
+    const removeMember = (sessionId: string, memberSessionId: string): void => {
+      void window.deva.chat.removeMember(sessionId, memberSessionId).catch(() => undefined)
+    }
+
     return {
       sessions,
+      memberSessions,
       currentSessionId,
       messages,
       streaming,
@@ -2159,6 +2306,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       mountFocus,
       setSessionModel,
       setSessionEffort,
+      pendingCards,
       respondAsk,
       respondPlan,
       respondMount,
@@ -2167,6 +2315,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       todos: todoStates.get(currentSessionId) ?? EMPTY_TODOS,
       cancelTodoList,
       stopSubagent,
+      removeMember,
       insert,
       pendingInserts: insertStates.get(currentSessionId) ?? NO_INSERTS,
       withdrawInserts,
@@ -2174,6 +2323,10 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
   }, [
     sessions,
+    allSessions,
+    memberSessions,
+    pendingCards,
+    dropPendingCard,
     currentSessionId,
     todoStates,
     setTodoState,

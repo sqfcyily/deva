@@ -1,0 +1,342 @@
+/**
+ * 项目成员（多 Agent 协作，方案见 design/project-members-plan.html）。
+ *
+ * 一个主对话可以有至多 MAX_MEMBERS 个成员。每个成员是一个**独立的成员会话**（真正的对话文件，`parentId`
+ * 指向主对话，不进左侧列表），有自己的历史、压缩、待办与回滚；主智能体用 member_send 派任务，成员在后台
+ * 干完后把最终回复作为结论：系统以主角色的名义在主对话里回一条「X已完成：任务」加结论原文（不调用模型）；
+ * 派任务时设了 report_to_me 才唤醒主智能体处理。成员可直接向用户提问、提交计划（主对话里显示为通知行）。
+ *
+ * 成员有两种来源：
+ *  · created：主智能体分析项目后用 create_member 创建，使用主对话角色的设定，名字与职责由主智能体给出，
+ *    头像以成员会话 id 为种子生成；
+ *  · mention：用户在主对话里 @ 一个已有角色，系统自动把它加为成员，使用该角色的设定、名字与头像。
+ *
+ * 名单存在主对话的 `members` 属性里（不在消息里），压缩、按轮删除都不影响；移除只做标记，成员会话保留。
+ * 主智能体通过随消息下发的【成员名单】（见 listing.ts memberListingPart）得知名单，增减成员不改工具表与系统提示词。
+ */
+import { isAbsolute, resolve } from 'path'
+import type { Message, ToolSpec } from '../providers/types'
+import { isAutoNudge, isCompactionSummary, isTaskNotification } from './compaction'
+
+/** 一个主对话的成员上限（含已移除的不算）。 */
+export const MAX_MEMBERS = 10
+
+/**
+ * 派给成员的任务消息的标记前缀（成员会话里的 user 消息）：标记 + 首行「【X 派来的任务】标题」，其后是任务说明、
+ * 主智能体的附注、主对话最近几轮正文（仅首次派发）。成员工作记录里据此画成「X 派来的任务」，而不是用户气泡。
+ */
+export const MEMBER_TASK_MARKER = '⟦deva:member-task⟧'
+
+/**
+ * 成员通知正文的开头标签（交给主智能体的结论、用户直接跟成员说话的同步）。主对话里含它的后台任务通知
+ * 不显示那一行（见 chat.ts toDisplayMessages 的 quiet）：交差内容由其后主角色的回复呈现。
+ */
+export const MEMBER_NOTICE_TAG = '<成员通知>'
+
+export interface MemberRef {
+  /** 成员会话 id（也是生成头像的种子）。 */
+  sessionId: string
+  /** 成员名（主对话内唯一，大小写不敏感）。 */
+  name: string
+  origin: 'created' | 'mention'
+  /** 设定来源角色：created = 主对话的角色，mention = 被 @ 的角色。 */
+  personaId: string
+  /** 负责的文件夹（绝对路径）；null = 不限，与主对话同一工作目录。 */
+  root: string | null
+  /** 一句话职责。 */
+  duty: string
+  addedAt: number
+  /** 已移除：不再派任务，成员会话保留。 */
+  removed?: boolean
+  /** 最近一次派来的任务标题。 */
+  task?: string
+  /** 最近一次结论（截断）与结局。 */
+  last?: { text: string; at: number; status: MemberRunStatus }
+  /**
+   * 用户在成员会话里亲自改过模型 / 思考等级：此后以成员会话为准，派任务时不再按主对话同步覆盖。
+   */
+  modelSet?: boolean
+  effortSet?: boolean
+}
+
+/** 成员一次任务的结局。 */
+export type MemberRunStatus = 'done' | 'failed' | 'stopped'
+
+/** 未移除的成员。 */
+export function activeMembers(list: MemberRef[] | undefined): MemberRef[] {
+  return (list ?? []).filter((m) => !m.removed)
+}
+
+/** 按名字找未移除的成员（去掉开头的 @、大小写不敏感）。 */
+export function findMember(list: MemberRef[] | undefined, name: string): MemberRef | undefined {
+  const want = name.trim().replace(/^@/, '').toLowerCase()
+  if (!want) return undefined
+  return activeMembers(list).find((m) => m.name.toLowerCase() === want)
+}
+
+/** 成员实际的工作目录：自己的文件夹，没有则跟随主对话。 */
+export function memberRoot(m: MemberRef, mainRoot: string | null): string | null {
+  return m.root ?? mainRoot
+}
+
+/** 文件夹在名单与界面上的写法：主对话工作目录下的写相对路径，其余写绝对路径；不限写「不限」。 */
+export function rootLabel(root: string | null, mainRoot: string | null): string {
+  if (!root) return '不限'
+  if (mainRoot) {
+    const base = mainRoot.replace(/[\\/]+$/, '')
+    const lowerRoot = root.toLowerCase()
+    const lowerBase = base.toLowerCase()
+    if (lowerRoot === lowerBase) return '项目根目录'
+    if (lowerRoot.startsWith(lowerBase) && /[\\/]/.test(root.charAt(base.length)))
+      return `${root.slice(base.length + 1).replace(/\\/g, '/')}/`
+  }
+  return root
+}
+
+/** create_member 的 folder 参数 → 绝对路径（相对路径以主对话工作目录为基准）。空 = 不限（null）。 */
+export function resolveMemberFolder(folder: string, mainRoot: string | null): string | null {
+  const f = folder.trim()
+  if (!f || f === '.' || f === './') return null
+  if (isAbsolute(f)) return resolve(f)
+  return mainRoot ? resolve(mainRoot, f) : null
+}
+
+// ── 主对话正文 ────────────────────────────────────────────────────────────────
+
+/** 一条真实用户消息的正文（展示层取最后一个 text 块作气泡正文，这里同口径）；不是真实用户消息则 null。 */
+export function realUserText(m: Message): string | null {
+  if (m.role !== 'user') return null
+  if (isCompactionSummary(m) || isAutoNudge(m) || isTaskNotification(m)) return null
+  if (typeof m.content === 'string') return m.content
+  if (m.content.some((p) => p.type === 'tool_result')) return null
+  for (let i = m.content.length - 1; i >= 0; i--) {
+    const p = m.content[i]
+    if (p.type === 'text') return p.text
+  }
+  return ''
+}
+
+function assistantText(m: Message): string {
+  if (typeof m.content === 'string') return m.content
+  return m.content
+    .filter((p): p is Extract<typeof p, { type: 'text' }> => p.type === 'text')
+    .map((p) => p.text)
+    .join('\n')
+}
+
+interface Round {
+  user: string
+  reply: string
+}
+
+/** 每段最多保留的字数：回复保留结尾（最终答复在后），提问保留开头。 */
+const ROUND_CHARS = 1500
+
+function clipHead(s: string): string {
+  return s.length > ROUND_CHARS ? `${s.slice(0, ROUND_CHARS)}…` : s
+}
+function clipTail(s: string): string {
+  return s.length > ROUND_CHARS ? `…${s.slice(-ROUND_CHARS)}` : s
+}
+
+/** 主对话按轮切分的正文：每轮 = 一条真实用户消息 + 其后的助手正文（不含工具调用、思考、通知）。 */
+function roundsOf(messages: Message[]): Round[] {
+  const out: Round[] = []
+  for (const m of messages) {
+    const u = realUserText(m)
+    if (u !== null) {
+      out.push({ user: u.trim(), reply: '' })
+      continue
+    }
+    if (m.role !== 'assistant') continue
+    const t = assistantText(m).trim()
+    if (!t) continue
+    if (!out.length) out.push({ user: '', reply: '' })
+    const cur = out[out.length - 1]
+    cur.reply = cur.reply ? `${cur.reply}\n${t}` : t
+  }
+  return out
+}
+
+function formatRound(r: Round, owner: string): string {
+  const lines: string[] = []
+  if (r.user) lines.push(`【用户】${clipHead(r.user)}`)
+  if (r.reply) lines.push(`【${owner}】${clipTail(r.reply)}`)
+  return lines.join('\n')
+}
+
+/** 成员会话里用户最近一次直接说的话（不是主智能体派来的任务；没有则空串）。 */
+export function lastDirectUserText(memberMessages: Message[]): string {
+  for (let i = memberMessages.length - 1; i >= 0; i--) {
+    const t = realUserText(memberMessages[i])
+    if (t === null || t.startsWith(MEMBER_TASK_MARKER)) continue
+    return t.trim()
+  }
+  return ''
+}
+
+/** 首次派任务时附带的主对话最近几轮正文（含当前这一轮：用户的请求与主智能体派任务前说的话）。 */
+export function recentMainContext(messages: Message[], owner: string, rounds = 3): string {
+  return roundsOf(messages)
+    .slice(-rounds)
+    .map((r) => formatRound(r, owner))
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+/** read_main：主对话正文的一页（默认最近 PAGE_ROUNDS 轮；before = 只看第 before 轮之前的，轮号从 1 开始）。 */
+const PAGE_ROUNDS = 5
+export function readMainPage(messages: Message[], owner: string, before?: number): string {
+  const all = roundsOf(messages)
+  if (!all.length) return '主对话还没有内容。'
+  const end =
+    typeof before === 'number' && Number.isFinite(before)
+      ? Math.max(0, Math.min(Math.floor(before) - 1, all.length))
+      : all.length
+  const start = Math.max(0, end - PAGE_ROUNDS)
+  if (end <= 0) return '已经到主对话开头了，没有更早的内容。'
+  const body = all
+    .slice(start, end)
+    .map((r, i) => `── 第 ${start + i + 1} 轮 ──\n${formatRound(r, owner)}`)
+    .join('\n\n')
+  const tail =
+    start > 0
+      ? `（主对话共 ${all.length} 轮，以上是第 ${start + 1}–${end} 轮；更早的内容用 read_main 并传 before=${start + 1} 查看。）`
+      : `（主对话共 ${all.length} 轮，以上已到开头。）`
+  return `${body}\n\n${tail}`
+}
+
+// ── 任务消息 ──────────────────────────────────────────────────────────────────
+
+/** 旧版任务消息附带的用户原话段（现在不再附，只为解析旧记录保留）。 */
+const QUOTE_HEAD = '【用户原话】'
+const NOTE_HEAD = '【任务说明】'
+const CONTEXT_HEAD = '【主对话最近几轮】（供参考；更早的内容可用 read_main 查看）'
+/** 任务说明段的标题（旧版叫「X的附注」）。 */
+const NOTE_RE = /^【(?:.+的附注|任务说明)】$/
+const TITLE_RE = /^【(.+)派来的任务】(.*)$/
+
+/**
+ * 派给成员的任务消息正文（成员会话里的一条 user 消息）：标题 + 主智能体写的任务说明（+ 首次派发时主对话最近几轮）。
+ * 不附用户原话：任务由主智能体理解后派发，说明里写完整。
+ */
+export function buildTaskMessage(p: { owner: string; task: string; note: string; context: string }): string {
+  const lines = [`${MEMBER_TASK_MARKER}【${p.owner}派来的任务】${p.task}`]
+  if (p.note) lines.push('', NOTE_HEAD, p.note)
+  if (p.context) lines.push('', CONTEXT_HEAD, p.context)
+  return lines.join('\n')
+}
+
+export interface ParsedTask {
+  owner: string
+  task: string
+  quote: string
+  note: string
+}
+
+/** 解析任务消息（不是任务消息则 null）：成员工作记录据此画「X 派来的任务」。 */
+export function parseTaskMessage(text: string): ParsedTask | null {
+  if (!text.startsWith(MEMBER_TASK_MARKER)) return null
+  const lines = text.slice(MEMBER_TASK_MARKER.length).split('\n')
+  const head = TITLE_RE.exec(lines[0] ?? '')
+  const out: ParsedTask = { owner: head?.[1] ?? '', task: (head?.[2] ?? '').trim(), quote: '', note: '' }
+  let section: 'quote' | 'note' | 'context' | null = null
+  const buf: Record<'quote' | 'note', string[]> = { quote: [], note: [] }
+  for (const line of lines.slice(1)) {
+    if (line.startsWith(QUOTE_HEAD)) section = 'quote'
+    else if (NOTE_RE.test(line)) section = 'note'
+    else if (line === CONTEXT_HEAD) section = 'context'
+    else if (section === 'quote' || section === 'note') buf[section].push(line)
+  }
+  out.quote = buf.quote.join('\n').trim()
+  out.note = buf.note.join('\n').trim()
+  return out
+}
+
+// ── 工具 ──────────────────────────────────────────────────────────────────────
+
+/** 主对话（主智能体）的成员工具名。 */
+export const MAIN_MEMBER_TOOLS = new Set(['create_member', 'member_send', 'member_stop'])
+/** 成员会话的成员工具名。 */
+export const MEMBER_SIDE_TOOLS = new Set(['read_main'])
+
+/** 主智能体的成员工具：创建、派任务、中止。描述写死（名单随消息下发），工具表稳定，提示缓存不受增减成员影响。 */
+export function mainMemberTools(): ToolSpec[] {
+  return [
+    {
+      name: 'create_member',
+      description:
+        `创建一个项目成员：成员在自己的独立会话里、以你的角色设定工作，长期负责项目里的一块（通常是一个文件夹），由你用 member_send 派任务。项目分成几块（如前端、后端、部署各在一个文件夹，技术栈不同）、值得分头并行时使用：先了解项目结构，再为每块创建一个成员。一次性的小事、调研不要创建成员（自己做，或用 run_subagent）。成员最多 ${MAX_MEMBERS} 个；现有成员见系统随消息附带的【成员名单】。用户在消息里 @ 一个角色时，系统会自动把它加为成员，无需调用本工具。`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: '成员名，按职责起，2～6 个字，如「前端」「后端」「部署」。同一对话内不能重名。'
+          },
+          folder: {
+            type: 'string',
+            description: '它负责的文件夹：相对当前工作目录的路径（如 web）或绝对路径；省略表示不限，与你在同一工作目录。'
+          },
+          pick_folder: {
+            type: 'boolean',
+            description:
+              '不知道它负责的文件夹在哪（不在当前工作目录下，用户也没给路径）时设为 true：系统会在对话里请用户点选文件夹，不要用文字问路径。'
+          },
+          duty: { type: 'string', description: '一句话职责，如「负责前端，React + Vite」。' }
+        },
+        required: ['name', 'duty']
+      }
+    },
+    {
+      name: 'member_send',
+      description:
+        '把任务交给一个成员，成员在后台工作。成员负责的文件夹里的工作（读代码、排查、验证、修改、跑构建）都交给它，不要自己先查一遍再派。' +
+        '成员看不到你和用户的对话（只有第一次派任务时附上主对话最近几轮，之后它需要时自己用 read_main 翻），所以在 message 里把任务写完整：要做什么、范围（哪些模块 / 文件）、已知的事实（需求单内容、报错原文、截图位置等原样附上）、约束（如只查不改）和怎样算完成。忠实于用户的要求，不擅自扩大范围。' +
+        '成员工作中需要用户回答或批准时，会直接向用户提问、提交计划，不经过你。成员完成后，系统会以你的名义在对话里回一条「某某已完成：任务」并附上它的结论原文（不经过你、不唤醒你），你的历史里也会有这条，不必再转述。' +
+        '需要你接着处理结果时（要据此安排下一步、要把几个成员的结果合起来、或用户要你汇总），把 report_to_me 设为 true：成员完成后会唤醒你处理；同一轮里派出的几项都设了 true 时，等最后一个完成才一起唤醒你。' +
+        '派出后不要等待、轮询或猜测它的结果，可以接着派其他成员、做别的事，或先简短回复用户。多个成员可以同时工作。对成员上一次结果的修改意见也用它转交。成员正在忙时，这条会插入它当前的工作。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          member: { type: 'string', description: '成员名（见【成员名单】）。' },
+          task: { type: 'string', description: '任务标题，10 个字左右，会显示在界面上。' },
+          message: {
+            type: 'string',
+            description: '任务说明：要做什么、范围、已知事实（原样附上需求单 / 报错等）、约束和完成标准。成员只看得到这段（与标题），写完整。'
+          },
+          report_to_me: {
+            type: 'boolean',
+            description:
+              '成员完成后是否唤醒你处理结果（默认 false：系统以你的名义把结论原样转给用户）。要据此安排下一步、要合并几个成员的结果、或用户要你汇总时设为 true。'
+          }
+        },
+        required: ['member', 'task', 'message']
+      }
+    },
+    {
+      name: 'member_stop',
+      description: '中止一个成员当前的任务。只在用户要求停下，或这项任务已不再需要时使用。',
+      inputSchema: {
+        type: 'object',
+        properties: { member: { type: 'string', description: '成员名。' } },
+        required: ['member']
+      }
+    }
+  ]
+}
+
+/** 成员会话的 read_main 工具：往前翻主对话的正文。 */
+export function readMainTool(): ToolSpec {
+  return {
+    name: 'read_main',
+    description:
+      '往前翻主对话（用户与主 Agent 的对话）的正文：用户的消息和主 Agent 的回复，不含工具调用与思考过程。不传 before 时返回最近几轮；结果末尾会给出查看更早内容所需的 before 值。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        before: { type: 'number', description: '只看第 before 轮之前的内容（轮号从 1 开始，见上一次结果末尾的提示）。' }
+      }
+    }
+  }
+}

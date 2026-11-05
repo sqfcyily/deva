@@ -155,6 +155,41 @@ export interface ChatSessionMeta {
   effort?: EffortLevel
   /** 已归档（不在左侧对话列表里显示）；缺省 = 未归档。 */
   archived?: boolean
+  /** 项目成员名单（主对话；含已移除的，见 MemberMeta.removed）。 */
+  members?: MemberMeta[]
+  /** 成员会话所属的主对话 id（成员会话不进左侧列表，故列表里的对话恒无此字段）。 */
+  parentId?: string
+}
+
+/** 项目成员（与 services/members.ts 的 MemberRef 对齐）。 */
+export interface MemberMeta {
+  /** 成员会话 id（也是生成头像的种子）。 */
+  sessionId: string
+  name: string
+  /** created = 主智能体创建（用主对话角色的设定）；mention = 用户 @ 加入的角色。 */
+  origin: 'created' | 'mention'
+  /** 设定来源角色 id。 */
+  personaId: string
+  /** 负责的文件夹（绝对路径）；null = 不限，与主对话同一工作目录。 */
+  root: string | null
+  duty: string
+  addedAt: number
+  removed?: boolean
+  /** 最近一次派来的任务标题。 */
+  task?: string
+  /** 最近一次结论（截断）与结局。 */
+  last?: { text: string; at: number; status: 'done' | 'failed' | 'stopped' }
+  /** 用户在成员会话里亲自选过模型 / 思考等级（此后不再跟随主对话）。 */
+  modelSet?: boolean
+  effortSet?: boolean
+}
+
+/** 成员会话里主智能体派来的任务（工作记录里画成「X 派来的任务」）。 */
+export interface MemberTask {
+  owner: string
+  title: string
+  quote: string
+  note: string
 }
 
 /** 角色名片草稿（与 services/chat.ts 的 AgentDraft 对齐）。 */
@@ -224,6 +259,10 @@ export type DisplayMessage =
       attachments: AttachmentChip[]
       /** 后台任务通知：展示为一行系统通知而非用户气泡，text 为其标题。 */
       notify?: true
+      /** 成员交差的通知：不显示（其后主角色的回复就是交差内容），只留作一轮的起点。 */
+      quiet?: true
+      /** 成员会话里主智能体派来的任务；text 为附注。 */
+      task?: MemberTask
     }
   /** durationMs：本轮耗时（未记录则缺省）。 */
   | { role: 'assistant'; blocks: DisplayBlock[]; durationMs?: number }
@@ -723,7 +762,8 @@ export type ChatStreamEvent =
    * 请求挂载工作区：未挂载工作区时，模型的某次调用缺「相对路径基准」（写相对路径 / 扫描类工具
    * 省略 path），暂停等待用户一键挂载或跳过。tool=触发的工具名，path=模型给的相对路径（可为空）。
    */
-  | { type: 'mount_request'; key: string; tool: string; path: string }
+  /** member：为成员选择它负责的文件夹（create_member 的 pick_folder），不是挂载本对话的工作区。 */
+  | { type: 'mount_request'; key: string; tool: string; path: string; member?: string }
   /** 用量。input 为总提示 token（含缓存命中/写入）；cacheRead/cacheWrite 供观测缓存是否生效。 */
   | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   | { type: 'reconnecting'; attempt: number; max: number }
@@ -768,8 +808,8 @@ export type ChatStreamEvent =
   /** 回合开始（本轮首个事件）：带本轮用户消息，供渲染层把别处发起的一轮当本地回合呈现。 */
   | {
       type: 'turn_start'
-      /** notify：本轮由后台任务通知自动发起，text 为通知标题。 */
-      user: { text: string; attachments: AttachmentChip[]; notify?: true }
+      /** notify：本轮由后台任务通知自动发起，text 为通知标题；task：成员会话里主智能体派来的任务。 */
+      user: { text: string; attachments: AttachmentChip[]; notify?: true; quiet?: true; task?: MemberTask }
     }
   /** 插入的消息已随本步工具结果交给模型：执行步骤里添一个节点。 */
   | { type: 'insert'; text: string }
@@ -779,6 +819,8 @@ export type ChatStreamEvent =
   | { type: 'inserts_returned'; text: string }
   /** durationMs：本轮耗时（扣除等用户处置的时间）。 */
   | { type: 'done'; stopReason: string; durationMs?: number }
+  /** 成员交差已以主角色的名义记进主对话（会话级，turnId 为空串）：从主进程重载该对话。 */
+  | { type: 'member_report' }
 
 /** IM 机器人（远程通道）状态，与 services/remote/index.ts 的 BotView / ScanEvent 对齐。 */
 export type BotPlatform = 'feishu' | 'telegram'
@@ -1037,9 +1079,12 @@ const api = {
     /** 载入历史 + 进行中回合的 turnId（同一时刻取出，用于接上别处发起、仍在跑的一轮） */
     attachSession: (sessionId: string): Promise<{ messages: DisplayMessage[]; turnId: string | null }> =>
       ipcRenderer.invoke('chat:attach-session', sessionId),
-    /** 删除某会话 */
+    /** 删除某会话（主对话连同它的成员会话一并删除） */
     deleteSession: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:delete-session', sessionId, workspaceRoot),
+    /** 移除主对话的一个成员（不再派任务，进行中的任务中止，成员会话保留）。 */
+    removeMember: (sessionId: string, memberSessionId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('chat:remove-member', sessionId, memberSessionId),
     /**
      * 按「轮」删除对话（同步删上下文）：turnIndices 为 0 基轮下标集合，
      * 返回删除后重建的展示气泡（供渲染层就地替换，保证展示与落盘一致、重启不变）。

@@ -52,6 +52,10 @@ import {
   Hand,
   MessageSquare,
   CircleCheckBig,
+  UserPlus,
+  Send,
+  CircleStop,
+  MessagesSquare,
   type LucideIcon
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
@@ -96,7 +100,12 @@ const TOOL_META: Record<string, { key: string; icon: LucideIcon }> = {
   // 拼图与输入框「/」联想、角色资料卡里的技能图标一致。
   skill: { key: 'skill', icon: Puzzle },
   // 内置浏览器：时间轴上按动作区分（见 BROWSER_META）；这里是不知道动作时（如底部状态行）的通用说法。
-  browser: { key: 'browser', icon: Globe }
+  browser: { key: 'browser', icon: Globe },
+  // 项目成员（见 services/members.ts）：主智能体添加成员 / 派任务 / 中止，成员查看主对话。
+  create_member: { key: 'createMember', icon: UserPlus },
+  member_send: { key: 'memberSend', icon: Send },
+  member_stop: { key: 'memberStop', icon: CircleStop },
+  read_main: { key: 'readMain', icon: MessagesSquare }
 }
 
 /** browser 工具的各个动作：每个动作有自己的动词与图标（打开网页、查看页面、点击……）。 */
@@ -191,6 +200,16 @@ function flowObject(name: string, args: unknown): { text: string; full: string }
     const skill = (args as { name?: unknown } | null)?.name
     return typeof skill === 'string' && skill.trim() ? { text: skill.trim(), full: skill.trim() } : null
   }
+  // 成员工具：对象写成员名（派任务另带任务标题）；查看主对话没有对象。
+  if (name === 'create_member' || name === 'member_send' || name === 'member_stop') {
+    const a = (args ?? {}) as { name?: unknown; member?: unknown; task?: unknown }
+    const who = String((name === 'create_member' ? a.name : a.member) ?? '').trim()
+    if (!who) return null
+    const task = name === 'member_send' && typeof a.task === 'string' ? a.task.trim() : ''
+    const text = task ? `${who} · ${task}` : who
+    return { text, full: text }
+  }
+  if (name === 'read_main') return null
   if (args && typeof args === 'object') {
     const o = args as { command?: unknown; path?: unknown; pattern?: unknown; url?: unknown }
     if (typeof o.command === 'string' && o.command.trim()) return { text: o.command, full: o.command }
@@ -216,7 +235,8 @@ export type Activity =
   | { kind: 'subagent'; agent: string }
   | { kind: 'ask' }
   | { kind: 'plan' }
-  | { kind: 'mount' }
+  /** member：等的是为成员选文件夹（不是挂载本对话的工作区）。 */
+  | { kind: 'mount'; member?: string }
 
 /**
  * 从最后一条助手消息的块序列推断"此刻在干什么"：
@@ -226,7 +246,8 @@ export function deriveActivity(messages: ChatMessage[]): Activity {
   const last = messages[messages.length - 1]
   if (!last || last.role !== 'assistant') return { kind: 'thinking' }
   const blocks = last.blocks
-  if (blocks.some((b) => b.kind === 'mount' && !b.decided)) return { kind: 'mount' }
+  const mountReq = blocks.find((b) => b.kind === 'mount' && !b.decided)
+  if (mountReq?.kind === 'mount') return { kind: 'mount', ...(mountReq.member !== undefined ? { member: mountReq.member } : {}) }
   if (blocks.some((b) => b.kind === 'plan' && !b.decided)) return { kind: 'plan' }
   if (blocks.some((b) => b.kind === 'ask' && b.answers === undefined)) return { kind: 'ask' }
   for (let i = blocks.length - 1; i >= 0; i--) {
@@ -310,7 +331,11 @@ export function StatusIndicator({
     return (
       <div className="chat__status is-waiting" role="status" aria-live="polite">
         <FolderOpen size={14} />
-        <span>{t('chat.work.awaitingMount')}</span>
+        <span>
+          {activity.member !== undefined
+            ? t('chat.work.awaitingMemberFolder').split('{name}').join(activity.member)
+            : t('chat.work.awaitingMount')}
+        </span>
       </div>
     )
   }
@@ -623,6 +648,44 @@ function MountRequestCard({
       const r = await window.deva.fs.openFolder()
       if (r && onMountReq) onMountReq(block.key, r.path)
     })()
+  }
+  // 为成员选择文件夹（create_member 的 pick_folder）：同一张卡，换成成员的文案，「不限」= 不指定。
+  const member = block.member
+  if (member !== undefined) {
+    const name = (s: string): string => s.split('{name}').join(member)
+    return (
+      <div className={`msg__mount${decided ? ' is-decided' : ''}${decided === 'mounted' ? ' is-ok' : ''}`}>
+        <div className="msg__mount-head">
+          <FolderOpen size={14} />
+          <span className="msg__mount-title">{name(t('chat.mount.memberTitle'))}</span>
+          {decided && (
+            <span className={decided === 'mounted' ? 'msg__mount-badge msg__mount-badge--ok' : 'msg__mount-badge'}>
+              {decided === 'mounted' ? t('chat.mount.memberPicked') : t('chat.mount.memberSkipped')}
+            </span>
+          )}
+        </div>
+        <div className="msg__mount-body">
+          {decided === 'mounted' ? (
+            <span>
+              {t('chat.mount.memberDone')} <code>{block.root}</code>
+            </span>
+          ) : (
+            <span>{t('chat.mount.memberHint')}</span>
+          )}
+        </div>
+        {!decided && onMountReq && (
+          <div className="msg__mount-actions">
+            <button type="button" className="btn btn--sm btn--primary" onClick={pick}>
+              <FolderOpen size={14} />
+              {t('chat.mount.memberPick')}
+            </button>
+            <button type="button" className="btn btn--sm" onClick={() => onMountReq(block.key, null)}>
+              {t('chat.mount.memberSkip')}
+            </button>
+          </div>
+        )}
+      </div>
+    )
   }
   return (
     <div
@@ -1243,7 +1306,7 @@ const QUIET_SUMMARIES = new Set([
 ])
 
 /** 成功摘要只是复述对象的工具：技能的「已加载技能「名称」」与行上的「已加载技能 名称」重复，不写。 */
-const QUIET_TOOLS = new Set(['skill'])
+const QUIET_TOOLS = new Set(['skill', 'create_member', 'member_send', 'member_stop', 'read_main'])
 
 /** 子智能体被用户亲手停下的结局摘要（后台「已停止」/ 前台「已中止」）：不当作出错展示。 */
 const STOPPED_SUMMARIES = new Set(['已停止', '已中止'])
@@ -1512,6 +1575,12 @@ function TimelineTodo({ block }: { block: Extract<ChatBlock, { kind: 'todolist' 
 function TimelineMount({ block }: { block: Extract<ChatBlock, { kind: 'mount' }> }): React.JSX.Element {
   const { t } = useI18n()
   const mounted = block.decided === 'mounted'
+  const verb =
+    block.member !== undefined
+      ? t(mounted ? 'chat.flow.mount.memberPicked' : 'chat.flow.mount.memberSkipped')
+          .split('{name}')
+          .join(block.member)
+      : t(mounted ? 'chat.flow.mount.mounted' : 'chat.flow.mount.skipped')
   return (
     <li className="tl__item">
       <span className="tl__node">
@@ -1520,7 +1589,7 @@ function TimelineMount({ block }: { block: Extract<ChatBlock, { kind: 'mount' }>
       <div className="tl__main">
         <div className="tl__line" title={mounted ? block.root : undefined}>
           <span className="tl__text">
-            <span className="tl__verb">{t(mounted ? 'chat.flow.mount.mounted' : 'chat.flow.mount.skipped')}</span>
+            <span className="tl__verb">{verb}</span>
             {mounted && block.root && <code className="tl__obj">{block.root}</code>}
           </span>
         </div>
@@ -1781,7 +1850,7 @@ function thoughtOnly(blocks: ChatBlock[]): string | null {
 }
 
 /** 秒数 →「1 分 12 秒」/「1m 12s」：高位为 0 的单位省略，秒恒显示。 */
-function formatDuration(sec: number, t: (key: string) => string): string {
+export function formatDuration(sec: number, t: (key: string) => string): string {
   const h = Math.floor(sec / 3600)
   const m = Math.floor((sec % 3600) / 60)
   const s = sec % 60

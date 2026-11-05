@@ -606,6 +606,11 @@ export interface ToolContext {
   canPromptUser?: boolean
   /** 当前对话的角色：browser 在浏览器窗口的标签上显示其头像。 */
   personaId?: string
+  /**
+   * 全局记忆只读（项目成员的会话）：memory_write 只能写项目私有记忆（省略 scope 即项目），memory_delete 不能删全局条目。
+   * 用户本人的通用偏好由主角色记。
+   */
+  globalMemoryReadonly?: boolean
 }
 
 export interface ToolResult {
@@ -1868,7 +1873,14 @@ export async function executeTool(
       // 显式给了 scope 就按它；省略时新增默认全局，带 id 更新则按 id 前缀定位（同 memory_delete），
       // 免得模型更新 p_ 条目时漏写 scope 被默认成 global 而误报不符。
       const explicit = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
-      const kind = explicit ?? (id ? scopeKindOfId(id) : 'global')
+      const kind = explicit ?? (id ? scopeKindOfId(id) : ctx.globalMemoryReadonly ? 'project' : 'global')
+      if (kind === 'global' && ctx.globalMemoryReadonly)
+        return {
+          content:
+            '你是项目成员，全局记忆（用户本人的通用偏好）对你只读，由主角色来记；你只能写当前文件夹的项目私有记忆（scope="project"）。',
+          summary: '未写入',
+          isError: true
+        }
       if (kind === 'project' && !ctx.workspaceRoot)
         return {
           content: id
@@ -1900,6 +1912,12 @@ export async function executeTool(
       const id = typeof a.id === 'string' ? a.id.trim() : ''
       if (!id) return { content: '缺少要删除的记忆 id', summary: '参数无效', isError: true }
       const kind = scopeKindOfId(id)
+      if (kind === 'global' && ctx.globalMemoryReadonly)
+        return {
+          content: `${id} 是全局记忆，对项目成员只读，不能删除；需要删除请告诉用户由主角色处理。`,
+          summary: '未删除',
+          isError: true
+        }
       if (kind === 'project' && !ctx.workspaceRoot)
         return { content: `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`, summary: '未找到', isError: true }
       const scope: MemoryScope =

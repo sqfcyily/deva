@@ -13,6 +13,7 @@ import { getDevaHome } from './config'
 import { hydrateMessages, mediaReplacer } from './media-store'
 import type { EffortLevel, Message } from '../providers/types'
 import type { CheckpointRec } from './checkpoints'
+import type { MemberRef } from './members'
 import type { TodoEntry } from './todos'
 
 /**
@@ -78,6 +79,16 @@ export interface StoredSession {
    * 缺省 = 未归档。在已归档的对话里开始新一轮（发消息 / 定时任务运行 / 后台任务通知）即自动取消。
    */
   archived?: boolean
+  /**
+   * 项目成员名单（主对话上；见 services/members.ts）。存在对话属性里而不在消息里：压缩、按轮删除都不影响；
+   * 移除只做标记（removed），成员会话保留。缺省 = 没有成员。
+   */
+  members?: MemberRef[]
+  /**
+   * 成员会话所属的主对话 id（有此字段即为成员会话）：不进左侧列表与手机端列表，只从主对话的成员头像打开查看；
+   * 删除主对话时一并删除。
+   */
+  parentId?: string
   /**
    * 角色名片（propose_agent 提议）的终态边车，按 toolUseId 记录 accepted/rejected。
    * 名片本体随 Message[] 天然存活，但其接受/拒绝终态无处落——此边车确保重开不退回 pending、
@@ -204,6 +215,10 @@ export interface ChatSessionMeta {
   effort?: EffortLevel
   /** 已归档。见 StoredSession.archived。 */
   archived?: boolean
+  /** 项目成员名单（主对话）。见 StoredSession.members。 */
+  members?: MemberRef[]
+  /** 成员会话所属的主对话 id。见 StoredSession.parentId。 */
+  parentId?: string
 }
 
 /**
@@ -258,7 +273,9 @@ function metaOf(s: StoredSession): ChatSessionMeta {
     focusRoot: s.focusRoot ?? null,
     model: s.model,
     effort: s.effort,
-    archived: s.archived
+    archived: s.archived,
+    ...(s.members?.length ? { members: s.members } : {}),
+    ...(s.parentId ? { parentId: s.parentId } : {})
   }
 }
 

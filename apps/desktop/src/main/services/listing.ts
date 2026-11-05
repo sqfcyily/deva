@@ -223,3 +223,60 @@ export function toolGuidePart(history: Message[], tool: string, guide: string): 
     listing: { kind: 'guide', listed: [{ key: tool, digest }] }
   }
 }
+
+// ── 成员名单 ──────────────────────────────────────────────────────────────────
+
+/** 名单里的一项：名字、负责的文件夹（界面写法）、职责、来源。 */
+export interface MemberListingItem {
+  name: string
+  folder: string
+  duty: string
+  /** 被 @ 加入的角色：记下角色名，名单里注明。 */
+  fromRole?: string
+}
+
+function memberLine(m: MemberListingItem): string {
+  const where = m.folder === '不限' ? '' : `（负责 ${m.folder}）`
+  const role = m.fromRole ? `［用户 @ 加入的角色］` : ''
+  return `- ${m.name}${where}${role}：${m.duty || '（未写职责）'}`
+}
+
+/**
+ * 本对话的项目成员名单（见 members.ts）与历史里已告知的差异；一致则返回 null。
+ * 名单只记名字、文件夹、职责——成员忙闲随时在变，不进名单（派任务时工具结果会说明）。
+ */
+export function memberListingPart(history: Message[], members: MemberListingItem[]): TextPart | null {
+  const d = diffListing(
+    history,
+    'members',
+    members,
+    (m) => m.name,
+    (m) => `${m.folder}|${m.duty}|${m.fromRole ?? ''}`
+  )
+  if (!d) return null
+  const lines: string[] = []
+  if (d.initial) {
+    lines.push(
+      '【成员名单】本对话现有以下成员。它们负责的文件夹里的工作（读代码、排查、验证、修改、跑构建）一律用 member_send 交给对应成员，不要自己动手：',
+      ...d.listed.map(memberLine)
+    )
+  } else {
+    lines.push('【成员名单更新】')
+    if (d.listed.length)
+      lines.push(
+        '以下成员新加入或信息有更新（它们负责的文件夹里的工作交给它们，不要自己动手）：',
+        ...d.listed.map(memberLine)
+      )
+    if (d.removed.length) lines.push(`以下成员已移除，不要再派任务给他们：${d.removed.join('、')}`)
+  }
+  lines.push('（以上由系统自动附带，不是用户发来的消息；成员再有增减时会另行告知，以最近的告知为准。）')
+  return { type: 'text', text: lines.join('\n'), listing: d.record }
+}
+
+/** create_member / @ 加入成功：结果里已写明该成员，记为已告知（挂在 tool_result 或提示块上）。 */
+export function memberAddedRecord(m: MemberListingItem): ListingRecord {
+  return {
+    kind: 'members',
+    listed: [{ key: m.name, digest: digestOf(`${m.folder}|${m.duty}|${m.fromRole ?? ''}`) }]
+  }
+}

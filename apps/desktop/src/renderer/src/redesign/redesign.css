@@ -4607,3 +4607,461 @@ a.bots-btn {
   padding: 12px 16px;
   border-top: 1px solid var(--border);
 }
+
+/* ============================ 项目成员（见 design/project-members-plan.html） ============================ */
+
+/* 标题栏角色名后的一排成员头像。标题栏是窗口拖拽区，头像与卡片须不可拖拽。 */
+.cf-members {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+/* 头像默认叠放（同技能「可用角色」的头像堆叠：后一个压在前一个上面，错开 8px，周围一圈底色作分隔）；悬停展开成间距 6px（要大于两侧光圈 2.5px 之和，
+   悬停的灰圈才不会压到打开的蓝圈上），离开收回，卡片开着时保持展开（.is-expanded） */
+.cf-members__stack {
+  display: flex;
+  align-items: center;
+  padding: 3px 2px;
+}
+.cf-members__stack .cf-members__ava {
+  position: relative;
+  box-shadow: 0 0 0 2px var(--bg);
+  transition:
+    margin-left 0.18s ease,
+    box-shadow 0.12s ease;
+}
+.cf-members__stack .cf-members__ava + .cf-members__ava {
+  margin-left: -8px;
+}
+.cf-members.is-expanded .cf-members__ava {
+  box-shadow: none;
+}
+.cf-members.is-expanded .cf-members__ava + .cf-members__ava {
+  margin-left: 6px;
+}
+/* 成员卡片开着时，窗口拖动区临时改成可点击：拖动区上的点击页面收不到，不这样点标题栏卡片不会收起 */
+body.cf-pop-open,
+body.cf-pop-open * {
+  -webkit-app-region: no-drag !important;
+}
+.cf-members__sep {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  margin: 0 8px 0 2px;
+  background: var(--border);
+}
+.cf-members__ava {
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  cursor: pointer;
+}
+.cf-members.is-expanded .cf-members__ava:hover {
+  box-shadow:
+    0 0 0 1px var(--bg),
+    0 0 0 2.5px var(--border-strong, var(--border));
+}
+.cf-members.is-expanded .cf-members__ava.is-open,
+.cf-members.is-expanded .cf-members__ava.is-open:hover {
+  box-shadow:
+    0 0 0 1px var(--bg),
+    0 0 0 2.5px var(--accent);
+}
+
+/* 成员卡片：头像下方弹出（对比稿 design/member-card.html 方案 D + 图标行） */
+.cf-mcard {
+  position: absolute;
+  top: calc(100% + 10px);
+  z-index: 60;
+  width: 300px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-elevated);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.16);
+  font-size: 12.5px;
+  overflow: hidden;
+  cursor: default;
+  animation: cf-mcard-in 0.14s ease;
+}
+:root[data-theme='dark'] .cf-mcard {
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.6);
+}
+@keyframes cf-mcard-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.cf-mcard__top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 12px;
+}
+.cf-mcard__id {
+  min-width: 0;
+  flex: 1;
+}
+.cf-mcard__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.cf-mcard__name {
+  min-width: 0;
+  font-size: 15.5px;
+  font-weight: 700;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 状态胶囊：空闲灰点；工作中主题色、圆点闪动 */
+.cf-mcard__pill {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.cf-mcard__pill i {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--fg-subtle);
+}
+.cf-mcard__pill.is-busy {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+.cf-mcard__pill.is-busy i {
+  background: var(--accent);
+  animation: cf-mcard-pulse 1.4s ease-in-out infinite;
+}
+@keyframes cf-mcard-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.cf-mcard__origin {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 图标行：文件夹 / 职责 / 模型 / 正在做或最近一次，同一种写法，不加框不加色底 */
+.cf-mcard__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 0 16px 14px;
+}
+.cf-mcard__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  line-height: 1.5;
+  color: var(--fg);
+}
+.cf-mcard__row > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--fg-subtle);
+}
+.cf-mcard__row > span {
+  min-width: 0;
+  word-break: break-word;
+}
+/* 文件夹、职责只占一行，超出省略（完整内容在悬停提示里） */
+.cf-mcard__row.is-single > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-mcard__row.is-now > svg {
+  color: var(--accent);
+}
+.cf-mcard__row.is-recent > svg {
+  color: var(--success);
+}
+.cf-mcard__row.is-recent.is-bad > svg {
+  color: var(--warning);
+}
+.cf-mcard__row.is-muted {
+  color: var(--fg-subtle);
+}
+.cf-mcard__mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.cf-mcard__hint {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+/* 最近一次的结论：跟在标题下，最多两行 */
+.cf-mcard__sub {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--fg-muted);
+}
+/* 底部：图标 + 文字的两枚按钮分在两边（打开对话在左、移除成员在右），不分格；移除悬停才变红 */
+.cf-mcard__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+.cf-mcard__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.cf-mcard__btn:hover {
+  background: var(--bg-hover);
+}
+.cf-mcard__btn.is-primary {
+  color: var(--accent);
+  font-weight: 600;
+}
+.cf-mcard__btn.is-primary:hover {
+  background: var(--accent-tint);
+}
+.cf-mcard__btn.is-danger:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+
+/* 成员对话的标题栏：「← 主角色」返回，其后是成员头像、名字与状态 */
+.cf-back {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 8px 0 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 13px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.cf-back:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+/* 看记录期间主对话有新回复或待处理：同对话列表「待你处理」的红点 */
+.cf-back__dot {
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--danger);
+}
+.cf-conv__mname {
+  flex: none;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--fg);
+}
+.cf-conv__mstate {
+  flex: none;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.cf-conv__mstate.is-busy {
+  color: var(--accent);
+}
+
+/* 主智能体派来的任务（成员对话里）：「你的原话」与附注两段 */
+.cf-msg.is-task .cf-msg__meta {
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+}
+.cf-brief {
+  margin-top: 4px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  font-size: calc(13px * var(--cs, 1));
+  line-height: 1.65;
+}
+.cf-brief__k {
+  display: block;
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+}
+.cf-brief__quote {
+  margin: 2px 0 8px;
+  padding-left: 9px;
+  border-left: 2px solid var(--border-strong, var(--border));
+  color: var(--fg);
+}
+.cf-brief__quote:last-child {
+  margin-bottom: 0;
+}
+.cf-brief__note {
+  margin-top: 2px;
+  color: var(--fg-muted);
+}
+
+/* ── 项目成员：交差通知的锚点 / 等你处理的通知行（见 ChatFirstShell MemberWaits） ── */
+
+/* 成员交差的通知：不显示，只留一个不占高度的锚点（抵消消息列的行间距）。 */
+.cf-msg.is-quiet {
+  display: block;
+  height: 0;
+  margin-top: calc(-1 * var(--space-5));
+  overflow: hidden;
+}
+
+/* 标题栏成员头像叠放超过 5 枚：最后一枚蒙上「+N」（同技能「可用角色」的 .cf-avstack__veil）。 */
+.cf-members__more {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* 标题栏成员头像：在等你处理时右上角一枚红点。 */
+.cf-members__ava {
+  position: relative;
+}
+.cf-members__dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--danger);
+  box-shadow: 0 0 0 1.5px var(--bg);
+  pointer-events: none;
+}
+
+/* 输入框上方：成员在等你回答 / 批准 / 选文件夹，一条一行，点开当场处理。 */
+.cf-mwaits {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: var(--space-2);
+}
+.cf-mwait {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.cf-mwait__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 10px 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.cf-mwait__row:hover {
+  background: var(--bg-hover);
+}
+.cf-mwait__text {
+  flex: none;
+  font-weight: 500;
+}
+.cf-mwait__sub {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+.cf-mwait__act {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--accent);
+  font-weight: 500;
+}
+.cf-mwait__act svg {
+  transition: transform 0.15s ease;
+}
+.cf-mwait.is-open .cf-mwait__act svg {
+  transform: rotate(180deg);
+}
+.cf-mwait__card {
+  max-height: min(55vh, 480px);
+  overflow-y: auto;
+  padding: 2px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+.cf-mwait__open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cf-mwait__open:hover {
+  color: var(--fg);
+}
