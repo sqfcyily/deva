@@ -187,12 +187,22 @@ function iconFor(kind: AttachKind): React.ReactNode {
   if (kind === 'image') return <ImageIcon size={13} />
   if (kind === 'document') return <FileText size={13} />
   if (kind === 'text') return <FileCode2 size={13} />
+  if (kind === 'folder') return <Folder size={13} />
   return <Paperclip size={13} />
 }
 
 /** 路径末段（跨平台）。 */
 function basename(p: string): string {
   return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p
+}
+
+/** 是否同一路径：忽略末尾分隔符；Windows 下不分大小写、不分正反斜杠。 */
+function samePath(a: string, b: string): boolean {
+  const norm = (p: string): string => {
+    const s = p.replace(/[\\/]+$/, '')
+    return window.deva.platform === 'win32' ? s.replace(/\//g, '\\').toLowerCase() : s
+  }
+  return norm(a) === norm(b)
 }
 
 /**
@@ -288,13 +298,13 @@ const TOC_VISIBLE_MAX = 10
 /** 系统默认角色 id（首启种子「Deva」，id 恒为 general）：兼作兜底身份，且不允许删除。 */
 const DEFAULT_PERSONA_ID = 'general'
 
-/** 一次挑选返回的附件（与 preload PickedAttachment 结构一致）。 */
+/** 一次挑选返回的附件（与 preload PickedAttachment 结构一致）；拖入 / 粘贴的文件夹也放这里，kind 为 folder。 */
 interface Picked {
   path: string
   name: string
   ext: string
   size: number
-  kind: 'image' | 'document' | 'text' | 'unsupported'
+  kind: 'image' | 'document' | 'text' | 'folder' | 'unsupported'
   supported: boolean
   reason?: string
 }
@@ -4554,7 +4564,7 @@ function ConvMessage({
           {msg.attachments && msg.attachments.length > 0 && (
             <div className="msg__attachments">
               {msg.attachments.map((a, i) => (
-                <span key={i} className="attach-chip attach-chip--sent" title={a.name}>
+                <span key={i} className="attach-chip attach-chip--sent" title={a.path ?? a.name}>
                   {iconFor(a.kind)}
                   <span className="attach-chip__name">{a.name}</span>
                 </span>
@@ -4935,7 +4945,7 @@ function Composer({
   }
 
   // 粘贴 / 拖入的文件：与「附加文件」同一条链路（主进程落盘授权 → pending 附件条）。
-  // 只交字节不交路径，渲染层仍无法让主进程读任意路径；拖入的文件夹读不出字节，直接跳过。
+  // 只交字节不交路径，渲染层仍无法让主进程读任意路径。文件夹不走这里，见 ingest。
   const addFiles = async (files: File[]): Promise<void> => {
     const results = await Promise.allSettled(
       files.map(async (f) =>
@@ -4952,19 +4962,62 @@ function Composer({
     addPicked(results.flatMap((r) => (r.status === 'fulfilled' ? [r.value as Picked] : [])))
   }
 
+  // 挂载 chip 闪一下浅主题色底：拖入的文件夹刚被挂载，或拖入的正是已挂载的那个（表示「已经挂着」）。
+  // 刚挂载时 chip 要等 focusRoot 生效才渲染出来，故记下目标路径，等 chip 显示的正是它再闪。
+  // className 是静态的，React 不会改写它，手动加的 is-flash 留到动画结束（onAnimationEnd）再摘。
+  const wsRef = useRef<HTMLSpanElement>(null)
+  const [wsFlash, setWsFlash] = useState<{ path: string } | null>(null)
+  useEffect(() => {
+    const el = wsRef.current
+    if (!wsFlash || !el || !focusRoot || !samePath(focusRoot, wsFlash.path)) return
+    el.classList.remove('is-flash')
+    void el.offsetWidth // 重排一次，连续两次闪烁时动画才会重新开始
+    el.classList.add('is-flash')
+    setWsFlash(null)
+  }, [wsFlash, focusRoot])
+
+  // 拖入 / 粘贴的文件夹：只记位置，不读内容。未挂载时恰好一个文件夹 → 直接挂载（同「挂载文件夹」）；
+  // 一次多个不猜哪个是项目，全部作为文件夹贴片。拖入的正是已挂载的那个 → 不加贴片，挂载 chip 闪一下。
+  const addFolders = (dirs: { path: string; name: string }[]): void => {
+    if (!focusRoot && dirs.length === 1) {
+      onMount(dirs[0].path)
+      setWsFlash({ path: dirs[0].path })
+      return
+    }
+    const refs: Picked[] = []
+    for (const d of dirs) {
+      if (focusRoot && samePath(d.path, focusRoot)) setWsFlash({ path: d.path })
+      else refs.push({ path: d.path, name: d.name, ext: '', size: 0, kind: 'folder', supported: true })
+    }
+    if (refs.length) addPicked(refs)
+  }
+
+  // 粘贴 / 拖入的条目：先问主进程哪些是文件夹，其余照旧作为文件附件。等待期间切走了会话就作罢，
+  // 免得把这个会话的文件夹挂到别的会话上。
+  const ingest = async (files: File[]): Promise<void> => {
+    const sid = sessionRef.current
+    type Dir = { path: string; name: string }
+    const dirs: (Dir | null)[] = await window.deva.fs.droppedFolders(files).catch(() => [])
+    if (sessionRef.current !== sid) return
+    const folders = dirs.filter((d): d is Dir => d !== null)
+    if (folders.length) addFolders(folders)
+    const rest = files.filter((_, i) => !dirs[i])
+    if (rest.length) await addFiles(rest)
+  }
+
   // 剪贴板带纯文本时一律按文本粘贴——Word / Excel 复制内容会顺带一张渲染图，不能把它变成附件。
   const onPaste = (e: ClipboardEvent): boolean => {
     const files = Array.from(e.clipboardData?.files ?? [])
     if (!files.length || e.clipboardData?.getData('text/plain')) return false
     e.preventDefault()
-    if (!streaming) void addFiles(files)
+    if (!streaming) void ingest(files)
     return true
   }
 
-  // 拖入文件：整个窗口都可放下，一律转成附件。Chromium 对未拦截的文件拖放默认「打开该文件」
+  // 拖入文件 / 文件夹：整个窗口都可放下。Chromium 对未拦截的文件拖放默认「打开该文件」
   // （导航离开应用），故凡带文件的 dragover / drop 都 preventDefault；回复中只拦截不附加，同粘贴。
-  const addFilesRef = useRef(addFiles)
-  addFilesRef.current = addFiles
+  const ingestRef = useRef(ingest)
+  ingestRef.current = ingest
   const streamingRef = useRef(streaming)
   streamingRef.current = streaming
   useEffect(() => {
@@ -4978,7 +5031,7 @@ function Composer({
       if (!hasFiles(e)) return
       e.preventDefault()
       const files = Array.from(e.dataTransfer?.files ?? [])
-      if (files.length && !streamingRef.current) void addFilesRef.current(files)
+      if (files.length && !streamingRef.current) void ingestRef.current(files)
     }
     window.addEventListener('dragover', onDragOver)
     window.addEventListener('drop', onDrop)
@@ -5221,7 +5274,7 @@ function Composer({
                 <span
                   key={p.path}
                   className={`attach-chip${p.supported ? '' : ' is-bad'}`}
-                  title={p.reason || p.name}
+                  title={p.kind === 'folder' ? p.path : p.reason || p.name}
                 >
                   {iconFor((p.supported ? p.kind : 'text') as AttachKind)}
                   <span className="attach-chip__name">{p.name}</span>
@@ -5229,8 +5282,10 @@ function Composer({
                     className="attach-chip__x"
                     onClick={() => removePending(p.path)}
                     title={t('cf.cancel')}
+                    aria-label={t('cf.cancel')}
                   >
-                    ✕
+                    {/* 用图标而非「✕」字符：字符的字形落在基线上，偏离悬停圆的中心。 */}
+                    <X size={12} strokeWidth={2.2} />
                   </button>
                 </span>
               ))}
@@ -5260,7 +5315,13 @@ function Composer({
               <Paperclip size={16} />
             </button>
             {mounted && focusRoot ? (
-              <span className="cf-wschip cf-wschip--mounted is-on">
+              <span
+                ref={wsRef}
+                className="cf-wschip cf-wschip--mounted is-on"
+                onAnimationEnd={(e) => {
+                  if (e.target === e.currentTarget) e.currentTarget.classList.remove('is-flash')
+                }}
+              >
                 <WorkspaceMenu root={focusRoot} />
                 <GitWidget root={focusRoot} streaming={streaming} />
                 <button

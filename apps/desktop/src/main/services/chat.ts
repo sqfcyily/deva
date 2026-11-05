@@ -2,7 +2,7 @@ import { ipcMain, type BrowserWindow } from 'electron'
 import { onChatEvent, onSessionsChanged, publishChatEvent } from './chat-bus'
 import { createHash, randomUUID } from 'node:crypto'
 import { statSync } from 'node:fs'
-import { resolve as resolvePath } from 'node:path'
+import { basename, resolve as resolvePath } from 'node:path'
 import { streamChat } from '../providers'
 import {
   isEffortLevel,
@@ -89,7 +89,7 @@ import {
   type StoredSession
 } from './chat-store'
 import { trimHistoryImages } from './image-trim'
-import { ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
+import { ATTACH_FOLDER_PREFIX, ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
 import { isEn } from '../locale'
 import {
   BROWSER_GUIDE,
@@ -387,11 +387,18 @@ type DisplayBlock =
   /** 回合进行中插入的消息（见 INSERT_MARKER）：执行步骤里的一个节点，排在它送达时的两步之间。 */
   | { kind: 'insert'; text: string }
 
+/** 用户消息上的附件贴片（仅名称 + 类型；文件夹另带绝对路径，供悬停显示）。 */
+export interface AttachmentChip {
+  name: string
+  kind: 'image' | 'document' | 'text' | 'folder'
+  path?: string
+}
+
 export type DisplayMessage =
   | {
       role: 'user'
       text: string
-      attachments: { name: string; kind: 'image' | 'document' | 'text' }[]
+      attachments: AttachmentChip[]
       /** 后台任务通知（见 NOTIFY_MARKER）：展示为一行系统通知而非用户气泡，text 为其标题。 */
       notify?: true
     }
@@ -619,7 +626,7 @@ function toDisplayMessages(
     }
 
     // 真实用户消息（可能带附件）：附件在前、提问正文在最后一个 text 块
-    const atts: { name: string; kind: 'image' | 'document' | 'text' }[] = []
+    const atts: AttachmentChip[] = []
     const textParts = parts.filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text')
     for (const p of parts) {
       if (p.type === 'image') atts.push({ name: p.name ?? '图片', kind: 'image' })
@@ -629,6 +636,10 @@ function toDisplayMessages(
       const tp = textParts[i]
       if (tp.text.startsWith(ATTACH_TEXT_PREFIX))
         atts.push({ name: tp.text.slice(ATTACH_TEXT_PREFIX.length).split('\n')[0].trim(), kind: 'text' })
+      else if (tp.text.startsWith(ATTACH_FOLDER_PREFIX)) {
+        const dir = tp.text.slice(ATTACH_FOLDER_PREFIX.length).split('\n')[0].trim()
+        atts.push({ name: basename(dir) || dir, kind: 'folder', path: dir })
+      }
     }
     const question = textParts.length ? textParts[textParts.length - 1].text : ''
     out.push({ role: 'user', text: question, attachments: atts })
@@ -1100,7 +1111,7 @@ export type ChatStreamEvent =
   | {
       type: 'turn_start'
       /** notify：本轮由后台任务通知自动发起（见 NOTIFY_MARKER），text 为通知标题。 */
-      user: { text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[]; notify?: true }
+      user: { text: string; attachments: AttachmentChip[]; notify?: true }
     }
   /** 插入的消息已随本步工具结果交给模型（回合事件）：渲染层在执行步骤里添一个节点。 */
   | { type: 'insert'; text: string }

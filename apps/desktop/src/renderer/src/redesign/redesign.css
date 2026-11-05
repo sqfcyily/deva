@@ -917,8 +917,8 @@ body.cf-resizing-y * {
 }
 /* 光带本体：一条 40% 宽、倾斜 25° 的渐变竖条，靠 left 位移扫过（不用 transform 是为了让
    rotate 保持静态、位移单独走动画，二者互不干扰）。
-   亮芯两侧各压一道极淡暗边：生成头像的底色（BG_TONES）现在整池是深色、白亮芯足够，但自定义照片
-   什么底都有，浅底照片上单靠白亮芯几乎看不见。暗边就是给那种情况兜底——深底白亮一闪、
+   亮芯两侧各压一道极淡暗边：生成头像的底色（BG_TONES）里有马卡龙浅底，自定义照片也什么底都有，
+   浅底上单靠白亮芯几乎看不见。暗边就是给浅底兜底——深底白亮一闪、
    浅底「暗—亮—暗」一道波纹，两种都读得出。别当多余删掉。 */
 .cf-ava__sweep::after {
   content: '';
@@ -1157,6 +1157,25 @@ body.cf-resizing-y * {
 .cf-wschip__x:hover {
   background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--danger);
+}
+/* 拖入文件夹后：刚挂上，或拖入的正是已挂载的那个——挂载 chip 闪一下浅主题色底 */
+.cf-wschip.is-flash {
+  animation: cf-wschip-flash 0.9s ease;
+}
+@keyframes cf-wschip-flash {
+  0%,
+  100% {
+    background: transparent;
+  }
+  25%,
+  60% {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-wschip.is-flash {
+    animation: none;
+  }
 }
 
 /* ── Git 快捷 pill（挂载 chip 内、名字与 ✕ 之间；仅 git 仓库渲染） ── */

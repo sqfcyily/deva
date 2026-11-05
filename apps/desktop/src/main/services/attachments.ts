@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { promises as fs } from 'fs'
 import { basename, dirname, extname, join, resolve } from 'path'
 import type { ContentPart } from '../providers/types'
+import { trustRoot } from './fs-guard'
 
 /**
  * 附加文件服务（主进程）。
@@ -29,6 +30,15 @@ export interface PickedAttachment {
 
 /** 文本类附件注入模型时的前缀标记（供历史重建识别为「附件」而非提问正文）。 */
 export const ATTACH_TEXT_PREFIX = '[附件文件] '
+
+/** 文件夹附件注入模型时的前缀标记：其后是绝对路径（首行），供历史重建识别为「文件夹」。 */
+export const ATTACH_FOLDER_PREFIX = '[附件文件夹] '
+
+/** 拖入 / 粘贴的条目里认出的文件夹。 */
+export interface DroppedFolder {
+  path: string
+  name: string
+}
 
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -62,6 +72,13 @@ function classify(ext: string): AttachmentKind {
 
 // 本会话内被用户明确选中且合规的绝对路径白名单。
 const allowed = new Set<string>()
+
+/**
+ * 本会话内被用户拖入 / 粘贴的文件夹（绝对路径）。文件夹只把位置告诉模型、不读内容，
+ * 但仍只认用户亲手拖进来的：路径由 preload 从真实的 File 对象取出（webUtils.getPathForFile），
+ * 页面脚本只能递 File、递不了路径字符串，伪造不出这里的条目。
+ */
+const allowedDirs = new Set<string>()
 
 /**
  * 粘贴附件的落盘目录。粘贴来的只有字节、没有路径（截图尤其如此），故由主进程写到这里再走同一套
@@ -147,6 +164,24 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
     }
   )
 
+  // 拖入 / 粘贴的条目：按下标逐个回答「是不是文件夹」，是则登记并返回位置，否则 null（文件照旧走字节）。
+  // 文件夹同时登记为受信根：用户亲手拖进来的目录与在系统对话框里选的同等可信，未挂载时渲染层会直接
+  // 挂载它，挂载后的资源管理器 / git 面板都要求目录在受信根内。
+  ipcMain.handle('fs:dropped-folders', async (_e, paths: unknown): Promise<(DroppedFolder | null)[]> => {
+    if (!Array.isArray(paths)) return []
+    return Promise.all(
+      paths.map(async (p): Promise<DroppedFolder | null> => {
+        if (typeof p !== 'string' || !p) return null
+        const abs = resolve(p)
+        const st = await fs.stat(abs).catch(() => null)
+        if (!st?.isDirectory()) return null
+        allowedDirs.add(abs)
+        trustRoot(abs)
+        return { path: abs, name: basename(abs) || abs }
+      })
+    )
+  })
+
   ipcMain.handle('fs:pick-attachments', async (): Promise<PickedAttachment[]> => {
     const win = getWindow()
     const opts: OpenDialogOptions = {
@@ -199,6 +234,16 @@ export async function buildAttachmentPart(
 ): Promise<{ part?: ContentPart; note?: string }> {
   const abs = resolve(path)
   const name = basename(abs)
+  // 文件夹：只给位置，内容由模型按需用工具查看（不复制、不受体积限制）。
+  if (allowedDirs.has(abs))
+    return {
+      part: {
+        type: 'text',
+        text:
+          `${ATTACH_FOLDER_PREFIX}${abs}\n` +
+          '（用户附上了这个文件夹的位置，内容未展开；需要时用 list_dir / glob / grep / read_file 按绝对路径查看）'
+      }
+    }
   if (!allowed.has(abs)) return { note: `已忽略未授权文件：${name}` }
   const kind = classify(extname(abs).toLowerCase())
   try {

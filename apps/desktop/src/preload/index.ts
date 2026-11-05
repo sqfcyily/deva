@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { EffortLevel } from '../shared/effort'
 import type { UpdateState } from '../shared/update'
 import type { DeliverableInfo } from '../shared/deliverables'
@@ -126,6 +126,19 @@ export interface PickedAttachment {
   reason?: string
 }
 
+/** 拖入 / 粘贴的条目里认出的文件夹（与 services/attachments.ts 对齐）。 */
+export interface DroppedFolder {
+  path: string
+  name: string
+}
+
+/** 用户消息上的附件贴片（与 services/chat.ts 对齐）：文件夹另带绝对路径。 */
+export interface AttachmentChip {
+  name: string
+  kind: 'image' | 'document' | 'text' | 'folder'
+  path?: string
+}
+
 /** 会话元信息（左侧列表用，与 chat-store.ts 对齐）。 */
 export interface ChatSessionMeta {
   id: string
@@ -208,7 +221,7 @@ export type DisplayMessage =
   | {
       role: 'user'
       text: string
-      attachments: { name: string; kind: 'image' | 'document' | 'text' }[]
+      attachments: AttachmentChip[]
       /** 后台任务通知：展示为一行系统通知而非用户气泡，text 为其标题。 */
       notify?: true
     }
@@ -756,7 +769,7 @@ export type ChatStreamEvent =
   | {
       type: 'turn_start'
       /** notify：本轮由后台任务通知自动发起，text 为通知标题。 */
-      user: { text: string; attachments: { name: string; kind: 'image' | 'document' | 'text' }[]; notify?: true }
+      user: { text: string; attachments: AttachmentChip[]; notify?: true }
     }
   /** 插入的消息已随本步工具结果交给模型：执行步骤里添一个节点。 */
   | { type: 'insert'; text: string }
@@ -843,7 +856,21 @@ const api = {
       mime: string
       size: number
       data: Uint8Array | null
-    }): Promise<PickedAttachment> => ipcRenderer.invoke('fs:paste-attachment', file)
+    }): Promise<PickedAttachment> => ipcRenderer.invoke('fs:paste-attachment', file),
+    /**
+     * 拖入 / 粘贴的条目里哪些是文件夹：按下标返回文件夹的位置，不是文件夹（或取不到路径）为 null。
+     * 路径在这里从 File 对象取出、直接交主进程——页面只能递 File，递不了路径，伪造不出「用户拖入的文件夹」。
+     */
+    droppedFolders: (files: File[]): Promise<(DroppedFolder | null)[]> => {
+      const paths = files.map((f) => {
+        try {
+          return webUtils.getPathForFile(f)
+        } catch {
+          return ''
+        }
+      })
+      return ipcRenderer.invoke('fs:dropped-folders', paths)
+    }
   },
   /** 应用配置（~/.deva/config.json 非敏感项）：同步读（首帧防闪烁）+ 异步读/写。 */
   config: {

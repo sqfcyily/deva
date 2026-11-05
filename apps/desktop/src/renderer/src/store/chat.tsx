@@ -36,7 +36,14 @@ import { formatTokens } from '../../../shared/context'
 
 export type ToolStatus = 'running' | 'ok' | 'error' | 'denied'
 
-export type AttachKind = 'image' | 'document' | 'text'
+export type AttachKind = 'image' | 'document' | 'text' | 'folder'
+
+/** 用户消息上的附件贴片（仅名称 + 类型；文件夹另带绝对路径，供悬停显示）。 */
+export interface AttachChip {
+  name: string
+  kind: AttachKind
+  path?: string
+}
 
 /** ask_user 候选项（与 preload/主进程对齐）。 */
 export interface AskOption {
@@ -213,7 +220,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   blocks: ChatBlock[]
   /** 用户消息附件贴片（仅名称 + 类型，不含正文/base64）。 */
-  attachments?: { name: string; kind: AttachKind }[]
+  attachments?: AttachChip[]
   /**
    * 后台任务通知（后台子智能体结束后主进程自动起的那一轮的起点）：仍占一个用户位（轮下标照常对齐），
    * 但展示为一行系统通知而非用户气泡，正文为通知标题。
@@ -301,7 +308,7 @@ type DisplayBlock =
   | { kind: 'todolist'; id: string; title: string; items: TodoItem[] }
   | { kind: 'insert'; text: string }
 type DisplayMessage =
-  | { role: 'user'; text: string; attachments: { name: string; kind: AttachKind }[]; notify?: true }
+  | { role: 'user'; text: string; attachments: AttachChip[]; notify?: true }
   | { role: 'assistant'; blocks: DisplayBlock[]; durationMs?: number }
 
 /** 与 preload/主进程 ChatStreamEvent 结构一致（按既定模式在渲染层复述线缆类型）。 */
@@ -371,7 +378,7 @@ type StreamEvent =
     }
   | {
       type: 'turn_start'
-      user: { text: string; attachments: { name: string; kind: AttachKind }[]; notify?: true }
+      user: { text: string; attachments: AttachChip[]; notify?: true }
     }
   | { type: 'insert'; text: string }
   | { type: 'inserts'; pending: string[] }
@@ -1735,7 +1742,10 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         id: genId(),
         role: 'user',
         blocks,
-        attachments: atts.length ? atts.map((a) => ({ name: a.name, kind: a.kind })) : undefined
+        // 文件夹带上绝对路径（贴片悬停显示，同主进程重建）；文件的路径是临时落盘位置，不带。
+        attachments: atts.length
+          ? atts.map((a) => ({ name: a.name, kind: a.kind, ...(a.kind === 'folder' ? { path: a.path } : {}) }))
+          : undefined
       }
 
       if (!model) return noModel()

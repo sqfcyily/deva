@@ -2882,14 +2882,19 @@ button.tl__line:hover {
   gap: 4px;
   max-width: 220px;
   height: 24px;
-  padding: 0 4px 0 8px;
+  /* 右侧 2px + 1px 边框 + 18px 的移除键：键的圆心正好落在胶囊右端圆角的圆心上（24 / 2 = 12）。 */
+  padding: 0 2px 0 8px;
   border-radius: var(--radius-full);
   border: 1px solid var(--border);
   background: var(--bg-inset);
   color: var(--fg-muted);
   font-size: 12px;
 }
+.attach-chip > svg {
+  flex-shrink: 0;
+}
 .attach-chip__name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2897,16 +2902,20 @@ button.tl__line:hover {
 .attach-chip__x {
   display: grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   flex-shrink: 0;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--fg-subtle);
   border-radius: var(--radius-full);
+  line-height: 0;
+  cursor: pointer;
 }
+/* 胶囊底色本身是 --bg-inset，--bg-hover 叠上去几乎看不出，用深一档的 --bg-active。 */
 .attach-chip__x:hover {
-  background: var(--bg-hover);
+  background: var(--bg-active);
   color: var(--fg);
 }
 .attach-chip.is-bad {
