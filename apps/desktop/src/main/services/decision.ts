@@ -1,3 +1,4 @@
+import { describeNetError, httpFetch } from '../http'
 import { getSecret } from './secrets'
 import { httpError, type ErrorKind, type NormalizedError } from '../providers/types'
 
@@ -84,7 +85,7 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS)
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal })
+    return await httpFetch(url, { ...init, signal: ctrl.signal })
   } finally {
     clearTimeout(timer)
   }
@@ -95,7 +96,7 @@ function networkError(e: unknown): NormalizedError {
   return {
     kind: 'network',
     retryable: true,
-    message: aborted ? `请求超时（${TIMEOUT_MS / 1000}s）` : String((e as Error)?.message ?? e)
+    message: aborted ? `请求超时（${TIMEOUT_MS / 1000}s）` : describeNetError(e)
   }
 }
 

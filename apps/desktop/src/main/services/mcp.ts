@@ -8,6 +8,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { Tool } from '@modelcontextprotocol/sdk/types.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { describeNetError, httpFetch } from '../http'
 import type { ImagePart, ToolSpec } from '../providers/types'
 import { prepareImage, sniffImageMime } from './image-read'
 import type { ToolResult } from './tools'
@@ -219,10 +220,11 @@ async function buildTransport(cfg: McpServerConfig): Promise<Transport> {
   }
   const headers = await resolveHeaders(cfg)
   const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined
+  // 走统一出站（Chromium 网络栈，见 ../http.ts）；SDK 的 POST、SSE 长连接与鉴权请求都用这个 fetch。
   if (cfg.transport === 'sse') {
-    return new SSEClientTransport(parsed, { requestInit })
+    return new SSEClientTransport(parsed, { requestInit, fetch: httpFetch })
   }
-  return new StreamableHTTPClientTransport(parsed, { requestInit })
+  return new StreamableHTTPClientTransport(parsed, { requestInit, fetch: httpFetch })
 }
 
 /** 把底层错误映射为明确的中文提示（绝不把栈/英文原文直接示人）。 */
@@ -231,13 +233,16 @@ function friendlyError(e: unknown): string {
   if (/ENOENT/i.test(msg))
     return '找不到启动命令（ENOENT）：请检查 command 是否已安装、是否在系统 PATH 中。'
   if (/EACCES/i.test(msg)) return '无权限执行启动命令（EACCES）：请检查文件权限。'
-  if (/ECONNREFUSED/i.test(msg))
+  // HTTP 类服务经 Chromium 网络栈连接，错误形如 net::ERR_CONNECTION_REFUSED；stdio 与 Node 回退仍是 E* 错误码。
+  if (/ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(msg))
     return '连接被拒绝：请检查服务地址与端口是否正确、服务是否已启动。'
-  if (/ETIMEDOUT|timed?\s*out|timeout/i.test(msg)) return '连接超时：服务无响应，请检查地址或稍后重试。'
-  if (/ENOTFOUND|getaddrinfo/i.test(msg)) return '无法解析服务地址：请检查域名是否正确、网络是否可用。'
+  if (/ETIMEDOUT|ERR_CONNECTION_TIMED_OUT|ERR_TIMED_OUT|timed?\s*out|timeout/i.test(msg))
+    return '连接超时：服务无响应，请检查地址或稍后重试。'
+  if (/ENOTFOUND|getaddrinfo|ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED/i.test(msg))
+    return '无法解析服务地址：请检查域名是否正确、网络是否可用。'
   if (/\b401\b|\b403\b|Unauthorized|Forbidden/i.test(msg))
     return '鉴权失败（401/403）：请检查密钥 / 令牌是否正确、是否已配置。'
-  return `连接失败：${msg}`
+  return `连接失败：${describeNetError(e)}`
 }
 
 /** 配置是否足以发起连接；不足则返回说明（→ needs_config，不当作连接失败）。 */

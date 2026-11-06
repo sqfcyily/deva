@@ -2193,7 +2193,8 @@ function GitWidget({ root, streaming }: { root: string; streaming: boolean }): R
   const { t, locale } = useI18n()
   const toast = useToast()
   const dialog = useDialog()
-  const { activeModel, hasKey } = useModels()
+  const { activeModel, providers, hasKey } = useModels()
+  const { currentBinding } = useChat()
   const { available, status, busy, refresh } = useGitStatus(root)
 
   // 一轮结束（正常完成 / 中断 / 出错，streaming 由 true 落为 false）后刷新一次：
@@ -2462,14 +2463,17 @@ function GitWidget({ root, streaming }: { root: string; streaming: boolean }): R
     ]
   }
 
+  // 生成提交信息用本对话的生效模型，与发送消息同口径（store/chat.tsx send）：本对话已选 → 否则回落最近使用。
+  // 只取最近使用会在本对话绑定了别的模型时用错服务商（如对话走 http 中转、最近使用却是被拦的 https 服务商）。
+  const genModel = findActive(providers, currentBinding.model ?? null) ?? activeModel
   const commitModel: GitGenModel | null =
-    activeModel && hasKey(activeModel.provider.id)
+    genModel && hasKey(genModel.provider.id)
       ? {
-          // activeModel 恒为对话模型（选择器已按 purpose 过滤），adapter 必属 LLM 三协议之一。
-          adapter: activeModel.provider.adapter as GitGenModel['adapter'],
-          providerId: activeModel.provider.id,
-          baseURL: activeModel.provider.apiHost,
-          model: activeModel.model.id
+          // 选择器只列对话模型（已按 purpose 过滤），adapter 必属 LLM 三协议之一。
+          adapter: genModel.provider.adapter as GitGenModel['adapter'],
+          providerId: genModel.provider.id,
+          baseURL: genModel.provider.apiHost,
+          model: genModel.model.id
         }
       : null
 
@@ -2613,7 +2617,7 @@ function cleanStreamingCommit(raw: string): string {
 
 /**
  * 轻量提交框（v1 只做「暂存全部改动 + 提交」，不含逐文件 diff/staging）：
- * 顶部一行改动数量摘要；一个信息 textarea；「AI 生成」按当前模型走 generateCommitMessage（无模型/无密钥则灰掉）。
+ * 顶部一行改动数量摘要；一个信息 textarea；「AI 生成」按本对话的生效模型（同输入框所选）走 generateCommitMessage（无模型/无密钥则灰掉）。
  * 生成时文字流式填入输入框（只读），按钮变「停止生成」；中断保留已生成部分，关闭提交框也会中断。
  * 有冲突时禁止提交并提示先解决——避免把未合并状态提交进去。
  */

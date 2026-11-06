@@ -32,7 +32,7 @@ function isOpencodeInference(baseURL: string): boolean {
 
 /**
  * 模型请求（对话流式与拉取模型清单）要追加的请求头，适配器原样并进 fetch headers 即可：
- *  · 所有服务商都带 `user-agent: deva/<版本>` 自报身份——不带就是 Node fetch 的默认值 `node`，网关、
+ *  · 所有服务商都带 `user-agent: deva/<版本>` 自报身份——不带就是网络库的默认值（Chromium 浏览器 UA），网关、
  *    中转服务与服务商后台都分不出是哪个工具在调用（issue #33）。版本号与更新器 / MCP 客户端同源。
  *  · opencode.ai 的推理端点另加 `x-opencode-session`（见文件头）。
  * @param sessionId 所属对话 id；缺省（不经对话的一次性调用）退回本次运行 id。

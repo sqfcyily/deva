@@ -1,4 +1,5 @@
 import { app } from 'electron'
+import { describeNetError, httpFetch } from '../http'
 import { spawn } from 'node:child_process'
 import { existsSync, promises as fs, type Dirent } from 'fs'
 import { homedir } from 'node:os'
@@ -1606,7 +1607,7 @@ export async function executeTool(
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS)
       try {
-        const res = await fetch(url, {
+        const res = await httpFetch(url, {
           signal: controller.signal,
           redirect: 'follow',
           headers: {
@@ -1671,7 +1672,7 @@ export async function executeTool(
             summary: '超时',
             isError: true
           }
-        return { content: `获取失败：${err?.message ?? String(e)}`, summary: errorSummary(e), isError: true }
+        return { content: `获取失败：${describeNetError(e)}`, summary: errorSummary(e), isError: true }
       } finally {
         clearTimeout(timer)
       }
