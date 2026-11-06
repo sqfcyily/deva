@@ -4818,14 +4818,20 @@ body.cf-pop-open * {
   color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
 }
-/* 最近一次的结论：跟在标题下，最多两行 */
-.cf-mcard__sub {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+/* 任务一行：用时 / 时间紧跟标题（同模型行的「跟随 X」）；标题超长时省略标题，时间不被挤掉 */
+.cf-mcard__taskline {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+.cf-mcard__task {
+  min-width: 0;
   overflow: hidden;
-  margin-top: 2px;
-  color: var(--fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-mcard__taskline > .cf-mcard__hint {
+  flex: none;
 }
 /* 底部：图标 + 文字的两枚按钮分在两边（打开对话在左、移除成员在右），不分格；移除悬停才变红 */
 .cf-mcard__foot {
@@ -4899,14 +4905,6 @@ body.cf-pop-open * {
   font-size: 13.5px;
   font-weight: 700;
   color: var(--fg);
-}
-.cf-conv__mstate {
-  flex: none;
-  font-size: 12px;
-  color: var(--fg-subtle);
-}
-.cf-conv__mstate.is-busy {
-  color: var(--accent);
 }
 
 /* 主智能体派来的任务（成员对话里）：「你的原话」与附注两段 */
@@ -5019,6 +5017,17 @@ body.cf-pop-open * {
 .cf-mwait__text {
   flex: none;
   font-weight: 500;
+}
+/* 新成员还没有头像：用同尺寸的文件夹图标圆片代替 */
+.cf-mwait__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  color: var(--fg-muted);
 }
 .cf-mwait__sub {
   flex: 1 1 auto;

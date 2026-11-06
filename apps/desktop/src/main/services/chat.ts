@@ -47,10 +47,12 @@ import {
   buildTaskMessage,
   findMember,
   lastDirectUserText,
+  lastReplyText,
   mainMemberTools,
   memberRoot,
   parseTaskMessage,
   readMainPage,
+  readMainRound,
   readMainTool,
   recentMainContext,
   resolveMemberFolder,
@@ -1452,6 +1454,8 @@ const mountDeclined = new Set<string>()
  * 渲染层打开会话时也据此接上进行中的回合（chat:attach-session）。
  */
 const busySessions = new Map<string, string>()
+/** 正在跑回合的会话 → 这一轮开始的时刻（member_status 据此报「已用多久」）。 */
+const busySince = new Map<string, number>()
 
 /**
  * 后台运行中的子智能体（run_in_background），键 = 开出它的 run_subagent / send_to_subagent 调用 id（即其
@@ -1754,7 +1758,7 @@ function systemPrompt(
     '【决策与澄清】只在卡住时提问：需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息，且用户的回答会改变你接下来的做法时，调用 ask_user 抛出一个或多个问题（每题可给候选项、可单选或多选，界面另有内置「自己输入」入口），用户在同一张卡片里一次性作答后回灌给你再继续。能自己查证的事实不要问；有合理默认的选择也不要问——选最合理的一项直接做，并在回复里说明你的选择。注意区分：ask_user 只用于征求决策/澄清；写入与执行本就无需授权，切勿用它去问「是否允许写入/执行」。',
     '【计划先行】只在以下情况先出计划：需求尚不明确；改动范围大（新功能、或牵动多个模块的较大改动）；存在多个各有取舍、会明显影响结果的方案；或用户明确要求先出计划。此时先用只读工具（read_file / list_dir / glob / grep / web_fetch，以及只做查询的 run_command）充分调研理解现状——调研面较大时（要翻多个目录、追多条调用链、或需摸清一整套既有约定）可先用 `run_subagent` 派发 `Plan` 子智能体在隔离上下文里完成调研并带回方案要点，再由你综合判断——然后调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件，也不要执行有副作用的命令**；只做查询的命令可以执行（查版本、查环境变量是否已设置但不打印其值、查服务是否在运行等），借此核实计划依赖的运行环境、凭据、账号等前提，缺了什么在计划里写明，免得执行到一半才发现。提交前若仍有影响方案的未决问题（包括 Plan 子智能体结论末尾的「待确认项」），先用 ask_user 问清，得到答复后再提交；计划里不得留有待用户回答的问题，确需假设的写成「默认采用 X」，也不要用 ask_user 询问「计划是否可行」。用户批准后你直接按计划执行、无需再次征求授权；用户若选择继续完善，请依其回复（随结果附上，或在用户下一条消息里）回应、需要时调整后再重新提交，在收到回复前不要重复调用 exit_plan；用户若忽略计划，不要执行也不要重新提交。其余任务直接做、不必先出计划——包括目标明确、做法直观的常规改动（哪怕涉及几个文件），以及琐碎、单点、只读或答疑类任务。',
     '【任务清单】执行需要 3 步及以上的任务时（尤其是计划获批后开始执行、或用户一次交代了多件事），先用 `todo_write` 列出待办清单，界面会在输入框上方以进度胶囊实时显示给用户；执行中持续更新：同一时刻只保留一项 in_progress，做完一项立即标为 completed，发现新步骤随时补进清单。每次调用传完整清单。任务被暂停、用户转向别的事而不再进行当前清单时，调用 todo_write 传 cancel: true 取消它。单步、琐碎或纯答疑的任务不要建清单。',
-    '【项目成员】项目分成几块、值得分头并行时，用 create_member 组建成员，用 member_send 派任务。有了成员之后你是协调者：弄清用户要什么，收集成员文件夹之外的信息（如需求单、外部文档），派任务，汇总结论，向用户提问。成员负责的文件夹里的工作——读代码、搜索、查 git 记录、运行构建或测试、排查、验证、修改——一律交给对应成员，不要自己先查一遍再派；不属于任何成员的小事你自己做。成员干活时你不必盯着：成员需要用户回答或批准时会直接问用户；成员完成后，系统会以你的名义在对话里回一条「某某已完成：任务」并附上成员的结论原文（不经过你），你的历史里也会有这条——派完任务简短说一句即可，不用复述派了什么，事后也不要再转述这些结论。需要你接着处理结果时（据此安排下一步、合并几个成员的结果、用户要你汇总），派任务时把 report_to_me 设为 true，完成后会唤醒你，由你回复用户。需要另一个成员配合改动的，由你派给那个成员。'
+    '【项目成员】默认在本对话里完成：同一个项目分几块的工作，你自己做，或用 run_subagent 分头并行。只有同时满足两点才用 create_member 建成员：① 这块工作和其他部分差别大——在不同的目录或仓库、技术栈不同，或是不同的工作场景（如部署、测试、功能开发）；② 这块工作在本对话里会持续、反复地做，值得保留它自己的上下文。一次性的任务即使跨了几块，也用子智能体。用户明确要求时照做。成员分两种：你为分工建的成员（负责一块）和用户 @ 请来的协助者（名单里标「协助者」）。你为分工建过成员后，你是管理者：与某个成员负责范围相关的工作（读代码、搜索、查 git 记录、运行构建或测试、排查、验证、修改）一律用 member_send 交给它，不要自己先查一遍再派；新的、与现有成员都不相关的项目或工作块，直接新建成员负责（不必等它会反复做）。你自己只做管理：弄清用户要什么（需要时看需求单等外部资料）、派任务、回答进展、汇总各成员的结论（较早的结论被压缩成摘要、或要看谁在忙时，用 member_status 查看）、协调成员之间的配合；不读代码、不改文件、不跑命令，也不用子智能体代替成员做项目工作。不涉及项目文件的简短问答可以直接回答。协助者只是来帮忙的，不改变你的工作方式：你原来的工作照常自己做，只把明显属于它专长的事、或用户点名要它做的事用 member_send 交给它。用户明确要你改变分工（如「以后这块交给它」「你只管协调」）时照做。成员干活时你不必盯着：成员需要用户回答或批准时会直接问用户；成员完成后，系统会以你的名义在对话里回一条「某某已完成：任务」并附上成员的结论原文（不经过你），你的历史里也会有这条——派完任务简短说一句即可，不用复述派了什么，事后也不要再转述这些结论。需要你接着处理结果时（据此安排下一步、合并几个成员的结果、用户要你汇总），派任务时把 report_to_me 设为 true，完成后会唤醒你，由你回复用户。需要另一个成员配合改动的，由你派给那个成员。'
   ]
   // 渐进式披露：清单只有「名称 + 一句话描述」，任务匹配时模型再调用 skill 工具取完整指令。
   // 清单本身不写在这里而是随消息下发（见 skill-listing.ts）：装 / 删 / 改技能不改本段，提示缓存前缀稳定。
@@ -1838,7 +1842,7 @@ function memberSystemPrompt(p: {
     `你运行在 Deva 桌面应用中，是项目成员「${p.member.name}」，由主 Agent「${p.owner}」分派工作。你的任务大多由${p.owner}派来（消息以「【${p.owner}派来的任务】」开头，后面是任务说明）；你的最终回复就是结论，系统会以${p.owner}的名义原样转给用户（开头加一行「${p.member.name}已完成：任务」），${p.owner}也会看到。用户也可能直接在你的会话里和你说话（没有这个开头）：这时直接回应用户，你的回复同样会同步给${p.owner}。以下是你必须始终遵守的规范；你的身份、性格与行文风格由后文的「角色设定」决定。`,
     `【职责】${p.member.duty || '（未写明）'}。负责的文件夹：${p.folder}。`,
     `【环境】${loc}`,
-    `【工作方式】独立完成任务，按任务说明去做；说明里没交代清楚、需要更早的上下文时，用 read_main 往前翻主对话（用户与${p.owner}的对话）。拿不准的地方能选合理默认就照默认去做，并在结论里写明假设；只有卡住、且用户的回答会改变你接下来怎么做时，才用 ask_user 直接问用户（用户在主对话里回答，不经过${p.owner}）。改动大、方案有多种走法时，可以先用 exit_plan 提交计划请用户批准再动手。只改你负责的部分：需要别的部分配合改动时不要自己去改，在结论里写明需要谁改什么。`,
+    `【工作方式】独立完成任务，按任务说明去做；说明里没交代清楚、需要更早的上下文时，用 read_main 往前翻主对话（用户与${p.owner}的对话）。任务说明里提到却没写清楚的内容（如「按刚才定的方案」「上面那个报错」），先用 read_main 把来龙去脉看明白再动手，不要猜；某一轮被截短了就按轮号读全文。拿不准的地方能选合理默认就照默认去做，并在结论里写明假设；只有卡住、且用户的回答会改变你接下来怎么做时，才用 ask_user 直接问用户（用户在主对话里回答，不经过${p.owner}）。改动大、方案有多种走法时，可以先用 exit_plan 提交计划请用户批准再动手。只改你负责的部分：需要别的部分配合改动时不要自己去改，在结论里写明需要谁改什么。`,
     `【结论】你的最终回复会原样转给用户：直接写结果，不寒暄、不复述任务；简要写明做了什么、改了哪些文件（路径）、验证情况（运行了什么、结果如何）、遗留问题或需要决定的事；不要复述过程流水账。`,
     '【工具使用】动手前先了解现状：已知具体文件/符号时直接用 read_file / grep 等查看，面广时可交给子智能体（run_subagent，只能前台运行）；查找与阅读请用 glob / grep / read_file / list_dir，不要用 run_command 跑 find、grep、cat、ls 代替；write_file 会覆盖整个文件，务必先读后写、保留无关内容。彼此没有依赖的工具调用请在同一次回复里一并发出。调用失败时据回灌的原因改道，切勿原样反复重试。',
     '【工程纪律】只做派给你的事，不擅自加功能或做没要求的重构；贴合所在文件既有的风格，优先复用现有实现；改完能验证就验证（类型检查、测试或构建），没验证过的不要说成已通过；出了问题先找根因，不用跳过测试、吞掉报错之类的办法让表面看起来正常。',
@@ -1985,7 +1989,8 @@ const SUBAGENT_EXCLUDED = new Set([
   // 项目成员由主智能体管理（fork 沿用主对话工具表，靠这里拦下）。
   'create_member',
   'member_send',
-  'member_stop'
+  'member_stop',
+  'member_status'
 ])
 
 /** 可在同一步内并发执行的内置只读工具：无副作用、彼此无先后依赖（见工具循环的 readRuns）。 */
@@ -2580,6 +2585,17 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     return { ref, restored: false }
   }
 
+  /** 用户直接在成员会话里说了一句：取这条消息开头（≤20 字）记作成员当前的任务标题。 */
+  function noteMemberDirectTask(sub: StoredSession, text: string): void {
+    const main = sub.parentId ? getSession(sub.parentId) : undefined
+    const ref = main?.members?.find((m) => m.sessionId === sub.id)
+    const title = text.replace(/\s+/g, ' ').trim()
+    if (!main || !ref || !title) return
+    ref.task = title.length > 20 ? `${title.slice(0, 20)}…` : title
+    saveProject(main.id)
+    publishSessionsChanged()
+  }
+
   /** 成员会话里用户亲自改了模型 / 思考等级：记到主对话名单上，此后派任务不再覆盖。 */
   function markMemberSetting(sub: StoredSession, field: 'modelSet' | 'effortSet'): void {
     const main = sub.parentId ? getSession(sub.parentId) : undefined
@@ -2737,7 +2753,69 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     return { content: `已中止成员「${member.name}」当前的任务。`, summary: `已中止「${member.name}」`, isError: false }
   }
 
-  /** 主对话的成员工具（create_member / member_send / member_stop）。 */
+  /**
+   * member_status：成员的当前状态与最近一次结论（结论取成员会话里最近一次收尾的回复全文，名单上只存了前 200 字）。
+   * 对话压缩后较早的交差只剩摘要，主智能体汇总各成员情况时据此补全。
+   */
+  function memberStatus(main: StoredSession, rawName: string): MemberToolResult {
+    const list = activeMembers(main.members)
+    if (!list.length) return { content: '本对话还没有成员。', summary: '没有成员', isError: false }
+    const name = rawName.replace(/^@+/, '').trim().toLowerCase()
+    const pick = name ? list.filter((m) => m.name.toLowerCase() === name) : list
+    if (!pick.length)
+      return {
+        content: `没有名为「${rawName}」的成员。现有成员：${list.map((m) => m.name).join('、')}。`,
+        summary: '没有这个成员',
+        isError: true
+      }
+    const now = Date.now()
+    const ago = (t: number): string => {
+      const min = Math.round((now - t) / 60000)
+      if (min < 1) return '刚刚'
+      if (min < 60) return `${min} 分钟前`
+      if (min < 1440) return `${Math.round(min / 60)} 小时前`
+      return `${Math.round(min / 1440)} 天前`
+    }
+    const waitingOf = (id: string): string =>
+      [...pendingAsk.values()].some((p) => p.sessionId === id)
+        ? '在等用户回答问题'
+        : [...pendingPlan.values()].some((p) => p.sessionId === id)
+          ? '在等用户批准计划'
+          : [...pendingMount.values()].some((p) => p.sessionId === id)
+            ? '在等用户选择文件夹'
+            : ''
+    const mainRoot = main.focusRoot ?? null
+    const blocks = pick.map((m) => {
+      const item = memberItem(m, mainRoot)
+      const lines = [
+        `【${m.name}】${item.fromRole ? '（协助者）' : ''}负责 ${item.folder}：${m.duty || '（未写职责）'}`
+      ]
+      if (busySessions.has(m.sessionId)) {
+        const since = busySince.get(m.sessionId)
+        const waiting = waitingOf(m.sessionId)
+        lines.push(
+          `状态：工作中${m.task ? `，正在做「${m.task}」` : ''}` +
+            (since ? `，已用 ${Math.max(1, Math.round((now - since) / 60000))} 分钟` : '') +
+            (waiting ? `；${waiting}` : '')
+        )
+      } else lines.push('状态：空闲')
+      if (m.last) {
+        const label = m.last.status === 'done' ? '已完成' : m.last.status === 'stopped' ? '已停止' : '未完成'
+        const sub = getSession(m.sessionId)
+        const full = (sub ? lastReplyText(sub.messages) : '') || m.last.text
+        const text = full.length > 3000 ? `${full.slice(0, 3000)}…（后略）` : full
+        lines.push(`最近一次交差（${ago(m.last.at)}，${label}）：`, text)
+      } else lines.push('还没有交过结论。')
+      return lines.join('\n')
+    })
+    return {
+      content: blocks.join('\n\n'),
+      summary: pick.length === 1 ? '已查看' : `已查看 ${pick.length} 个成员`,
+      isError: false
+    }
+  }
+
+  /** 主对话的成员工具（create_member / member_send / member_stop / member_status）。 */
   async function mainMemberTool(
     mainId: string,
     tc: { id: string; name: string; args: unknown },
@@ -2748,6 +2826,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (!main) return { content: '对话不存在。', summary: '对话不存在', isError: true }
     const a = (tc.args ?? {}) as Record<string, unknown>
     const str = (k: string): string => (typeof a[k] === 'string' ? (a[k] as string).trim() : '')
+    if (tc.name === 'member_status') return memberStatus(main, str('member'))
     if (tc.name === 'create_member') {
       let folder = str('folder')
       // 不知道文件夹在哪：在对话里弹选择文件夹的卡片请用户点选（复用挂载卡），不让用户打字报路径。
@@ -2779,9 +2858,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const sub = getSession(memberId)
     const main = sub?.parentId ? getSession(sub.parentId) : undefined
     if (!main) return { content: '找不到主对话（可能已被删除）。', summary: '找不到主对话', isError: true }
-    const before = (tc.args as { before?: unknown } | null)?.before
+    const a = (tc.args ?? {}) as { before?: unknown; round?: unknown; offset?: unknown }
+    const owner = personaName(main)
     return {
-      content: readMainPage(main.messages, personaName(main), typeof before === 'number' ? before : undefined),
+      content:
+        typeof a.round === 'number'
+          ? readMainRound(main.messages, owner, a.round, typeof a.offset === 'number' ? a.offset : 0)
+          : readMainPage(main.messages, owner, typeof a.before === 'number' ? a.before : undefined),
       summary: '已读取主对话',
       isError: false
     }
@@ -2810,7 +2893,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     ref.last = {
       text: conclusion.length > 200 ? `${conclusion.slice(0, 200)}…` : conclusion,
       at: Date.now(),
-      status
+      status,
+      ...(ref.task ? { task: ref.task } : {})
     }
     saveProject(main.id)
     publishSessionsChanged()
@@ -2921,7 +3005,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       lines.push(
         a.restored
           ? `- 「${a.ref.name}」是之前移除的成员，已按用户的 @ 恢复：它用的还是原来的会话，之前的上下文都还在。`
-          : `- 角色「${a.ref.name}」已按用户的 @ 加入本对话的成员名单（${a.ref.duty || '未写职责'}）。`
+          : `- 角色「${a.ref.name}」已按用户的 @ 作为协助者加入本对话（${a.ref.duty || '未写职责'}）：它是来帮忙的，你原来的工作照常自己做。`
       )
     if (targets)
       lines.push(
@@ -4037,9 +4121,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             : null
         let mountRefused = false
         if (mountNeed) {
+          // 成员会话：卡片按「为成员 X 选择文件夹」显示（选的是它负责的文件夹，见 setMemberFolder），带上成员名。
+          const own = getSession(sessionId)
+          const memberName = own?.parentId
+            ? getSession(own.parentId)?.members?.find((m) => m.sessionId === sessionId)?.name
+            : undefined
           const picked = mountDeclined.has(sessionId)
             ? null
-            : await requestMount(turnId, sessionId, mountNeed.tool, mountNeed.path)
+            : await requestMount(turnId, sessionId, mountNeed.tool, mountNeed.path, memberName)
           // 中止（chat:abort 会把待决挂载按 null 解开）不算「拒绝」：直接收尾，别污染会话级去重标记。
           if (controller.signal.aborted) break
           if (picked) {
@@ -4052,7 +4141,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             else if (s) s.focusRoot = picked
             // 措辞刻意只陈述「本次」：工作区可被用户随时切换，而这条 tool_result 会永久留在上下文里。
             // 若写成「后续所有相对路径均以此为基准」，切换之后它就成了一条与【环境】行对撞的假规则。
-            mountNote = `（用户已挂载工作区：${picked}，本次调用的相对路径以此为基准。工作区可由用户随时切换，后续一律以系统提示词【环境】里的当前工作目录为准。）\n`
+            mountNote = memberName
+              ? `（用户已为你指定负责的文件夹：${picked}，本次调用的相对路径以此为基准。文件夹可由用户随时更换，后续一律以系统提示词【环境】里的当前工作目录为准。）\n`
+              : `（用户已挂载工作区：${picked}，本次调用的相对路径以此为基准。工作区可由用户随时切换，后续一律以系统提示词【环境】里的当前工作目录为准。）\n`
             // 系统提示词本轮已定格、项目说明下一轮才注入：本轮接下来就在这个项目里干活，先让模型自己读。
             const doc = loadProjectDoc(picked)
             if (doc)
@@ -4061,8 +4152,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           } else {
             mountRefused = true
             mountDeclined.add(sessionId)
-            denySummary = '未挂载工作区'
-            denyContent = mountNeed.path
+            denySummary = memberName ? '未指定文件夹' : '未挂载工作区'
+            denyContent = memberName
+              ? `用户没有为你指定文件夹（选了「不限」），无法确定${mountNeed.path ? `相对路径「${mountNeed.path}」` : ` ${mountNeed.tool} 省略 path 时`}的落点，本次调用未执行。请改用**绝对路径**重试，不要再请求选择文件夹。`
+              : mountNeed.path
               ? `未挂载工作区，无法确定相对路径「${mountNeed.path}」的落点，本次调用未执行。用户已选择暂不挂载。请改用**绝对路径**重试（必要时先问清用户目标目录），不要再请求挂载工作区。`
               : `未挂载工作区，${mountNeed.tool} 省略 path 时没有默认根可用，本次调用未执行。用户已选择暂不挂载。请显式传入**绝对路径** path 重试，不要再请求挂载工作区。`
           }
@@ -4295,6 +4388,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const startedAt = Date.now()
     activeTurns.set(turnId, controller)
     busySessions.set(sessionId, turnId)
+    busySince.set(sessionId, startedAt)
     insertableTurns.add(turnId)
     if (fromRemote) remoteTurns.add(turnId)
     const session = ensureSession(sessionId)
@@ -4596,6 +4690,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       session.updatedAt = Date.now()
       saveProject(sessionId)
       busySessions.delete(sessionId)
+      busySince.delete(sessionId)
       // 本轮结束：浏览器窗口 / 胶囊上的「正在操作」立即收起（不等空闲计时）；后台网页从此刻起按短时限计时
       clearBrowserOperating(sessionId)
       markBrowserTurnEnded(sessionId)
@@ -4817,6 +4912,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 用户 @ 了角色或成员（主对话的交互轮）：还不是成员的角色加入名单，并请主智能体把这条消息交给它们。
     const mentionNote = !session.parentId && trigger !== 'schedule' ? handleMentions(session, text) : null
     if (mentionNote) parts.push(mentionNote)
+    // 用户直接在成员会话里交代事情：名单上记下它在做什么（成员卡片显示任务标题）。
+    if (session.parentId) noteMemberDirectTask(session, text)
     if (parts.length) {
       parts.push({ type: 'text', text: questionText })
       history.push({ role: 'user', content: parts })
@@ -5035,9 +5132,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // 此后到达的流事件都晚于这份快照，不会漏掉 done 而永远停在「进行中」。
   ipcMain.handle(
     'chat:attach-session',
-    (_e, sessionId: string): { messages: DisplayMessage[]; turnId: string | null } => ({
+    (
+      _e,
+      sessionId: string
+    ): { messages: DisplayMessage[]; turnId: string | null; startedAt: number | null } => ({
       messages: loadDisplay(sessionId),
-      turnId: busySessions.get(sessionId) ?? null
+      turnId: busySessions.get(sessionId) ?? null,
+      // 进行中这一轮的开始时刻：渲染层中途接上时据此续上计时，而不是从接上那一刻重新算。
+      startedAt: busySince.get(sessionId) ?? null
     })
   )
 

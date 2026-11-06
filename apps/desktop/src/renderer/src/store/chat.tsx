@@ -1207,7 +1207,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   // 载入期间已切走 / 已有活动态生成 → 丢弃结果（绝不冲掉实时内容）。
   const attachSession = useCallback(
     async (sid: string): Promise<void> => {
-      const { messages, turnId } = await window.deva.chat.attachSession(sid)
+      const { messages, turnId, startedAt } = await window.deva.chat.attachSession(sid)
       if (sessionIdRef.current !== sid || runtimesRef.current.has(sid)) return
       const msgs = displayToMessages(messages as DisplayMessage[])
       if (!turnId) {
@@ -1222,7 +1222,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         messages: withLiveCards([...msgs, ...tail], pendingCardsRef.current[sid] ?? []),
         streaming: true,
         turnId,
-        startedAt: Date.now(),
+        // 后台跑了一阵才打开（如成员对话）：计时从这一轮真正开始的时刻算，不从打开时归零。
+        startedAt: startedAt ?? bgStartedRef.current.get(sid) ?? Date.now(),
         reconnecting: null,
         compacting: false,
         external: true

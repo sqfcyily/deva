@@ -178,7 +178,7 @@ export interface MemberMeta {
   /** 最近一次派来的任务标题。 */
   task?: string
   /** 最近一次结论（截断）与结局。 */
-  last?: { text: string; at: number; status: 'done' | 'failed' | 'stopped' }
+  last?: { text: string; at: number; status: 'done' | 'failed' | 'stopped'; task?: string }
   /** 用户在成员会话里亲自选过模型 / 思考等级（此后不再跟随主对话）。 */
   modelSet?: boolean
   effortSet?: boolean
@@ -1077,7 +1077,10 @@ const api = {
     loadSession: (sessionId: string, workspaceRoot: string | null): Promise<DisplayMessage[]> =>
       ipcRenderer.invoke('chat:load-session', sessionId, workspaceRoot),
     /** 载入历史 + 进行中回合的 turnId（同一时刻取出，用于接上别处发起、仍在跑的一轮） */
-    attachSession: (sessionId: string): Promise<{ messages: DisplayMessage[]; turnId: string | null }> =>
+    /** 接上某会话：历史 + 进行中的回合（turnId 与开始时刻 startedAt，空闲时都为 null）。 */
+    attachSession: (
+      sessionId: string
+    ): Promise<{ messages: DisplayMessage[]; turnId: string | null; startedAt: number | null }> =>
       ipcRenderer.invoke('chat:attach-session', sessionId),
     /** 删除某会话（主对话连同它的成员会话一并删除） */
     deleteSession: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>

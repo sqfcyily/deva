@@ -237,7 +237,7 @@ export interface MemberListingItem {
 
 function memberLine(m: MemberListingItem): string {
   const where = m.folder === '不限' ? '' : `（负责 ${m.folder}）`
-  const role = m.fromRole ? `［用户 @ 加入的角色］` : ''
+  const role = m.fromRole ? `［协助者：用户 @ 请来的角色「${m.fromRole}」］` : ''
   return `- ${m.name}${where}${role}：${m.duty || '（未写职责）'}`
 }
 
@@ -257,14 +257,14 @@ export function memberListingPart(history: Message[], members: MemberListingItem
   const lines: string[] = []
   if (d.initial) {
     lines.push(
-      '【成员名单】本对话现有以下成员。它们负责的文件夹里的工作（读代码、排查、验证、修改、跑构建）一律用 member_send 交给对应成员，不要自己动手：',
+      '【成员名单】本对话现有以下成员。你为分工建的成员：与它们负责范围相关的工作（读代码、排查、验证、修改、跑构建）一律用 member_send 交给对应成员，不要自己动手；标「协助者」的是用户 @ 请来帮忙的，只把属于它专长或用户点名的事交给它，你自己的工作照常做：',
       ...d.listed.map(memberLine)
     )
   } else {
     lines.push('【成员名单更新】')
     if (d.listed.length)
       lines.push(
-        '以下成员新加入或信息有更新（它们负责的文件夹里的工作交给它们，不要自己动手）：',
+        '以下成员新加入或信息有更新（分工成员负责范围相关的工作交给它们；协助者只接它专长或用户点名的事）：',
         ...d.listed.map(memberLine)
       )
     if (d.removed.length) lines.push(`以下成员已移除，不要再派任务给他们：${d.removed.join('、')}`)

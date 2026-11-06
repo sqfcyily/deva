@@ -48,10 +48,10 @@ export interface MemberRef {
   addedAt: number
   /** 已移除：不再派任务，成员会话保留。 */
   removed?: boolean
-  /** 最近一次派来的任务标题。 */
+  /** 最近一次的任务标题：主智能体派来的，或用户在成员会话里直接交代的那条消息开头。成员卡片显示它。 */
   task?: string
-  /** 最近一次结论（截断）与结局。 */
-  last?: { text: string; at: number; status: MemberRunStatus }
+  /** 最近一次结论（截断）、结局与当时的任务标题。 */
+  last?: { text: string; at: number; status: MemberRunStatus; task?: string }
   /**
    * 用户在成员会话里亲自改过模型 / 思考等级：此后以成员会话为准，派任务时不再按主对话同步覆盖。
    */
@@ -165,6 +165,18 @@ function formatRound(r: Round, owner: string): string {
   return lines.join('\n')
 }
 
+/** 成员会话里最近一次正常收尾的回复（有正文、没有工具调用；没有则空串）：member_status 据此给出结论全文。 */
+export function lastReplyText(memberMessages: Message[]): string {
+  for (let i = memberMessages.length - 1; i >= 0; i--) {
+    const m = memberMessages[i]
+    if (m.role !== 'assistant') continue
+    if (typeof m.content !== 'string' && m.content.some((p) => p.type === 'tool_use')) continue
+    const t = assistantText(m).trim()
+    if (t) return t
+  }
+  return ''
+}
+
 /** 成员会话里用户最近一次直接说的话（不是主智能体派来的任务；没有则空串）。 */
 export function lastDirectUserText(memberMessages: Message[]): string {
   for (let i = memberMessages.length - 1; i >= 0; i--) {
@@ -195,15 +207,37 @@ export function readMainPage(messages: Message[], owner: string, before?: number
       : all.length
   const start = Math.max(0, end - PAGE_ROUNDS)
   if (end <= 0) return '已经到主对话开头了，没有更早的内容。'
-  const body = all
-    .slice(start, end)
-    .map((r, i) => `── 第 ${start + i + 1} 轮 ──\n${formatRound(r, owner)}`)
-    .join('\n\n')
+  const shown = all.slice(start, end)
+  const body = shown.map((r, i) => `── 第 ${start + i + 1} 轮 ──\n${formatRound(r, owner)}`).join('\n\n')
   const tail =
     start > 0
       ? `（主对话共 ${all.length} 轮，以上是第 ${start + 1}–${end} 轮；更早的内容用 read_main 并传 before=${start + 1} 查看。）`
       : `（主对话共 ${all.length} 轮，以上已到开头。）`
-  return `${body}\n\n${tail}`
+  // 每轮的用户消息与回复各只给前 / 后 ROUND_CHARS 字（带「…」）：被截的要读全文，按轮号取。
+  const clipped = shown.some((r) => r.user.length > ROUND_CHARS || r.reply.length > ROUND_CHARS)
+  const more = clipped ? '\n（带「…」的轮被截短了：要看某一轮的全文，用 read_main 并传 round=轮号。）' : ''
+  return `${body}\n\n${tail}${more}`
+}
+
+/** read_main 读一轮全文时每次给出的字数：更长的分段读，结果末尾给出下一段的 offset。 */
+const ROUND_PAGE_CHARS = 8000
+
+/** read_main 传 round：主对话第 round 轮（从 1 开始）的全文，从 offset 字起最多 ROUND_PAGE_CHARS 字。 */
+export function readMainRound(messages: Message[], owner: string, round: number, offset = 0): string {
+  const all = roundsOf(messages)
+  const n = Math.floor(round)
+  if (!all.length) return '主对话还没有内容。'
+  if (!Number.isFinite(n) || n < 1 || n > all.length) return `没有第 ${round} 轮：主对话共 ${all.length} 轮（轮号从 1 开始）。`
+  const r = all[n - 1]
+  const full = [r.user && `【用户】${r.user}`, r.reply && `【${owner}】${r.reply}`].filter(Boolean).join('\n')
+  const from = Math.max(0, Math.min(Math.floor(offset) || 0, full.length))
+  const to = Math.min(full.length, from + ROUND_PAGE_CHARS)
+  const head = `── 第 ${n} 轮${from > 0 ? `（接第 ${from} 字）` : ''} ──`
+  const tail =
+    to < full.length
+      ? `（第 ${n} 轮共 ${full.length} 字，以上是第 ${from + 1}–${to} 字；接着读用 read_main 并传 round=${n}、offset=${to}。）`
+      : `（第 ${n} 轮共 ${full.length} 字，已读完。）`
+  return `${head}\n${full.slice(from, to)}\n\n${tail}`
 }
 
 // ── 任务消息 ──────────────────────────────────────────────────────────────────
@@ -256,7 +290,7 @@ export function parseTaskMessage(text: string): ParsedTask | null {
 // ── 工具 ──────────────────────────────────────────────────────────────────────
 
 /** 主对话（主智能体）的成员工具名。 */
-export const MAIN_MEMBER_TOOLS = new Set(['create_member', 'member_send', 'member_stop'])
+export const MAIN_MEMBER_TOOLS = new Set(['create_member', 'member_send', 'member_stop', 'member_status'])
 /** 成员会话的成员工具名。 */
 export const MEMBER_SIDE_TOOLS = new Set(['read_main'])
 
@@ -266,7 +300,7 @@ export function mainMemberTools(): ToolSpec[] {
     {
       name: 'create_member',
       description:
-        `创建一个项目成员：成员在自己的独立会话里、以你的角色设定工作，长期负责项目里的一块（通常是一个文件夹），由你用 member_send 派任务。项目分成几块（如前端、后端、部署各在一个文件夹，技术栈不同）、值得分头并行时使用：先了解项目结构，再为每块创建一个成员。一次性的小事、调研不要创建成员（自己做，或用 run_subagent）。成员最多 ${MAX_MEMBERS} 个；现有成员见系统随消息附带的【成员名单】。用户在消息里 @ 一个角色时，系统会自动把它加为成员，无需调用本工具。`,
+        `创建一个项目成员：成员在自己的独立会话里、以你的角色设定工作，长期负责项目里的一块（通常是一个文件夹），由你用 member_send 派任务。默认不建成员：同一个项目分几块的工作，你自己做，或用 run_subagent 分头并行。只有同时满足两点才使用：① 这块工作和其他部分差别大——在不同的目录或仓库、技术栈不同，或是不同的工作场景（如部署、测试、功能开发）；② 这块工作在本对话里会持续、反复地做（多轮修改、反复验证），值得保留它自己的上下文。一次性的任务即使跨了几块，也用 run_subagent；调研、小事不建成员。用户明确要求时照做。你为分工建过成员后（你是管理者），与现有成员都不相关的新项目或工作块，直接新建成员负责，不受第②点限制；用户 @ 请来的协助者不算分工，不改变这条。建之前先了解项目结构，一块一个成员。成员最多 ${MAX_MEMBERS} 个；现有成员见系统随消息附带的【成员名单】。用户在消息里 @ 一个角色时，系统会自动把它加为成员，无需调用本工具。`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -322,6 +356,16 @@ export function mainMemberTools(): ToolSpec[] {
         properties: { member: { type: 'string', description: '成员名。' } },
         required: ['member']
       }
+    },
+    {
+      name: 'member_status',
+      description:
+        '查看成员的当前状态与最近一次结论：谁在工作（正在做什么、已用多久）、谁在等用户回答或批准、最近一次交差的结论全文。' +
+        '用户问进展、要你汇总各成员的情况，或较早的交差内容已被压缩成摘要时使用。不要为了等结果反复调用：成员完成后系统会转告。',
+      inputSchema: {
+        type: 'object',
+        properties: { member: { type: 'string', description: '可选：只看这个成员；省略则看全部成员。' } }
+      }
     }
   ]
 }
@@ -331,11 +375,14 @@ export function readMainTool(): ToolSpec {
   return {
     name: 'read_main',
     description:
-      '往前翻主对话（用户与主 Agent 的对话）的正文：用户的消息和主 Agent 的回复，不含工具调用与思考过程。不传 before 时返回最近几轮；结果末尾会给出查看更早内容所需的 before 值。',
+      '往前翻主对话（用户与主 Agent 的对话）的正文：用户的消息和主 Agent 的回复（含其他成员的交差），不含工具调用与思考过程。' +
+      '不传参数时返回最近几轮，每轮较长的内容会截短（带「…」）；传 before 往前翻页；传 round 读某一轮的全文（很长时分段，结果末尾给出下一段的 offset）。',
     inputSchema: {
       type: 'object',
       properties: {
-        before: { type: 'number', description: '只看第 before 轮之前的内容（轮号从 1 开始，见上一次结果末尾的提示）。' }
+        before: { type: 'number', description: '只看第 before 轮之前的内容（轮号从 1 开始，见上一次结果末尾的提示）。' },
+        round: { type: 'number', description: '读第 round 轮的全文（轮号见翻页结果里的「第 N 轮」）。' },
+        offset: { type: 'number', description: '与 round 一起用：从第 offset 字接着读（见上一次结果末尾的提示）。' }
       }
     }
   }

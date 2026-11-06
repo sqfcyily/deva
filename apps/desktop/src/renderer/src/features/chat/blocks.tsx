@@ -56,6 +56,7 @@ import {
   Send,
   CircleStop,
   MessagesSquare,
+  UsersRound,
   type LucideIcon
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
@@ -105,6 +106,7 @@ const TOOL_META: Record<string, { key: string; icon: LucideIcon }> = {
   create_member: { key: 'createMember', icon: UserPlus },
   member_send: { key: 'memberSend', icon: Send },
   member_stop: { key: 'memberStop', icon: CircleStop },
+  member_status: { key: 'memberStatus', icon: UsersRound },
   read_main: { key: 'readMain', icon: MessagesSquare }
 }
 
@@ -201,7 +203,7 @@ function flowObject(name: string, args: unknown): { text: string; full: string }
     return typeof skill === 'string' && skill.trim() ? { text: skill.trim(), full: skill.trim() } : null
   }
   // 成员工具：对象写成员名（派任务另带任务标题）；查看主对话没有对象。
-  if (name === 'create_member' || name === 'member_send' || name === 'member_stop') {
+  if (name === 'create_member' || name === 'member_send' || name === 'member_stop' || name === 'member_status') {
     const a = (args ?? {}) as { name?: unknown; member?: unknown; task?: unknown }
     const who = String((name === 'create_member' ? a.name : a.member) ?? '').trim()
     if (!who) return null
@@ -1306,7 +1308,7 @@ const QUIET_SUMMARIES = new Set([
 ])
 
 /** 成功摘要只是复述对象的工具：技能的「已加载技能「名称」」与行上的「已加载技能 名称」重复，不写。 */
-const QUIET_TOOLS = new Set(['skill', 'create_member', 'member_send', 'member_stop', 'read_main'])
+const QUIET_TOOLS = new Set(['skill', 'create_member', 'member_send', 'member_stop', 'member_status', 'read_main'])
 
 /** 子智能体被用户亲手停下的结局摘要（后台「已停止」/ 前台「已中止」）：不当作出错展示。 */
 const STOPPED_SUMMARIES = new Set(['已停止', '已中止'])

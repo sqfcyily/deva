@@ -1096,6 +1096,18 @@ function MemberBar({
  * 成员正等你处理的卡（提问 / 计划 / 选文件夹）：主对话输入框上方一条一行，点开当场处理，处理完就消失。
  * 这些卡不进主对话、也不经主角色，答复直接回到成员的那一轮（对比稿 design/member-direct.html 的结论）。
  */
+/**
+ * 输入框上方的一条等你处理：成员会话里的提问 / 计划 / 选文件夹（sid = 成员会话），或主角色建成员时为新成员选文件夹
+ * （sid = 主对话，isNew：成员还没建，没有头像和对话）。
+ */
+interface MemberWait {
+  sid: string
+  name: string
+  persona?: Persona
+  card: PendingCard
+  isNew?: boolean
+}
+
 function MemberWaits({
   waits,
   onAsk,
@@ -1103,7 +1115,7 @@ function MemberWaits({
   onMountReq,
   onOpenMember
 }: {
-  waits: { member: MemberEntry; card: PendingCard }[]
+  waits: MemberWait[]
   onAsk: (key: string, answers: string[], sessionId?: string) => void
   onPlan: (key: string, decision: 'approve' | 'keep' | 'ignore', feedback?: string, sessionId?: string) => void
   onMountReq: (key: string, path: string | null, sessionId?: string) => void
@@ -1113,11 +1125,16 @@ function MemberWaits({
   const [openKey, setOpenKey] = useState<string | null>(null)
   return (
     <div className="cf-mwaits">
-      {waits.map(({ member, card }) => {
-        const sid = member.meta.sessionId
+      {waits.map(({ sid, name, persona, card, isNew }) => {
         const isOpen = openKey === card.key
         const label =
-          card.kind === 'ask' ? 'cf.member.waitAsk' : card.kind === 'plan' ? 'cf.member.waitPlan' : 'cf.member.waitMount'
+          card.kind === 'ask'
+            ? 'cf.member.waitAsk'
+            : card.kind === 'plan'
+              ? 'cf.member.waitPlan'
+              : isNew
+                ? 'cf.member.waitPick'
+                : 'cf.member.waitMount'
         const action =
           card.kind === 'ask'
             ? 'cf.member.waitAnswer'
@@ -1138,8 +1155,14 @@ function MemberWaits({
               aria-expanded={isOpen}
               onClick={() => setOpenKey(isOpen ? null : card.key)}
             >
-              <Avatar persona={member.persona} size={18} />
-              <span className="cf-mwait__text">{fill(t(label), { name: member.meta.name })}</span>
+              {isNew ? (
+                <span className="cf-mwait__icon" aria-hidden="true">
+                  <FolderOpen size={12} />
+                </span>
+              ) : (
+                <Avatar persona={persona} size={18} />
+              )}
+              <span className="cf-mwait__text">{fill(t(label), { name })}</span>
               {preview && !isOpen && <span className="cf-mwait__sub">{preview}</span>}
               <span className="cf-mwait__act">
                 {isOpen ? t('cf.member.waitCollapse') : t(action)}
@@ -1155,10 +1178,12 @@ function MemberWaits({
                   onPlan={(k, d, f) => onPlan(k, d, f, sid)}
                   onMountReq={(k, p) => onMountReq(k, p, sid)}
                 />
-                <button type="button" className="cf-mwait__open" onClick={() => onOpenMember(sid)}>
-                  <MessageSquare size={12} />
-                  {t('cf.member.viewLog')}
-                </button>
+                {!isNew && (
+                  <button type="button" className="cf-mwait__open" onClick={() => onOpenMember(sid)}>
+                    <MessageSquare size={12} />
+                    {t('cf.member.viewLog')}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1264,23 +1289,24 @@ function MemberCard({
             </span>
           </div>
         )}
+        {/* 任务一行：图标表示状态（转圈=进行中、勾=已完成、叹号=未完成 / 已停止），文字只写任务标题，用时 / 时间紧跟其后（同模型行的「跟随 X」）。 */}
         {busy ? (
-          <div className="cf-mcard__row is-now">
+          <div className="cf-mcard__row is-now is-task" title={meta.task || undefined}>
             <Loader2 size={14} className="spin" />
-            <span>
-              {fill(t('cf.member.doing'), { task: meta.task || t('cf.member.doingUnknown') })}
+            <span className="cf-mcard__taskline">
+              <span className="cf-mcard__task">{meta.task || t('cf.member.doingUnknown')}</span>
               {elapsed && <span className="cf-mcard__hint">{elapsed}</span>}
             </span>
           </div>
         ) : last ? (
-          <div className={`cf-mcard__row is-recent${last.status === 'done' ? '' : ' is-bad'}`}>
+          <div
+            className={`cf-mcard__row is-recent is-task${last.status === 'done' ? '' : ' is-bad'}`}
+            title={`${t(lastKey)}${last.task || meta.task ? ` · ${last.task || meta.task}` : ''}`}
+          >
             {last.status === 'done' ? <Check size={14} /> : <AlertCircle size={14} />}
-            <span>
-              {t(lastKey)}
+            <span className="cf-mcard__taskline">
+              <span className="cf-mcard__task">{last.task || meta.task || t(lastKey)}</span>
               <span className="cf-mcard__hint">{rel(last.at)}</span>
-              <span className="cf-mcard__sub" title={last.text}>
-                {last.text}
-              </span>
             </span>
           </div>
         ) : (
@@ -1332,9 +1358,13 @@ function MemberLogHead({
       <span className="cf-conv__mname" title={meta.duty || undefined}>
         {meta.name}
       </span>
-      <span className={`cf-conv__mstate${streaming ? ' is-busy' : ''}`}>
-        {streaming ? t('cf.member.working') : t('cf.member.idle')}
-      </span>
+      {/* 只在工作中显示状态胶囊（与成员卡片同一套 .cf-mcard__pill：主题色底 + 闪烁圆点）；空闲时不显示。 */}
+      {streaming && (
+        <span className="cf-mcard__pill is-busy">
+          <i aria-hidden="true" />
+          {t('cf.member.working')}
+        </span>
+      )}
     </>
   )
 }
@@ -4646,10 +4676,15 @@ function Conversation({
 
   // 单条消息渲染（选择态与常态复用；选择态下 active 恒 false，因选择只在非流式时可用）。
   // turn：常态渲染传入，标注到根 data-turn 供右键定位；选择态用卡片自身处理点击，无需传。
+  // 主对话里等你处理的「为成员选择文件夹」卡在输入框上方的通知行里处理（见 MemberWaits），消息流里先不画；处理完照常是一步。
+  const hidePendingPick = (m: ChatMessage): ChatMessage =>
+    !memberView && m.role === 'assistant' && m.blocks.some((b) => b.kind === 'mount' && b.member && !b.decided)
+      ? { ...m, blocks: m.blocks.filter((b) => !(b.kind === 'mount' && b.member && !b.decided)) }
+      : m
   const renderMsg = (m: ChatMessage, i: number, turn?: number): React.JSX.Element => (
     <ConvMessage
       key={m.id}
-      msg={m}
+      msg={hidePendingPick(m)}
       owner={owner}
       taskOwner={memberView?.owner}
       active={!selecting && streaming && i === messages.length - 1}
@@ -4666,9 +4701,22 @@ function Conversation({
   )
 
   // 成员正等你处理的卡（只在主对话里显示；成员对话里卡片就在它自己的对话流中）。
-  const waits = memberView
+  // 主对话里另有主角色建成员时「为成员选择文件夹」的卡（create_member 的 pick_folder）：同样放在这里，不进消息流。
+  const waits: MemberWait[] = memberView
     ? []
-    : members.flatMap((m) => (pendingCards[m.meta.sessionId] ?? []).map((card) => ({ member: m, card })))
+    : [
+        ...(pendingCards[currentSessionId] ?? [])
+          .filter((c) => c.kind === 'mount' && c.member)
+          .map((card) => ({ sid: currentSessionId, name: (card.kind === 'mount' && card.member) || '', card, isNew: true })),
+        ...members.flatMap((m) =>
+          (pendingCards[m.meta.sessionId] ?? []).map((card) => ({
+            sid: m.meta.sessionId,
+            name: m.meta.name,
+            persona: m.persona,
+            card
+          }))
+        )
+      ]
 
   return (
     <main className="cf-conv">
