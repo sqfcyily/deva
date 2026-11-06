@@ -48,15 +48,23 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-/** 比较 x.y.z，忽略「-」之后的预发布后缀。 */
+/**
+ * 比较 x.y.z[-pre]。x.y.z 相同时正式版比预发布版新（0.5.0 > 0.5.0-beta.1），
+ * 装了预发布版的用户才能收到同号正式版的更新；都是预发布版时按后缀比较（beta.2 > beta.1）。
+ */
 function compareVersions(a: string, b: string): number {
-  const pa = a.split('-')[0].split('.').map(Number)
-  const pb = b.split('-')[0].split('.').map(Number)
+  const [ca, preA = ''] = a.split(/-(.*)/)
+  const [cb, preB = ''] = b.split(/-(.*)/)
+  const pa = ca.split('.').map(Number)
+  const pb = cb.split('.').map(Number)
   for (let i = 0; i < 3; i++) {
     const d = (pa[i] || 0) - (pb[i] || 0)
     if (d !== 0) return Math.sign(d)
   }
-  return 0
+  if (preA === preB) return 0
+  if (!preA) return 1
+  if (!preB) return -1
+  return Math.sign(preA.localeCompare(preB, 'en', { numeric: true }))
 }
 
 /**
@@ -145,6 +153,9 @@ function getUpdater(): AppUpdater {
   if (updater) return updater
   updater = autoUpdater
   updater.autoDownload = false
+  // 当前是预发布版时 electron-updater 默认打开它、改读 feed 里最新的一个（可能又是预发布版），
+  // 和 check() 读的 releases/latest（只有正式版）对不上；固定只升正式版
+  updater.allowPrerelease = false
   // 下好了没点「重启并安装」：下次退出时静默装上（不自动重开）
   updater.autoInstallOnAppQuit = true
   updater.on('download-progress', (p) => {
