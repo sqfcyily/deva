@@ -19,7 +19,7 @@ export class StreamIdleError extends Error {
 
 /**
  * 极简 SSE 解析：把 fetch 的响应体流切成一个个 {event, data} 事件。
- * 用 Node 全局 fetch + Web Streams（Electron 主进程即 Node，无需任何依赖），
+ * 响应来自统一出站 httpFetch（../http.ts，Chromium 网络栈），按 Web Streams 读取，无需任何依赖，
  * 契合「零环境配置」铁律。Anthropic 与 OpenAI 两套流都走它。
  *
  * idleMs>0 时启用空闲看门狗：任一 read() 超过 idleMs 未返回即抛 StreamIdleError，
