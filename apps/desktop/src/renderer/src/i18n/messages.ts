@@ -1033,12 +1033,7 @@ const zhCN: MessageTree = {
     },
     // 项目成员：标题栏成员头像、成员卡片、成员工作记录（见 design/project-members-plan.html）
     member: {
-      createdBy: '由 {owner} 创建 · 使用 {owner} 的设定',
-      fromRole: '来自角色：{role}',
-      noFolder: '不限',
-      followOwner: '跟随 {owner}',
       working: '工作中',
-      idle: '空闲',
       doingUnknown: '处理中',
       recentDone: '最近一次已完成',
       recentFailed: '最近一次未完成',
@@ -1046,7 +1041,8 @@ const zhCN: MessageTree = {
       neverTasked: '还没派过任务',
       viewLog: '打开对话',
       remove: '移除成员',
-      removeBusyTitle: '移除成员 {name}？',
+      removeTitle: '移除成员 {name}？',
+      removeMessage: '之后 {owner} 不会再派任务给它，工作记录会保留。',
       removeBusyMessage: '{name} 正在工作，移除后当前任务会中止。之后 {owner} 不会再派任务给它，工作记录会保留。',
       back: '返回 {owner}',
       taskFrom: '派来的任务',
@@ -1055,6 +1051,11 @@ const zhCN: MessageTree = {
       syncNote: '会同步告知 {owner}',
       empty: '{name} 还没有收到任务，也可以直接跟它说。',
       mentionHint: '加入本对话，由 {owner} 派活',
+      // @ 联想：已是本对话成员的标签；「新建成员」（写入 @新成员，后面写需求）
+      tag: '成员',
+      newMember: '新建成员',
+      newMemberDesc: '描述职责，由 {owner} 创建；仅参与当前对话，不作为全局角色',
+      newToken: '新成员',
       // 成员在等用户处理（主对话输入框上方的通知行）
       waitAsk: '{name} 在等你回答',
       waitPlan: '{name} 提交了计划，等你批准',
@@ -1064,10 +1065,17 @@ const zhCN: MessageTree = {
       waitReview: '查看',
       waitHandle: '处理',
       waitCollapse: '收起',
-      waiting: '{name} 在等你处理',
+      waitShort: '在等你处理',
+      count: '{n} 位成员',
+      countOne: '1 位成员',
       // 左侧对话行的成员徽标（悬停提示）
       threadBadge: '{n} 个成员：{names}',
-      nameSep: '、'
+      nameSep: '、',
+      // 等主角色汇总时对话末尾的进度提示（一位写名字，多位只写人数；悬停逐个列出状态）
+      progressOne: '{name}已完成',
+      progressMany: '{n} 位成员已完成',
+      progressStDone: '已完成',
+      progressHint: '都完成后由 {owner} 汇总'
     },
     // 检查点回滚面板（/rewind、双击 Esc、聊天区右键「回到此处」）
     rewind: {
@@ -2377,12 +2385,7 @@ const en: MessageTree = {
       mentionTitle: 'Bring in a member'
     },
     member: {
-      createdBy: 'Created by {owner} · uses {owner}’s settings',
-      fromRole: 'From role: {role}',
-      noFolder: 'Any',
-      followOwner: 'follows {owner}',
       working: 'Working',
-      idle: 'Idle',
       doingUnknown: 'a task',
       recentDone: 'Last task done',
       recentFailed: 'Last task unfinished',
@@ -2390,7 +2393,8 @@ const en: MessageTree = {
       neverTasked: 'No tasks yet',
       viewLog: 'Open chat',
       remove: 'Remove member',
-      removeBusyTitle: 'Remove member {name}?',
+      removeTitle: 'Remove member {name}?',
+      removeMessage: '{owner} won’t assign it more work, and its work log is kept.',
       removeBusyMessage: '{name} is working; removing it stops the current task. {owner} won’t assign it more work, and its work log is kept.',
       back: 'Back to {owner}',
       taskFrom: 'Task from',
@@ -2399,6 +2403,10 @@ const en: MessageTree = {
       syncNote: 'shared with {owner}',
       empty: '{name} hasn’t received any tasks yet — you can also talk to it directly.',
       mentionHint: 'Join this chat; {owner} assigns the work',
+      tag: 'Member',
+      newMember: 'New member',
+      newMemberDesc: 'Describe the responsibilities and {owner} creates it; scoped to this conversation, not a global role',
+      newToken: 'NewMember',
       waitAsk: '{name} is waiting for your answer',
       waitPlan: '{name} submitted a plan for your approval',
       waitMount: '{name} needs you to pick a folder',
@@ -2407,9 +2415,15 @@ const en: MessageTree = {
       waitReview: 'Review',
       waitHandle: 'Handle',
       waitCollapse: 'Collapse',
-      waiting: '{name} is waiting for you',
+      waitShort: 'Needs you',
+      count: '{n} members',
+      countOne: '1 member',
       threadBadge: 'Members ({n}): {names}',
-      nameSep: ', '
+      nameSep: ', ',
+      progressOne: '{name} finished',
+      progressMany: '{n} members finished',
+      progressStDone: 'Finished',
+      progressHint: '{owner} will summarize once everyone is done'
     },
     rewind: {
       title: 'Rewind to checkpoint',

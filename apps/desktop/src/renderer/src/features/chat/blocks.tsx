@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   Square,
   Sparkles,
@@ -195,6 +195,24 @@ function shortPath(p: string): string {
  * 只有 path 缩成「父目录/文件名」，命令、正则、URL 原样展示，超长时由 CSS 单行省略号截断尾部。
  * 未知工具（如 MCP 工具）显示工具名：动词「已调用」本身说明不了调了什么。
  */
+const MEMBER_TOOLS = new Set(['create_member', 'member_send', 'member_stop', 'member_status'])
+
+/** 成员工具的对象：成员名（派任务另带任务标题）。不是成员工具、或没写成员（查看全部成员的状态）时为 null。 */
+function memberObject(name: string, args: unknown): { who: string; task: string } | null {
+  if (!MEMBER_TOOLS.has(name)) return null
+  const a = (args ?? {}) as { name?: unknown; member?: unknown; task?: unknown }
+  const who = String((name === 'create_member' ? a.name : a.member) ?? '').trim()
+  if (!who) return null
+  const task = name === 'member_send' && typeof a.task === 'string' ? a.task.trim() : ''
+  return { who, task }
+}
+
+/**
+ * 成员名前的小头像（派任务、建成员等步骤）：由对话外壳按名字提供（主对话的成员名单，含已移除的）。没提供（成员对话、
+ * 后台任务面板等）或认不出这个名字时返回 null，只写名字。
+ */
+export const MemberFaceContext = createContext<((name: string) => React.ReactNode) | null>(null)
+
 function flowObject(name: string, args: unknown): { text: string; full: string } | null {
   if (!TOOL_META[name]) return { text: name, full: name }
   if (name === 'browser') return browserObject(args)
@@ -203,14 +221,12 @@ function flowObject(name: string, args: unknown): { text: string; full: string }
     return typeof skill === 'string' && skill.trim() ? { text: skill.trim(), full: skill.trim() } : null
   }
   // 成员工具：对象写成员名（派任务另带任务标题）；查看主对话没有对象。
-  if (name === 'create_member' || name === 'member_send' || name === 'member_stop' || name === 'member_status') {
-    const a = (args ?? {}) as { name?: unknown; member?: unknown; task?: unknown }
-    const who = String((name === 'create_member' ? a.name : a.member) ?? '').trim()
-    if (!who) return null
-    const task = name === 'member_send' && typeof a.task === 'string' ? a.task.trim() : ''
-    const text = task ? `${who} · ${task}` : who
+  const member = memberObject(name, args)
+  if (member) {
+    const text = member.task ? `${member.who} · ${member.task}` : member.who
     return { text, full: text }
   }
+  if (MEMBER_TOOLS.has(name)) return null
   if (name === 'read_main') return null
   if (args && typeof args === 'object') {
     const o = args as { command?: unknown; path?: unknown; pattern?: unknown; url?: unknown }
@@ -1357,8 +1373,10 @@ function stepIcon(step: ToolStep, size: number): React.JSX.Element {
  */
 export function ToolText({ step }: { step: ToolStep }): React.JSX.Element {
   const { t } = useI18n()
+  const faceOf = useContext(MemberFaceContext)
   const key = verbKey(step.name, step.args)
   const obj = flowObject(step.name, step.args)
+  const member = memberObject(step.name, step.args)
   const reason = failReason(step, t)
   let verb: React.JSX.Element
   let tail: React.JSX.Element | null = null
@@ -1375,7 +1393,16 @@ export function ToolText({ step }: { step: ToolStep }): React.JSX.Element {
   return (
     <span className="tl__text tl__text--tool">
       {verb}
-      {obj && <code className="tl__obj">{obj.text}</code>}
+      {/* 成员名不是代码：正文字体，前面带成员的小头像，任务标题灰字跟在后面。 */}
+      {member ? (
+        <span className="tl__obj tl__obj--member">
+          {faceOf?.(member.who)}
+          <span className="tl__who">{member.who}</span>
+          {member.task && <span className="tl__task"> · {member.task}</span>}
+        </span>
+      ) : (
+        obj && <code className="tl__obj">{obj.text}</code>
+      )}
       {tail}
     </span>
   )

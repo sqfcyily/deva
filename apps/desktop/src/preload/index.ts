@@ -819,8 +819,15 @@ export type ChatStreamEvent =
   | { type: 'inserts_returned'; text: string }
   /** durationMs：本轮耗时（扣除等用户处置的时间）。 */
   | { type: 'done'; stopReason: string; durationMs?: number }
-  /** 成员交差已以主角色的名义记进主对话（会话级，turnId 为空串）：从主进程重载该对话。 */
+  /** 成员交差已记进主对话、以成员的身份显示（会话级，turnId 为空串）：从主进程重载该对话。 */
   | { type: 'member_report' }
+  /** 主对话里要汇总的成员派发组的进度（会话级，turnId 为空串）：空数组 = 没有在等的组。 */
+  | { type: 'member_progress'; groups: MemberProgressGroup[] }
+
+/** 要主角色汇总的一组派发的进度：已交差的在前（按交差先后），还在做的（running）在后；sid 是成员会话 id。 */
+export type MemberProgressGroup = {
+  items: { sid: string; name: string; status: 'done' | 'failed' | 'stopped' | 'running' }[]
+}
 
 /** IM 机器人（远程通道）状态，与 services/remote/index.ts 的 BotView / ScanEvent 对齐。 */
 export type BotPlatform = 'feishu' | 'telegram'

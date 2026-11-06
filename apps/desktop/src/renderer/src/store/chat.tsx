@@ -11,6 +11,7 @@ import {
 import type {
   EffortLevel,
   MemberMeta,
+  MemberProgressGroup,
   MemberTask,
   TaskCreateInput,
   ResolveAutotaskResult,
@@ -359,6 +360,7 @@ type StreamEvent =
   | { type: 'todo_done'; id: string; title: string; items: TodoItem[] }
   | { type: 'mount_request'; key: string; tool: string; path: string; member?: string }
   | { type: 'member_report' }
+  | { type: 'member_progress'; groups: MemberProgressGroup[] }
   | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   | { type: 'reconnecting'; attempt: number; max: number }
   | {
@@ -460,8 +462,6 @@ function resolveProposalCard(
 
 interface ChatContextValue {
   sessions: SessionMeta[]
-  /** 成员会话的元信息（不进左侧列表；成员卡片据此显示它用的模型等）。 */
-  memberSessions: SessionMeta[]
   currentSessionId: string
   messages: ChatMessage[]
   streaming: boolean
@@ -584,6 +584,8 @@ interface ChatContextValue {
   insert: (text: string) => Promise<boolean>
   /** 当前会话待送达的插入消息（输入框上方的胶囊），按插入先后。 */
   pendingInserts: string[]
+  /** 当前（主）对话里还有成员在做、等主角色汇总的派发组（对话末尾的「前端、后端已完成」提示）。 */
+  memberProgress: MemberProgressGroup[]
   /** 撤回当前会话全部待送达的插入消息，返回合并后的原文（已送达或没有则为空串）。 */
   withdrawInserts: () => Promise<string>
   /**
@@ -604,6 +606,7 @@ function onInsertsReturned(cb: (sessionId: string, text: string) => void): () =>
   }
 }
 const NO_INSERTS: string[] = []
+const NO_PROGRESS: MemberProgressGroup[] = []
 
 /** 空闲态的流式状态（归零）。 */
 /**
@@ -1103,7 +1106,6 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   // 对外只给 sessions（不含成员会话）；打开成员对话时它的模型 / 思考等级 / 文件夹从这里读。
   const [allSessions, setSessions] = useState<SessionMeta[]>([])
   const sessions = useMemo(() => allSessions.filter((s) => !s.parentId), [allSessions])
-  const memberSessions = useMemo(() => allSessions.filter((s) => !!s.parentId), [allSessions])
   // 初始会话清单是否已载入完成。首次 listSessions resolve 后置 true 并恒保持；
   // 渲染层据此区分「加载中」与「确认无对话」，避免启动瞬间闪现空态。
   const [currentSessionId, setCurrentSessionId] = useState<string>('')
@@ -1250,6 +1252,18 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       if (!pending.length && !prev.has(sid)) return prev
       const map = new Map(prev)
       if (pending.length) map.set(sid, pending)
+      else map.delete(sid)
+      return map
+    })
+  }, [])
+
+  // 各主对话等汇总的成员进度（键=sessionId）：只由主进程的 member_progress 事件更新（派出、交差时都推）。
+  const [progressStates, setProgressStates] = useState<Map<string, MemberProgressGroup[]>>(() => new Map())
+  const setProgressState = useCallback((sid: string, groups: MemberProgressGroup[]): void => {
+    setProgressStates((prev) => {
+      if (!groups.length && !prev.has(sid)) return prev
+      const map = new Map(prev)
+      if (groups.length) map.set(sid, groups)
       else map.delete(sid)
       return map
     })
@@ -1434,7 +1448,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       if (ev.type === 'interaction_resolved') dropPendingCard(sid, ev.key)
       if (ev.type === 'done') dropPendingCard(sid)
 
-      // 成员交差已以主角色的名义记进主对话（会话级，主对话空闲时才发）：同一条新回复，不在看就记未读；缓存着该对话
+      // 成员交差已记进主对话、以成员的身份显示（会话级，主对话空闲时才发）：同一条新回复，不在看就记未读；缓存着该对话
       // 就以主进程为准重载。正流式时（刚发出新一轮、主进程还没登记忙）等这一轮 done 时再重载。
       if (ev.type === 'member_report') {
         void refreshSessions()
@@ -1495,6 +1509,11 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 待送达的插入消息与退回的插入消息同样是会话级的：不论本层是否正流式该会话都要处理。
       if (ev.type === 'inserts') {
         setInsertState(sid, ev.pending)
+        return
+      }
+      // 成员进度同样是会话级的。
+      if (ev.type === 'member_progress') {
+        setProgressState(sid, ev.groups)
         return
       }
       if (ev.type === 'inserts_returned') {
@@ -1635,6 +1654,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     toast,
     setTodoState,
     setInsertState,
+    setProgressState,
     dropPendingCard
   ])
 
@@ -2285,7 +2305,6 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
     return {
       sessions,
-      memberSessions,
       currentSessionId,
       messages,
       streaming,
@@ -2319,19 +2338,20 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       removeMember,
       insert,
       pendingInserts: insertStates.get(currentSessionId) ?? NO_INSERTS,
+      memberProgress: progressStates.get(currentSessionId) ?? NO_PROGRESS,
       withdrawInserts,
       onInsertsReturned
     }
   }, [
     sessions,
     allSessions,
-    memberSessions,
     pendingCards,
     dropPendingCard,
     currentSessionId,
     todoStates,
     setTodoState,
     insertStates,
+    progressStates,
     messages,
     streaming,
     streamStatus,

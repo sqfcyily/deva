@@ -1836,6 +1836,40 @@ body.cf-resizing-y * {
   white-space: nowrap;
 }
 
+/*
+ * 等主角色汇总的成员进度（对话末尾居中，见 MemberProgressNotice）：外观同系统通知行 .cf-notify（灰底提醒），
+ * 左边是已完成成员的头像（叠放，最多 3 个，同技能「可用角色」），后面写「前端已完成」或「2 位成员已完成」。
+ */
+.cf-mprogress {
+  display: flex;
+  justify-content: center;
+}
+.cf-mprogress__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 3px 12px 3px 4px;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--fg-muted);
+}
+.cf-mprogress__pill.is-noface {
+  padding-left: 12px;
+}
+/* 头像之间的分隔圈用灰底色，叠在提醒的底色上 */
+.cf-mprogress__pill .cf-avstack {
+  --ring: var(--bg-inset);
+}
+.cf-mprogress__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 底部工作状态指示器（思考中/生成回答/等待作答…）：跳过头像列，与消息正文左缘对齐（同 .cf-msg 的 32px 头像 + 列间距） */
 .cf-msgs__inner > .chat__status {
   margin-left: calc(32px + var(--space-3));
@@ -1975,6 +2009,42 @@ body.cf-resizing-y * {
   font-family: var(--font-mono);
   font-size: 12.5px;
   font-weight: 600;
+}
+/* 「新建成员」的名字不是 @ 句柄，用正文字体 */
+.cf-slash__name.is-plain {
+  font-family: inherit;
+  font-size: 13px;
+}
+/* @ 联想里已是本对话成员：名字后一枚主题色小标签 */
+.cf-slash__tag {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+/* 「新建成员」：虚线圈加号代替头像（与 18px 头像同尺寸），高亮时转主题色 */
+.cf-slash__newface {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 50%;
+  color: var(--fg-subtle);
+}
+.cf-slash__item .cf-slash__newface svg {
+  color: inherit;
+}
+.cf-slash__item.is-on .cf-slash__newface {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .cf-slash__desc {
   flex: 1;
@@ -2299,6 +2369,40 @@ body.cf-resizing-y * {
 /* 开头会生效的 /指令（已启用技能、整条只有它的 /compact /rewind）：只上色，不加底色。 */
 .cf-slash-token {
   color: var(--accent);
+}
+/*
+ * @ 成员标签（输入框里的 MentionNode、气泡里的 MentionText 同一套 DOM）：头像 + 名字，无底色、不写 @，名字字号同正文。
+ * 20px 高、下沉 2px 时中线对齐相邻文字（对比稿 design/mention-chip.html 实测）。
+ */
+.cf-mention {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  margin: 0 1px;
+  vertical-align: -2px;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: inherit;
+  line-height: 20px;
+  cursor: default;
+}
+.cf-mention__face {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+/*
+ * 气泡里保留的 @：不占位、看不见，复制时仍带上。须脱离弹性布局——作为第一个弹性子项时，零高的它会决定整枚标签的
+ * 基线，标签因此下沉约 8px。
+ */
+.cf-mention__at {
+  position: absolute;
+  left: 0;
+  font-size: 0;
 }
 .cf-box__bar {
   display: flex;
@@ -4618,30 +4722,7 @@ a.bots-btn {
   min-width: 0;
   -webkit-app-region: no-drag;
 }
-/* 头像默认叠放（同技能「可用角色」的头像堆叠：后一个压在前一个上面，错开 8px，周围一圈底色作分隔）；悬停展开成间距 6px（要大于两侧光圈 2.5px 之和，
-   悬停的灰圈才不会压到打开的蓝圈上），离开收回，卡片开着时保持展开（.is-expanded） */
-.cf-members__stack {
-  display: flex;
-  align-items: center;
-  padding: 3px 2px;
-}
-.cf-members__stack .cf-members__ava {
-  position: relative;
-  box-shadow: 0 0 0 2px var(--bg);
-  transition:
-    margin-left 0.18s ease,
-    box-shadow 0.12s ease;
-}
-.cf-members__stack .cf-members__ava + .cf-members__ava {
-  margin-left: -8px;
-}
-.cf-members.is-expanded .cf-members__ava {
-  box-shadow: none;
-}
-.cf-members.is-expanded .cf-members__ava + .cf-members__ava {
-  margin-left: 6px;
-}
-/* 成员卡片开着时，窗口拖动区临时改成可点击：拖动区上的点击页面收不到，不这样点标题栏卡片不会收起 */
+/* 成员列表开着时，窗口拖动区临时改成可点击：拖动区上的点击页面收不到，不这样点标题栏列表不会收起 */
 body.cf-pop-open,
 body.cf-pop-open * {
   -webkit-app-region: no-drag !important;
@@ -4653,78 +4734,198 @@ body.cf-pop-open * {
   margin: 0 8px 0 2px;
   background: var(--border);
 }
-.cf-members__ava {
+/* 标题栏的成员入口「👥 N」（对比稿 design/member-entry.html 方案 A）：安静的无框按钮，图标同左侧对话列表的成员徽标；
+   不亮状态点（尽量不吸引注意，等你处理的事在输入框上方另有一行）。点开时主题色浅底 */
+.cf-members__entry {
   flex: none;
-  display: grid;
-  place-items: center;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
   border: none;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius);
   background: transparent;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
   cursor: pointer;
 }
-.cf-members.is-expanded .cf-members__ava:hover {
-  box-shadow:
-    0 0 0 1px var(--bg),
-    0 0 0 2.5px var(--border-strong, var(--border));
+.cf-members__entry:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
-.cf-members.is-expanded .cf-members__ava.is-open,
-.cf-members.is-expanded .cf-members__ava.is-open:hover {
-  box-shadow:
-    0 0 0 1px var(--bg),
-    0 0 0 2.5px var(--accent);
+.cf-members__entry.is-open {
+  background: var(--accent-tint);
+  color: var(--accent);
 }
-
-/* 成员卡片：头像下方弹出（对比稿 design/member-card.html 方案 D + 图标行） */
-.cf-mcard {
+/* 成员列表：入口下方弹出。每行头像、名字（+ 状态签），第二行任务；不写「几位工作中」之类的汇总 */
+.cf-members__dd {
   position: absolute;
   top: calc(100% + 10px);
   z-index: 60;
-  width: 300px;
+  width: 320px;
+  max-height: min(480px, 70vh);
+  overflow-y: auto;
+  padding: 5px;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: var(--bg-elevated);
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.16);
-  font-size: 12.5px;
-  overflow: hidden;
   cursor: default;
   animation: cf-mcard-in 0.14s ease;
 }
-:root[data-theme='dark'] .cf-mcard {
+:root[data-theme='dark'] .cf-members__dd {
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.6);
 }
+/* 列表顶部一行「N 位成员」（只写人数，不写几位工作中） */
+.cf-members__head {
+  padding: 6px 9px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+/* 一位成员：点整行切到它的对话；行尾「移除成员」平时隐藏，悬停（或键盘聚焦）才出现，悬停变红 */
+.cf-members__row {
+  display: flex;
+  align-items: center;
+  border-radius: 9px;
+}
+.cf-members__row:hover {
+  background: var(--bg-hover);
+}
+.cf-members__open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px 7px 7px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.cf-members__del {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: 6px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+  opacity: 0;
+}
+.cf-members__row:hover .cf-members__del,
+.cf-members__del:focus-visible {
+  opacity: 1;
+}
+.cf-members__del:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.cf-members__main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.cf-members__line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.cf-members__name {
+  flex: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+.cf-members__sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.cf-members__sub > svg {
+  flex: none;
+}
+.cf-members__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-members__time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.cf-members__now {
+  color: var(--accent);
+}
+/* 最近一次已完成：灰色任务图标（不用绿色对勾，少吸引注意） */
+.cf-members__task {
+  color: var(--fg-subtle);
+}
+.cf-members__bad {
+  color: var(--warning);
+}
+/* 名字后的状态签：只有「在等你处理」（红色）；工作中不加标签，第二行已有转圈图标 */
+.cf-members__state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+}
+.cf-members__state.is-wait {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+/* 对话里成员名前的小头像（执行步骤里的「派给 前端」等、交差回复的标题行）：和名字同一行，随「文字大小」缩放 */
+.cf-inface {
+  display: inline-block;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.cf-inface .cf-ava {
+  --sz: calc(16px * var(--cs, 1));
+  /* 头像下沿与汉字底部对齐，居中会显得偏高 */
+  top: -1px;
+}
+/* 成员交差回复的标题行：「前端已完成：任务」单独一行加粗，前面是成员的小头像；下面是成员的结论原文 */
+.cf-mreport {
+  margin-bottom: var(--space-1);
+  font-size: calc(14px * var(--cs, 1));
+  line-height: 1.65;
+  font-weight: 600;
+  color: var(--fg);
+}
+.cf-mreport .cf-inface .cf-ava {
+  --sz: calc(18px * var(--cs, 1));
+}
+
+/* 弹出层出现：轻微下移淡入（成员列表用） */
 @keyframes cf-mcard-in {
   from {
     opacity: 0;
     transform: translateY(-4px);
   }
 }
-.cf-mcard__top {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 16px 12px;
-}
-.cf-mcard__id {
-  min-width: 0;
-  flex: 1;
-}
-.cf-mcard__line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.cf-mcard__name {
-  min-width: 0;
-  font-size: 15.5px;
-  font-weight: 700;
-  color: var(--fg);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* 状态胶囊：空闲灰点；工作中主题色、圆点闪动 */
+/* 成员对话顶栏的状态胶囊（工作中才显示）：主题色、圆点闪动 */
 .cf-mcard__pill {
   flex: none;
   display: inline-flex;
@@ -4757,116 +4958,6 @@ body.cf-pop-open * {
   50% {
     opacity: 0.35;
   }
-}
-.cf-mcard__origin {
-  margin-top: 3px;
-  font-size: 11.5px;
-  color: var(--fg-subtle);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* 图标行：文件夹 / 职责 / 模型 / 正在做或最近一次，同一种写法，不加框不加色底 */
-.cf-mcard__rows {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 0 16px 14px;
-}
-.cf-mcard__row {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  min-width: 0;
-  line-height: 1.5;
-  color: var(--fg);
-}
-.cf-mcard__row > svg {
-  flex: none;
-  margin-top: 2px;
-  color: var(--fg-subtle);
-}
-.cf-mcard__row > span {
-  min-width: 0;
-  word-break: break-word;
-}
-/* 文件夹、职责只占一行，超出省略（完整内容在悬停提示里） */
-.cf-mcard__row.is-single > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.cf-mcard__row.is-now > svg {
-  color: var(--accent);
-}
-.cf-mcard__row.is-recent > svg {
-  color: var(--success);
-}
-.cf-mcard__row.is-recent.is-bad > svg {
-  color: var(--warning);
-}
-.cf-mcard__row.is-muted {
-  color: var(--fg-subtle);
-}
-.cf-mcard__mono {
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-.cf-mcard__hint {
-  margin-left: 6px;
-  font-size: 11.5px;
-  color: var(--fg-subtle);
-  font-variant-numeric: tabular-nums;
-}
-/* 任务一行：用时 / 时间紧跟标题（同模型行的「跟随 X」）；标题超长时省略标题，时间不被挤掉 */
-.cf-mcard__taskline {
-  display: flex;
-  align-items: baseline;
-  min-width: 0;
-}
-.cf-mcard__task {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.cf-mcard__taskline > .cf-mcard__hint {
-  flex: none;
-}
-/* 底部：图标 + 文字的两枚按钮分在两边（打开对话在左、移除成员在右），不分格；移除悬停才变红 */
-.cf-mcard__foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-}
-.cf-mcard__btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 8px;
-  border: none;
-  border-radius: var(--radius);
-  background: transparent;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-.cf-mcard__btn:hover {
-  background: var(--bg-hover);
-}
-.cf-mcard__btn.is-primary {
-  color: var(--accent);
-  font-weight: 600;
-}
-.cf-mcard__btn.is-primary:hover {
-  background: var(--accent-tint);
-}
-.cf-mcard__btn.is-danger:hover {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
 /* 成员对话的标题栏：「← 主角色」返回，其后是成员头像、名字与状态 */
@@ -4948,38 +5039,6 @@ body.cf-pop-open * {
   height: 0;
   margin-top: calc(-1 * var(--space-5));
   overflow: hidden;
-}
-
-/* 标题栏成员头像叠放超过 5 枚：最后一枚蒙上「+N」（同技能「可用角色」的 .cf-avstack__veil）。 */
-.cf-members__more {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  border-radius: var(--radius-full);
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
-
-/* 标题栏成员头像：在等你处理时右上角一枚红点。 */
-.cf-members__ava {
-  position: relative;
-}
-.cf-members__dot {
-  position: absolute;
-  top: -1px;
-  right: -1px;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  background: var(--danger);
-  box-shadow: 0 0 0 1.5px var(--bg);
-  pointer-events: none;
 }
 
 /* 输入框上方：成员在等你回答 / 批准 / 选文件夹，一条一行，点开当场处理。 */

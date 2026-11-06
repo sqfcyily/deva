@@ -1361,6 +1361,18 @@ button.tl__line:hover {
   /* 命令与路径要按原样显示：等宽字体的连字会把 => 画成 ⇒ */
   font-variant-ligatures: none;
 }
+/* 成员工具的对象（派给 前端 · 任务）：成员名用正文字体，前面是成员的小头像（.cf-inface），任务标题灰字 */
+.tl__obj--member {
+  font-family: inherit;
+  font-size: inherit;
+  font-variant-ligatures: normal;
+}
+.tl__who {
+  color: var(--fg);
+}
+.tl__task {
+  color: var(--fg-subtle);
+}
 .tl__extra {
   font-size: calc(12.5px * var(--cs, 1));
   color: var(--fg-subtle);

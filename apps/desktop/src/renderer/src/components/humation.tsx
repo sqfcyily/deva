@@ -211,6 +211,33 @@ export function resolveSpec(seed: string, spec?: AvatarSpec | null): Required<Av
   return { selections: json.selections, colors: json.colors, background: json.background }
 }
 
+const dataUriCache = new Map<string, string>()
+
+/**
+ * 头像的图片地址（data URI）：有自定义图就用它，否则按 seed + spec 生成（合并口径同 HumationFace）。
+ * 供放不了 React 组件的地方用（如输入框编辑器里的 @ 成员标签）；生成失败返回空串。
+ */
+export function avatarDataUri(seed: string, spec?: AvatarSpec | null, image?: string): string {
+  if (image) return image
+  const key = JSON.stringify([seed, spec ?? null])
+  const hit = dataUriCache.get(key)
+  if (hit) return hit
+  try {
+    const pal = seededPalette(seed)
+    const uri = createAvatar(humation1, {
+      seed,
+      selections: validSelections(spec?.selections),
+      colors: { ...pal.colors, ...(spec?.colors ?? {}) },
+      background: spec?.background || pal.background
+    }).toDataUri()
+    if (dataUriCache.size > 200) dataUriCache.clear()
+    dataUriCache.set(key, uri)
+    return uri
+  } catch {
+    return ''
+  }
+}
+
 /** 生成一枚随机头像的完整 spec（随机部件 + 精选随机配色）。 */
 export function randomizeSpec(): Required<AvatarSpec> {
   const base = createAvatar(humation1, { seed: Math.random().toString(36).slice(2) }).toJSON()

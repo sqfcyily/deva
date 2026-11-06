@@ -57,9 +57,11 @@ import {
   recentMainContext,
   resolveMemberFolder,
   rootLabel,
+  type MemberProgressGroup,
   type MemberRef,
   type MemberRunStatus
 } from './members'
+import { NEW_MEMBER_TOKENS } from '../../shared/mention'
 import { memoryPromptSection } from './memory'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
 import {
@@ -1200,9 +1202,14 @@ export type ChatStreamEvent =
   /** durationMs：本轮耗时（扣除等用户处置的时间），渲染层据此给工作过程折叠条显示「已处理 X」。 */
   | { type: 'done'; stopReason: StopReason; durationMs?: number }
   /**
-   * 成员交差已以主角色的名义记进主对话（会话级，空 turnId；见 commitMemberReports）：渲染层从主进程重载该对话。
+   * 成员交差已记进主对话、以成员的身份显示（会话级，空 turnId；见 commitMemberReports）：渲染层从主进程重载该对话。
    */
   | { type: 'member_report' }
+  /**
+   * 主对话里要汇总的成员派发组的进度（会话级，空 turnId；见 emitMemberProgress）：派出、交差时都发，
+   * 空数组 = 没有在等的组。渲染层据此在对话末尾显示「前端、后端已完成」。
+   */
+  | { type: 'member_progress'; groups: MemberProgressGroup[] }
 
 /**
  * 单个步骤因可重试错误（断网 / 空闲僵死 / 429 / 5xx）自动重连的最大次数。退避 1s→2s→4s… 封顶
@@ -1758,7 +1765,7 @@ function systemPrompt(
     '【决策与澄清】只在卡住时提问：需求确有歧义、存在多个各有取舍的可行方案需用户抉择、或缺少无法合理默认的关键信息，且用户的回答会改变你接下来的做法时，调用 ask_user 抛出一个或多个问题（每题可给候选项、可单选或多选，界面另有内置「自己输入」入口），用户在同一张卡片里一次性作答后回灌给你再继续。能自己查证的事实不要问；有合理默认的选择也不要问——选最合理的一项直接做，并在回复里说明你的选择。注意区分：ask_user 只用于征求决策/澄清；写入与执行本就无需授权，切勿用它去问「是否允许写入/执行」。',
     '【计划先行】只在以下情况先出计划：需求尚不明确；改动范围大（新功能、或牵动多个模块的较大改动）；存在多个各有取舍、会明显影响结果的方案；或用户明确要求先出计划。此时先用只读工具（read_file / list_dir / glob / grep / web_fetch，以及只做查询的 run_command）充分调研理解现状——调研面较大时（要翻多个目录、追多条调用链、或需摸清一整套既有约定）可先用 `run_subagent` 派发 `Plan` 子智能体在隔离上下文里完成调研并带回方案要点，再由你综合判断——然后调用 `exit_plan` 提交一份面向用户批准的完整实施计划（Markdown）；**在计划获批前不要写入文件，也不要执行有副作用的命令**；只做查询的命令可以执行（查版本、查环境变量是否已设置但不打印其值、查服务是否在运行等），借此核实计划依赖的运行环境、凭据、账号等前提，缺了什么在计划里写明，免得执行到一半才发现。提交前若仍有影响方案的未决问题（包括 Plan 子智能体结论末尾的「待确认项」），先用 ask_user 问清，得到答复后再提交；计划里不得留有待用户回答的问题，确需假设的写成「默认采用 X」，也不要用 ask_user 询问「计划是否可行」。用户批准后你直接按计划执行、无需再次征求授权；用户若选择继续完善，请依其回复（随结果附上，或在用户下一条消息里）回应、需要时调整后再重新提交，在收到回复前不要重复调用 exit_plan；用户若忽略计划，不要执行也不要重新提交。其余任务直接做、不必先出计划——包括目标明确、做法直观的常规改动（哪怕涉及几个文件），以及琐碎、单点、只读或答疑类任务。',
     '【任务清单】执行需要 3 步及以上的任务时（尤其是计划获批后开始执行、或用户一次交代了多件事），先用 `todo_write` 列出待办清单，界面会在输入框上方以进度胶囊实时显示给用户；执行中持续更新：同一时刻只保留一项 in_progress，做完一项立即标为 completed，发现新步骤随时补进清单。每次调用传完整清单。任务被暂停、用户转向别的事而不再进行当前清单时，调用 todo_write 传 cancel: true 取消它。单步、琐碎或纯答疑的任务不要建清单。',
-    '【项目成员】默认在本对话里完成：同一个项目分几块的工作，你自己做，或用 run_subagent 分头并行。只有同时满足两点才用 create_member 建成员：① 这块工作和其他部分差别大——在不同的目录或仓库、技术栈不同，或是不同的工作场景（如部署、测试、功能开发）；② 这块工作在本对话里会持续、反复地做，值得保留它自己的上下文。一次性的任务即使跨了几块，也用子智能体。用户明确要求时照做。成员分两种：你为分工建的成员（负责一块）和用户 @ 请来的协助者（名单里标「协助者」）。你为分工建过成员后，你是管理者：与某个成员负责范围相关的工作（读代码、搜索、查 git 记录、运行构建或测试、排查、验证、修改）一律用 member_send 交给它，不要自己先查一遍再派；新的、与现有成员都不相关的项目或工作块，直接新建成员负责（不必等它会反复做）。你自己只做管理：弄清用户要什么（需要时看需求单等外部资料）、派任务、回答进展、汇总各成员的结论（较早的结论被压缩成摘要、或要看谁在忙时，用 member_status 查看）、协调成员之间的配合；不读代码、不改文件、不跑命令，也不用子智能体代替成员做项目工作。不涉及项目文件的简短问答可以直接回答。协助者只是来帮忙的，不改变你的工作方式：你原来的工作照常自己做，只把明显属于它专长的事、或用户点名要它做的事用 member_send 交给它。用户明确要你改变分工（如「以后这块交给它」「你只管协调」）时照做。成员干活时你不必盯着：成员需要用户回答或批准时会直接问用户；成员完成后，系统会以你的名义在对话里回一条「某某已完成：任务」并附上成员的结论原文（不经过你），你的历史里也会有这条——派完任务简短说一句即可，不用复述派了什么，事后也不要再转述这些结论。需要你接着处理结果时（据此安排下一步、合并几个成员的结果、用户要你汇总），派任务时把 report_to_me 设为 true，完成后会唤醒你，由你回复用户。需要另一个成员配合改动的，由你派给那个成员。'
+    '【项目成员】默认在本对话里完成：同一个项目分几块的工作，你自己做，或用 run_subagent 分头并行。只有同时满足两点才用 create_member 建成员：① 这块工作和其他部分差别大——在不同的目录或仓库、技术栈不同，或是不同的工作场景（如部署、测试、功能开发）；② 这块工作在本对话里会持续、反复地做，值得保留它自己的上下文。一次性的任务即使跨了几块，也用子智能体。用户明确要求时照做。成员分两种：你为分工建的成员（负责一块）和用户 @ 请来的协助者（名单里标「协助者」）。你为分工建过成员后，你是管理者：与某个成员负责范围相关的工作（读代码、搜索、查 git 记录、运行构建或测试、排查、验证、修改）一律用 member_send 交给它，不要自己先查一遍再派；新的、与现有成员都不相关的项目或工作块，直接新建成员负责（不必等它会反复做）。你自己只做管理：弄清用户要什么（需要时看需求单等外部资料）、派任务、回答进展、汇总各成员的结论（较早的结论被压缩成摘要、或要看谁在忙时，用 member_status 查看）、协调成员之间的配合；不读代码、不改文件、不跑命令，也不用子智能体代替成员做项目工作。不涉及项目文件的简短问答可以直接回答。协助者只是来帮忙的，不改变你的工作方式：你原来的工作照常自己做，只把明显属于它专长的事、或用户点名要它做的事用 member_send 交给它。用户明确要你改变分工（如「以后这块交给它」「你只管协调」）时照做。成员干活时你不必盯着：成员需要用户回答或批准时会直接问用户；成员完成后会以自己的身份（头像和名字）在对话里直接回复用户（不经过你），你的历史里也会有这条——派完任务简短说一句即可，不用复述派了什么，事后也不要再转述这些结论。成员出错时用户看不到，系统会唤醒你处理：能补救就补救（换个做法再派一次，或改派），补救不了再告诉用户。需要你接着处理结果时（据此安排下一步、合并几个成员的结果、用户要你汇总），派任务时把 report_to_me 设为 true，完成后会唤醒你，由你回复用户。需要另一个成员配合改动的，由你派给那个成员。'
   ]
   // 渐进式披露：清单只有「名称 + 一句话描述」，任务匹配时模型再调用 skill 工具取完整指令。
   // 清单本身不写在这里而是随消息下发（见 skill-listing.ts）：装 / 删 / 改技能不改本段，提示缓存前缀稳定。
@@ -1839,7 +1846,7 @@ function memberSystemPrompt(p: {
     : '没有固定的工作目录；读写文件请使用**绝对路径**。'
   const skillsRoot = skillsDir()
   const lines = [
-    `你运行在 Deva 桌面应用中，是项目成员「${p.member.name}」，由主 Agent「${p.owner}」分派工作。你的任务大多由${p.owner}派来（消息以「【${p.owner}派来的任务】」开头，后面是任务说明）；你的最终回复就是结论，系统会以${p.owner}的名义原样转给用户（开头加一行「${p.member.name}已完成：任务」），${p.owner}也会看到。用户也可能直接在你的会话里和你说话（没有这个开头）：这时直接回应用户，你的回复同样会同步给${p.owner}。以下是你必须始终遵守的规范；你的身份、性格与行文风格由后文的「角色设定」决定。`,
+    `你运行在 Deva 桌面应用中，是项目成员「${p.member.name}」，由主 Agent「${p.owner}」分派工作。你的任务大多由${p.owner}派来（消息以「【${p.owner}派来的任务】」开头，后面是任务说明）；你的最终回复就是结论，会以你的身份（你的头像和名字）原样显示在主对话里给用户看，${p.owner}也会看到。用户也可能直接在你的会话里和你说话（没有这个开头）：这时直接回应用户，你的回复同样会同步给${p.owner}。以下是你必须始终遵守的规范；你的身份、性格与行文风格由后文的「角色设定」决定。`,
     `【职责】${p.member.duty || '（未写明）'}。负责的文件夹：${p.folder}。`,
     `【环境】${loc}`,
     `【工作方式】独立完成任务，按任务说明去做；说明里没交代清楚、需要更早的上下文时，用 read_main 往前翻主对话（用户与${p.owner}的对话）。任务说明里提到却没写清楚的内容（如「按刚才定的方案」「上面那个报错」），先用 read_main 把来龙去脉看明白再动手，不要猜；某一轮被截短了就按轮号读全文。拿不准的地方能选合理默认就照默认去做，并在结论里写明假设；只有卡住、且用户的回答会改变你接下来怎么做时，才用 ask_user 直接问用户（用户在主对话里回答，不经过${p.owner}）。改动大、方案有多种走法时，可以先用 exit_plan 提交计划请用户批准再动手。只改你负责的部分：需要别的部分配合改动时不要自己去改，在结论里写明需要谁改什么。`,
@@ -2452,13 +2459,62 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   >()
   /** 同一轮派出、要唤醒主智能体的几项里，已有交差（未被停止）却还在等其余几项的组（见 reportMemberTurn）。 */
   const memberGroupsWaiting = new Set<string>()
+  /**
+   * 要主智能体汇总的派发组里已交差的成员（键 = 组，即派出它们的主轮 id），按交差先后：主对话据此显示
+   * 「前端、后端已完成」的居中提示（见 emitMemberProgress）。组里没人还在做时整组删去，提示随之消失。
+   */
+  const memberGroupDone = new Map<string, { mainId: string; items: { sid: string; status: MemberRunStatus }[] }>()
 
-  /** 一次成员交差（见 commitMemberReports）：headline 是「前端已完成：任务」，conclusion 是成员的最终回复。 */
-  type MemberReport = { headline: string; conclusion: string }
+  /** 主对话里还有成员在做的汇总组：每组已交差的在前（按交差先后），还在做的在后。 */
+  function memberProgress(mainId: string): MemberProgressGroup[] {
+    const main = getSession(mainId)
+    if (!main) return []
+    const nameOf = (sid: string): string | undefined => main.members?.find((m) => m.sessionId === sid)?.name
+    const groups = new Map<string, MemberProgressGroup>()
+    for (const [g, rec] of memberGroupDone) {
+      if (rec.mainId !== mainId) continue
+      const items = rec.items.flatMap((i) => {
+        const name = nameOf(i.sid)
+        return name ? [{ sid: i.sid, name, status: i.status }] : []
+      })
+      groups.set(g, { items })
+    }
+    for (const [sid, d] of memberDispatches) {
+      if (!d.reportToMe || getSession(sid)?.parentId !== mainId) continue
+      const name = nameOf(sid)
+      if (!name) continue
+      const g = groups.get(d.group) ?? { items: [] }
+      g.items.push({ sid, name, status: 'running' })
+      groups.set(d.group, g)
+    }
+    return [...groups.values()].filter((g) => g.items.some((i) => i.status === 'running'))
+  }
+
+  /** 推送主对话的成员进度（会话级，空 turnId）；先删去已没人在做的组。 */
+  function emitMemberProgress(mainId: string): void {
+    const running = new Set([...memberDispatches.values()].filter((d) => d.reportToMe).map((d) => d.group))
+    for (const [g, rec] of memberGroupDone) if (rec.mainId === mainId && !running.has(g)) memberGroupDone.delete(g)
+    emit('', mainId, { type: 'member_progress', groups: memberProgress(mainId) })
+  }
+
+  /** 汇总组里一位成员交差（status 为 null：成员已被移除，只从组里拿掉）。 */
+  function noteMemberDone(mainId: string, group: string, sid: string, status: MemberRunStatus | null): void {
+    const rec = memberGroupDone.get(group) ?? { mainId, items: [] }
+    rec.items = rec.items.filter((i) => i.sid !== sid)
+    if (status) rec.items.push({ sid, status })
+    memberGroupDone.set(group, rec)
+    emitMemberProgress(mainId)
+  }
+
+  /**
+   * 一次成员交差（见 commitMemberReports）：name 是成员名，headline 是「前端已完成：任务」（只给模型看，界面上
+   * 画成该成员的回复、不显示这一行），conclusion 是成员的最终回复。
+   */
+  type MemberReport = { name: string; headline: string; conclusion: string }
   /** 主对话正忙时的成员交差：等主对话这一轮结束再记（不插在主智能体一轮的中间），见 commitMemberReports。 */
   const pendingMemberReports = new Map<string, MemberReport[]>()
 
-  /** 成员交差：以主角色的名义在主对话里回一条（主对话正忙则排队，等空闲再记）。 */
+  /** 成员交差：以成员的身份在主对话里回一条（主对话正忙则排队，等空闲再记）。 */
   function addMemberReport(mainId: string, report: MemberReport): void {
     const queue = pendingMemberReports.get(mainId)
     if (queue) queue.push(report)
@@ -2468,8 +2524,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
   /**
    * 主对话空闲时，把排队的成员交差记进主对话：每条是一轮——一条不显示的成员通知（轮的起点，交代给主智能体这是
-   * 系统代发的）+ 一条主角色的回复「前端已完成：任务」加成员的结论原文。不调用模型：主智能体此后的上下文与用户
-   * 看到的一致，用户问起时它知道结论；用户也不必去翻成员的对话。
+   * 系统代发的）+ 一条回复「前端已完成：任务」加成员的结论原文。界面上这条回复画成该成员说的话（成员的头像和名字，
+   * 不显示标题行，见渲染层 reportOf）。不调用模型：主智能体此后的上下文与用户看到的一致，用户问起时它知道结论；
+   * 用户也不必去翻成员的对话。
    */
   function commitMemberReports(mainId: string): void {
     const queue = pendingMemberReports.get(mainId)
@@ -2484,7 +2541,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         role: 'user',
         content:
           `${NOTIFY_MARKER}${r.headline}\n${MEMBER_NOTICE_TAG}\n` +
-          '（系统自动发送：成员交回了结论，系统已以你的名义把它原样转给用户，见你的下一条回复。不是用户发来的消息。）\n</成员通知>'
+          `（系统自动发送：成员「${r.name}」交回了结论，下一条就是它的原话，已以它自己的身份（头像和名字）直接显示给用户，不是你说的话。不是用户发来的消息。）\n</成员通知>`
       })
       main.messages.push({
         role: 'assistant',
@@ -2497,13 +2554,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     saveProject(mainId)
     emit('', mainId, { type: 'member_report' })
     publishSessionsChanged()
-    // 用户没在看 Deva 时同普通回复一样弹系统通知。
+    // 用户没在看 Deva 时同普通回复一样弹系统通知：标题是成员名（是它在说话），正文是它的回复。
     if (!shuttingDown) {
       const last = queue[queue.length - 1]
       notifyReplyDone(getWindow, {
         sessionId: mainId,
-        title: notifyTitle(mainId),
-        text: last.conclusion ? `${last.headline}\n${last.conclusion}` : last.headline
+        title: last.name,
+        text: last.conclusion || last.headline
       })
     }
   }
@@ -2700,21 +2757,30 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (!member.effortSet && main.effort) sub.effort = main.effort
     member.task = title
     saveProject(main.id)
+    const prevDispatch = memberDispatches.get(sub.id)
     memberDispatches.set(sub.id, { toolUseId, model, reportToMe, group })
+    // 同一组里再派给已交差的成员：它又在做了，从「已完成」里拿掉。
+    const groupDone = memberGroupDone.get(group)
+    if (groupDone) groupDone.items = groupDone.items.filter((i) => i.sid !== sub.id)
     publishSessionsChanged()
 
     if (busySessions.has(sub.id)) {
       const r = insertMessage({ sessionId: sub.id, text: content, model })
-      if (!r.ok)
+      if (!r.ok) {
+        // 没派出去：它手上那项任务的交差仍按原来的派发处理。
+        if (prevDispatch) memberDispatches.set(sub.id, prevDispatch)
+        else memberDispatches.delete(sub.id)
         return {
           content: `成员「${member.name}」正忙，暂时无法接收新任务，请等它完成后再派。`,
           summary: `「${member.name}」正忙`,
           isError: true
         }
+      }
+      emitMemberProgress(main.id)
       return {
         content: reportToMe
           ? `成员「${member.name}」正在处理上一项任务，这条已插入它当前的工作，完成后会唤醒你处理结果。`
-          : `成员「${member.name}」正在处理上一项任务，这条已插入它当前的工作，完成后系统会以你的名义把结论转给用户。`,
+          : `成员「${member.name}」正在处理上一项任务，这条已插入它当前的工作，完成后它会以自己的身份直接回复用户。`,
         summary: `已交给「${member.name}」`,
         isError: false
       }
@@ -2728,12 +2794,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     void runTurn(sub.id, turnId, model, null, 'member').catch((e) =>
       console.warn('[members] 成员回合异常：', (e as Error)?.message ?? e)
     )
+    emitMemberProgress(main.id)
     return {
       content:
         `已交给成员「${member.name}」，它在后台工作。` +
         (reportToMe
           ? '完成后系统会唤醒你处理结果；'
-          : '完成后系统会以你的名义把它的结论转给用户（不经过你，你不必转述）；') +
+          : '完成后它会以自己的身份在对话里直接回复用户（不经过你，你不必转述）；出错时系统会唤醒你处理；') +
         '在此之前不要等待、轮询或猜测它的结果，可以接着派其他成员、做别的事，或先简短回复用户（不用复述派了什么，界面上看得到）。',
       summary: `已交给「${member.name}」`,
       isError: false
@@ -2871,9 +2938,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   /**
-   * 成员会话一轮结束：结论记进主对话名单（最近一次）。派来的任务以主角色的名义在主对话里回一条「前端已完成：任务」
-   * 加结论原文（不调用模型，见 commitMemberReports）；派任务时设了 report_to_me 的改为以通知唤醒主智能体处理
-   *（同一轮派出的几项等最后一个交差再唤醒一次）。用户直接跟成员说的话以不唤醒的通知同步给主智能体。
+   * 成员会话一轮结束：结论记进主对话名单（最近一次）。派来的任务正常完成时，成员以自己的身份在主对话里回一条
+   * 结论原文（不调用模型，见 commitMemberReports）；出错时不显示，唤醒主智能体处理；被停止的不显示也不唤醒。
+   * 派任务时设了 report_to_me 的改为以通知唤醒主智能体处理（同一轮派出的几项等最后一个交差再唤醒一次）。
+   * 用户直接跟成员说的话以不唤醒的通知同步给主智能体。
    */
   function reportMemberTurn(
     sub: StoredSession,
@@ -2898,6 +2966,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
     saveProject(main.id)
     publishSessionsChanged()
+    // 要汇总的组：更新主对话的进度提示（最后一位交差时提示消失，随后唤醒主智能体汇总）。
+    if (dispatch?.reportToMe) noteMemberDone(main.id, dispatch.group, sub.id, ref.removed ? null : status)
     if (ref.removed) return
     // 不是派来的任务：用户直接在成员会话里说的话。同步给主智能体，但不为此唤醒它（用户正在跟成员说，
     // 主对话不必插话），随它下一次开口时一并看到。
@@ -2937,16 +3007,37 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         memberGroupsWaiting.delete(dispatch.group)
       }
     }
-    // 不唤醒主智能体的：以主角色的名义直接回一条「前端已完成：任务」+ 结论原文（不调用模型，见 commitMemberReports）。
     if (!wake && !deferred) {
-      const en = isEn()
-      const word = en
-        ? status === 'done' ? 'finished' : status === 'stopped' ? 'stopped' : 'did not finish'
-        : label
-      const task = ref.task ?? ''
-      addMemberReport(main.id, {
-        headline: en ? `${ref.name} ${word}${task ? `: ${task}` : ''}` : `${ref.name}${word}${task ? `：${task}` : ''}`,
-        conclusion: text.trim() || (error ? (en ? `Error: ${error}` : `执行出错：${error}`) : '')
+      // 不要汇总、正常交回：成员以自己的身份（头像和名字）在主对话里回复（不调用模型，见 commitMemberReports）。
+      if (status === 'done') {
+        const task = ref.task ?? ''
+        addMemberReport(main.id, {
+          name: ref.name,
+          headline: isEn()
+            ? `${ref.name} finished${task ? `: ${task}` : ''}`
+            : `${ref.name}已完成${task ? `：${task}` : ''}`,
+          conclusion: text.trim()
+        })
+        return
+      }
+      // 出错：主对话里不显示，唤醒主智能体处理（补救或告诉用户）。被停止的（主智能体或用户叫停的）既不显示
+      // 也不唤醒，随主智能体下一次开口一并告诉它。
+      enqueueNotice(main.id, {
+        toolUseId: dispatch.toolUseId,
+        headline: `成员「${ref.name}」${label}${ref.task ? `：${ref.task}` : ''}`,
+        body: [
+          MEMBER_NOTICE_TAG,
+          `成员：${ref.name}`,
+          ...(ref.task ? [`任务：${ref.task}`] : []),
+          `状态：${label}${status === 'failed' && error ? `（${error}）` : ''}`,
+          ...(text.trim() ? ['已有的结论：', text.trim()] : []),
+          status === 'failed'
+            ? '用户看不到这次出错。请你处理：能补救就补救（如换个做法再用 member_send 派一次，或改派给别的成员），补救不了再简短告诉用户原因和你的建议。'
+            : '这项任务已被停止，用户没有看到它的结论；用户问起或需要时再处理。',
+          '</成员通知>'
+        ].join('\n'),
+        wake: status === 'failed',
+        model: dispatch.model
       })
       return
     }
@@ -2990,7 +3081,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       if (typeof r === 'string') full.push(p.name)
       else added.push(r)
     }
-    if (!named.length && !added.length && !full.length) return null
+    // 「@新成员」（@ 联想里的「新建成员」，见 shared/mention.ts）：请主智能体按用户写的需求建一位成员。
+    // 有成员或角色正好叫这个名字时，按点名处理。
+    const newTokens = NEW_MEMBER_TOKENS.filter(
+      (tk) => has(tk) && !named.some((m) => m.name === tk) && !roles.some((p) => p.name === tk)
+    )
+    if (!named.length && !added.length && !full.length && !newTokens.length) return null
     if (added.length) publishSessionsChanged()
     const mainRoot = main.focusRoot ?? null
     const mentioned = [...added.map((a) => a.ref), ...named]
@@ -2999,8 +3095,19 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     let rest = text
     for (const m of mentioned) rest = rest.split(`@${m.name}`).join('')
     for (const n of full) rest = rest.split(`@${n}`).join('')
+    for (const tk of newTokens) rest = rest.split(`@${tk}`).join('')
     const onlyMention = !rest.replace(/[\s\p{P}\p{S}]/gu, '')
-    const lines = ['（系统附注：用户在这条消息里 @ 了成员。）']
+    const lines = [
+      mentioned.length || full.length
+        ? '（系统附注：用户在这条消息里 @ 了成员。）'
+        : '（系统附注：用户在这条消息里选了「新建成员」。）'
+    ]
+    if (newTokens.length)
+      lines.push(
+        onlyMention
+          ? `- 用户选了「新建成员」（消息里的「@${newTokens[0]}」），但没写需求：简短问用户要新成员负责什么（能给选项就给选项），先不要建。`
+          : `- 用户要新建一位成员（消息里的「@${newTokens[0]}」，其余是需求）：按需求用 create_member 建一位成员——名字、职责、负责的文件夹由你按需求定；需求里没说清文件夹、这块工作又需要文件夹时，传 pick_folder 请用户选。这是用户明确要求，不用再判断值不值得建成员。新成员只在本对话中协助工作，不是全局角色。需求里有要它马上做的事，建好后用 member_send 交给它；没有就简短告诉用户已建好、负责什么。`
+      )
     for (const a of added)
       lines.push(
         a.restored
@@ -3011,7 +3118,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       lines.push(
         onlyMention
           ? `- 用户只是 @ 了${targets}，没有交代要做的事：不要给它派任务，简短告诉用户已加入即可。`
-          : `- 这条消息里如果有要交给${targets}做的事，用 member_send 交给它，不要自己代做（它完成后系统会以你的名义把结论转给用户，派完简短回一句即可）；如果只是把它加进来、没有具体要求（如「把你加进来」），就不要派任务，简短告诉用户已加入即可。`
+          : `- 这条消息里如果有要交给${targets}做的事，用 member_send 交给它，不要自己代做（它完成后会以自己的身份直接回复用户，派完简短回一句即可）；如果只是把它加进来、没有具体要求（如「把你加进来」），就不要派任务，简短告诉用户已加入即可。`
       )
     if (full.length)
       lines.push(
@@ -4702,9 +4809,24 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         endReason !== 'error' &&
         !shuttingDown &&
         (pendingInserts.get(sessionId)?.length ?? 0) > 0
+      // 一件事只提醒一次：本轮派出的成员还在做（结论或汇总到了再提醒）、已有要唤醒的通知（马上接着汇总）、
+      // 有排着的成员交差（记进对话时自带提醒）——这一轮结束都不提醒。出错照常提醒。
+      const awaitsFollowUp =
+        endReason !== 'error' &&
+        ([...memberDispatches.values()].some((d) => d.group === turnId) ||
+          (pendingNotices.get(sessionId)?.some((n) => n.wake) ?? false) ||
+          (pendingMemberReports.get(sessionId)?.length ?? 0) > 0)
       // 用户没在看 Deva 时弹系统通知提醒回复已完成。不提醒：手机端发起的（回复已推到手机）、定时任务（调度器
       // 按任务另发通知）、用户按了停止的、退出途中被中止的、马上接着下一轮的。
-      if (endReason !== 'aborted' && !fromRemote && !unattended && !isMember && !shuttingDown && !continues)
+      if (
+        endReason !== 'aborted' &&
+        !fromRemote &&
+        !unattended &&
+        !isMember &&
+        !shuttingDown &&
+        !continues &&
+        !awaitsFollowUp
+      )
         notifyReplyDone(getWindow, {
           sessionId,
           title: notifyTitle(sessionId),
@@ -5228,6 +5350,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     removeSessionCheckpoints(sessionId)
     removeSessionSubagents(sessionId)
     memberDispatches.delete(sessionId)
+    for (const [g, rec] of memberGroupDone) if (rec.mainId === sessionId) memberGroupDone.delete(g)
   }
 
   // 删除某会话（含会话级授权）。id 全局唯一 → 按 id 删。主对话连同它的成员会话一并删除。
