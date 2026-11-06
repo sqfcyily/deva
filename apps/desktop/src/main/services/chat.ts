@@ -169,6 +169,7 @@ import {
   type CompactModelConfig,
   type CompactStatus
 } from './compaction'
+import { clearStaleToolResults } from './tool-results'
 
 /**
  * 会话编排（Agent 主循环）。
@@ -4325,7 +4326,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           ? await prefetched
           : isMcpTool(tc.name)
             ? offeredTools.has(tc.name)
-              ? await dispatchMcpTool(tc.name, tc.args, ctx.signal)
+              ? await dispatchMcpTool(tc.name, tc.args, ctx.signal, ctx.sessionId)
               : {
                   content: `MCP 工具「${tc.name}」在当前对话中不可用（没有提供给这个角色，或服务已断开），不要再调用。`,
                   summary: '工具不可用',
@@ -4532,6 +4533,17 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const persona = getPersona(rolePersonaId)
     const turnModel = resolveModelRef(session.model, config)
 
+    // 提示缓存已过期：先把较早的大块工具结果换成占位（原文存文件，不调模型）。缓存反正要重建，此时改写历史
+    // 不多花钱；缓存还热时不动（见 tool-results.ts）。清掉的往往足以让下面的摘要压缩不必发生。
+    try {
+      const cleared = clearStaleToolResults(session, turnModel)
+      if (cleared)
+        console.info(`[context] 缓存已过期，清理了 ${cleared.cleared} 个较早的工具结果（约 ${cleared.tokens} token）`)
+    } catch (e) {
+      /* 清理失败（极少）：历史可能只改了一部分，均为合法内容，本轮照常 */
+      console.warn('[context] 清理旧工具结果异常：', (e as Error)?.message ?? e)
+    }
+
     // 自动压缩：接近上下文窗口时，先把较早历史摘要替换，再进入本轮（一轮进行中另有逐步检查，见 compact）。
     // 失败 / 无需压缩都发事件供渲染层弱提示，且绝不阻断本轮（宁可这一轮不压也要照常回答）。
     if (!controller.signal.aborted && needsCompaction(session, turnModel)) {
@@ -4716,6 +4728,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           if (n > 0) lastInput = n
           lastCacheRead = read
           lastCacheWrite = write
+          // 缓存最后一次被用到的时刻：下一轮据此判断缓存是否已过期（随本轮收尾落盘）。
+          session.lastRequestAt = Date.now()
         },
         // ask_user 答复 / 工具摘要 → 展示边车（按 toolUseId），供重开还原问答卡与工具卡摘要。
         // 只挂主轮：子智能体的嵌套调用不传这两个回调，其工具/问询不会污染父对话边车。

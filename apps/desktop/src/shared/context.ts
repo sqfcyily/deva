@@ -170,3 +170,26 @@ export function parseContextLimit(body: string): number | undefined {
   }
   return undefined
 }
+
+/** 拉丁文字等按约 3.5 字符 ≈ 1 token 估算。 */
+const CHARS_PER_TOKEN = 3.5
+
+/** 中日韩文字、全角符号：一字约 1 token（各家分词器在 0.6~1.5 之间，取 1 偏保守）。 */
+function isCjk(c: number): boolean {
+  return (
+    (c >= 0x2e80 && c <= 0x9fff) || // 部首、标点、假名、汉字
+    (c >= 0xac00 && c <= 0xd7af) || // 韩文
+    (c >= 0xf900 && c <= 0xfaff) || // 兼容汉字
+    (c >= 0xff00 && c <= 0xffef) // 全角字符
+  )
+}
+
+/**
+ * 文本的 token 估算（拿不到真实用量时用）。统一按 3.5 字符 ≈ 1 token 会把中文低估到三分之一左右，
+ * 压缩线贴近窗口时容易估少撞上限，故中日韩字符单独按一字一 token 计。
+ */
+export function estimateTextTokens(s: string): number {
+  let cjk = 0
+  for (let i = 0; i < s.length; i++) if (isCjk(s.charCodeAt(i))) cjk++
+  return cjk + (s.length - cjk) / CHARS_PER_TOKEN
+}

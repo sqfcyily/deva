@@ -11,6 +11,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { describeNetError, httpFetch } from '../http'
 import type { ImagePart, ToolSpec } from '../providers/types'
 import { prepareImage, sniffImageMime } from './image-read'
+import { spillLongOutput } from './tool-results'
 import type { ToolResult } from './tools'
 import { registerMcpToolNames, unregisterMcpToolNames } from './tools'
 import {
@@ -551,8 +552,11 @@ function mcpImage(block: Record<string, unknown>): { part?: ImagePart; note: str
   return { part: img.part, note: `[图片：${mime}，已随本结果附上]` }
 }
 
-/** 展平 MCP 的 content[]（文本拼接；图片随结果附上，其余非文本内容以占位符表示）；文本上限 TEXT_CAP。 */
-function flattenResult(result: RawCallResult): ToolResult {
+/**
+ * 展平 MCP 的 content[]（文本拼接；图片随结果附上，其余非文本内容以占位符表示）。
+ * 文本超过 TEXT_CAP 时全文存文件，只给开头结尾预览与路径（见 tool-results.ts）。
+ */
+function flattenResult(result: RawCallResult, sessionId?: string): ToolResult {
   const parts: string[] = []
   const images: ImagePart[] = []
   if (Array.isArray(result.content)) {
@@ -577,15 +581,10 @@ function flattenResult(result: RawCallResult): ToolResult {
       }
     }
   }
-  let text = parts.join('\n').trim() || '（工具返回空内容）'
-  let cut = false
-  if (text.length > TEXT_CAP) {
-    text = text.slice(0, TEXT_CAP)
-    cut = true
-  }
+  const text = parts.join('\n').trim() || '（工具返回空内容）'
   const isError = result.isError === true
   return {
-    content: text + (cut ? `\n…（内容过长已截断，上限 ${TEXT_CAP} 字符）` : ''),
+    content: spillLongOutput(text, TEXT_CAP, sessionId, 'mcp'),
     summary: isError ? '返回错误' : parts.length ? `${parts.length} 段内容` : '已返回',
     isError,
     ...(images.length ? { images } : {})
@@ -599,7 +598,9 @@ function flattenResult(result: RawCallResult): ToolResult {
 export async function dispatchMcpTool(
   fqName: string,
   args: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 当前对话：超长结果存进它的工具结果文件夹。 */
+  sessionId?: string
 ): Promise<ToolResult> {
   const route = routes.get(fqName)
   if (!route)
@@ -614,7 +615,7 @@ export async function dispatchMcpTool(
       undefined,
       { signal, timeout: DISPATCH_TIMEOUT }
     )) as RawCallResult
-    return flattenResult(result)
+    return flattenResult(result, sessionId)
   } catch (e) {
     if (signal?.aborted) return { content: '调用已中止。', summary: '已中止', isError: true }
     const msg = (e as Error)?.message ?? String(e)

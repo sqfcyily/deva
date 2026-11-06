@@ -846,7 +846,7 @@ const zhCN: MessageTree = {
     displayName: '模型名称',
     displayNameHint: '仅用于显示，请求使用模型 ID：{id}',
     contextWindow: '上下文窗口',
-    contextWindowHint: '用量达约 75% 时自动压缩历史。可下拉选择，或直接输入 200K、1M 等。',
+    contextWindowHint: '用量接近上限时自动压缩历史。可下拉选择，或直接输入 200K、1M 等。',
     maxOutput: '最大输出长度',
     maxOutputHint: '单次回复的 token 上限。可下拉选择，或直接输入 32K、64K、128K 等。',
     providerDefault: '服务商默认',
@@ -2198,7 +2198,7 @@ const en: MessageTree = {
     displayNameHint: 'Display only. Requests use model ID: {id}',
     contextWindow: 'Context window',
     contextWindowHint:
-      'History is compacted at ~75% usage. Pick from the list or type a value such as 200K or 1M.',
+      'History is compacted when usage nears the limit. Pick from the list or type a value such as 200K or 1M.',
     maxOutput: 'Max output length',
     maxOutputHint:
       'Token limit per reply. Pick from the list or type a value such as 32K, 64K or 128K.',

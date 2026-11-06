@@ -4,7 +4,12 @@ import { getConfig } from './config'
 import { save as saveProject, type StoredSession } from './chat-store'
 import { todoSnapshotText } from './todos'
 import { modelOverrides } from './model-resolve'
-import { DEFAULT_CONTEXT_WINDOW, autoContextWindow, autoOutputBudget } from '../../shared/context'
+import {
+  DEFAULT_CONTEXT_WINDOW,
+  autoContextWindow,
+  autoOutputBudget,
+  estimateTextTokens
+} from '../../shared/context'
 
 /**
  * 上下文压缩（主进程）。
@@ -66,13 +71,13 @@ export type CompactStatus = 'compacted' | 'none' | 'failed'
 
 interface CompactionCfg {
   enabled: boolean
-  triggerRatio: number
+  /** 手动指定的触发比例（窗口的几成）；缺省 = 按窗口与输出上限算（见 triggerTokens），只能比默认更早。 */
+  triggerRatio?: number
   defaultWindow: number
 }
 
 const DEFAULTS: CompactionCfg = {
   enabled: true,
-  triggerRatio: 0.75,
   defaultWindow: DEFAULT_CONTEXT_WINDOW
 }
 
@@ -84,7 +89,7 @@ export function compactionConfig(): CompactionCfg {
     triggerRatio:
       typeof raw.triggerRatio === 'number' && raw.triggerRatio > 0 && raw.triggerRatio < 1
         ? raw.triggerRatio
-        : DEFAULTS.triggerRatio,
+        : undefined,
     defaultWindow:
       typeof raw.defaultWindow === 'number' && raw.defaultWindow > 0
         ? raw.defaultWindow
@@ -122,20 +127,28 @@ export function contextWindowFor(
   return learned ? Math.min(configured, learned) : configured
 }
 
+/** 压缩线与窗口之间留给估算误差的余量（同 CC 的 13K）；小窗口按窗口的一成封顶。 */
+const COMPACT_BUFFER = 13_000
+/** 输出上限未知（OpenAI 兼容协议多不发 max_tokens，由服务商定）时为回复预留的量（同 CC 的 20K）。 */
+const OUTPUT_RESERVE_UNKNOWN = 20_000
+
 /**
- * 触发压缩的输入量：窗口 × 触发比例，且给输出留足余量——Anthropic 等要求「输入 + max_tokens」不超窗口，
- * 小窗口配大输出上限（128K + 64K）时只按比例算会先撞超限。余量封顶半个窗口，防填错值时每轮都压。
+ * 触发压缩的输入量（对标 CC）：窗口 − 输出上限 − 余量。不再按固定比例早早压掉——每压一次，此后的提示缓存
+ * 全部作废，摘要本身也要一次模型调用，能晚则晚；真撞了上限，引擎会从报错自愈（压缩后重发，见 chat.ts）。
+ * 输出上限必须扣：Anthropic 等要求「输入 + max_tokens」不超窗口。它封顶半个窗口，防填错值时每轮都压。
+ * 用户在 config.json 写了 triggerRatio 时取两者中更早的那个。
  */
 function triggerTokens(model: LimitModelRef, cfg: CompactionCfg): number {
   const window = contextWindowFor(model, cfg)
   const output =
     modelOverrides(model.providerId, model.model).maxOutput ??
     autoOutputBudget(model.adapter, model.model) ??
-    0
-  return Math.min(window * cfg.triggerRatio, window - Math.min(output, window / 2))
+    OUTPUT_RESERVE_UNKNOWN
+  const byWindow = window - Math.min(output, window / 2) - Math.min(COMPACT_BUFFER, window * 0.1)
+  return cfg.triggerRatio !== undefined ? Math.min(window * cfg.triggerRatio, byWindow) : byWindow
 }
 
-// ── token 估算（字符法；图片/文档按固定成本，规避 base64 数长度失真）───────────────
+// ── token 估算（字符法，中日韩文字另计；图片/文档按固定成本，规避 base64 数长度失真）──────
 const CHARS_PER_TOKEN = 3.5
 const IMAGE_TOKENS = 1600
 const DOC_TOKENS = 3000
@@ -143,11 +156,11 @@ const DOC_TOKENS = 3000
 function partTokens(p: ContentPart): number {
   switch (p.type) {
     case 'text':
-      return p.text.length / CHARS_PER_TOKEN
+      return estimateTextTokens(p.text)
     case 'tool_use':
-      return JSON.stringify(p.input ?? {}).length / CHARS_PER_TOKEN + 8
+      return estimateTextTokens(JSON.stringify(p.input ?? {})) + 8
     case 'tool_result':
-      return p.content.length / CHARS_PER_TOKEN + 8 + (p.images?.length ?? 0) * IMAGE_TOKENS
+      return estimateTextTokens(p.content) + 8 + (p.images?.length ?? 0) * IMAGE_TOKENS
     case 'image':
       return IMAGE_TOKENS
     case 'document':
@@ -158,7 +171,7 @@ function partTokens(p: ContentPart): number {
 }
 
 function messageTokens(m: Message): number {
-  if (typeof m.content === 'string') return m.content.length / CHARS_PER_TOKEN + 4
+  if (typeof m.content === 'string') return estimateTextTokens(m.content) + 4
   let t = 4
   for (const p of m.content) t += partTokens(p)
   return t
@@ -171,7 +184,7 @@ export function estimateTokens(messages: Message[]): number {
   return Math.round(t)
 }
 
-/** 是否需要压缩：优先真实 usage.input，回退字符估算，与「窗口 × 触发比例」比较。 */
+/** 是否需要压缩：优先真实 usage.input，回退字符估算，与压缩线（见 triggerTokens）比较。 */
 export function needsCompaction(
   session: StoredSession,
   model: LimitModelRef,

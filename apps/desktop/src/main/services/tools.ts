@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'path'
 import ignore, { type Ignore } from 'ignore'
 import { resolveExecShell } from './exec-policy'
+import { spillLongOutput } from './tool-results'
 import { skillsDir, upsertSkill } from './skills'
 import {
   deleteMemory,
@@ -100,7 +101,7 @@ export const toolSpecs: ToolSpec[] = [
   {
     name: 'web_fetch',
     description:
-      '获取一个网页 / HTTP(S) 资源并转为可读文本：HTML 自动去标签、解码实体、保留正文；JSON / 纯文本原样返回。用于查在线文档、读网页、取 API 响应。仅支持 http/https，有超时与大小上限，超长内容会截断。内容靠 JS 渲染、要登录或要交互的网页用 browser。',
+      '获取一个网页 / HTTP(S) 资源并转为可读文本：HTML 自动去标签、解码实体、保留正文；JSON / 纯文本原样返回。用于查在线文档、读网页、取 API 响应。仅支持 http/https，有超时与大小上限；正文超过 100000 字符时完整内容存到文件，只返回开头、结尾与文件路径。内容靠 JS 渲染、要登录或要交互的网页用 browser。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -173,7 +174,7 @@ export const toolSpecs: ToolSpec[] = [
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
-      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 600000ms（可用 timeout 调整，最长 1800000ms）；输出过长会被截断。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 600000ms（可用 timeout 调整，最长 1800000ms）；输出超过 30000 字符时完整内容存到文件，只返回开头、结尾与文件路径。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -649,11 +650,14 @@ const GREP_CONCURRENCY = 16
 const WEB_FETCH_TIMEOUT_MS = 30_000
 const WEB_FETCH_MAX_BYTES = 5 * 1024 * 1024
 const WEB_TEXT_MAX = 100_000
-/** run_command 护栏：输出字符上限 / 默认与最长超时 / 捕获字节上限（防暴产出）。 */
+/**
+ * run_command 护栏：直接交给模型的输出字符上限（同 CC，超过即全文存文件、只给头尾预览，见 tool-results.ts）/
+ * 默认与最长超时 / 捕获字节上限（防暴产出：超过即停止命令）。
+ */
 const EXEC_OUTPUT_MAX = 30_000
 const EXEC_TIMEOUT_DEFAULT = 600_000
 const EXEC_TIMEOUT_MAX = 1_800_000
-const EXEC_CAPTURE_BYTES = 4 * EXEC_OUTPUT_MAX
+const EXEC_CAPTURE_BYTES = 10 * 1024 * 1024
 /** 杀树后等 stdio 关闭的宽限期；须短于退出时 settleActiveTurns 的 3s 收尾窗口。 */
 const EXEC_KILL_GRACE_MS = 2000
 /** 遍历时直接跳过、不进入的噪音目录。 */
@@ -1094,6 +1098,8 @@ interface ExecOutcome {
   spawnError?: string
   /** 已杀树但宽限期内 stdio 仍未关闭（多半有漏网子进程攥着管道），已强行收尾。 */
   lingering?: boolean
+  /** 输出超过捕获上限，已停止命令。 */
+  capped?: boolean
 }
 
 /** 非交互环境：禁分页器、禁 git 凭据提示、禁颜色码，避免命令挂起或污染输出。 */
@@ -1298,7 +1304,8 @@ function execCapture(
         timedOut,
         aborted,
         spawnError,
-        lingering
+        lingering,
+        capped
       })
     }
 
@@ -1647,11 +1654,6 @@ export async function executeTool(
         } else {
           text = raw
         }
-        let cut = false
-        if (text.length > WEB_TEXT_MAX) {
-          text = text.slice(0, WEB_TEXT_MAX)
-          cut = true
-        }
         const header = [
           `URL: ${res.url || url}`,
           title ? `标题: ${title}` : null,
@@ -1660,8 +1662,9 @@ export async function executeTool(
           .filter(Boolean)
           .join('\n')
         const body = text.trim() || '（无可读文本内容）'
+        // 正文过长：全文存文件，模型拿开头结尾预览与路径（同 run_command）；页面头信息恒在前。
         return {
-          content: `${header}\n\n${body}${cut ? `\n\n…（内容超过 ${WEB_TEXT_MAX} 字符，已截断）` : ''}`,
+          content: `${header}\n\n${spillLongOutput(body, WEB_TEXT_MAX, ctx.sessionId, 'web')}`,
           summary: title ? title.slice(0, 40) : `${body.length} 字符`
         }
       } catch (e) {
@@ -1793,15 +1796,16 @@ export async function executeTool(
         EXEC_TIMEOUT_MAX
       )
       const r = await execCapture(command, cwd, timeoutMs, ctx.signal)
-      // 先截断输出，再追加恒显状态行（截断藏不住成败信号）。
-      let body = r.out
-      if (body.length > EXEC_OUTPUT_MAX)
-        body = body.slice(0, EXEC_OUTPUT_MAX) + `\n…（输出超过 ${EXEC_OUTPUT_MAX} 字符，已截断）`
+      // 输出过长：全文存文件，模型只拿开头和结尾（报错与汇总多在结尾）。恒显状态行追加在后，不会被省略。
+      const body = spillLongOutput(r.out, EXEC_OUTPUT_MAX, ctx.sessionId, 'command')
       let status: string
       let summary: string
       if (r.spawnError) {
         status = `（无法执行：${r.spawnError}）`
         summary = '无法执行'
+      } else if (r.capped) {
+        status = `（输出超过 ${EXEC_CAPTURE_BYTES / 1024 / 1024}MB，已停止命令）`
+        summary = '输出过多'
       } else if (r.aborted) {
         status = '（已中止）'
         summary = '已中止'
@@ -1813,7 +1817,7 @@ export async function executeTool(
         summary = `退出码 ${r.code}`
       }
       if (r.lingering) status += '（有子进程未能确认结束，可能仍在后台运行）'
-      const isError = Boolean(r.spawnError) || r.aborted || r.timedOut || r.code !== 0
+      const isError = Boolean(r.spawnError) || r.capped || r.aborted || r.timedOut || r.code !== 0
       // 未挂载工作区时命令在用户主目录执行，失败多半只是「不在项目里」（典型：git 报 not a git
       // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。命令文本里的相对路径无法
       // 可靠判定（故 needsWorkspaceMount 不拦 run_command），改用这种「失败才提示」的事后自愈。

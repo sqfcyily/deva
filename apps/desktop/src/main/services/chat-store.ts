@@ -11,6 +11,7 @@ import {
 import { join } from 'path'
 import { getDevaHome } from './config'
 import { hydrateMessages, mediaReplacer } from './media-store'
+import { removeToolResults } from './tool-results'
 import type { EffortLevel, Message } from '../providers/types'
 import type { CheckpointRec } from './checkpoints'
 import type { MemberRef } from './members'
@@ -52,6 +53,11 @@ export interface StoredSession {
    */
   lastCacheRead?: number
   lastCacheWrite?: number
+  /**
+   * 主轮最近一次收到模型用量的时间（毫秒时间戳），即提示缓存最后一次被用到的时刻。开新一轮时据此判断缓存
+   * 是否已过期，过期才清理较早的工具结果（见 tool-results.ts）。缺省（旧对话）时退回 updatedAt。
+   */
+  lastRequestAt?: number
   /**
    * 绑定的 persona id（对话优先外壳：一对话一身份，单选当值）。
    * 缺省 = 旧版遗留的未绑定对话，执行与显示都按默认角色（见 personas.ts resolvePersonaId）。首发落库后绑定不再改。
@@ -479,7 +485,7 @@ export function setSessionArchived(id: string, archived: boolean): boolean {
   return true
 }
 
-/** 删除某对话：清缓存 + 索引 + 磁盘文件。 */
+/** 删除某对话：清缓存 + 索引 + 磁盘文件（含它存下的超长工具结果）。 */
 export function deleteSession(id: string): void {
   sessionCache.delete(id)
   if (ensureIndex().delete(id)) persistIndex()
@@ -488,6 +494,7 @@ export function deleteSession(id: string): void {
   } catch {
     /* 删除失败静默 */
   }
+  removeToolResults(safeId(id))
 }
 
 /** 从首条用户文本派生标题（单行、截断）。 */
