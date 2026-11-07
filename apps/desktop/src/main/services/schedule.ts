@@ -361,12 +361,26 @@ export function describeSchedule(schedule: TaskSchedule, locale: 'zh-CN' | 'en')
     return zh ? `每天 ${timeStr}` : `daily at ${timeStr}`
   }
 
+  // 周几的写法：周一到周五合称「工作日」，其余逐个列出。
+  const dayNames = (): string => {
+    const days = [...cron.dow].sort((a, b) => a - b)
+    if (days.length === 5 && days.every((d, i) => d === i + 1)) return zh ? '工作日' : 'weekdays'
+    const names = days.map((d) => (zh ? WEEK_ZH[d] : WEEK_EN[d]))
+    return zh ? `每${names.join('、')}` : names.join(', ')
+  }
+
   // 每周某几天 HH:MM：min/hour 单值，dom/mon 为 *，dow 受限
   if (timeStr && domF === '*' && monF === '*' && dowF !== '*') {
-    const days = [...cron.dow].sort((a, b) => a - b)
-    const names = days.map((d) => (zh ? WEEK_ZH[d] : WEEK_EN[d]))
-    const joined = zh ? names.join('、') : names.join(', ')
-    return zh ? `每${joined} ${timeStr}` : `${joined} at ${timeStr}`
+    return zh ? `${dayNames()} ${timeStr}` : `${dayNames()} at ${timeStr}`
+  }
+
+  // 一段时间内每小时（如工作日 9–18 点每小时）：min 单值，hour 为连续区间，dom/mon 为 *
+  const hours = [...cron.hour].sort((a, b) => a - b)
+  const contiguous = hours.length > 1 && hours.every((x, i) => i === 0 || x === hours[i - 1] + 1)
+  if (m != null && contiguous && domF === '*' && monF === '*') {
+    const span = `${pad2(hours[0])}:${pad2(m)}–${pad2(hours[hours.length - 1])}:${pad2(m)}`
+    const who = dowF === '*' ? (zh ? '每天' : 'daily') : dayNames()
+    return zh ? `${who} ${span} · 每小时` : `${who} ${span}, hourly`
   }
 
   // 每月某日 HH:MM：min/hour 单值，dom 受限，mon/dow 为 *

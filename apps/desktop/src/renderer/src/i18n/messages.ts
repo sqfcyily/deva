@@ -918,6 +918,7 @@ const zhCN: MessageTree = {
     dismiss: '忽略',
     confirm: '创建任务',
     created: '已创建定时任务',
+    createdShort: '已创建',
     createdOpen: '查看任务',
     dismissed: '已忽略此定时任务',
     errInvalidInput: '信息不完整，请检查填写',
@@ -957,6 +958,21 @@ const zhCN: MessageTree = {
     runNowAlreadyQueued: '任务已在排队',
     runNowAlreadyQueuedHint: '前面还有任务在运行，轮到它时会自动开始，不会重复加入。',
     deleteConfirm: '删除后其运行历史一并清除；独占会话仍保留在对话列表，可另行删除。',
+    deleteBoundConfirm: '删除后其运行历史与任务对话一并清除，无法恢复。',
+    // 名片与详情的「结果」行：交给本对话的主角色，或独立运行
+    fResult: '结果',
+    rowTime: '时间',
+    rowExec: '执行',
+    rowPrompt: '指令',
+    // 创建后的卡 / 任务详情上的「完成后通知本对话」开关（见 design/task-card-bind.html 方案 A）
+    notifyChat: '完成后通知本对话',
+    notifyChatNamed: '完成后通知对话「{name}」',
+    notifyChatHint: '没有新情况不打扰',
+    notifyChatOn: '已开启，点一下改回独立运行',
+    notifyChatOff: '开了以后任务的结果回到这个对话，需要处理的交给主角色',
+    notifyChatOffAct: '改为独立运行',
+    resultAlone: '独立运行',
+    resultAloneHint: '完成后系统通知',
     // 管理页（左列表 + 右详情）
     searchPlaceholder: '搜索任务',
     // 新建入口（搜索框旁的 + 菜单，布局同「添加角色」）
@@ -1076,6 +1092,24 @@ const zhCN: MessageTree = {
       progressMany: '{n} 位成员已完成',
       progressStDone: '已完成',
       progressHint: '都完成后由 {owner} 汇总'
+    },
+    // 绑定在本对话上的定时任务（标题栏闹钟入口、任务对话、交接显示；见 design/task-entry-README.md）
+    task: {
+      count: '{n} 个定时任务',
+      countOne: '1 个定时任务',
+      threadBadge: '{n} 个定时任务：{names}',
+      running: '正在运行',
+      next: '下次 {time}',
+      tomorrow: '明天',
+      paused: '已暂停',
+      runNow: '立即运行',
+      pause: '暂停',
+      resume: '继续',
+      edit: '编辑任务',
+      empty: '「{name}」还没有运行过。到时间会自动运行，也可以立即运行一次。',
+      placeholder: '在「{name}」的任务对话里发消息…',
+      expand: '查看全文',
+      collapse: '收起'
     },
     // 检查点回滚面板（/rewind、双击 Esc、聊天区右键「回到此处」）
     rewind: {
@@ -1233,6 +1267,10 @@ const zhCN: MessageTree = {
     pinTop: '置顶',
     deletePersona: '删除角色',
     deleteChatConfirm: '删除后该对话的所有消息将被永久移除，无法恢复。',
+    // 删主对话时连带删除的东西（成员、绑定的定时任务及它们的对话）
+    deleteChatCascade: '会一并删除：{items}。',
+    deleteChatMembers: '{n} 位成员（{names}）及其对话',
+    deleteChatTasks: '{n} 个定时任务（{names}）及其对话',
     select: '选择',
     selCancel: '取消',
     selectToDelete: '删除对话',
@@ -2271,6 +2309,7 @@ const en: MessageTree = {
     dismiss: 'Dismiss',
     confirm: 'Create task',
     created: 'Scheduled task created',
+    createdShort: 'Created',
     createdOpen: 'View task',
     dismissed: 'Scheduled task dismissed',
     errInvalidInput: 'Incomplete information — please check the fields',
@@ -2311,6 +2350,19 @@ const en: MessageTree = {
     runNowAlreadyQueuedHint: 'Another task is running first. This one starts automatically when its turn comes and won’t be queued again.',
     deleteConfirm:
       'Its run history will also be removed. The dedicated conversation stays in your chat list and can be deleted separately.',
+    deleteBoundConfirm: 'Its run history and its conversation will be removed. This cannot be undone.',
+    fResult: 'Result',
+    rowTime: 'When',
+    rowExec: 'Run as',
+    rowPrompt: 'Prompt',
+    notifyChat: 'Report to this chat',
+    notifyChatNamed: 'Report to “{name}”',
+    notifyChatHint: 'stays quiet when nothing is new',
+    notifyChatOn: 'On — click to run on its own again',
+    notifyChatOff: 'Results come back to this chat; anything that needs action goes to the main role',
+    notifyChatOffAct: 'Run on its own instead',
+    resultAlone: 'Run on its own',
+    resultAloneHint: 'system notification when done',
     // Management page (list + detail)
     searchPlaceholder: 'Search tasks',
     // Create entry (+ menu beside the search box, same layout as “Add persona”)
@@ -2424,6 +2476,23 @@ const en: MessageTree = {
       progressMany: '{n} members finished',
       progressStDone: 'Finished',
       progressHint: '{owner} will summarize once everyone is done'
+    },
+    task: {
+      count: '{n} scheduled tasks',
+      countOne: '1 scheduled task',
+      threadBadge: 'Scheduled tasks ({n}): {names}',
+      running: 'Running',
+      next: 'Next {time}',
+      tomorrow: 'Tomorrow',
+      paused: 'Paused',
+      runNow: 'Run now',
+      pause: 'Pause',
+      resume: 'Resume',
+      edit: 'Edit task',
+      empty: '“{name}” hasn’t run yet. It runs on schedule, or you can run it now.',
+      placeholder: 'Message in the “{name}” task chat…',
+      expand: 'Show details',
+      collapse: 'Collapse'
     },
     rewind: {
       title: 'Rewind to checkpoint',
@@ -2580,6 +2649,9 @@ const en: MessageTree = {
     deletePersona: 'Delete persona',
     deleteChatConfirm:
       'This conversation and all its messages will be permanently removed. This cannot be undone.',
+    deleteChatCascade: 'Also removes {items}.',
+    deleteChatMembers: '{n} members ({names}) and their chats',
+    deleteChatTasks: '{n} scheduled tasks ({names}) and their chats',
     select: 'Select',
     selCancel: 'Cancel',
     selectToDelete: 'Delete conversation',

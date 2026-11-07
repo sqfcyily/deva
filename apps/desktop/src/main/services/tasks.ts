@@ -70,7 +70,9 @@ function normalizeRecord(t: TaskRecord): TaskRecord {
     consecutiveErrors: typeof t.consecutiveErrors === 'number' ? t.consecutiveErrors : 0,
     runs: Array.isArray(t.runs) ? t.runs : [],
     lastRunAt: typeof t.lastRunAt === 'number' ? t.lastRunAt : null,
-    nextRunAt: typeof t.nextRunAt === 'number' ? t.nextRunAt : null
+    nextRunAt: typeof t.nextRunAt === 'number' ? t.nextRunAt : null,
+    ...(typeof t.ownerSessionId === 'string' && t.ownerSessionId ? { ownerSessionId: t.ownerSessionId } : {}),
+    ...(typeof t.originSessionId === 'string' && t.originSessionId ? { originSessionId: t.originSessionId } : {})
   }
 }
 
@@ -107,6 +109,19 @@ export function listTasks(): TaskRecord[] {
 export function getTask(id: string): TaskRecord | null {
   ensureLoaded()
   return cache.get(id) ?? null
+}
+
+/** 以某会话为任务对话的任务（没有则 null）。chat.ts 据此判断一轮定时运行属于哪个任务、绑定了哪个主对话。 */
+export function findTaskBySession(sessionId: string): TaskRecord | null {
+  ensureLoaded()
+  for (const t of cache.values()) if (t.sessionId === sessionId) return t
+  return null
+}
+
+/** 绑定在某个主对话上的任务（见 TaskRecord.ownerSessionId）。 */
+export function tasksOwnedBy(ownerSessionId: string): TaskRecord[] {
+  ensureLoaded()
+  return [...cache.values()].filter((t) => t.ownerSessionId === ownerSessionId)
 }
 
 /** 创建结果：成功带记录，失败带稳定错误码（渲染层据此本地化）。 */
@@ -163,6 +178,9 @@ export function createTask(input: TaskCreateInput): CreateTaskResult {
     schedule: sched,
     auth: sanitizeAuth(input.auth),
     sessionId: `task-${id}`,
+    ...(typeof input.originSessionId === 'string' && input.originSessionId
+      ? { originSessionId: input.originSessionId }
+      : {}),
     status: 'active',
     createdAt: now,
     updatedAt: now,
@@ -218,9 +236,42 @@ export function updateTask(input: TaskUpdateInput): TaskRecord | null {
   return t
 }
 
+/**
+ * 删除任务。绑定了主对话的任务连它的任务对话一起删（绑定后任务对话不在左侧列表，留下会成为看不到的孤儿对话）；
+ * 独立运行的任务只删记录，任务对话留在对话列表里由用户自行删除。任务对话经 setTaskSessionPurger 注入的删除器删
+ * （正在跑的一轮由它中止），chat.ts 装载前退化为只删记录。
+ */
+/**
+ * 开 / 关「完成后通知本对话」（创建后在卡上或任务详情里切换）：开 = 绑定创建它的对话（结果回到那个对话，任务对话从
+ * 左侧列表收进标题栏的闹钟入口）；关 = 恢复独立运行。只能绑回创建它的对话（originSessionId），别的对话不认。
+ */
+export function setTaskNotifyOrigin(id: string, on: boolean): TaskRecord | null {
+  ensureLoaded()
+  const t = cache.get(id)
+  if (!t) return null
+  const want = on && t.originSessionId ? t.originSessionId : undefined
+  if ((t.ownerSessionId ?? undefined) === want) return t
+  if (want) t.ownerSessionId = want
+  else delete t.ownerSessionId
+  t.updatedAt = Date.now()
+  persist()
+  publishSessionsChanged()
+  return t
+}
+
 export function deleteTask(id: string): void {
   ensureLoaded()
-  if (cache.delete(id)) persist()
+  const t = cache.get(id)
+  if (!t) return
+  cache.delete(id)
+  persist()
+  if (t.ownerSessionId) purgeSessionImpl?.(t.sessionId)
+}
+
+/** 任务对话的删除器（chat.ts purgeSession）：删绑定任务时连任务对话一起删。 */
+let purgeSessionImpl: ((sessionId: string) => void) | null = null
+export function setTaskSessionPurger(fn: ((sessionId: string) => void) | null): void {
+  purgeSessionImpl = fn
 }
 
 /**
@@ -404,8 +455,9 @@ export function registerTasksIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('tasks:list', (): TaskRecord[] => listTasks())
   ipcMain.handle('tasks:get', (_e, id: string): TaskRecord | null => getTask(id))
+  // 管理页手动新建的任务不属于任何对话（originSessionId 只由对话里的确认名片带上，见 chat.ts resolveAutotask）。
   ipcMain.handle('tasks:create', (_e, input: TaskCreateInput): CreateTaskResult =>
-    createTask(input)
+    createTask({ ...input, originSessionId: undefined })
   )
   ipcMain.handle('tasks:update', (_e, input: TaskUpdateInput): TaskRecord | null =>
     updateTask(input)
@@ -416,6 +468,10 @@ export function registerTasksIpc(getWindow: () => BrowserWindow | null): void {
   })
   ipcMain.handle('tasks:set-status', (_e, id: string, status: TaskStatus): TaskRecord | null =>
     setTaskStatus(id, status)
+  )
+  // 「完成后通知本对话」开关（创建后在卡上 / 任务详情里切换）。
+  ipcMain.handle('tasks:set-notify-origin', (_e, id: string, on: boolean): TaskRecord | null =>
+    setTaskNotifyOrigin(id, on === true)
   )
   // 确认名片实时预览：校验日程 + 人读摘要 + 下次触发（只读，不建任务）。
   ipcMain.handle(

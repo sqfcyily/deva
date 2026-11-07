@@ -127,6 +127,9 @@ function notifyForRun(task: TaskRecord, run: TaskRun, autoPaused: boolean): void
     return
   }
   if (run.status === 'skipped') return
+  // 绑定了主对话的任务（见 handoff.ts）：一件事只通知一次——没有新情况不打扰；交给主角色的由主对话那边通知
+  // （只是告知的记进主对话时弹一次，需要处理的等成员回复或主角色汇总时再弹）。
+  if (task.ownerSessionId) return
   notify(task.title, run.summary || task.prompt, task.sessionId, true)
 }
 
@@ -170,7 +173,9 @@ async function fireOnce(id: string, manual: boolean, missed: number): Promise<vo
     status: aborted ? 'aborted' : ok ? 'ok' : 'error',
     // 被中止：摘要写中止说明（手动停止 / 对话被删除 / 应用退出，见 runScheduledTurn），不写失败原因。
     summary: ok ? firstLine(res.text) || undefined : aborted ? res.errorMessage : undefined,
-    error: ok || aborted ? undefined : res.errorMessage || '执行失败'
+    error: ok || aborted ? undefined : res.errorMessage || '执行失败',
+    // 绑定任务这次交给主角色的结果（闹钟列表那一行据此写「交给 X：摘要」）。
+    ...(res.handoff ? { handoff: res.handoff } : {})
   }
   appendRun(id, run)
 

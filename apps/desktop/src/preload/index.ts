@@ -184,6 +184,18 @@ export interface MemberMeta {
   effortSet?: boolean
 }
 
+/** 绑定的定时任务交来的结果（与 services/handoff.ts 的 HandoffInfo 对齐）。 */
+export interface HandoffInfo {
+  /** 任务名。 */
+  title: string
+  /** 一句话摘要（居中一行上显示）。 */
+  summary: string
+  /** 全文（点开看）。 */
+  content: string
+  /** 需要主角色处理（已唤醒它）；false = 只是告知（其后那条回复以任务的身份显示）。 */
+  needsAction: boolean
+}
+
 /** 成员会话里主智能体派来的任务（工作记录里画成「X 派来的任务」）。 */
 export interface MemberTask {
   owner: string
@@ -263,6 +275,8 @@ export type DisplayMessage =
       quiet?: true
       /** 成员会话里主智能体派来的任务；text 为附注。 */
       task?: MemberTask
+      /** 绑定的定时任务交来的结果：需要处理的画成居中一行、点开看全文；只是告知的不显示（quiet）。 */
+      handoff?: HandoffInfo
     }
   /** durationMs：本轮耗时（未记录则缺省）。 */
   | { role: 'assistant'; blocks: DisplayBlock[]; durationMs?: number }
@@ -538,6 +552,8 @@ export interface TaskRun {
   status: 'ok' | 'error' | 'skipped' | 'aborted'
   summary?: string
   error?: string
+  /** 绑定任务这次交给主角色的结果（见 services/handoff.ts）；没交接则缺省。 */
+  handoff?: { summary: string; needsAction: boolean }
 }
 export interface TaskRecord {
   id: string
@@ -546,6 +562,10 @@ export interface TaskRecord {
   schedule: TaskSchedule
   auth: TaskAuthorization
   sessionId: string
+  /** 绑定的主对话 id（见 services/tasks-types.ts）：任务对话不进左侧列表，从主对话标题栏的定时任务入口进入。 */
+  ownerSessionId?: string
+  /** 在哪个对话里创建的；据此提供「完成后通知对话」开关。 */
+  originSessionId?: string
   status: TaskStatus
   createdAt: number
   updatedAt: number
@@ -559,6 +579,8 @@ export interface TaskCreateInput {
   prompt: string
   schedule: TaskSchedule
   auth: TaskAuthorization
+  /** 在哪个对话里创建的（由主进程 resolveAutotask 填，渲染层不传）。 */
+  originSessionId?: string
 }
 export interface TaskUpdateInput {
   id: string
@@ -809,7 +831,14 @@ export type ChatStreamEvent =
   | {
       type: 'turn_start'
       /** notify：本轮由后台任务通知自动发起，text 为通知标题；task：成员会话里主智能体派来的任务。 */
-      user: { text: string; attachments: AttachmentChip[]; notify?: true; quiet?: true; task?: MemberTask }
+      user: {
+        text: string
+        attachments: AttachmentChip[]
+        notify?: true
+        quiet?: true
+        task?: MemberTask
+        handoff?: HandoffInfo
+      }
     }
   /** 插入的消息已随本步工具结果交给模型：执行步骤里添一个节点。 */
   | { type: 'insert'; text: string }
@@ -1276,6 +1305,9 @@ const api = {
     remove: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('tasks:delete', id),
     setStatus: (id: string, status: TaskStatus): Promise<TaskRecord | null> =>
       ipcRenderer.invoke('tasks:set-status', id, status),
+    /** 「完成后通知本对话」开关：开 = 绑定创建它的对话，关 = 独立运行。 */
+    setNotifyOrigin: (id: string, on: boolean): Promise<TaskRecord | null> =>
+      ipcRenderer.invoke('tasks:set-notify-origin', id, on),
     /**
      * 立即运行（委托调度器串行队列；调度器未就绪则 ok:false）。
      * 同一任务已在运行 / 排队时不重复入队，返回 ok:true + already。

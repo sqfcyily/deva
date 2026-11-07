@@ -5576,12 +5576,6 @@ button.projmenu__item:disabled {
   display: grid;
   place-items: center;
 }
-.autotaskcard__hint {
-  color: var(--fg-muted);
-  font-size: 12px;
-  line-height: 1.5;
-  margin: var(--space-1) 0 var(--space-3);
-}
 .autotaskcard__field {
   display: block;
   margin-top: var(--space-3);
@@ -5823,57 +5817,119 @@ select.autotaskcard__input {
   gap: var(--space-2);
   margin-top: var(--space-4);
 }
-/* pending 摘要态：图标 + 三行（标题 / 日程·下次·角色·模型 / 指令单行省略）+ 右侧操作。 */
-.autotaskcard--summary {
+/* ── 方案 A 骨架（design/task-card.html）：表头 + 键值行 + 底栏，三个状态共用；pending 主题色描边，created 灰底 ── */
+.autotaskcard--card {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  font-size: 12.5px;
+}
+.autotaskcard--card.is-done {
+  border-color: var(--border);
+  background: var(--bg-elevated);
+}
+.autotaskcard__chead {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-}
-.autotaskcard--summary .autotaskcard__head-icon {
-  margin-top: 2px;
-  flex-shrink: 0;
-}
-.autotaskcard__sum-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.autotaskcard__sum-title {
-  font-weight: 600;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-weight: 600;
 }
-.autotaskcard__sum-meta {
+.autotaskcard--card.is-done .autotaskcard__chead {
+  border-bottom-color: var(--border);
+}
+.autotaskcard__chead > svg {
+  flex: none;
   color: var(--accent);
-  font-size: 12px;
 }
-.autotaskcard__sum-prompt {
-  color: var(--fg-muted);
-  font-size: 12px;
+.autotaskcard--card.is-done .autotaskcard__chead > svg {
+  color: var(--success);
+}
+.autotaskcard__kind {
+  flex: none;
+  color: var(--fg-subtle);
+  font-weight: 500;
+}
+.autotaskcard__ctitle {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.autotaskcard__sum-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  flex-shrink: 0;
-}
-.autotaskcard__sum-side .autotaskcard__actions {
-  margin-top: 0;
-}
-.autotaskcard__collapse {
+.autotaskcard__headact {
   margin-left: auto;
   font-weight: 400;
 }
-/* created / dismissed：紧凑终态行（编辑器已卸载）。 */
-.autotaskcard--created,
+/* 表头右侧的一组：编辑 / 收起，或 created 态的「查看任务」+ 绿勾 */
+.autotaskcard__headacts {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.autotaskcard__headacts .btn--ghost {
+  font-weight: 400;
+}
+.autotaskcard__ok {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  color: var(--success);
+}
+/* created 态表头下面的键值行到底，底部不再有按钮行：多留一点下边距 */
+.autotaskcard--card.is-done .autotaskcard__rows {
+  padding-bottom: 12px;
+}
+.autotaskcard__rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  padding: 10px 12px;
+  line-height: 1.5;
+}
+.autotaskcard__k {
+  color: var(--fg-subtle);
+}
+.autotaskcard__v {
+  min-width: 0;
+}
+.autotaskcard__v.is-clip {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.autotaskcard__dim {
+  color: var(--fg-subtle);
+}
+.autotaskcard__cfoot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: 0 12px 11px;
+}
+/* 展开编辑：表单区（原名片的 padding 挪到这里） */
+.autotaskcard__form {
+  padding: 10px 12px 12px;
+}
+.autotaskcard__form .autotaskcard__field:first-child {
+  margin-top: 0;
+}
+/* created 态右上角的「完成后通知本对话」：开了变成主题色底的选中态 */
+.autotaskcard__notify.is-on {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.autotaskcard__notify.is-on:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* dismissed：紧凑终态行（编辑器已卸载）。 */
 .autotaskcard--dismissed {
   display: flex;
   align-items: center;
@@ -5893,33 +5949,6 @@ select.autotaskcard__input {
 }
 .autotaskcard--dismissed .autotaskcard__icon {
   color: var(--fg-subtle);
-}
-/* 已创建（用户批准）：与其它已决卡一样淡化底框，图标与「已创建」勾转成功绿。 */
-.autotaskcard--created {
-  border-color: var(--border);
-  background: var(--bg-elevated);
-}
-.autotaskcard--created .autotaskcard__icon,
-.autotaskcard--created .autotaskcard__done-title svg {
-  color: var(--success);
-}
-.autotaskcard__done-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1 1 auto;
-}
-.autotaskcard__done-title {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-weight: 600;
-  font-size: 13px;
-}
-.autotaskcard__done-sub {
-  color: var(--fg-muted);
-  font-size: 12px;
 }
 .autotaskcard__done-text {
   font-size: 13px;

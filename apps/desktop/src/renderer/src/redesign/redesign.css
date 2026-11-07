@@ -4096,6 +4096,22 @@ body.cf-resizing-y * {
   color: var(--success, #2e7d32);
   background: color-mix(in srgb, var(--success, #2e7d32) 12%, transparent);
 }
+/* 任务详情「结果」行：淡色说明 + 主题色链接式开关 */
+.cf-tdetail__dim {
+  color: var(--fg-subtle);
+}
+.cf-tdetail__link {
+  margin-left: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: inherit;
+  cursor: pointer;
+}
+.cf-tdetail__link:hover {
+  text-decoration: underline;
+}
 .cf-tdetail .cf-profile__name {
   margin-top: var(--space-3);
   text-align: center;
@@ -4722,6 +4738,10 @@ a.bots-btn {
   min-width: 0;
   -webkit-app-region: no-drag;
 }
+/* 成员入口与定时任务入口并排时靠得近些：抵掉标题栏 gap，只留按钮自身内边距隔开两枚图标 */
+.cf-conv__head .cf-members + .cf-members {
+  margin-left: calc(-1 * var(--space-3) + 2px);
+}
 /* 成员列表开着时，窗口拖动区临时改成可点击：拖动区上的点击页面收不到，不这样点标题栏列表不会收起 */
 body.cf-pop-open,
 body.cf-pop-open * {
@@ -4916,6 +4936,144 @@ body.cf-pop-open * {
 }
 .cf-mreport .cf-inface .cf-ava {
   --sz: calc(18px * var(--cs, 1));
+}
+
+/*
+ * 绑定在本对话上的定时任务（见 design/task-entry-README.md）：标题栏成员入口旁的闹钟入口与下拉复用 .cf-members__*；
+ * 任务没有头像，用管理面板任务行同款的圆角方块图标（.cf-tface）。
+ */
+.cf-tface {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  color: var(--accent);
+}
+/* 任务行右侧：下次运行时间（暂停时写「已暂停」）；悬停换成「立即运行」「暂停」 */
+.cf-members__next {
+  flex: none;
+  align-self: flex-start;
+  margin: 9px 10px 0 4px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cf-members__acts {
+  flex: none;
+  display: none;
+  gap: 2px;
+  margin-right: 6px;
+}
+.cf-members__row:hover .cf-members__next {
+  display: none;
+}
+.cf-members__row:hover .cf-members__acts,
+.cf-members__acts:focus-within {
+  display: flex;
+}
+.cf-members__ib {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.cf-members__ib:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.cf-members__ib:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* 任务对话的标题栏：任务名前只放图标（不带灰底），名字后的日程与下次运行时间；右侧立即运行 / 暂停 / 编辑 */
+.cf-conv__ticon {
+  flex: none;
+  color: var(--accent);
+}
+.cf-conv__tsub {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.cf-conv__hacts {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  -webkit-app-region: no-drag;
+}
+/* 定时任务交来的结果（需要处理的）：居中一行灰底提醒「任务名 摘要」（同等汇总的 .cf-mprogress__pill），点开看全文 */
+.cf-handoff {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.cf-handoff__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(100%, 560px);
+  padding: 3px 10px 3px 4px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.cf-handoff__pill:hover {
+  color: var(--fg);
+}
+.cf-handoff__pill b {
+  font-weight: 600;
+  color: var(--fg);
+}
+.cf-handoff__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-handoff__chev {
+  flex: none;
+  color: var(--fg-subtle);
+  transition: transform 0.15s;
+}
+.cf-handoff__pill.is-open .cf-handoff__chev {
+  transform: rotate(180deg);
+}
+.cf-handoff__box {
+  width: min(100%, 560px);
+  padding: 9px 13px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  font-size: calc(13px * var(--cs, 1));
+  line-height: 1.65;
+  animation: cf-mcard-in 0.14s ease;
+}
+.cf-handoff__who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
 }
 
 /* 弹出层出现：轻微下移淡入（成员列表用） */

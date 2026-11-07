@@ -91,6 +91,14 @@ export interface AutotaskDraft {
   schedule: { kind: 'once' | 'recurring'; at: string; cron: string; tz: string }
 }
 
+/** 绑定的定时任务交来的结果（与 preload/主进程 HandoffInfo 对齐）。 */
+export interface HandoffInfo {
+  title: string
+  summary: string
+  content: string
+  needsAction: boolean
+}
+
 export type ChatBlock =
   | { kind: 'text'; text: string }
   | { kind: 'thinking'; text: string }
@@ -238,6 +246,11 @@ export interface ChatMessage {
   quiet?: boolean
   /** 成员会话里主智能体派来的任务：工作记录里画成「X 派来的任务」（用户原话 + 附注）。 */
   task?: MemberTask
+  /**
+   * 绑定的定时任务交来的结果：需要处理的画成居中一行「任务名 摘要」、点开看全文；只是告知的不显示这一行（quiet），
+   * 其后那条回复以任务的身份显示（见 ChatFirstShell reportOf）。
+   */
+  handoff?: HandoffInfo
   /** 助手消息：本轮耗时（毫秒，主进程计时、扣除等用户处置的时间），工作过程折叠条据此显示「已处理 X」。 */
   durationMs?: number
 }
@@ -326,7 +339,15 @@ type DisplayBlock =
   | { kind: 'todolist'; id: string; title: string; items: TodoItem[] }
   | { kind: 'insert'; text: string }
 type DisplayMessage =
-  | { role: 'user'; text: string; attachments: AttachChip[]; notify?: true; quiet?: true; task?: MemberTask }
+  | {
+      role: 'user'
+      text: string
+      attachments: AttachChip[]
+      notify?: true
+      quiet?: true
+      task?: MemberTask
+      handoff?: HandoffInfo
+    }
   | { role: 'assistant'; blocks: DisplayBlock[]; durationMs?: number }
 
 /** 与 preload/主进程 ChatStreamEvent 结构一致（按既定模式在渲染层复述线缆类型）。 */
@@ -398,7 +419,14 @@ type StreamEvent =
     }
   | {
       type: 'turn_start'
-      user: { text: string; attachments: AttachChip[]; notify?: true; quiet?: true; task?: MemberTask }
+      user: {
+        text: string
+        attachments: AttachChip[]
+        notify?: true
+        quiet?: true
+        task?: MemberTask
+        handoff?: HandoffInfo
+      }
     }
   | { type: 'insert'; text: string }
   | { type: 'inserts'; pending: string[] }
@@ -637,7 +665,8 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
         attachments: dm.attachments.length ? dm.attachments : undefined,
         ...(dm.notify ? { notify: true } : {}),
         ...(dm.quiet ? { quiet: true } : {}),
-        ...(dm.task ? { task: dm.task } : {})
+        ...(dm.task ? { task: dm.task } : {}),
+        ...(dm.handoff ? { handoff: dm.handoff } : {})
       }
     }
     const blocks: ChatBlock[] = dm.blocks.map((b) => {

@@ -36,8 +36,10 @@ interface TasksContextValue {
   runNow: (id: string) => Promise<{ ok: boolean; reason?: string; already?: 'running' | 'queued' }>
   /** 编辑任务（标题/指令/日程/人格/模型）；主进程校验日程并重算下次触发，广播回全量列表。 */
   update: (input: TaskUpdateInput) => Promise<TaskRecord | null>
-  /** 删除任务（连同其运行历史；独占会话保留，由用户在对话列表自行删除）。 */
+  /** 删除任务（连同其运行历史；绑定了对话的连任务对话一起删，独立运行的任务对话保留）。 */
   remove: (id: string) => Promise<void>
+  /** 「完成后通知本对话」开关：开 = 绑定创建它的对话（结果回到那个对话），关 = 独立运行。 */
+  setNotifyOrigin: (id: string, on: boolean) => Promise<void>
 }
 
 const TasksContext = createContext<TasksContextValue | null>(null)
@@ -87,7 +89,12 @@ export function TasksProvider({ children }: { children: ReactNode }): React.JSX.
     await window.deva.tasks.remove(id)
   }, [])
 
-  const value: TasksContextValue = { tasks, create, setStatus, runNow, update, remove }
+  const setNotifyOrigin = useCallback(async (id: string, on: boolean): Promise<void> => {
+    await window.deva.tasks.setNotifyOrigin(id, on)
+    // 刷新交由 tasks:changed 广播。
+  }, [])
+
+  const value: TasksContextValue = { tasks, create, setStatus, runNow, update, remove, setNotifyOrigin }
   return <TasksContext.Provider value={value}>{children}</TasksContext.Provider>
 }
 
