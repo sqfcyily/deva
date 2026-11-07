@@ -13,6 +13,7 @@ import {
 import {
   AlarmClock,
   AlertCircle,
+  BellRing,
   AlertTriangle,
   Loader2,
   MessageSquare,
@@ -1328,11 +1329,12 @@ function MemberWaits({
 
 /* ---------------- 绑定在本对话上的定时任务（对比稿 design/task-entry.html 方案 A + M2） ---------------- */
 
-/** 定时任务的「头像」：同管理面板任务行的图标（圆角方块里的日历钟），任务没有角色头像。 */
+/** 定时任务的「头像」：圆角方块里的图标，任务没有角色头像。出现在对话里的任务都是「完成后通知对话」的，
+ *  所以用铃铛（同创建后名片上那个开关、同管理页里绑定任务的图标）；独立运行的任务才用日历钟。 */
 function TaskFace({ size }: { size: number }): React.JSX.Element {
   return (
     <span className="cf-tface" style={{ width: size, height: size }} aria-hidden="true">
-      <CalendarClock size={Math.round(size * 0.52)} />
+      <BellRing size={Math.round(size * 0.52)} />
     </span>
   )
 }
@@ -1482,7 +1484,7 @@ function TaskBarRow({
     <div className="cf-members__row">
       <button type="button" className="cf-members__open" onClick={onOpen}>
         <span className={`cf-trow__icon is-${task.status}`}>
-          <CalendarClock size={16} />
+          <BellRing size={16} />
         </span>
         <span className="cf-members__main">
           <span className="cf-members__line">
@@ -1556,8 +1558,8 @@ function TaskLogHead({
         {view.backAlert && <span className="cf-back__dot" aria-hidden="true" />}
       </button>
       <span className="cf-members__sep" aria-hidden="true" />
-      {/* 标题栏里只放图标本身，不带列表行那种灰底方块 */}
-      <CalendarClock size={18} className="cf-conv__ticon" aria-hidden="true" />
+      {/* 标题栏里只放图标本身，不带列表行那种灰底方块；任务对话只有绑定任务才有，用铃铛 */}
+      <BellRing size={18} className="cf-conv__ticon" aria-hidden="true" />
       <span className="cf-conv__mname" title={task.prompt}>
         {task.title}
       </span>
@@ -3709,12 +3711,12 @@ function TasksPane({
   onAddByChat: () => void
 }): React.JSX.Element {
   const { t, locale } = useI18n()
-  const { tasks, create, setStatus, runNow, update, remove, setNotifyOrigin } = useTasks()
-  // 「完成后通知对话」开关的对话名：任务在哪个对话里创建的（对话已删则不提供开关）。
+  const { tasks, create, setStatus, runNow, update, remove } = useTasks()
+  // 详情「结果」行里的对话名：绑定任务完成后通知的那个对话。
   const { sessions: chatSessions } = useChat()
-  const originTitle = (task: TaskRecord): string | null => {
-    if (!task.originSessionId) return null
-    const s = chatSessions.find((x) => x.id === task.originSessionId)
+  const chatTitle = (task: TaskRecord): string | null => {
+    if (!task.ownerSessionId) return null
+    const s = chatSessions.find((x) => x.id === task.ownerSessionId)
     return s ? s.title || t('chat.untitled') : null
   }
   const { providers } = useModels()
@@ -3851,8 +3853,7 @@ function TasksPane({
           onSetStatus={(s) => void setStatus(viewTask.id, s)}
           onRunNow={() => doRunNow(viewTask)}
           onDelete={() => doDelete(viewTask)}
-          originTitle={originTitle(viewTask)}
-          onSetNotify={(on) => void setNotifyOrigin(viewTask.id, on)}
+          chatTitle={chatTitle(viewTask)}
         />
       ) : (
         <TasksEmpty hasTasks={tasks.length > 0} />
@@ -4058,8 +4059,12 @@ function TaskRailRow({
       onClick={onClick}
       onContextMenu={onContext}
     >
-      <span className={`cf-trow__icon is-${task.status}`} title={t('tasks.cardTitle')}>
-        <CalendarClock size={16} />
+      {/* 图标分两种：完成后通知对话的任务是铃铛，独立运行的是日历钟（详情页大图标同此） */}
+      <span
+        className={`cf-trow__icon is-${task.status}`}
+        title={t(task.ownerSessionId ? 'tasks.kindBound' : 'tasks.kindAlone')}
+      >
+        {task.ownerSessionId ? <BellRing size={16} /> : <CalendarClock size={16} />}
       </span>
       <div className="cf-trow__main">
         <div className="cf-trow__title">{task.title || t('chat.untitled')}</div>
@@ -4151,8 +4156,7 @@ function TaskDetail({
   onSetStatus,
   onRunNow,
   onDelete,
-  originTitle,
-  onSetNotify
+  chatTitle
 }: {
   task: TaskRecord
   personaName: string
@@ -4161,9 +4165,8 @@ function TaskDetail({
   onSetStatus: (status: TaskStatus) => void
   onRunNow: () => void
   onDelete: () => void
-  /** 创建它的对话的标题（对话里创建的任务才有；对话已删为 null）：有才显示「完成后通知对话」开关。 */
-  originTitle: string | null
-  onSetNotify: (on: boolean) => void
+  /** 完成后通知的那个对话的标题（绑定任务才有）。 */
+  chatTitle: string | null
 }): React.JSX.Element {
   const { t, locale } = useI18n()
   const rel = useRelativeTime()
@@ -4189,8 +4192,11 @@ function TaskDetail({
       <DragBar />
       <div className="cf-profile">
         <div className="cf-profile__inner cf-tdetail">
-          <div className={`cf-tdetail__icon is-${task.status}`}>
-            <CalendarClock size={30} />
+          <div
+            className={`cf-tdetail__icon is-${task.status}`}
+            title={t(task.ownerSessionId ? 'tasks.kindBound' : 'tasks.kindAlone')}
+          >
+            {task.ownerSessionId ? <BellRing size={30} /> : <CalendarClock size={30} />}
           </div>
           <div className="cf-profile__name">{task.title || t('chat.untitled')}</div>
           <div className="cf-tdetail__tags">
@@ -4241,29 +4247,13 @@ function TaskDetail({
               <span className="cf-profile__k">{t('tasks.fModel')}</span>
               <span className="cf-profile__v">{modelLabel}</span>
             </div>
-            {/* 结果：对话里创建的任务可以开 / 关「完成后通知对话」（同创建后的卡上那个按钮）。 */}
-            {originTitle && (
+            {/* 绑定对话的任务多一行「通知对话 对话名」，样式同上面各行；独立运行的没有这一行（顶部铃铛 / 日历钟
+                已经区分了两种任务）。这里不切换绑定，开关只在创建后的名片上。 */}
+            {chatTitle && (
               <div className="cf-profile__row">
-                <span className="cf-profile__k">{t('tasks.fResult')}</span>
-                <span className="cf-profile__v">
-                  {task.ownerSessionId ? (
-                    <>
-                      {fill(t('tasks.notifyChatNamed'), { name: originTitle })}
-                      <span className="cf-tdetail__dim"> · {t('tasks.notifyChatHint')}</span>
-                    </>
-                  ) : (
-                    <>
-                      {t('tasks.resultAlone')}
-                      <span className="cf-tdetail__dim"> · {t('tasks.resultAloneHint')}</span>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    className="cf-tdetail__link"
-                    onClick={() => onSetNotify(!task.ownerSessionId)}
-                  >
-                    {task.ownerSessionId ? t('tasks.notifyChatOffAct') : fill(t('tasks.notifyChatNamed'), { name: originTitle })}
-                  </button>
+                <span className="cf-profile__k">{t('tasks.fNotifyChat')}</span>
+                <span className="cf-profile__v cf-tdetail__chat" title={chatTitle}>
+                  {chatTitle}
                 </span>
               </div>
             )}

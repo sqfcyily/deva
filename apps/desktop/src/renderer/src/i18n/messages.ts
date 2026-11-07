@@ -966,13 +966,14 @@ const zhCN: MessageTree = {
     rowPrompt: '指令',
     // 创建后的卡 / 任务详情上的「完成后通知本对话」开关（见 design/task-card-bind.html 方案 A）
     notifyChat: '完成后通知本对话',
-    notifyChatNamed: '完成后通知对话「{name}」',
     notifyChatHint: '没有新情况不打扰',
     notifyChatOn: '已开启，点一下改回独立运行',
     notifyChatOff: '开了以后任务的结果回到这个对话，需要处理的交给主角色',
-    notifyChatOffAct: '改为独立运行',
-    resultAlone: '独立运行',
-    resultAloneHint: '完成后系统通知',
+    // 详情页：绑定对话的任务多一行「通知对话 对话名」，不提供「改为独立运行」
+    fNotifyChat: '通知对话',
+    // 两种任务的图标提示：通知对话的是铃铛，独立运行的是日历钟
+    kindBound: '完成后通知对话的定时任务',
+    kindAlone: '独立运行的定时任务',
     // 管理页（左列表 + 右详情）
     searchPlaceholder: '搜索任务',
     // 新建入口（搜索框旁的 + 菜单，布局同「添加角色」）
@@ -2356,13 +2357,12 @@ const en: MessageTree = {
     rowExec: 'Run as',
     rowPrompt: 'Prompt',
     notifyChat: 'Report to this chat',
-    notifyChatNamed: 'Report to “{name}”',
     notifyChatHint: 'stays quiet when nothing is new',
     notifyChatOn: 'On — click to run on its own again',
     notifyChatOff: 'Results come back to this chat; anything that needs action goes to the main role',
-    notifyChatOffAct: 'Run on its own instead',
-    resultAlone: 'Run on its own',
-    resultAloneHint: 'system notification when done',
+    fNotifyChat: 'Reports to',
+    kindBound: 'Scheduled task that reports to a chat',
+    kindAlone: 'Scheduled task that runs on its own',
     // Management page (list + detail)
     searchPlaceholder: 'Search tasks',
     // Create entry (+ menu beside the search box, same layout as “Add persona”)

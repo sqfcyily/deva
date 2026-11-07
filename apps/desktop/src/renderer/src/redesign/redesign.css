@@ -4096,21 +4096,14 @@ body.cf-resizing-y * {
   color: var(--success, #2e7d32);
   background: color-mix(in srgb, var(--success, #2e7d32) 12%, transparent);
 }
-/* 任务详情「结果」行：淡色说明 + 主题色链接式开关 */
-.cf-tdetail__dim {
-  color: var(--fg-subtle);
-}
-.cf-tdetail__link {
-  margin-left: 8px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--accent);
-  font-size: inherit;
-  cursor: pointer;
-}
-.cf-tdetail__link:hover {
-  text-decoration: underline;
+/* 任务详情「通知对话」行的对话名：同其他行的值，只是单行省略（写在 .cf-tdetail .cf-profile__v 之后，
+   盖掉它的 inline-flex 换行） */
+.cf-tdetail .cf-profile__v.cf-tdetail__chat {
+  display: block;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .cf-tdetail .cf-profile__name {
   margin-top: var(--space-3);
