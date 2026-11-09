@@ -34,9 +34,20 @@ import {
   memberListingPart,
   memoryListingPart,
   skillListingPart,
-  toolGuidePart,
   type MemberListingItem
 } from './listing'
+import {
+  TOOL_SEARCH,
+  USAGE_SUMMARY,
+  buildToolSearchTool,
+  hasDeferredTools,
+  isUsageGateResult,
+  runToolSearch,
+  searchedNames,
+  skillToolUsages,
+  unknownUsages,
+  usageGateResult
+} from './tool-search'
 import {
   MAIN_MEMBER_TOOLS,
   MAX_MEMBERS,
@@ -143,7 +154,6 @@ import { ATTACH_FOLDER_PREFIX, ATTACH_TEXT_PREFIX, buildAttachmentPart } from '.
 import { thumbnailDataUrl } from './image-read'
 import { isEn } from '../locale'
 import {
-  BROWSER_GUIDE,
   clearBrowserOperating,
   closeSessionPages,
   markBrowserTurnEnded,
@@ -548,12 +558,16 @@ function toDisplayMessages(
   // 而非误显为一张可再次点选的交互卡。真正从未答复的（无 result 无边车）才留作交互态。
   // 顺带收集每次 run_subagent 派出的子智能体（id 由调用 id 确定性派生），记录已被清理时续聊卡仍能取到标题。
   const resultIds = new Set<string>()
+  // 没查用法就调用、被拦下的按需加载工具（见 tool-search.ts）：画成一步「查看用法」（同流式），不画失败、不铸名片。
+  const gatedIds = new Set<string>()
   const subagentOrigins = new Map<string, { agent: string; description: string }>()
   for (const m of messages) {
     if (typeof m.content === 'string') continue
     for (const p of m.content) {
-      if (p.type === 'tool_result') resultIds.add(p.toolUseId)
-      else if (p.type === 'tool_use' && p.name === 'run_subagent') {
+      if (p.type === 'tool_result') {
+        resultIds.add(p.toolUseId)
+        if (isUsageGateResult(p.content)) gatedIds.add(p.toolUseId)
+      } else if (p.type === 'tool_use' && p.name === 'run_subagent') {
         const input = (p.input ?? {}) as { agent?: unknown; description?: unknown }
         subagentOrigins.set(subagentIdFor(p.id), {
           agent: typeof input.agent === 'string' && input.agent.trim() ? input.agent.trim() : GENERAL_SUBAGENT.name,
@@ -600,7 +614,16 @@ function toDisplayMessages(
           // propose_agent 铸成角色名片（惰性提议）；ask_user 铸成提问卡（含答复回填）；其余工具照常铸工具卡。
           // 被输出上限截断的调用一律是普通工具卡（与流式一致）：它参数残缺、从未执行，不是能答复的卡。
           const kind = (p.input as Record<string, unknown> | null)?.[TRUNCATED_FLAG] === true ? '' : p.name
-          if (kind === 'propose_agent')
+          if (gatedIds.has(p.id))
+            blocks.push({
+              kind: 'tool',
+              id: p.id,
+              name: TOOL_SEARCH,
+              args: { names: [p.name] },
+              status: 'ok',
+              summary: USAGE_SUMMARY
+            })
+          else if (kind === 'propose_agent')
             blocks.push({
               kind: 'agentcard',
               id: p.id,
@@ -721,7 +744,7 @@ function toDisplayMessages(
             (x): x is Extract<DisplayBlock, { kind: 'tool' }> => x.kind === 'tool' && x.id === p.toolUseId
           )
           if (!b) continue
-          b.status = p.isError ? 'error' : 'ok'
+          b.status = p.isError && !gatedIds.has(b.id) ? 'error' : 'ok'
           // 后台子智能体：这条结果只是「已在后台启动」，Task 卡的真实状态看运行表与 background 边车。
           const bg = background[b.id]
           if (backgroundSubagents.has(b.id)) b.status = 'running'
@@ -2093,9 +2116,10 @@ function buildSubagentTools(def: SubagentDef, personaId: string): ToolSpec[] {
   // create_* / propose_agent 在 toolSpecs 基表里，须显式剔除；memory_read 保留（只读无害）。
   const builtins = toolSpecs.filter((t) => !SUBAGENT_EXCLUDED.has(t.name))
   const mcp = getMcpToolSpecs(personaId)
-  if (def.tools === '*') return [...builtins, ...mcp]
-  const allow = new Set(def.tools)
-  return [...builtins.filter((t) => allow.has(t.name)), ...mcp]
+  const allow = def.tools === '*' ? null : new Set(def.tools)
+  const picked = allow ? builtins.filter((t) => allow.has(t.name)) : builtins
+  // 有按需加载的工具（如通用子智能体的 browser）才带 tool_search：只读的 Explore / Plan 等用不上。
+  return [...picked, ...(hasDeferredTools(picked) ? [buildToolSearchTool()] : []), ...mcp]
 }
 
 /**
@@ -3833,6 +3857,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       let stopReason: StopReason = 'end_turn'
       // 本步被中止 / 出错打断（而非干净结束）：仍落地已收到的部分，见下方提交段。
       let interrupted: 'aborted' | 'error' | null = null
+      // 按需加载工具（见 tool-search.ts）里用法还不在上下文里的，在发请求前定格：发 tool_call 事件（画成
+      // 「查看用法」）与工具循环里的拦截按同一份判定。子智能体禁用的工具照旧走「子智能体不可用」，不算在内。
+      let pendingUsage = new Set<string>()
+      const usageGated = (name: string): boolean =>
+        pendingUsage.has(name) && !(depth > 0 && SUBAGENT_EXCLUDED.has(name))
 
       // 单步流式 + 自动重连：遇可重试网络错误（含空闲僵死）→ 丢弃残缺尾部、退避后重发本步。
       // 无状态中转不支持断点续流，只能整步重发；已完成的前序步骤（工具卡/文本）不受影响。
@@ -3862,8 +3891,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // 项目成员名单：主对话的主轮，名单有增减或更新时附上（同技能清单）。
         const listMembers = args.listMembers
         if (listMembers) attachListing(history, (h) => memberListingPart(h, listMembers()))
-        // 复杂工具的详细用法：本步结果里有它、且历史里还没告知过时附上一次（任何深度都给：子智能体的历史是独立的）。
-        if (offeredTools.has('browser')) attachListing(history, (h) => toolGuidePart(h, 'browser', BROWSER_GUIDE))
+        pendingUsage = unknownUsages(history, offeredTools)
 
         for await (const ev of streamChat(
           { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
@@ -3895,9 +3923,19 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             // 若遇空 id，会把不同轮的记录串到同一个键上。
             const id = ev.id || `call_${randomUUID()}`
             toolCalls.push({ id, name: ev.name, args: ev.args })
+            // 没查用法就调用的按需加载工具会被拦下、改为附上用法：画成一步「查看用法」，不画失败，
+            // 名片类（create_task / propose_agent）也不铸名片——桌面与手机端都不会冒出一张作废的卡。
+            if (usageGated(ev.name))
+              emit(turnId, sessionId, {
+                type: 'tool_call',
+                id,
+                name: TOOL_SEARCH,
+                args: { names: [ev.name] },
+                ...(evMeta ?? {})
+              })
             // ask_user / exit_plan 不画通用工具卡：循环走到它们时再发专用 ask_user / plan_review 事件
             //（避免既有工具卡又有问答卡/计划卡）。todo_write 同理：进度走 todos 事件进胶囊，不进对话流。
-            if (ev.name !== 'ask_user' && ev.name !== 'exit_plan' && ev.name !== 'todo_write')
+            else if (ev.name !== 'ask_user' && ev.name !== 'exit_plan' && ev.name !== 'todo_write')
               emit(turnId, sessionId, {
                 type: 'tool_call',
                 id,
@@ -4165,6 +4203,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           readRuns.set(tc.id, p)
         }
 
+      // 本步结果里已给出用法的按需加载工具（同一步的 tool_search、先被拦下的调用、加载的技能）：
+      // 后面被拦下的同名调用只提示去看，不重复附用法。
+      const usageGiven = new Set<string>()
+      for (const tc of toolCalls)
+        if (tc.name === TOOL_SEARCH && tc.truncated === undefined)
+          for (const n of searchedNames(tc.args)) if (pendingUsage.has(n)) usageGiven.add(n)
+
       // 逐个执行工具（过权限闸门），结果回灌为一条 user 消息
       const resultParts: ContentPart[] = []
       for (const tc of toolCalls) {
@@ -4211,6 +4256,52 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             toolUseId: tc.id,
             content: `子智能体不能使用「${tc.name}」，请直接完成分配的任务。`,
             isError: true
+          })
+          continue
+        }
+
+        // tool_search：给出按需加载工具的完整用法（见 tool-search.ts）。只读，不过权限闸门。
+        if (tc.name === TOOL_SEARCH) {
+          const r = runToolSearch(tc.args, offeredTools)
+          args.onToolSummary?.(tc.id, r.summary)
+          emit(turnId, sessionId, {
+            type: 'tool_result',
+            id: tc.id,
+            name: tc.name,
+            summary: r.summary,
+            isError: r.isError,
+            ...(evMeta ?? {})
+          })
+          resultParts.push({
+            type: 'tool_result',
+            toolUseId: tc.id,
+            content: r.content,
+            isError: r.isError,
+            ...(r.listing ? { listing: r.listing } : {})
+          })
+          continue
+        }
+
+        // 没查用法就调用按需加载工具：不执行，附上完整用法请模型照着重调。界面上这一步是「查看用法」（见上方发
+        // tool_call 处），不算失败；给模型的结果仍标为出错——这次调用确实没有执行。
+        if (usageGated(tc.name)) {
+          const r = usageGateResult(tc.name, usageGiven.has(tc.name))
+          usageGiven.add(tc.name)
+          args.onToolSummary?.(tc.id, USAGE_SUMMARY)
+          emit(turnId, sessionId, {
+            type: 'tool_result',
+            id: tc.id,
+            name: TOOL_SEARCH,
+            summary: USAGE_SUMMARY,
+            isError: false,
+            ...(evMeta ?? {})
+          })
+          resultParts.push({
+            type: 'tool_result',
+            toolUseId: tc.id,
+            content: r.content,
+            isError: true,
+            ...(r.listing ? { listing: r.listing } : {})
           })
           continue
         }
@@ -4315,8 +4406,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           const a = (tc.args ?? {}) as { name?: unknown }
           const wanted = typeof a.name === 'string' ? a.name.trim() : ''
           const found = wanted ? loadSkillInstructionsByName(wanted, personaId) : null
+          // 技能接着要用的按需加载工具：用法一并附上，省得再查一步（本步已给过的不重复）。
+          const usages = found
+            ? skillToolUsages(found.allowedTools, new Set([...pendingUsage].filter((n) => !usageGiven.has(n))))
+            : null
+          for (const n of usages?.names ?? []) usageGiven.add(n)
           const content = found
-            ? `已加载技能「${found.name}」，请严格据此指令完成用户任务：\n\n${skillDirNote(found.dir)}${found.instructions}`
+            ? `已加载技能「${found.name}」，请严格据此指令完成用户任务：\n\n${skillDirNote(found.dir)}${found.instructions}` +
+              (usages ? `\n\n${usages.text}` : '')
             : `未找到名为「${wanted}」的可用技能。当前可用技能：${
                 enabledSkillSummaries(personaId).map((s) => s.name).join('、') || '（无）'
               }。`
@@ -4334,7 +4431,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             type: 'tool_result',
             toolUseId: tc.id,
             content,
-            isError: !found
+            isError: !found,
+            ...(usages ? { listing: usages.listing } : {})
           })
           continue
         }
@@ -4818,6 +4916,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       buildPlanTool(),
       buildTodoTool(),
       buildSkillTool(),
+      // 查看按需加载工具（browser、create_* 等，见 tool-search.ts）的完整用法；这几个工具在各类对话里至少剩 browser。
+      buildToolSearchTool(),
       subagentTool,
       buildSendToSubagentTool(),
       // 项目成员：主对话的交互轮提供 create_member / member_send / member_stop，成员会话提供 read_main；定时任务都不给。
@@ -5191,6 +5291,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 「/技能名」显式触发：命中本对话角色可用的技能 → 剥离该 token，把完整正文预置进本条消息（这一轮即生效）。
     // 未命中则原样保留（用户可能只是打了个斜杠），不做任何处理。
     let effectiveText = text
+    // 技能接着要用的按需加载工具的用法（见 tool-search.ts）：作为正文之前的独立块一并带上，省得模型再查一步。
+    let slashUsages: ReturnType<typeof skillToolUsages> = null
     const slashMatch = /^\/([A-Za-z0-9_-]+)[ \t]*([\s\S]*)$/.exec(text.trim())
     if (slashMatch) {
       const loaded = loadSkillInstructionsByName(slashMatch[1], resolvePersonaId(session.personaId))
@@ -5200,6 +5302,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           `（用户通过 /${loaded.name} 显式激活了技能「${loaded.name}」，请严格据下述指令完成本次任务）\n` +
           `===== 技能指令：${loaded.name} =====\n${skillDirNote(loaded.dir)}${loaded.instructions}\n===== 指令结束 =====` +
           (rest ? `\n\n用户补充：${rest}` : '')
+        // 成员会话不提供创建类工具，那几个的用法不附。
+        const usable = loaded.allowedTools.filter((n) => !session.parentId || !MEMBER_EXCLUDED.has(n))
+        slashUsages = skillToolUsages(usable, unknownUsages(history, new Set(usable)))
       }
     }
 
@@ -5238,6 +5343,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 用户 @ 了角色或成员（主对话的交互轮）：还不是成员的角色加入名单，并请主智能体把这条消息交给它们。
     const mentionNote = !session.parentId && trigger !== 'schedule' ? handleMentions(session, text) : null
     if (mentionNote) parts.push(mentionNote)
+    if (slashUsages) parts.push({ type: 'text', text: slashUsages.text, listing: slashUsages.listing })
     // 用户直接在成员会话里交代事情：名单上记下它在做什么（成员卡片显示任务标题）。
     if (session.parentId) noteMemberDirectTask(session, text)
     if (parts.length) {

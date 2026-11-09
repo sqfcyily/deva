@@ -381,6 +381,7 @@ const TOOL_HINTS: Record<string, string> = {
   create_mcp: '正在配置 MCP',
   todo_write: '正在更新待办清单',
   present_files: '正在交付文件',
+  tool_search: '正在查看工具用法',
   run_subagent: '正在交给子助手处理',
   send_to_subagent: '正在交给子助手处理'
 }

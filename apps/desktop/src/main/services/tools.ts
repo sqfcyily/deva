@@ -30,7 +30,8 @@ import {
   type ImageMime
 } from './image-read'
 import type { ImagePart, ListingRecord, ToolSpec } from '../providers/types'
-import { browserToolSpec, runBrowserTool } from './browser'
+import { BROWSER_BRIEF, BROWSER_GUIDE, browserToolSpec, runBrowserTool } from './browser'
+import { deferTool } from './tool-search'
 
 /**
  * Agent 工具集。工具名遵循 ^[a-zA-Z0-9_-]{1,64}$（各家 API 均不允许点号），
@@ -39,7 +40,8 @@ import { browserToolSpec, runBrowserTool } from './browser'
  * web_fetch 是唯一的网络工具：仅 http/https、带超时与大小上限、HTML 自动转纯文本。
  */
 
-export const toolSpecs: ToolSpec[] = [
+/** 完整定义。工具表用的是下面的 toolSpecs：按需加载的几个换成一句话描述 + 参数骨架。 */
+const fullToolSpecs: ToolSpec[] = [
   {
     name: 'read_file',
     description:
@@ -468,6 +470,26 @@ export const toolSpecs: ToolSpec[] = [
 ]
 
 /**
+ * 按需加载的工具（见 tool-search.ts）：不常用、说明又长。工具表里只有这句描述（写清做什么、什么时候用）与参数骨架，
+ * 完整定义由 tool_search 给出；没查就调用会被拦下并附上用法，故执行前模型必定看过完整定义。
+ */
+const DEFERRED: Record<string, { brief: string; guide?: string }> = {
+  browser: { brief: BROWSER_BRIEF, guide: BROWSER_GUIDE },
+  create_skill: { brief: '创建并启用一个单文件技能（Skill）。仅在用户明确想创建技能时使用。' },
+  propose_agent: { brief: '用户想通过对话创建一个角色（Agent）时，生成一张角色名片供用户确认。' },
+  create_task: {
+    brief:
+      '为用户创建定时任务（周期执行或一次性，如「每天 10 点发我热点新闻」「下午 5 点提醒我开会」）：生成一张确认名片，用户确认后才真正创建。'
+  },
+  create_mcp: { brief: '把一个 MCP 服务接入 Deva：写入配置并启用。仅在用户明确想接入某个 MCP 服务时使用。' }
+}
+
+export const toolSpecs: ToolSpec[] = fullToolSpecs.map((t) => {
+  const d = DEFERRED[t.name]
+  return d ? deferTool(t, d.brief, d.guide) : t
+})
+
+/**
  * exit_plan 工具规格。常驻主轮工具集：模型对非平凡任务先只读调研，再调用它提交计划待用户批准。
  * 该工具在 runAgentLoop 内「闸门前特判」，不走 executeTool、不授予任何能力——批准仅让循环继续执行。
  */
@@ -563,6 +585,8 @@ const READ_TOOLS = new Set([
   'web_fetch',
   'ask_user',
   'skill',
+  // 查看按需加载工具的用法：同为闸门前特判，列此仅兜底。
+  'tool_search',
   'run_subagent',
   'send_to_subagent',
   // 读记忆（主进程直读 ~/.deva 下的全局 / 项目记忆，无路径入参）；写/删记忆不在此集，落默认分支同 create_skill。

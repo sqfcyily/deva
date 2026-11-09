@@ -493,7 +493,7 @@ export function hasEnabledSkills(): boolean {
 export function loadSkillInstructionsByName(
   name: string,
   personaId: string
-): { name: string; instructions: string; dir?: string } | null {
+): { name: string; instructions: string; allowedTools: string[]; dir?: string } | null {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return null
   for (const s of listSkills()) {
@@ -502,6 +502,7 @@ export function loadSkillInstructionsByName(
       return {
         name: s.name,
         instructions: s.instructions,
+        allowedTools: s.allowedTools,
         ...(s.source === 'custom' ? { dir: join(skillsDir(), s.id) } : {})
       }
     }

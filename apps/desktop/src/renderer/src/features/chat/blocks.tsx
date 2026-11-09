@@ -57,6 +57,7 @@ import {
   CircleStop,
   MessagesSquare,
   UsersRound,
+  BookOpen,
   type LucideIcon
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
@@ -100,6 +101,8 @@ const TOOL_META: Record<string, { key: string; icon: LucideIcon }> = {
   present_files: { key: 'presentFiles', icon: Package },
   // 拼图与输入框「/」联想、角色资料卡里的技能图标一致。
   skill: { key: 'skill', icon: Puzzle },
+  // 查看按需加载工具的用法（主进程 tool-search.ts）；没查就调用、被拦下的那次也画成这一步。
+  tool_search: { key: 'toolSearch', icon: BookOpen },
   // 内置浏览器：时间轴上按动作区分（见 BROWSER_META）；这里是不知道动作时（如底部状态行）的通用说法。
   browser: { key: 'browser', icon: Globe },
   // 项目成员（见 services/members.ts）：主智能体添加成员 / 派任务 / 中止，成员查看主对话。
@@ -213,9 +216,26 @@ function memberObject(name: string, args: unknown): { who: string; task: string 
  */
 export const MemberFaceContext = createContext<((name: string) => React.ReactNode) | null>(null)
 
-function flowObject(name: string, args: unknown): { text: string; full: string } | null {
+/** tool_search 查的是哪些工具：写工具的显示名（不认识的写原名）。不在 TOOL_META 里的名片类工具另有文案键。 */
+const USAGE_NAME_KEY: Record<string, string> = { create_task: 'createTask', propose_agent: 'proposeAgent' }
+
+function usageObject(args: unknown, t?: (key: string) => string): { text: string; full: string } | null {
+  const raw = (args as { names?: unknown } | null)?.names
+  const names = (Array.isArray(raw) ? raw : [raw]).filter((n): n is string => typeof n === 'string' && n.trim() !== '')
+  if (!names.length) return null
+  const key = (n: string): string | undefined => TOOL_META[n]?.key ?? USAGE_NAME_KEY[n]
+  const text = names.map((n) => (t && key(n) ? t(`chat.tool.${key(n)}`) : n)).join('、')
+  return { text, full: text }
+}
+
+function flowObject(
+  name: string,
+  args: unknown,
+  t?: (key: string) => string
+): { text: string; full: string } | null {
   if (!TOOL_META[name]) return { text: name, full: name }
   if (name === 'browser') return browserObject(args)
+  if (name === 'tool_search') return usageObject(args, t)
   if (name === 'skill') {
     const skill = (args as { name?: unknown } | null)?.name
     return typeof skill === 'string' && skill.trim() ? { text: skill.trim(), full: skill.trim() } : null
@@ -1324,7 +1344,15 @@ const QUIET_SUMMARIES = new Set([
 ])
 
 /** 成功摘要只是复述对象的工具：技能的「已加载技能「名称」」与行上的「已加载技能 名称」重复，不写。 */
-const QUIET_TOOLS = new Set(['skill', 'create_member', 'member_send', 'member_stop', 'member_status', 'read_main'])
+const QUIET_TOOLS = new Set([
+  'skill',
+  'tool_search',
+  'create_member',
+  'member_send',
+  'member_stop',
+  'member_status',
+  'read_main'
+])
 
 /** 子智能体被用户亲手停下的结局摘要（后台「已停止」/ 前台「已中止」）：不当作出错展示。 */
 const STOPPED_SUMMARIES = new Set(['已停止', '已中止'])
@@ -1350,7 +1378,7 @@ function failReason(step: ToolStep, t: (key: string) => string): string | null {
 
 /** 行上的悬停提示：完整对象（命令 / 路径），失败时另起一行附上原因。 */
 function stepTitle(step: ToolStep, t: (key: string) => string): string | undefined {
-  const full = flowObject(step.name, step.args)?.full
+  const full = flowObject(step.name, step.args, t)?.full
   const reason = failReason(step, t)
   if (!reason) return full
   return full ? `${full}\n${reason}` : reason
@@ -1375,7 +1403,7 @@ export function ToolText({ step }: { step: ToolStep }): React.JSX.Element {
   const { t } = useI18n()
   const faceOf = useContext(MemberFaceContext)
   const key = verbKey(step.name, step.args)
-  const obj = flowObject(step.name, step.args)
+  const obj = flowObject(step.name, step.args, t)
   const member = memberObject(step.name, step.args)
   const reason = failReason(step, t)
   let verb: React.JSX.Element
