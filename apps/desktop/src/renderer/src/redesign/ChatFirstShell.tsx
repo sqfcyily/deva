@@ -146,13 +146,16 @@ import {
   useViewport
 } from './resizable'
 import {
+  AUTO_SHAPE,
   PersonaFace,
   USER_AVATAR_SEED,
   avatarDataUri,
   parseAvatarSpec,
   randomizeSpec,
+  resolveShape,
   resolveSpec,
   serializeAvatarSpec,
+  shapeMask,
   type AvatarSpec
 } from '../components/humation'
 import { useTheme } from '../theme/ThemeContext'
@@ -1047,16 +1050,19 @@ function fill(s: string, vars: Record<string, string>): string {
   return Object.entries(vars).reduce((acc, [k, v]) => acc.split(`{${k}}`).join(v), s)
 }
 
+/** 新角色的头像 spec（只定形状、按 seed 随机；部件与配色仍按 seed 生成）。 */
+const AUTO_AVATAR = serializeAvatarSpec({ shape: AUTO_SHAPE })
+
 /**
  * 成员的显示身份：用户 @ 加入的角色就用该角色本身（名字、头像不变）；主智能体创建的用成员名与职责，
- * 头像以成员会话 id 为种子生成（同角色没设头像时的做法），每个成员各不相同。
+ * 头像以成员会话 id 为种子生成（同角色没设头像时的做法），每个成员各不相同；形状按新角色随机（AUTO_SHAPE）。
  */
 function memberPersona(m: MemberMeta, personas: Persona[], fallback?: Persona): Persona | undefined {
   const own = personas.find((p) => p.id === m.personaId)
   if (m.origin === 'mention' && own) return own
   const base = own ?? fallback
   if (!base) return undefined
-  return { ...base, id: m.sessionId, name: m.name, desc: m.duty, avatar: '', avatarImage: '', model: '' }
+  return { ...base, id: m.sessionId, name: m.name, desc: m.duty, avatar: AUTO_AVATAR, avatarImage: '', model: '' }
 }
 
 /**
@@ -2044,6 +2050,10 @@ function Rail({
       key={s.id}
       session={s}
       owner={personas.find((p) => p.id === s.personaId)}
+      memberFaces={(s.members ?? [])
+        .filter((m) => !m.removed)
+        .map((m) => memberPersona(m, personas, personas.find((p) => p.id === s.personaId)))
+        .filter((p): p is Persona => !!p)}
       state={sessionStates[s.id]}
       browserPages={browserPages[s.id] ?? 0}
       tasks={tasksBySession[s.id] ?? []}
@@ -3414,9 +3424,68 @@ function AddMenu({
   )
 }
 
+/**
+ * 群组头像（有成员的对话，占 38px 头像列）：两人左右堆叠、三人三角排布（参考图 1）、四人 2×2 稍微堆叠（只压 2px），
+ * 超过四人时第 4 枚（右下）盖半透明深色层写 +N（N 含被盖住的这一位）。都是后一枚压住前一枚（同参考图 1），
+ * 写 +N 的第 4 枚自然在最上面；人物脸朝左，被压住的多是右侧头发与下方肩膀，脸仍露着。
+ * 主角色排第一位（左 / 上 / 左上）；头像一律框内构图，压处的分隔环取行底色。
+ * 两人时头像放大到 28px，左右各越出头像列 3px（落在行内边距与文字间距里，不挤文字）。
+ * 生成中的扫光只扫主角色那一枚，待处理 / 未读红点在方框右上角。
+ */
+const GROUP_LAYOUT: Record<1 | 2 | 3 | 4, { size: number; ring: boolean; at: [number, number][] }> = {
+  // 只剩一位（主角色不存在、只有一个成员）：照单人头像画满
+  1: { size: 38, ring: false, at: [[0, 0]] },
+  2: { size: 28, ring: true, at: [[-3, 5], [13, 5]] },
+  3: { size: 21, ring: true, at: [[8.5, 0], [0, 17], [17, 17]] },
+  // 20px 四枚，相邻只压住 2px（偏移 18），整体正好 38px
+  4: { size: 20, ring: true, at: [[0, 0], [18, 0], [0, 18], [18, 18]] }
+}
+function GroupFace({
+  people,
+  busy,
+  dot,
+  title
+}: {
+  people: Persona[]
+  busy?: boolean
+  dot?: boolean
+  title?: string
+}): React.JSX.Element {
+  const shown = people.slice(0, 4)
+  const more = people.length > 4 ? people.length - 3 : 0
+  const layout = GROUP_LAYOUT[shown.length as 1 | 2 | 3 | 4]
+  return (
+    <span className={`cf-group${layout.ring ? ' is-overlap' : ''}`} title={title}>
+      {shown.map((p, i) => {
+        const spec = parseAvatarSpec(p.avatar)
+        const [x, y] = layout.at[i]
+        return (
+          <span
+            key={`${i}:${p.id}`}
+            className="cf-group__face"
+            style={{ left: x, top: y, width: layout.size, height: layout.size }}
+          >
+            <PersonaFace seed={p.id} spec={spec} image={p.avatarImage} compact />
+            {busy && i === 0 && (
+              <span className="cf-ava__sweep" aria-hidden="true" style={{ mask: shapeMask(resolveShape(p.id, spec)) }} />
+            )}
+            {more > 0 && i === 3 && (
+              <span className="cf-group__more" style={{ mask: shapeMask(resolveShape(p.id, spec)) }}>
+                +{more}
+              </span>
+            )}
+          </span>
+        )
+      })}
+      {dot && <span className="cf-ava__dot" aria-hidden="true" />}
+    </span>
+  )
+}
+
 function ThreadRow({
   session,
   owner,
+  memberFaces,
   state,
   browserPages,
   tasks,
@@ -3426,6 +3495,8 @@ function ThreadRow({
 }: {
   session: SessionMeta
   owner?: Persona
+  /** 成员的显示身份（未移除的，按加入先后）：有成员时头像换成群组头像（GroupFace）。 */
+  memberFaces: Persona[]
   state?: SessionLiveState
   /** 这个对话在内置浏览器里开着几个网页（>0 时标题旁打地球徽标）。 */
   browserPages: number
@@ -3441,7 +3512,7 @@ function ThreadRow({
   // 任务独占会话（sessionId = `task-…`）：行上打一枚静态「⏰ 定时」徽标以区别普通对话。
   // 「有新运行未读」（state.unread）与待你处理（state.attention）都在头像右上角打红点。
   const isTask = session.id.startsWith('task-')
-  // 有项目成员（协作者）：行上打一枚成员徽标，悬停列出成员名。
+  // 有项目成员（协作者）：头像换成群组头像（堆叠 / 三角 / 四宫格），悬停列出成员名。
   const members = (session.members ?? []).filter((m) => !m.removed)
   return (
     <button
@@ -3451,13 +3522,27 @@ function ThreadRow({
     >
       {/* 对话中（streaming）→ 头像上一道扫光指示；有新消息 / 待你处理 → 右上角红点。
           正在查看的对话不打红点（内容就在眼前），已归档的也不打（归档即不再提醒）。 */}
-      <Avatar
-        persona={owner}
-        size={38}
-        busy={state?.streaming}
-        attention={!active && !session.archived && state?.attention}
-        unread={!active && !session.archived && state?.unread}
-      />
+      <span className="cf-thread__face">
+        {memberFaces.length > 0 ? (
+          <GroupFace
+            people={owner ? [owner, ...memberFaces] : memberFaces}
+            busy={state?.streaming}
+            dot={!active && !session.archived && (state?.attention || state?.unread)}
+            title={fill(t('cf.member.threadBadge'), {
+              n: String(members.length),
+              names: members.map((m) => m.name).join(t('cf.member.nameSep'))
+            })}
+          />
+        ) : (
+          <Avatar
+            persona={owner}
+            size={38}
+            busy={state?.streaming}
+            attention={!active && !session.archived && state?.attention}
+            unread={!active && !session.archived && state?.unread}
+          />
+        )}
+      </span>
       <div className="cf-thread__main">
         {/* 上：对话标题与时间（主视觉，醒目显示对话内容）；下：角色名，挂了文件夹则换成文件夹名（悬停看完整路径，角色看头像）。 */}
         <div className="cf-thread__top">
@@ -3480,7 +3565,7 @@ function ThreadRow({
           ) : (
             <div className="cf-thread__owner">{owner?.name ?? ''}</div>
           )}
-          {(isTask || tasks.length > 0 || members.length > 0 || browserPages > 0) && (
+          {(isTask || tasks.length > 0 || browserPages > 0) && (
             <span className="cf-thread__badges">
               {(isTask || tasks.length > 0) && (
                 <span
@@ -3495,17 +3580,6 @@ function ThreadRow({
                   }
                 >
                   <AlarmClock size={13} />
-                </span>
-              )}
-              {members.length > 0 && (
-                <span
-                  className="cf-thread__badge"
-                  title={fill(t('cf.member.threadBadge'), {
-                    n: String(members.length),
-                    names: members.map((m) => m.name).join(t('cf.member.nameSep'))
-                  })}
-                >
-                  <Users size={13} />
                 </span>
               )}
               {/* 开着内置浏览器的网页。地球是满圆，比闹钟显大，缩 1px 让两者观感一致 */}
@@ -5606,7 +5680,7 @@ function withoutHeadline(m: ChatMessage, headline: string): ChatMessage {
 function MemberInlineFace({ persona }: { persona: Persona }): React.JSX.Element {
   return (
     <span className="cf-inface" aria-hidden="true">
-      <Avatar persona={persona} plain />
+      <Avatar persona={persona} plain compact />
     </span>
   )
 }
@@ -7106,13 +7180,14 @@ function PersonaEditor({
 
   // 头像：初始化解析为**具体** spec，此后只处理显式值、保存也写显式值（杜绝漂移）。
   // 编辑=沿用已存（空则按 id 确定性生成，与各处显示一致）；名片=按角色名确定性生成（与聊天名片预览一致）；
-  // 新建=默认随机一枚（每个新角色开箱即有独特头像）。seed 只初始化取一次，故编辑期间不随输入名跳变。
+  // 新建=默认随机一枚（每个新角色开箱即有独特头像）。名片与新建都算新角色，形状随机（名片按名字派生，与聊天名片预览一致）。
+  // seed 只初始化取一次，故编辑期间不随输入名跳变。
   const avatarSeed = editing?.id || draft?.name || 'new-persona'
   const [avatar, setAvatar] = useState<AvatarSpec>(() =>
     editing
       ? resolveSpec(avatarSeed, parseAvatarSpec(editing.avatar))
       : proposing
-        ? resolveSpec(avatarSeed, null)
+        ? resolveSpec(avatarSeed, { shape: AUTO_SHAPE })
         : randomizeSpec()
   )
   // 自定义头像（用户上传的图，data URI）：非空即盖过上面的 spec 生成头像。编辑态取已存图，
@@ -7601,13 +7676,18 @@ function AvatarStack({
     >
       {shown.map((p) => (
         <span key={p.id} className="cf-avstack__ava">
-          <PersonaFace seed={p.id} spec={parseAvatarSpec(p.avatar)} image={p.avatarImage} />
+          <PersonaFace seed={p.id} spec={parseAvatarSpec(p.avatar)} image={p.avatarImage} compact />
         </span>
       ))}
       {veiled && (
         <span className="cf-avstack__ava">
-          <PersonaFace seed={veiled.id} spec={parseAvatarSpec(veiled.avatar)} image={veiled.avatarImage} />
-          <span className={`cf-avstack__veil${more >= 10 ? ' is-wide' : ''}`}>+{more}</span>
+          <PersonaFace seed={veiled.id} spec={parseAvatarSpec(veiled.avatar)} image={veiled.avatarImage} compact />
+          <span
+            className={`cf-avstack__veil${more >= 10 ? ' is-wide' : ''}`}
+            style={{ mask: shapeMask(resolveShape(veiled.id, parseAvatarSpec(veiled.avatar))) }}
+          >
+            +{more}
+          </span>
         </span>
       )}
     </span>
@@ -8257,7 +8337,7 @@ function Toggle({
 // 全应用头像（角色 / 人类用户）统一走 Humation：
 //  - 角色：seed=persona.id，叠加其 avatar spec（若有）。
 //  - 用户：个人资料里的头像（图片 / spec；未配置时主进程回默认头像），读到前回落固定 seed（USER_AVATAR_SEED）。
-// 结构：外层 .cf-ava 作定位框，内层 .cf-ava__face 圆形裁剪头像（无描边）。
+// 结构：外层 .cf-ava 作定位框，内层 .cf-ava__face 放头像本体（形状与探出由 PersonaFace 自己画，外层不裁剪）。
 function Avatar({
   persona,
   user,
@@ -8265,13 +8345,16 @@ function Avatar({
   busy,
   attention,
   unread,
-  plain
+  plain,
+  compact
 }: {
   persona?: Persona
   user?: boolean
   size?: number
   /** 不挂悬停提示：名字已经写在旁边的地方用（标题栏成员条、对话里成员名前的小头像）。 */
   plain?: boolean
+  /** 框内构图（不探出）：≤20px 自动启用；尺寸由 CSS 决定的小头像（成员名前）显式传。 */
+  compact?: boolean
   /** 忙碌（对话生成中）：头像上叠一道自左向右扫过的高光带，作就地「思考/生成中」指示。 */
   busy?: boolean
   /** 待你处理（问答 / 计划 / 挂载 / 待确认名片）：右上角红点。 */
@@ -8282,8 +8365,13 @@ function Avatar({
   const profile = useProfile()
   const style = { ...(size ? { '--sz': `${size}px` } : {}) } as React.CSSProperties
   const cls = `cf-ava${busy ? ' is-busy' : ''}${user ? ' is-user' : ''}`
+  const seed = user ? USER_AVATAR_SEED : (persona?.id ?? '')
+  const spec = user ? profile.avatar : parseAvatarSpec(persona?.avatar)
   // 遮层必须排在 .cf-ava__face 之后：同为 inset:0 的绝对定位兄弟，靠文档顺序压在头像之上；红点再压在最上。
-  const sweep = busy ? <span className="cf-ava__sweep" aria-hidden="true" /> : null
+  // 扫光按头像形状裁（形状恒铺满头像框）。
+  const sweep = busy ? (
+    <span className="cf-ava__sweep" aria-hidden="true" style={{ mask: shapeMask(resolveShape(seed, spec)) }} />
+  ) : null
   const marks = unread || attention ? <span className="cf-ava__dot" aria-hidden="true" /> : null
   // 非用户、非角色（理论上罕见）：空占位圈。
   if (!user && !persona)
@@ -8293,8 +8381,6 @@ function Avatar({
         {marks}
       </div>
     )
-  const seed = user ? USER_AVATAR_SEED : (persona as Persona).id
-  const spec = user ? profile.avatar : parseAvatarSpec((persona as Persona).avatar)
   const title =
     user || plain
       ? undefined
@@ -8307,6 +8393,7 @@ function Avatar({
           spec={spec}
           image={user ? profile.avatarImage : (persona as Persona).avatarImage}
           title={title}
+          compact={compact ?? (size ?? 28) <= 20}
         />
       </span>
       {sweep}

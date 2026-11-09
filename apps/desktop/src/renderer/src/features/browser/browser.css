@@ -93,7 +93,6 @@ body {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  overflow: hidden;
   display: grid;
   place-items: center;
   color: var(--fg-subtle);
@@ -206,8 +205,6 @@ body {
   flex: none;
   width: 18px;
   height: 18px;
-  border-radius: 50%;
-  overflow: hidden;
   display: grid;
   place-items: center;
 }

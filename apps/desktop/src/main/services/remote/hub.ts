@@ -1238,11 +1238,12 @@ async function handleAction(a: InboundAction): Promise<ActionResult> {
       if (getSession(v.sid)?.proposals?.[v.tool]) return { ok: false, message: '这张名片已经处理过了。' }
       if (v.a === 'accept') {
         // 与桌面「接受」同：建角色并启用（头像由 id 确定性生成，之后可在电脑上改）。
+        // 新角色形状随机：'auto' 由渲染层 humation.tsx 按 id 挑形状（形状清单只在渲染层，主进程不解释）。
         upsertPersona({
           name: str(raw.name) || '新角色',
           description: str(raw.description),
           prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
-          avatar: '',
+          avatar: '{"shape":"auto"}',
           model: '',
           enabled: true
         })

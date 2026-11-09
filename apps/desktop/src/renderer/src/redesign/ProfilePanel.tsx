@@ -4,7 +4,7 @@ import { ImagePlus, Pencil, Trash2 } from 'lucide-react'
 import type { MemoryEntry } from '../../../preload'
 import { useI18n } from '../i18n/i18n'
 import { useToast } from '../components/ToastProvider'
-import { PersonaFace, USER_AVATAR_SEED, resolveSpec } from '../components/humation'
+import { PersonaFace, USER_AVATAR_SEED, resolveShape, resolveSpec, shapeMask } from '../components/humation'
 import { useProfile } from '../store/profile'
 import { AvatarEditor } from './AvatarEditor'
 import { fill, useMemoryEditor, type EditBase, type TagHandlers } from './memory-editor'
@@ -99,7 +99,11 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
                       image={profile.avatarImage}
                       title={t('cf.fAvatar')}
                     />
-                    <span className="cf-me__avatarov" aria-hidden="true">
+                    <span
+                      className="cf-me__avatarov"
+                      aria-hidden="true"
+                      style={{ mask: shapeMask(resolveShape(USER_AVATAR_SEED, profile.avatar)) }}
+                    >
                       <ImagePlus size={20} />
                     </span>
                   </button>

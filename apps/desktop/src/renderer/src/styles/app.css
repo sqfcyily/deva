@@ -1561,9 +1561,6 @@ button.tl__line:hover {
 .tl__me {
   width: 16px;
   height: 16px;
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  background: var(--bg-inset);
 }
 .tl__me > svg,
 .tl__me > img {
@@ -1864,15 +1861,20 @@ button.tl__line:hover {
 .agentcard--rejected {
   opacity: 0.7;
 }
-/* 名片头像：圆形裁剪 Humation SVG，::after 补一圈身份主题色描边环。 */
+/*
+ * 头像（components/humation.tsx 的 PersonaFace）：形状底板 + 探出构图（不做悬停 / 点击动效，深色主题也不加白描边，用户定）。对比稿 design/avatar-shapes.html。
+ * 头像 SVG overflow 可见（头部与配件越出上沿），放头像的容器一律不要再 border-radius + overflow:hidden。
+ */
+.hm-ava {
+  display: block;
+  overflow: visible;
+}
+/* 名片头像：形状与探出由头像 SVG 自己画（components/humation.tsx），这里不裁剪。 */
 .agentcard__avatar {
   position: relative;
   flex: none;
   width: 40px;
   height: 40px;
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  background: var(--bg-inset, rgba(0, 0, 0, 0.04));
 }
 .agentcard__avatar > svg {
   display: block;
@@ -5974,9 +5976,6 @@ select.autotaskcard__input {
   flex: none;
   width: 26px;
   height: 26px;
-  border-radius: 50%;
-  overflow: hidden;
-  background: var(--bg-inset);
 }
 .select-ava > svg,
 .select-ava > img {

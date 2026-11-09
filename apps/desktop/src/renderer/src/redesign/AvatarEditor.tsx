@@ -4,13 +4,18 @@ import { useI18n } from '../i18n/i18n'
 import { useToast } from '../components/ToastProvider'
 import {
   AVATAR_COLORS,
+  AVATAR_SHAPES,
   AVATAR_SLOTS,
   PersonaFace,
+  USER_AVATAR_SEED,
   isNonePart,
   partLabel,
   partPreview,
   partsForSlot,
   randomizeSpec,
+  resolveShape,
+  shapeMask,
+  shapePath,
   type AvatarSpec
 } from '../components/humation'
 
@@ -132,6 +137,9 @@ export function AvatarEditor({
   const setColorSlot = (slot: string, hex: string): void =>
     setAvatar((a) => ({ ...a, colors: { ...(a.colors ?? {}), [slot]: fromHexInput(hex) } }))
   const setBackground = (hex: string): void => setAvatar((a) => ({ ...a, background: fromHexInput(hex) }))
+  const shape = resolveShape(seed, avatar)
+  // 「我」的头像默认圆形：随机只换部件与配色，不动形状（要换形状在下面手选）
+  const randomize = (): void => setAvatar(randomizeSpec(seed === USER_AVATAR_SEED ? shape : undefined))
 
   return (
     <div className="cf-avapanel">
@@ -145,7 +153,7 @@ export function AvatarEditor({
             onClick={() => fileRef.current?.click()}
           >
             <PersonaFace seed={seed} spec={avatar} image={avatarImage} title={title || t('cf.fAvatar')} />
-            <span className="cf-avaedit__upload" title={t('cf.avaImgUpload')}>
+            <span className="cf-avaedit__upload" title={t('cf.avaImgUpload')} style={{ mask: shapeMask(shape) }}>
               <ImagePlus size={20} aria-hidden="true" />
             </span>
           </button>
@@ -155,11 +163,7 @@ export function AvatarEditor({
               {t('cf.avaImgRemove')}
             </button>
           ) : (
-            <button
-              type="button"
-              className="cf-btn cf-avaedit__rand"
-              onClick={() => setAvatar(randomizeSpec())}
-            >
+            <button type="button" className="cf-btn cf-avaedit__rand" onClick={randomize}>
               {t('cf.avaRandom')}
             </button>
           )}
@@ -174,6 +178,27 @@ export function AvatarEditor({
         </div>
 
         <div className="cf-avaedit__main">
+          {/* 形状：底板形状，色块用当前背景色画；上传了图片时同样按此形状裁切。 */}
+          <div className="cf-avaedit__group">
+            <span className="cf-avaedit__glabel">{t('cf.avaShapeLabel')}</span>
+            <div className="cf-avaedit__parts">
+              {AVATAR_SHAPES.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  title={t(`cf.avaShape.${s}`)}
+                  aria-pressed={s === shape}
+                  className={`cf-avaedit__part cf-avaedit__shape${s === shape ? ' is-selected' : ''}`}
+                  onClick={() => setAvatar((a) => ({ ...a, shape: s }))}
+                >
+                  <svg viewBox="0 0 100 100" aria-hidden="true">
+                    <path d={shapePath(s)} fill={toHexInput(avatar.background)} />
+                  </svg>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* 部件：每槽一行横向缩略图；「无」选项渲染为文字块。 */}
           {slotPreviews.map(({ slot, parts }) => (
             <div key={slot} className="cf-avaedit__group">

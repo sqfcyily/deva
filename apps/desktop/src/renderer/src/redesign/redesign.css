@@ -133,21 +133,20 @@ body.cf-resizing-y * {
 .cf-navbtn {
   -webkit-app-region: no-drag;
 }
-/* 顶部用户头像：可点，打开个人资料面板；与下方导航之间留白 */
+/* 顶部用户头像：可点，打开个人资料面板；与下方导航之间留白。
+   悬停不加任何效果（头像形状不定，圆形描边环会套在形状外面；用户也不要头像的悬停动效），只给键盘聚焦一圈外框。 */
 .cf-iconrail__me {
   -webkit-app-region: no-drag;
   margin-bottom: var(--space-2);
   padding: 2px;
   border: none;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius);
   background: transparent;
   cursor: pointer;
-  transition: box-shadow 0.12s ease;
 }
-.cf-iconrail__me:hover,
 .cf-iconrail__me:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .cf-navbtn {
   position: relative;
@@ -766,6 +765,60 @@ body.cf-resizing-y * {
 .cf-thread.is-active {
   background: var(--bg-selected);
 }
+/*
+ * 成员小头像的分隔环要与行底同色：行底是叠在列表底色上的半透明色，这里按同样比例混出不透明的等效色
+ * （--bg-hover = 黑 4.5% / 深色白 6%，--bg-selected = 主题色 12% / 深色 20%，见 tokens.css）。
+ */
+.cf-thread {
+  --row-bg: var(--bg-panel);
+}
+.cf-thread:hover {
+  --row-bg: color-mix(in srgb, var(--bg-panel), #000 4.5%);
+}
+.cf-thread.is-active {
+  --row-bg: color-mix(in srgb, var(--bg-panel), var(--accent) 12%);
+}
+:root[data-theme='dark'] .cf-thread:hover {
+  --row-bg: color-mix(in srgb, var(--bg-panel), #fff 6%);
+}
+:root[data-theme='dark'] .cf-thread.is-active {
+  --row-bg: color-mix(in srgb, var(--bg-panel), var(--accent) 20%);
+}
+/* 群组头像（有成员的对话）：两人左右堆叠、三人三角排布、四人 2×2 稍微堆叠、更多时第 4 枚写 +N（GroupFace） */
+.cf-thread__face {
+  position: relative;
+  width: 38px;
+  height: 38px;
+}
+.cf-group {
+  position: relative;
+  display: block;
+  width: 38px;
+  height: 38px;
+}
+.cf-group__face {
+  position: absolute;
+}
+/* 堆叠效果：重叠处沿头像形状画一圈与行底同色的分隔环（SVG 里的 --hm-ring），外露 2px */
+.cf-group.is-overlap .cf-group__face {
+  --hm-ring: var(--row-bg);
+  --hm-ring-w: 4px;
+}
+/* 超过四人：第 4 枚盖半透明深色层（按头像形状蒙版）写白色 +N，任何头像颜色上都看得清 */
+.cf-group__more {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.38);
+  color: #fff;
+  /* 遮罩调浅后浅色头像上白字偏弱，加一点柔和投影托住 */
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.45);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
 .cf-thread__main {
   min-width: 0;
 }
@@ -881,8 +934,9 @@ body.cf-resizing-y * {
   white-space: nowrap;
 }
 
-/* 头像 —— 外层 .cf-ava 作定位框，内层 .cf-ava__face 圆形裁剪头像本体。
-   刻意无描边：头像即一枚圆形图，不再有身份色环。 */
+/* 头像 —— 外层 .cf-ava 作定位框，内层 .cf-ava__face 放头像本体。
+   形状与「探出」由 PersonaFace 在 SVG 里画（components/humation.tsx），这里**不再圆形裁剪**——一裁就切掉越出上沿的头部。
+   刻意无描边。 */
 .cf-ava {
   --sz: 28px;
   position: relative;
@@ -894,9 +948,6 @@ body.cf-resizing-y * {
 .cf-ava__face {
   position: absolute;
   inset: 0;
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  background: var(--bg-inset);
 }
 .cf-ava__face > svg,
 .cf-ava__face > img {
@@ -907,11 +958,10 @@ body.cf-resizing-y * {
 }
 
 /* 忙碌（对话生成中）：一道高光斜带自左向右扫过头像，作就地「思考/生成中」指示。
-   遮层与 .cf-ava__face 同框（inset:0）且自行圆形裁剪，故光带只在头像圆内可见、不会漏到行上。 */
+   遮层与 .cf-ava__face 同框（inset:0），按头像形状蒙版（行内 mask，形状恒铺满头像框），故光带只在底板内可见。 */
 .cf-ava__sweep {
   position: absolute;
   inset: 0;
-  border-radius: var(--radius-full);
   overflow: hidden;
   pointer-events: none;
 }
@@ -2392,7 +2442,6 @@ body.cf-resizing-y * {
   flex: none;
   width: 16px;
   height: 16px;
-  border-radius: 50%;
   object-fit: cover;
 }
 /*
@@ -2554,9 +2603,6 @@ body.cf-resizing-y * {
   position: relative;
   width: var(--sz);
   height: var(--sz);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  background: var(--bg-inset);
   user-select: none;
 }
 .cf-profile__ava > svg,
@@ -3721,15 +3767,12 @@ body.cf-resizing-y * {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-/* 缩略图：圆形裁剪 SVG + ::after 主题色描边环（与列表头像同构）。 */
+/* 缩略图：形状与探出由头像 SVG 自己画，这里不裁剪。 */
 .cf-avapick__face {
   position: relative;
   flex: none;
   width: 48px;
   height: 48px;
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  background: var(--bg-base, #fff);
 }
 .cf-avapick__face > svg,
 .cf-avapick__face > img {
@@ -3755,12 +3798,8 @@ body.cf-resizing-y * {
   height: 96px;
   padding: 0;
   border: none;
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  background: var(--bg-base, #fff);
+  background: transparent;
   cursor: pointer;
-  box-shadow: 0 0 0 1px var(--border);
-  transition: box-shadow 0.12s ease;
 }
 .cf-me__avatar > svg,
 .cf-me__avatar > img {
@@ -3769,10 +3808,11 @@ body.cf-resizing-y * {
   height: 100%;
   object-fit: cover;
 }
-.cf-me__avatar:hover,
+/* 形状不定，不再画圆形描边环；悬停靠遮层提示，键盘聚焦给一圈外框 */
 .cf-me__avatar:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
 }
 .cf-me__avatarov {
   position: absolute;
@@ -4028,7 +4068,7 @@ body.cf-resizing-y * {
   align-items: center;
   gap: var(--space-2);
 }
-/* 大预览：圆形裁剪头像本体（与列表头像同构，无描边），同时是上传图片的点击入口。 */
+/* 大预览：头像本体（形状与探出由 SVG 自己画，这里不裁剪），同时是上传图片的点击入口。 */
 .cf-avaedit__preview {
   padding: 0;
   border: 0;
@@ -4036,9 +4076,7 @@ body.cf-resizing-y * {
   position: relative;
   width: 96px;
   height: 96px;
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  background: var(--bg-inset);
+  background: transparent;
 }
 .cf-avaedit__preview > svg,
 .cf-avaedit__preview > img {
@@ -4118,6 +4156,11 @@ body.cf-resizing-y * {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+/* 形状色块：留些边距，与部件缩略图的视觉大小相当 */
+.cf-avaedit__shape > svg {
+  width: 30px;
+  height: 30px;
 }
 .cf-avaedit__none {
   font-size: 11px;
@@ -4833,7 +4876,8 @@ a.bots-btn {
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
-/* 头像堆叠（扩展列表行尾、可用角色下拉框、对话搜索框）：后一个压前一个 6px，描边取所在底色 */
+/* 头像堆叠（扩展列表行尾、可用角色下拉框、对话搜索框）：后一个压前一个 6px，描边取所在底色。
+   描边沿头像形状画（SVG 里的 --hm-ring 环，按屏幕像素计宽、一半压在底板下，即外露 2px）。 */
 .cf-avstack {
   --sz: 20px;
   --ring: var(--bg-elevated);
@@ -4842,13 +4886,11 @@ a.bots-btn {
   flex: none;
 }
 .cf-avstack__ava {
+  --hm-ring: var(--ring);
+  --hm-ring-w: 4px;
   position: relative;
   width: var(--sz);
   height: var(--sz);
-  border-radius: 50%;
-  overflow: hidden;
-  background: var(--bg-inset);
-  box-shadow: 0 0 0 2px var(--ring);
 }
 .cf-avstack__ava + .cf-avstack__ava {
   margin-left: -6px;
@@ -4915,9 +4957,6 @@ a.bots-btn {
   flex: none;
   width: 30px;
   height: 30px;
-  overflow: hidden;
-  border-radius: 50%;
-  background: var(--bg-inset);
 }
 .bots-pick__ava img {
   width: 100%;

@@ -72,7 +72,7 @@ export function BrowserChrome(): React.JSX.Element {
   const face = (id?: string): React.JSX.Element => {
     const p = persona(id)
     return p ? (
-      <PersonaFace seed={p.id} spec={parseAvatarSpec(p.avatar)} image={p.avatarImage} title={p.name} />
+      <PersonaFace seed={p.id} spec={parseAvatarSpec(p.avatar)} image={p.avatarImage} title={p.name} compact />
     ) : (
       <Globe size={12} />
     )
