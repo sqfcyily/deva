@@ -64,8 +64,9 @@ nsis:
 mac:
   target:
     - dmg
-  # 1024×1024 png，electron-builder 自动转 icns
-  icon: build/icon.png
+  # 1024×1024 png，electron-builder 自动转 icns。按 macOS 图标网格四周留透明边距（底板 824 居中），
+  # 不能用满幅的 icon.png，否则 Dock 里比其它应用大一圈（issue #37）；由 scripts/gen-icon.mjs 生成
+  icon: build/icon-mac.png
   category: public.app-category.developer-tools
 
 dmg:

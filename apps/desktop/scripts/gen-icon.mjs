@@ -1,6 +1,8 @@
 /**
- * 生成应用图标：build/icon.png（1024，供 mac/linux，electron-builder 自动转 icns）
- * 与 build/icon.ico（16~256 多尺寸，供 Windows）。
+ * 生成应用图标：
+ * - build/icon.png（1024，满幅；README 展示用，Linux 各尺寸图标 build/icons 由它缩放而来）
+ * - build/icon.ico（16~256 多尺寸，供 Windows）
+ * - build/icon-mac.png（1024，按 macOS 图标网格四周留透明边距，electron-builder 转 icns）
  *
  * 零第三方依赖：按 build/icon.svg 的几何形状解析式光栅化（超采样抗锯齿），
  * 用内置 zlib 编码 PNG，ICO 内嵌 PNG 帧。改图形请同步修改 icon.svg 与下方 inShape。
@@ -19,10 +21,14 @@ const BG_R = 224 // 底板圆角
 const C0 = [0x4f, 0x46, 0xe5] // 渐变起点 indigo
 const C1 = [0x7c, 0x3a, 0xed] // 渐变终点 violet
 
-function inBg(x, y) {
-  const cx = Math.min(Math.max(x, BG_R), 1024 - BG_R)
-  const cy = Math.min(Math.max(y, BG_R), 1024 - BG_R)
-  return (x - cx) ** 2 + (y - cy) ** 2 <= BG_R * BG_R
+// macOS 图标网格：1024 画布内底板 824×824 居中（四周各留 100 透明边距）、圆角 185。
+// 系统不会替第三方图标补边距，满幅图标在 Dock / 启动台里会比其它应用大一圈（issue #37）。
+const MAC_GRID = { pad: 100, r: 185 }
+
+function inBg(x, y, r = BG_R) {
+  const cx = Math.min(Math.max(x, r), 1024 - r)
+  const cy = Math.min(Math.max(y, r), 1024 - r)
+  return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
 }
 
 function inShape(x, y) {
@@ -42,26 +48,34 @@ function inShape(x, y) {
 }
 
 // ── 光栅化 ─────────────────────────────────────────────────────────────────
-function render(size, ss = 4) {
+/**
+ * pad：四周透明边距（1024 画布坐标），标志整体以画布中心等比缩小；r：缩小后的底板圆角。
+ * 默认满幅（pad 0、圆角 224）。
+ */
+function render(size, ss = 4, { pad = 0, r = BG_R } = {}) {
   const px = new Uint8Array(size * size * 4)
   const k = 1024 / size
   const n = ss * ss
+  const s = (1024 - 2 * pad) / 1024 // 标志缩放比例
+  const toLogo = (v) => (v * k - pad) / s // 像素坐标 → 标志的 1024 坐标
+  const logoR = r / s
   for (let py = 0; py < size; py++) {
     for (let pxl = 0; pxl < size; pxl++) {
       let bgCov = 0
       let inkCov = 0
       for (let sy = 0; sy < ss; sy++) {
         for (let sx = 0; sx < ss; sx++) {
-          const x = (pxl + (sx + 0.5) / ss) * k
-          const y = (py + (sy + 0.5) / ss) * k
-          if (inBg(x, y)) {
+          const x = toLogo(pxl + (sx + 0.5) / ss)
+          const y = toLogo(py + (sy + 0.5) / ss)
+          if (inBg(x, y, logoR)) {
             bgCov++
             if (inShape(x, y)) inkCov++
           }
         }
       }
       if (!bgCov) continue
-      const t = (pxl + py + 1) / (2 * size) // 对角线渐变
+      // 对角线渐变，按底板而非画布铺开（满幅时两者相同）
+      const t = pad ? Math.min(Math.max((toLogo(pxl + 0.5) + toLogo(py + 0.5)) / 2048, 0), 1) : (pxl + py + 1) / (2 * size)
       const a = inkCov / bgCov
       const i = (py * size + pxl) * 4
       for (let c = 0; c < 3; c++) {
@@ -135,4 +149,5 @@ const frames = [16, 24, 32, 48, 64, 128, 256].map((size) => ({
   data: png(size, render(size, size <= 32 ? 8 : 4))
 }))
 writeFileSync(join(OUT, 'icon.ico'), ico(frames))
-console.log('generated build/icon.png (1024) and build/icon.ico (16-256)')
+writeFileSync(join(OUT, 'icon-mac.png'), png(1024, render(1024, 4, MAC_GRID)))
+console.log('generated build/icon.png (1024), build/icon.ico (16-256) and build/icon-mac.png (1024, macOS grid)')
