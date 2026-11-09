@@ -1,7 +1,9 @@
 /**
  * 检查更新（设置 → 关于 →「检查更新」）。只在用户点按钮时检查，不在后台自动检查。
  *
- * 检查：读 GitHub 的 releases/latest（预发布版这个接口本就不返回），和本机版本比较。
+ * 检查：读 GitHub 网页上的 releases/latest（预发布版这个地址本就不指向），和本机版本比较。不用 api.github.com：
+ * 未登录时每个 IP 每小时只有 60 次，开代理时出口 IP 多人共用，额度常被用光而返回 403（issue #39）；网页地址不占这个额度，
+ * electron-updater 的 GitHub 源也是这么读的。
  * 有新版时按安装方式分两种（见 shared/update.ts 的 UpdateMode）：
  *  - Windows 上用 exe 装的：electron-updater 读 Release 里的 latest.yml，应用内下载（校验 sha512），
  *    点「重启并安装」后静默覆盖安装并自动重开；下好了没点，下次退出时也会装上；
@@ -16,20 +18,8 @@ import type { UpdateMode, UpdateRelease, UpdateState } from '../../shared/update
 import { settleActiveTurns } from './chat'
 import { installedByNsis, isPortable } from './portable'
 
-const LATEST_API = 'https://api.github.com/repos/sqfcyily/deva/releases/latest'
-
-interface GithubAsset {
-  name: string
-  browser_download_url: string
-  /** uploaded = 已传完；open = 还在上传 */
-  state?: string
-}
-
-interface GithubRelease {
-  tag_name: string
-  html_url: string
-  assets?: GithubAsset[]
-}
+const RELEASES = 'https://github.com/sqfcyily/deva/releases'
+const TIMEOUT_MS = 15_000
 
 let getWindow: () => BrowserWindow | null = () => null
 let state: UpdateState = { phase: 'idle' }
@@ -109,19 +99,58 @@ function installerName(version: string): string | null {
   return null
 }
 
+/** 最新正式版的 tag。网页地址带 Accept: application/json 时跳转到该版本，并返回含 tag_name 的 JSON。 */
+async function latestTag(): Promise<string> {
+  const res = await net.fetch(`${RELEASES}/latest`, {
+    headers: { accept: 'application/json' },
+    signal: AbortSignal.timeout(TIMEOUT_MS)
+  })
+  if (!res.ok) throw new Error(`GitHub HTTP ${res.status}`)
+  const tag = ((await res.json()) as { tag_name?: unknown }).tag_name
+  if (typeof tag !== 'string' || !tag) throw new Error('GitHub: tag_name missing')
+  return tag
+}
+
+/**
+ * 该版本的 Release 里这个文件是否已传完、可以下载。只问 github.com：有文件时回 302 跳到下载服务器（不跟过去），
+ * 没有或还在上传时回 404。
+ */
+function assetReady(tag: string, name: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const req = net.request({
+      method: 'HEAD',
+      url: `${RELEASES}/download/${tag}/${encodeURIComponent(name)}`,
+      redirect: 'manual'
+    })
+    const timer = setTimeout(() => {
+      req.abort()
+      reject(new Error('GitHub: request timed out'))
+    }, TIMEOUT_MS)
+    // 先到的结果为准；不调 followRedirect，请求随即取消，之后的 error 事件落到已定的 Promise 上不起作用
+    const settle = (fn: () => void): void => {
+      clearTimeout(timer)
+      fn()
+    }
+    req.on('redirect', () => settle(() => resolve(true)))
+    req.on('response', (res) => {
+      const code = res.statusCode
+      settle(() =>
+        code === 404 ? resolve(false) : code < 300 ? resolve(true) : reject(new Error(`GitHub HTTP ${code}`))
+      )
+    })
+    req.on('error', (e) => settle(() => reject(e)))
+    req.end()
+  })
+}
+
 async function check(): Promise<void> {
   // 正在下载 / 已下好时不重查，免得把进度或「重启并安装」冲掉
   if (state.phase === 'checking' || state.phase === 'downloading' || state.phase === 'downloaded')
     return
   setState({ phase: 'checking' })
   try {
-    const res = await net.fetch(LATEST_API, {
-      headers: { accept: 'application/vnd.github+json' },
-      signal: AbortSignal.timeout(15_000)
-    })
-    if (!res.ok) throw new Error(`GitHub HTTP ${res.status}`)
-    const data = (await res.json()) as GithubRelease
-    const version = data.tag_name.replace(/^v/, '')
+    const tag = await latestTag()
+    const version = tag.replace(/^v/, '')
     if (compareVersions(version, app.getVersion()) <= 0) {
       found = null
       setState({ phase: 'latest' })
@@ -130,20 +159,24 @@ async function check(): Promise<void> {
     const mode: UpdateMode = canAutoInstall() ? 'auto' : isPortable() ? 'portable' : 'manual'
     // 发版时常是先在网页上发布 Release、CI 几分钟后才把安装包传上来：本机要用的文件传完之前不算有新版，
     // 免得用户点了下载却下不到（Windows 自动更新还要 latest.yml）
-    const uploaded = (data.assets ?? []).filter((a) => a.state !== 'open')
     const name = installerName(version)
-    const installer = name ? uploaded.find((a) => a.name === name) : undefined
     const ready =
       name === null ||
-      (installer !== undefined && (mode !== 'auto' || uploaded.some((a) => a.name === 'latest.yml')))
+      (
+        await Promise.all([
+          assetReady(tag, name),
+          mode === 'auto' ? assetReady(tag, 'latest.yml') : Promise.resolve(true)
+        ])
+      ).every(Boolean)
     if (!ready) {
       found = null
       setState({ phase: 'latest' })
       return
     }
-    const release = { version, pageUrl: data.html_url }
-    found = { release, mode, installerUrl: installer?.browser_download_url ?? null }
-    setState({ phase: 'available', release, mode, file: installer?.name ?? null })
+    const release = { version, pageUrl: `${RELEASES}/tag/${tag}` }
+    const installerUrl = name ? `${RELEASES}/download/${tag}/${encodeURIComponent(name)}` : null
+    found = { release, mode, installerUrl }
+    setState({ phase: 'available', release, mode, file: name })
   } catch (e) {
     setState({ phase: 'error', stage: 'check', message: errorText(e) })
   }
