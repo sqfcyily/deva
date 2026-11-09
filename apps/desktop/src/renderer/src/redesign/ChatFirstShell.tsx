@@ -1080,7 +1080,7 @@ function MemberBar({
 }: {
   members: MemberEntry[]
   sessionStates: Record<string, SessionLiveState>
-  /** 成员正等用户处理（提问 / 计划 / 选文件夹）：列表里名字后写「在等你处理」。 */
+  /** 成员正等用户处理（提问 / 计划 / 选文件夹 / 网页上登录等）：列表里名字后写「在等你处理」。 */
   waiting: (memberSessionId: string) => boolean
   onOpen: (memberSessionId: string) => void
   onRemove: (m: MemberMeta) => void
@@ -1223,19 +1223,23 @@ function MemberBar({
 
 /**
  * 成员正等你处理的卡（提问 / 计划 / 选文件夹）：主对话输入框上方一条一行，点开当场处理，处理完就消失。
+ * 成员请你在网页上登录等（内置浏览器的 handoff）同样一行，点「去处理」打开浏览器窗口到那个网页。
  * 这些卡不进主对话、也不经主角色，答复直接回到成员的那一轮（对比稿 design/member-direct.html 的结论）。
  */
 /**
  * 输入框上方的一条等你处理：成员会话里的提问 / 计划 / 选文件夹（sid = 成员会话），或主角色建成员时为新成员选文件夹
- * （sid = 主对话，isNew：成员还没建，没有头像和对话）。
+ * （sid = 主对话，isNew：成员还没建，没有头像和对话），或成员请你在网页上登录等（handoff：内置浏览器里等你操作的那个标签）。
  */
-interface MemberWait {
+type MemberWait = {
   sid: string
   name: string
   persona?: Persona
-  card: PendingCard
   isNew?: boolean
-}
+} & ({ card: PendingCard; handoff?: undefined } | { card?: undefined; handoff: BrowserHandoffWait })
+
+/** 成员在内置浏览器里等你操作（同 BrowserUiState.handoff 的一项）。 */
+type BrowserHandoffWait = { tab: string; reason: string; message: string }
+const BROWSER_WAIT_REASONS = new Set(['login', 'captcha', 'upload', 'confirm', 'other'])
 
 function MemberWaits({
   waits,
@@ -1254,7 +1258,27 @@ function MemberWaits({
   const [openKey, setOpenKey] = useState<string | null>(null)
   return (
     <div className="cf-mwaits">
-      {waits.map(({ sid, name, persona, card, isNew }) => {
+      {waits.map(({ sid, name, persona, card, isNew, handoff }) => {
+        if (handoff)
+          // 网页上等你操作：点整行打开浏览器窗口、切到那个标签（窗口里有「完成，继续」「跳过」），不在这里展开。
+          return (
+            <div key={`ho:${sid}`} className="cf-mwait">
+              <button
+                type="button"
+                className="cf-mwait__row"
+                onClick={() => void window.deva.browser.open({ tab: handoff.tab })}
+              >
+                <Avatar persona={persona} size={18} />
+                <span className="cf-mwait__text">
+                  {fill(t(`cf.member.waitBrowser.${BROWSER_WAIT_REASONS.has(handoff.reason) ? handoff.reason : 'other'}`), {
+                    name
+                  })}
+                </span>
+                {handoff.message && <span className="cf-mwait__sub">{handoff.message}</span>}
+                <span className="cf-mwait__act">{t('browser.goHandle')}</span>
+              </button>
+            </div>
+          )
         const isOpen = openKey === card.key
         const label =
           card.kind === 'ask'
@@ -4714,6 +4738,8 @@ function Conversation({
 }): React.JSX.Element {
   const { t, locale } = useI18n()
   const scrollRef = useRef<HTMLDivElement>(null)
+  // 成员在内置浏览器里等你操作（登录、验证等）：同提问 / 计划，在输入框上方的通知行里提醒（见 MemberWaits）。
+  const browserState = useBrowserState()
   // 执行步骤里成员名前的小头像（派任务、建成员等，见 blocks.tsx MemberFaceContext）：按名字在主对话名单里找，含已移除的。
   const memberFace = useCallback(
     (name: string): React.ReactNode => {
@@ -5212,14 +5238,18 @@ function Conversation({
         ...(pendingCards[currentSessionId] ?? [])
           .filter((c) => c.kind === 'mount' && c.member)
           .map((card) => ({ sid: currentSessionId, name: (card.kind === 'mount' && card.member) || '', card, isNew: true })),
-        ...members.flatMap((m) =>
-          (pendingCards[m.meta.sessionId] ?? []).map((card) => ({
-            sid: m.meta.sessionId,
-            name: m.meta.name,
-            persona: m.persona,
-            card
-          }))
-        )
+        ...members.flatMap((m): MemberWait[] => {
+          const handoff = browserState?.handoff[m.meta.sessionId]
+          return [
+            ...(pendingCards[m.meta.sessionId] ?? []).map((card) => ({
+              sid: m.meta.sessionId,
+              name: m.meta.name,
+              persona: m.persona,
+              card
+            })),
+            ...(handoff ? [{ sid: m.meta.sessionId, name: m.meta.name, persona: m.persona, handoff }] : [])
+          ]
+        })
       ]
 
   const view = (
@@ -5248,7 +5278,7 @@ function Conversation({
             <MemberBar
               members={members}
               sessionStates={sessionStates}
-              waiting={(id) => !!pendingCards[id]?.length}
+              waiting={(id) => !!pendingCards[id]?.length || !!browserState?.handoff[id]}
               onOpen={onOpenMember}
               onRemove={onRemoveMember}
             />
@@ -5414,12 +5444,8 @@ function Conversation({
           sessionId={currentSessionId}
           owner={owner}
           mentionables={mentionables}
-          // 成员对话：技能按成员的设定来源角色过滤；占位说明会同步给主角色；文件夹「不限」时显示的是主对话的
-          // 工作目录（跟随它），不给 ✕。
+          // 成员对话：技能按成员的设定来源角色过滤；文件夹「不限」时显示的是主对话的工作目录（跟随它），不给 ✕。
           roleId={memberView?.entry.meta.personaId}
-          syncNote={
-            memberView ? fill(t('cf.member.syncNote'), { owner: memberView.owner?.name ?? '' }) : undefined
-          }
           canUnmount={memberView ? !!memberView.entry.meta.root : true}
           streaming={streaming}
           focusRoot={focusRoot}
@@ -6164,7 +6190,6 @@ function Composer({
   owner,
   mentionables,
   roleId,
-  syncNote,
   canUnmount = true,
   streaming,
   focusRoot,
@@ -6185,8 +6210,6 @@ function Composer({
   mentionables: SlashCommand[]
   /** 技能按哪个角色过滤（缺省 = owner）：成员对话里是成员的设定来源角色。 */
   roleId?: string
-  /** 占位提示后缀（成员对话：「会同步告知 Deva」）。 */
-  syncNote?: string
   /** 文件夹 chip 上给不给 ✕（成员文件夹为「不限」时显示的是主对话的目录，卸载无意义）。 */
   canUnmount?: boolean
   streaming: boolean
@@ -6308,7 +6331,7 @@ function Composer({
       ? t('cf.insert.placeholder').replace('{name}', name)
       : locale === 'en'
         ? `Message ${name}…`
-        : `跟 ${name} 说点什么…`) + (syncNote && !streaming ? `（${syncNote}）` : '')
+        : `跟 ${name} 说点什么…`)
   const supported = pending.filter((p) => p.supported)
   const canSend = Boolean(input.trim()) || supported.length > 0
   // 回合进行中有文字：唯一的按键是「发送」（插入当前轮）。只插文字，待发附件留在输入框里随下一条消息发出。

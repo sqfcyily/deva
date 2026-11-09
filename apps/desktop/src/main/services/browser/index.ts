@@ -48,6 +48,7 @@ export { liveTab, startLive, stopLive } from './live'
 export {
   clearOperating as clearBrowserOperating,
   dock as dockBrowserWindow,
+  hasHandoff as browserHasHandoff,
   registerBrowserIpc,
   respondHandoff,
   setMainWindowGetter,
@@ -189,6 +190,14 @@ interface BrowserToolContext {
   canPromptUser?: boolean
   /** 当前对话的角色：浏览器窗口的标签上显示其头像。 */
   personaId?: string
+  /** 成员会话：handoff 不弹窗口，由主对话的通知行提醒（见 ToolContext.memberHandoff）。 */
+  memberHandoff?: MemberHandoff
+}
+
+/** 成员请用户在网页上操作：提示条署成员名；开始等待时 notify（弹系统通知）。 */
+export interface MemberHandoff {
+  name: string
+  notify: (reason: HandoffReason) => void
 }
 
 interface ToolOutcome {
@@ -525,7 +534,8 @@ async function act(
   sessionId: string,
   signal: AbortSignal | undefined,
   canPromptUser: boolean,
-  personaId?: string
+  personaId?: string,
+  member?: MemberHandoff
 ): Promise<ToolOutcome> {
   switch (action) {
     case 'handoff': {
@@ -550,7 +560,10 @@ async function act(
         closePage(page.id)
         page = moved
       }
-      const r = await requestHandoff(page, reason, message, signal)
+      // 成员：不弹窗口，主对话输入框上方出通知行（用户点「去处理」再打开），用户没在看 Deva 时弹系统通知
+      const waiting = requestHandoff(page, reason, message, signal, member ? { show: false, who: member.name } : {})
+      member?.notify(reason)
+      const r = await waiting
       if (r === 'aborted') fail('已中止')
       if (r === 'timeout') fail(`等待用户${what}超过 30 分钟，已不再等待`)
       if (r === 'skipped')
@@ -883,7 +896,7 @@ export async function runBrowserTool(
     // 作用在当前页面上的动作：先在浏览器窗口 / 胶囊上亮出「Deva 正在操作」（open 在 act 里建好页面后再亮）
     const pre = OPERATING_ACTIONS.has(action) ? currentPage(sessionId) : null
     if (pre) await operate(pre, action, undefined, ctx.signal)
-    return await act(action, a, sessionId, ctx.signal, ctx.canPromptUser === true, ctx.personaId)
+    return await act(action, a, sessionId, ctx.signal, ctx.canPromptUser === true, ctx.personaId, ctx.memberHandoff)
   } catch (e) {
     const msg = e instanceof BrowserToolError ? e.message : String((e as Error)?.message ?? e)
     const page = currentPage(sessionId)

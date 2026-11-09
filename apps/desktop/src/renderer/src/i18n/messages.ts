@@ -1071,7 +1071,6 @@ const zhCN: MessageTree = {
       taskFrom: '派来的任务',
       quote: '你的原话',
       note: '{owner} 的附注',
-      syncNote: '会同步告知 {owner}',
       empty: '{name} 还没有收到任务，也可以直接跟它说。',
       mentionHint: '加入本对话，由 {owner} 派活',
       // @ 联想：已是本对话成员的标签；「新建成员」（写入 @新成员，后面写需求）
@@ -1084,6 +1083,13 @@ const zhCN: MessageTree = {
       waitPlan: '{name} 提交了计划，等你批准',
       waitMount: '{name} 需要你选择文件夹',
       waitPick: '新成员 {name} 需要你选择文件夹',
+      waitBrowser: {
+        login: '{name} 需要你登录网页',
+        captcha: '{name} 需要你完成网页上的验证',
+        upload: '{name} 需要你在网页上上传文件',
+        confirm: '{name} 需要你在网页上确认',
+        other: '{name} 需要你在网页上操作'
+      },
       waitAnswer: '回答',
       waitReview: '查看',
       waitHandle: '处理',
@@ -2489,7 +2495,6 @@ const en: MessageTree = {
       taskFrom: 'Task from',
       quote: 'Your words',
       note: 'Note from {owner}',
-      syncNote: 'shared with {owner}',
       empty: '{name} hasn’t received any tasks yet — you can also talk to it directly.',
       mentionHint: 'Join this chat; {owner} assigns the work',
       tag: 'Member',
@@ -2500,6 +2505,13 @@ const en: MessageTree = {
       waitPlan: '{name} submitted a plan for your approval',
       waitMount: '{name} needs you to pick a folder',
       waitPick: 'New member {name} needs you to pick a folder',
+      waitBrowser: {
+        login: '{name} needs you to sign in on a web page',
+        captcha: '{name} needs you to complete a verification on a web page',
+        upload: '{name} needs you to upload a file on a web page',
+        confirm: '{name} needs you to confirm a step on a web page',
+        other: '{name} needs you to do something on a web page'
+      },
       waitAnswer: 'Answer',
       waitReview: 'Review',
       waitHandle: 'Handle',

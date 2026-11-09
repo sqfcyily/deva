@@ -30,7 +30,7 @@ import {
   type ImageMime
 } from './image-read'
 import type { ImagePart, ListingRecord, ToolSpec } from '../providers/types'
-import { BROWSER_BRIEF, BROWSER_GUIDE, browserToolSpec, runBrowserTool } from './browser'
+import { BROWSER_BRIEF, BROWSER_GUIDE, browserToolSpec, runBrowserTool, type MemberHandoff } from './browser'
 import { deferTool } from './tool-search'
 
 /**
@@ -635,6 +635,11 @@ export interface ToolContext {
   canPromptUser?: boolean
   /** 当前对话的角色：browser 在浏览器窗口的标签上显示其头像。 */
   personaId?: string
+  /**
+   * 项目成员的会话：browser 请用户在网页上操作（handoff）时不弹浏览器窗口，由主对话输入框上方的通知行提醒，
+   * 提示条署成员名；开始等待时调 notify（用户没在看 Deva 时弹系统通知）。
+   */
+  memberHandoff?: MemberHandoff
   /**
    * 全局记忆只读（项目成员的会话）：memory_write 只能写项目私有记忆（省略 scope 即项目），memory_delete 不能删全局条目。
    * 用户本人的通用偏好由主角色记。

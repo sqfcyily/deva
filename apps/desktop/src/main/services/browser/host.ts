@@ -80,7 +80,7 @@ const views = new Map<string, WebContentsView>()
 const operating = new Map<string, { tab: string; action: string; label?: string; timer?: NodeJS.Timeout }>()
 const handoffs = new Map<
   string,
-  { tab: string; reason: HandoffReason; message: string; finish: (r: HandoffResponse) => void }
+  { tab: string; reason: HandoffReason; message: string; who?: string; finish: (r: HandoffResponse) => void }
 >()
 /** 主窗口胶囊上「固定」着的预览卡在看哪个标签（渲染层上报）。 */
 let pinnedPreview: string | null = null
@@ -158,7 +158,12 @@ export function uiState(): BrowserUiState {
         .filter(([, o]) => visible.has(o.tab))
         .map(([sid, o]) => [sid, { tab: o.tab, action: o.action, label: o.label }])
     ),
-    handoff: Object.fromEntries([...handoffs].map(([sid, h]) => [sid, { tab: h.tab, reason: h.reason, message: h.message }]))
+    handoff: Object.fromEntries(
+      [...handoffs].map(([sid, h]) => [
+        sid,
+        { tab: h.tab, reason: h.reason, message: h.message, ...(h.who ? { who: h.who } : {}) }
+      ])
+    )
   }
 }
 
@@ -472,14 +477,17 @@ export function clearOperating(sessionId: string): void {
 /**
  * 请用户在网页上亲自操作：展开窗口、切到该标签、外框出提示条（「完成，继续」「跳过」），等用户处理。
  * 用户操作的就是 Deva 正在用的同一个页面，完成后不需要重新加载。
+ * opts.show = false：不弹窗口（成员会话：由主对话输入框上方的通知行提醒，用户点「去处理」再打开）；
+ * opts.who：提示条上署谁的名字（成员名；缺省用标签所属角色的名字）。
  */
 export function requestHandoff(
   page: BrowserPage,
   reason: HandoffReason,
   message: string,
   signal?: AbortSignal,
-  timeoutMs = 30 * 60_000
+  opts: { show?: boolean; who?: string; timeoutMs?: number } = {}
 ): Promise<HandoffResponse> {
+  const timeoutMs = opts.timeoutMs ?? 30 * 60_000
   const existing = handoffs.get(page.sessionId)
   if (existing) existing.finish('aborted')
   clearOperating(page.sessionId)
@@ -498,9 +506,18 @@ export function requestHandoff(
     const onAbort = (): void => finish('aborted')
     signal?.addEventListener('abort', onAbort, { once: true })
     const timer = setTimeout(() => finish('timeout'), timeoutMs)
-    handoffs.set(page.sessionId, { tab: page.id, reason, message, finish })
-    showWindow(page.id, true)
+    handoffs.set(page.sessionId, { tab: page.id, reason, message, ...(opts.who ? { who: opts.who } : {}), finish })
+    if (opts.show === false) {
+      // 不弹窗口：只更新外框（窗口正显示该对话的标签时出提示条）并推送状态，主窗口据此显示通知行
+      layout()
+      push()
+    } else showWindow(page.id, true)
   })
+}
+
+/** 该对话正等用户在网页上操作（member_status 报成员状态用）。 */
+export function hasHandoff(sessionId: string): boolean {
+  return handoffs.has(sessionId)
 }
 
 /** 外框 / 胶囊上的按钮：完成或跳过。 */

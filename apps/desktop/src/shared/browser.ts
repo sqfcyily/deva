@@ -29,8 +29,8 @@ export interface BrowserUiState {
   current: Record<string, string>
   /** Deva 正在操作：对话 → 标签、动作（同 browser 工具的 action）、对象（网址 / 元素名）。 */
   operating: Record<string, { tab: string; action: string; label?: string }>
-  /** 等用户在网页上操作：对话 → 标签、原因、模型给的说明。 */
-  handoff: Record<string, { tab: string; reason: BrowserHandoffReason; message: string }>
+  /** 等用户在网页上操作：对话 → 标签、原因、模型给的说明、提示条上署谁的名字（成员名；缺省用标签所属角色）。 */
+  handoff: Record<string, { tab: string; reason: BrowserHandoffReason; message: string; who?: string }>
 }
 
 /** 预览卡实时画面的一帧（主进程经 browser:live-frame 推给主窗口）。 */

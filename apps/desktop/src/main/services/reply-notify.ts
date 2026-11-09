@@ -79,11 +79,21 @@ export function notifyReplyDone(
   show(getWindow, opts.sessionId, opts.title, body)
 }
 
-/** 回合停下来等用户：问答（带首个问题）/ 计划审阅 / 挂载工作区。 */
+/** 回合停下来等用户：问答（带首个问题）/ 计划审阅 / 挂载工作区 / 在网页上操作（成员的 browser handoff）。 */
 export type PendingInput =
   | { kind: 'ask'; questions: string[] }
   | { kind: 'plan' }
   | { kind: 'mount' }
+  | { kind: 'browser'; reason: string }
+
+/** 在网页上操作的各原因（同 browser 工具 handoff 的 reason）。 */
+const BROWSER_INPUT: Record<string, [string, string]> = {
+  login: ['需要你在网页上登录', 'Needs you to sign in on a web page'],
+  captcha: ['需要你完成网页上的验证', 'Needs you to complete a verification on a web page'],
+  upload: ['需要你在网页上上传文件', 'Needs you to upload a file on a web page'],
+  confirm: ['需要你在网页上确认一步', 'Needs you to confirm a step on a web page'],
+  other: ['需要你在网页上操作', 'Needs you to do something on a web page']
+}
 
 export function notifyNeedsInput(
   getWindow: () => BrowserWindow | null,
@@ -103,6 +113,9 @@ export function notifyNeedsInput(
         : '需要你回答问题'
   } else if (input.kind === 'plan') {
     body = en ? 'A plan is ready for your review' : '计划已拟好，等待你审阅'
+  } else if (input.kind === 'browser') {
+    const [zh, enText] = BROWSER_INPUT[input.reason] ?? BROWSER_INPUT.other
+    body = en ? enText : zh
   } else {
     body = en
       ? 'A workspace folder must be mounted to continue'

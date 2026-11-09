@@ -40,7 +40,7 @@ import {
   TOOL_SEARCH,
   USAGE_SUMMARY,
   buildToolSearchTool,
-  hasDeferredTools,
+  fitToolSearch,
   isUsageGateResult,
   runToolSearch,
   searchedNames,
@@ -154,6 +154,7 @@ import { ATTACH_FOLDER_PREFIX, ATTACH_TEXT_PREFIX, buildAttachmentPart } from '.
 import { thumbnailDataUrl } from './image-read'
 import { isEn } from '../locale'
 import {
+  browserHasHandoff,
   clearBrowserOperating,
   closeSessionPages,
   markBrowserTurnEnded,
@@ -2119,7 +2120,7 @@ function buildSubagentTools(def: SubagentDef, personaId: string): ToolSpec[] {
   const allow = def.tools === '*' ? null : new Set(def.tools)
   const picked = allow ? builtins.filter((t) => allow.has(t.name)) : builtins
   // 有按需加载的工具（如通用子智能体的 browser）才带 tool_search：只读的 Explore / Plan 等用不上。
-  return [...picked, ...(hasDeferredTools(picked) ? [buildToolSearchTool()] : []), ...mcp]
+  return fitToolSearch([...picked, buildToolSearchTool(), ...mcp])
 }
 
 /**
@@ -2841,6 +2842,31 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     return { ref, restored: false }
   }
 
+  /**
+   * 用户在成员会话里说话，而主智能体派来的上一项任务还没做完（被停止、出错，或 Deva 重启中断了，见 MemberRef.openTask）：
+   * 这一轮算接着做那项任务——任务标题不变，结束时照常交回主对话（成员以自己的身份回复，或按 report_to_me 唤醒主智能体）。
+   * 停止时排给主智能体、还没送到的「已停止」通知随之作废。返回是否接上了。
+   */
+  function resumeMemberTask(sub: StoredSession, model: ChatModelConfig): boolean {
+    if (memberDispatches.has(sub.id)) return false
+    const main = sub.parentId ? getSession(sub.parentId) : undefined
+    const ref = main?.members?.find((m) => m.sessionId === sub.id && !m.removed)
+    const open = ref?.openTask
+    if (!main || !open) return false
+    memberDispatches.set(sub.id, { toolUseId: open.toolUseId, model, reportToMe: open.reportToMe, group: open.group })
+    const queue = pendingNotices.get(main.id)
+    if (queue) {
+      const left = queue.filter((n) => n.toolUseId !== open.toolUseId)
+      if (left.length) pendingNotices.set(main.id, left)
+      else pendingNotices.delete(main.id)
+    }
+    // 要汇总的组里它又在做了：从「已完成」里拿掉（同再派一次）。
+    const groupDone = memberGroupDone.get(open.group)
+    if (groupDone) groupDone.items = groupDone.items.filter((i) => i.sid !== sub.id)
+    emitMemberProgress(main.id)
+    return true
+  }
+
   /** 用户直接在成员会话里说了一句：取这条消息开头（≤20 字）记作成员当前的任务标题。 */
   function noteMemberDirectTask(sub: StoredSession, text: string): void {
     const main = sub.parentId ? getSession(sub.parentId) : undefined
@@ -2879,7 +2905,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     publishSessionsChanged()
   }
 
-  /** create_member：主智能体为项目的一块创建成员（使用主对话角色的设定）。 */
+  /**
+   * create_member：主智能体为项目的一块创建成员。成员一律使用默认角色 Deva 的设定（不随主对话的角色：主角色的性格、
+   * 风格是给用户看的，分工干活的成员用通用设定）；名字、职责由主智能体给出，头像按成员会话 id 随机生成。
+   */
   function createMember(main: StoredSession, rawName: string, folder: string, duty: string): MemberToolResult {
     const name = rawName.replace(/^@+/, '').trim()
     const fail = (content: string, summary = '未能添加成员'): MemberToolResult => ({ content, summary, isError: true })
@@ -2904,7 +2933,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       root,
       duty,
       origin: 'created',
-      personaId: resolvePersonaId(main.personaId)
+      personaId: DEFAULT_PERSONA_ID
     })
     if (typeof r === 'string') return fail(r)
     publishSessionsChanged()
@@ -2954,7 +2983,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     sub.focusRoot = memberRoot(member, main.focusRoot ?? null)
     if (!member.modelSet) sub.model = memberModelRef(member, main)
     if (!member.effortSet && main.effort) sub.effort = main.effort
+    const prevTask = member.task
+    const prevOpen = member.openTask
     member.task = title
+    member.openTask = { toolUseId, reportToMe, group }
     saveProject(main.id)
     const prevDispatch = memberDispatches.get(sub.id)
     memberDispatches.set(sub.id, { toolUseId, model, reportToMe, group })
@@ -2966,9 +2998,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (busySessions.has(sub.id)) {
       const r = insertMessage({ sessionId: sub.id, text: content, model })
       if (!r.ok) {
-        // 没派出去：它手上那项任务的交差仍按原来的派发处理。
+        // 没派出去：它手上那项任务的交差仍按原来的派发处理，名单上的任务也还是原来那项。
         if (prevDispatch) memberDispatches.set(sub.id, prevDispatch)
         else memberDispatches.delete(sub.id)
+        member.task = prevTask
+        member.openTask = prevOpen
+        saveProject(main.id)
         return {
           content: `成员「${member.name}」正忙，暂时无法接收新任务，请等它完成后再派。`,
           summary: `「${member.name}」正忙`,
@@ -3007,7 +3042,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   /** member_stop：中止成员当前的任务（它照常收尾，结论标为已停止）。 */
-  function stopMember(member: MemberRef): MemberToolResult {
+  function stopMember(main: StoredSession, member: MemberRef): MemberToolResult {
     const turnId = busySessions.get(member.sessionId)
     if (!turnId)
       return {
@@ -3015,6 +3050,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         summary: '没有进行中的任务',
         isError: false
       }
+    // 主智能体叫停 = 这项任务不要了：用户之后在成员会话里再说话，不再算接着做它（见 MemberRef.openTask）。
+    if (member.openTask) {
+      member.openTask = undefined
+      saveProject(main.id)
+    }
     abortTurn(turnId)
     return { content: `已中止成员「${member.name}」当前的任务。`, summary: `已中止「${member.name}」`, isError: false }
   }
@@ -3049,7 +3089,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           ? '在等用户批准计划'
           : [...pendingMount.values()].some((p) => p.sessionId === id)
             ? '在等用户选择文件夹'
-            : ''
+            : browserHasHandoff(id)
+              ? '在等用户在网页上操作（如登录）'
+              : ''
     const mainRoot = main.focusRoot ?? null
     const blocks = pick.map((m) => {
       const item = memberItem(m, mainRoot)
@@ -3064,7 +3106,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             (since ? `，已用 ${Math.max(1, Math.round((now - since) / 60000))} 分钟` : '') +
             (waiting ? `；${waiting}` : '')
         )
-      } else lines.push('状态：空闲')
+      } else {
+        lines.push('状态：空闲')
+        // 派来的任务没做完（被停止、出错或 Deva 重启中断）：用户在成员会话里让它接着做时，完成后照常交回。
+        if (m.openTask)
+          lines.push(
+            `上次派的任务${m.task ? `「${m.task}」` : ''}还没做完（被停止、出错或因 Deva 重启中断）。要现在接着做就用 member_send 再派一次。`
+          )
+      }
       if (m.last) {
         const label = m.last.status === 'done' ? '已完成' : m.last.status === 'stopped' ? '已停止' : '未完成'
         const sub = getSession(m.sessionId)
@@ -3112,7 +3161,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         isError: true
       }
     }
-    if (tc.name === 'member_stop') return stopMember(member)
+    if (tc.name === 'member_stop') return stopMember(main, member)
     return sendToMember(main, member, str('task'), str('message'), tc.id, model, a.report_to_me === true, turnId)
   }
 
@@ -3163,6 +3212,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       status,
       ...(ref.task ? { task: ref.task } : {})
     }
+    // 派来的任务做完了才算交差；被停止、出错的留着，用户在成员会话里接着说话时接上（见 resumeMemberTask）。
+    if (dispatch && status === 'done') ref.openTask = undefined
     saveProject(main.id)
     publishSessionsChanged()
     // 要汇总的组：更新主对话的进度提示（最后一位交差时提示消失，随后唤醒主智能体汇总）。
@@ -4789,13 +4840,23 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const effectiveRoot = session.focusRoot ?? workspaceRoot
     // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
     // canPromptUser：手机端发起的对话与定时任务，用户不在电脑前，不能弹窗请他在网页上亲自操作（browser 的 handoff）。
+    // 成员会话可以请（同成员提问）：不弹浏览器窗口，主对话输入框上方出一行「前端 需要你登录 · 去处理」，用户没在看
+    // Deva 时弹系统通知（点开主对话）。
     const ctx: ToolContext = {
       workspaceRoot: effectiveRoot,
       signal: controller.signal,
       sessionId,
-      canPromptUser: trigger === 'desktop' && !isMember,
+      canPromptUser: trigger === 'desktop' || trigger === 'member',
       // 成员会话：全局记忆只读（用户本人的通用偏好由主角色记），项目私有记忆可写。
-      ...(isMember ? { globalMemoryReadonly: true } : {})
+      ...(isMember
+        ? {
+            globalMemoryReadonly: true,
+            memberHandoff: {
+              name: memberRef?.name ?? notifyTitle(sessionId),
+              notify: (reason: string) => notifyPending(turnId, sessionId, { kind: 'browser', reason })
+            }
+          }
+        : {})
     }
 
     // 本轮实际模型（对话优先外壳·快照固定/只改当前对话）：以**本对话**存的 model 为准（新建时快照角色偏好、
@@ -4930,13 +4991,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           : mainMemberTools()),
       ...getMcpToolSpecs(rolePersonaId)
     ]
-    const tools = isMember
-      ? turnTools.filter(
-          (t) => !MEMBER_EXCLUDED.has(t.name) && (effectiveRoot !== null || !MEMBER_MEMORY_TOOLS.has(t.name))
-        )
-      : scheduled
-        ? turnTools.filter((t) => !UNATTENDED_EXCLUDED.has(t.name))
-        : turnTools
+    // tool_search 的可选工具名按筛选后的工具表收窄（成员会话没有 create_* 等）。
+    const tools = fitToolSearch(
+      isMember
+        ? turnTools.filter(
+            (t) => !MEMBER_EXCLUDED.has(t.name) && (effectiveRoot !== null || !MEMBER_MEMORY_TOOLS.has(t.name))
+          )
+        : scheduled
+          ? turnTools.filter((t) => !UNATTENDED_EXCLUDED.has(t.name))
+          : turnTools
+    )
     // 项目说明在轮开头快照进 system：本轮中途改 AGENTS.md 不改 system（提示缓存前缀稳定），下一轮生效。
     // 成员负责子文件夹时，项目根目录（主对话工作目录）的 AGENTS.md 也一并读入，近者在后。
     const projectDoc = [
@@ -5344,8 +5408,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const mentionNote = !session.parentId && trigger !== 'schedule' ? handleMentions(session, text) : null
     if (mentionNote) parts.push(mentionNote)
     if (slashUsages) parts.push({ type: 'text', text: slashUsages.text, listing: slashUsages.listing })
-    // 用户直接在成员会话里交代事情：名单上记下它在做什么（成员卡片显示任务标题）。
-    if (session.parentId) noteMemberDirectTask(session, text)
+    // 用户直接在成员会话里交代事情：名单上记下它在做什么（成员卡片显示任务标题）。派来的上一项任务还没做完的，
+    // 这一轮算接着做它（任务标题不变，完成后交回主对话，见 resumeMemberTask）。
+    if (session.parentId && !resumeMemberTask(session, model)) noteMemberDirectTask(session, text)
     if (parts.length) {
       parts.push({ type: 'text', text: questionText })
       history.push({ role: 'user', content: parts })
@@ -5712,6 +5777,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const ref = main?.members?.find((m) => m.sessionId === memberSessionId && !m.removed)
       if (!main || !ref) return { ok: false }
       ref.removed = true
+      ref.openTask = undefined
       saveProject(sessionId)
       const turnId = busySessions.get(memberSessionId)
       if (turnId) abortTurn(turnId)

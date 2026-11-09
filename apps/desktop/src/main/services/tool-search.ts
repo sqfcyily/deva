@@ -55,9 +55,16 @@ export function deferTool(spec: ToolSpec, brief: string, guide?: string): ToolSp
   }
 }
 
-/** 工具表里有按需加载的工具时才需要带上 tool_search。 */
-export function hasDeferredTools(tools: ToolSpec[]): boolean {
-  return tools.some((t) => deferred.has(t.name))
+/**
+ * 工具表定稿后调用：表里的 tool_search 换成只列本表实际有的按需加载工具的版本；一个都没有就去掉 tool_search。
+ * 可选的工具名写成枚举，模型照着选：有的中转站会把请求里的工具名改写掉（如 browser → parse_bro05，回复里的
+ * 调用名再改回来），模型只看得到改写后的名字，凭工具表自己写名字就会写成改写后的，参数里的字符串中转站又不会改回。
+ */
+export function fitToolSearch(tools: ToolSpec[]): ToolSpec[] {
+  const names = tools.filter((t) => deferred.has(t.name)).map((t) => t.name)
+  return tools.flatMap((t) =>
+    t.name !== TOOL_SEARCH ? [t] : names.length ? [buildToolSearchTool(names)] : []
+  )
 }
 
 /** 逐个列出参数及其含义；对象参数与对象数组缩进列出其字段。 */
@@ -86,7 +93,8 @@ export function toolUsage(name: string): string | null {
   return lines.join('\n')
 }
 
-export function buildToolSearchTool(): ToolSpec {
+/** names：可查看用法的工具名，缺省为全部按需加载的工具（工具表定稿后由 fitToolSearch 收窄成本表实际有的）。 */
+export function buildToolSearchTool(names: string[] = [...deferred.keys()]): ToolSpec {
   return {
     name: TOOL_SEARCH,
     description:
@@ -96,8 +104,8 @@ export function buildToolSearchTool(): ToolSpec {
       properties: {
         names: {
           type: 'array',
-          items: { type: 'string' },
-          description: '要查看的工具名，如 ["browser"]。'
+          items: { type: 'string', enum: names },
+          description: '要查看的工具名，从可选值中选，可选多个。'
         }
       },
       required: ['names']

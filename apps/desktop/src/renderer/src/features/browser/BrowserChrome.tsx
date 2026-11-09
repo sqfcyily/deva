@@ -78,8 +78,8 @@ export function BrowserChrome(): React.JSX.Element {
     )
   }
   const api = window.deva.browser
-  // 状态条里说话的是这个对话的角色（没取到角色时叫 Deva）
-  const who = persona(active?.personaId)?.name || 'Deva'
+  // 状态条里说话的是这个对话的角色（没取到角色时叫 Deva）；成员请你操作时署成员名
+  const who = handoff?.who || persona(active?.personaId)?.name || 'Deva'
   const HandoffIcon = handoff ? (HANDOFF_ICON[handoff.reason] ?? Hand) : Hand
   const site = handoff && active ? siteOf(active.url) : null
 
