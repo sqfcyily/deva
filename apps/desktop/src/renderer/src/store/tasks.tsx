@@ -38,8 +38,6 @@ interface TasksContextValue {
   update: (input: TaskUpdateInput) => Promise<TaskRecord | null>
   /** 删除任务（连同其运行历史；绑定了对话的连任务对话一起删，独立运行的任务对话保留）。 */
   remove: (id: string) => Promise<void>
-  /** 「完成后通知本对话」开关：开 = 绑定创建它的对话（结果回到那个对话），关 = 独立运行。 */
-  setNotifyOrigin: (id: string, on: boolean) => Promise<void>
 }
 
 const TasksContext = createContext<TasksContextValue | null>(null)
@@ -89,12 +87,7 @@ export function TasksProvider({ children }: { children: ReactNode }): React.JSX.
     await window.deva.tasks.remove(id)
   }, [])
 
-  const setNotifyOrigin = useCallback(async (id: string, on: boolean): Promise<void> => {
-    await window.deva.tasks.setNotifyOrigin(id, on)
-    // 刷新交由 tasks:changed 广播。
-  }, [])
-
-  const value: TasksContextValue = { tasks, create, setStatus, runNow, update, remove, setNotifyOrigin }
+  const value: TasksContextValue = { tasks, create, setStatus, runNow, update, remove }
   return <TasksContext.Provider value={value}>{children}</TasksContext.Provider>
 }
 

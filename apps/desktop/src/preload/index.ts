@@ -1316,8 +1316,6 @@ const api = {
     setStatus: (id: string, status: TaskStatus): Promise<TaskRecord | null> =>
       ipcRenderer.invoke('tasks:set-status', id, status),
     /** 「完成后通知本对话」开关：开 = 绑定创建它的对话，关 = 独立运行。 */
-    setNotifyOrigin: (id: string, on: boolean): Promise<TaskRecord | null> =>
-      ipcRenderer.invoke('tasks:set-notify-origin', id, on),
     /**
      * 立即运行（委托调度器串行队列；调度器未就绪则 ok:false）。
      * 同一任务已在运行 / 排队时不重复入队，返回 ok:true + already。

@@ -13,7 +13,6 @@ import {
 import {
   AlarmClock,
   AlertCircle,
-  BellRing,
   AlertTriangle,
   Loader2,
   MessageSquare,
@@ -1348,12 +1347,11 @@ function MemberWaits({
 
 /* ---------------- 绑定在本对话上的定时任务（对比稿 design/task-entry.html 方案 A + M2） ---------------- */
 
-/** 定时任务的「头像」：圆角方块里的图标，任务没有角色头像。出现在对话里的任务都是「完成后通知对话」的，
- *  所以用铃铛（同创建后名片上那个开关、同管理页里绑定任务的图标）；独立运行的任务才用日历钟。 */
+/** 定时任务的「头像」：同管理面板任务行的图标（圆角方块里的日历钟），任务没有角色头像。 */
 function TaskFace({ size }: { size: number }): React.JSX.Element {
   return (
     <span className="cf-tface" style={{ width: size, height: size }} aria-hidden="true">
-      <BellRing size={Math.round(size * 0.52)} />
+      <CalendarClock size={Math.round(size * 0.52)} />
     </span>
   )
 }
@@ -1503,7 +1501,7 @@ function TaskBarRow({
     <div className="cf-members__row">
       <button type="button" className="cf-members__open" onClick={onOpen}>
         <span className={`cf-trow__icon is-${task.status}`}>
-          <BellRing size={16} />
+          <CalendarClock size={16} />
         </span>
         <span className="cf-members__main">
           <span className="cf-members__line">
@@ -1577,8 +1575,8 @@ function TaskLogHead({
         {view.backAlert && <span className="cf-back__dot" aria-hidden="true" />}
       </button>
       <span className="cf-members__sep" aria-hidden="true" />
-      {/* 标题栏里只放图标本身，不带列表行那种灰底方块；任务对话只有绑定任务才有，用铃铛 */}
-      <BellRing size={18} className="cf-conv__ticon" aria-hidden="true" />
+      {/* 标题栏里只放图标本身，不带列表行那种灰底方块 */}
+      <CalendarClock size={18} className="cf-conv__ticon" aria-hidden="true" />
       <span className="cf-conv__mname" title={task.prompt}>
         {task.title}
       </span>
@@ -4146,12 +4144,8 @@ function TaskRailRow({
       onClick={onClick}
       onContextMenu={onContext}
     >
-      {/* 图标分两种：完成后通知对话的任务是铃铛，独立运行的是日历钟（详情页大图标同此） */}
-      <span
-        className={`cf-trow__icon is-${task.status}`}
-        title={t(task.ownerSessionId ? 'tasks.kindBound' : 'tasks.kindAlone')}
-      >
-        {task.ownerSessionId ? <BellRing size={16} /> : <CalendarClock size={16} />}
+      <span className={`cf-trow__icon is-${task.status}`} title={t('tasks.cardTitle')}>
+        <CalendarClock size={16} />
       </span>
       <div className="cf-trow__main">
         <div className="cf-trow__title">{task.title || t('chat.untitled')}</div>
@@ -4279,11 +4273,8 @@ function TaskDetail({
       <DragBar />
       <div className="cf-profile">
         <div className="cf-profile__inner cf-tdetail">
-          <div
-            className={`cf-tdetail__icon is-${task.status}`}
-            title={t(task.ownerSessionId ? 'tasks.kindBound' : 'tasks.kindAlone')}
-          >
-            {task.ownerSessionId ? <BellRing size={30} /> : <CalendarClock size={30} />}
+          <div className={`cf-tdetail__icon is-${task.status}`}>
+            <CalendarClock size={30} />
           </div>
           <div className="cf-profile__name">{task.title || t('chat.untitled')}</div>
           <div className="cf-tdetail__tags">
@@ -4755,7 +4746,7 @@ function Conversation({
     [members, formerMembers]
   )
   // 用户消息里的 @ 成员标签（见 MentionText）：现在可 @ 的成员与角色，加上已移除的成员（旧消息照样显示它当时的
-  // 头像与名字），以及「新成员」标记。成员对话里不做。
+  // 头像与名字），以及「新建成员」标记。成员对话里不做。
   const mentionLookup = useMemo<MentionLookup | null>(() => {
     if (memberView) return null
     const faces = new Map<string, Persona | undefined>()
@@ -6023,7 +6014,7 @@ interface SlashCommand {
   desc: string
   /**
    * mention = 「@ 成员 / 角色」联想（输入以 @ 开头时），采纳后写回 `@name `；
-   * newMember = 「新建成员」，采纳后写回 `@新成员 `（name 即此标记，见 shared/mention.ts），接着写需求。
+   * newMember = 「新建成员」，采纳后写回 `@新建成员 `（name 即此标记，见 shared/mention.ts），接着写需求。
    */
   kind: 'command' | 'skill' | 'mention' | 'newMember'
   /** mention：候选的头像。 */
@@ -6581,7 +6572,7 @@ function Composer({
     if ((n === 'compact' || n === 'rewind') && noAtts && whole.toLowerCase() === `/${n}`) return true
     return skills.some((s) => s.enabled && (s.name.toLowerCase() === n || s.id.toLowerCase() === n))
   }
-  // 正文里会做成成员标签的 `@名字`：本对话成员、可 @ 的角色，以及「新建成员」的标记（两种写法都认，同主进程
+  // 正文里会做成成员标签的 `@名字`：本对话成员、可 @ 的角色，以及「新建成员」的标记（几种写法都认，同主进程
   // handleMentions）。只在主对话里有（成员对话没有 @ 联想，主进程也不认）。
   const mentionNames = useMemo<string[]>(
     () =>
@@ -6590,7 +6581,7 @@ function Composer({
         : [],
     [mentionables]
   )
-  // 成员标签的头像：按名字找候选的身份；「新成员」没有头像。
+  // 成员标签的头像：按名字找候选的身份；「新建成员」没有头像。
   const mentionFace = (name: string): string | null => {
     const p = mentionables.find((c) => c.kind === 'mention' && c.name === name)?.persona
     return p ? avatarDataUri(p.id, parseAvatarSpec(p.avatar), p.avatarImage) || null : null

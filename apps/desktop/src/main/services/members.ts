@@ -309,7 +309,7 @@ export function parseTaskMessage(text: string): ParsedTask | null {
 /** 主对话（主智能体）的成员工具名。 */
 export const MAIN_MEMBER_TOOLS = new Set(['create_member', 'member_send', 'member_stop', 'member_status'])
 /** 成员会话的成员工具名。 */
-export const MEMBER_SIDE_TOOLS = new Set(['read_main'])
+export const MEMBER_SIDE_TOOLS = new Set(['read_main', 'report_to_main'])
 
 /** 主智能体的成员工具：创建、派任务、中止。描述写死（名单随消息下发），工具表稳定，提示缓存不受增减成员影响。 */
 export function mainMemberTools(): ToolSpec[] {
@@ -345,7 +345,8 @@ export function mainMemberTools(): ToolSpec[] {
         '把任务交给一个成员，成员在后台工作。成员负责的文件夹里的工作（读代码、排查、验证、修改、跑构建）都交给它，不要自己先查一遍再派。' +
         '成员看不到你和用户的对话（只有第一次派任务时附上主对话最近几轮，之后它需要时自己用 read_main 翻），所以在 message 里把任务写完整：要做什么、范围（哪些模块 / 文件）、已知的事实（需求单内容、报错原文、截图位置等原样附上）、约束（如只查不改）和怎样算完成。忠实于用户的要求，不擅自扩大范围。' +
         '成员工作中需要用户回答或批准时，会直接向用户提问、提交计划，不经过你。成员完成后会以自己的身份（头像和名字）在对话里直接回复用户（不经过你、不唤醒你），你的历史里也会有这条，不必再转述；成员出错时用户看不到，系统会唤醒你处理。' +
-        '需要你接着处理结果时（要据此安排下一步、要把几个成员的结果合起来、或用户要你汇总），把 report_to_me 设为 true：成员完成后会唤醒你处理；同一轮里派出的几项都设了 true 时，等最后一个完成才一起唤醒你。' +
+        '需要你接着处理结果时（要据此安排下一步、要把几个成员的结果合起来、或用户要你汇总），把 report_to_me 设为 true：成员完成后会唤醒你处理；同一轮里派出的几项都设了 true 时，等最后一个完成才一起唤醒你。成员发现要你处理时（如要用它没有的工具），也会自己把结论交给你并唤醒你。' +
+        '成员没有创建角色、技能、MCP、定时任务和呈交文件的工具，这些事你自己做，不要派给成员；用户点名要成员做也一样，由你来做并简短说明。' +
         '派出后不要等待、轮询或猜测它的结果，可以接着派其他成员、做别的事，或先简短回复用户。多个成员可以同时工作。对成员上一次结果的修改意见也用它转交。成员正在忙时，这条会插入它当前的工作。',
       inputSchema: {
         type: 'object',
@@ -401,6 +402,33 @@ export function readMainTool(): ToolSpec {
         round: { type: 'number', description: '读第 round 轮的全文（轮号见翻页结果里的「第 N 轮」）。' },
         offset: { type: 'number', description: '与 round 一起用：从第 offset 字接着读（见上一次结果末尾的提示）。' }
       }
+    }
+  }
+}
+
+/**
+ * 成员会话的 report_to_main 工具：本轮的结论交给主智能体处理（唤醒它），不以成员的身份直接回复用户。
+ * 成员自己判断：要做的事得用它没有的工具（创建角色 / 技能 / MCP / 定时任务、呈交文件），或要别的成员配合、要主智能体
+ * 据此安排下一步。效果在本轮结束时生效（见 chat.ts reportMemberTurn），最终回复照常写，作为交给主智能体的结论。
+ */
+export function reportToMainTool(): ToolSpec {
+  return {
+    name: 'report_to_main',
+    description:
+      '本轮结束时，把你的结论交给主 Agent 处理（会唤醒它），而不是以你的身份直接回复用户。以下情况使用：' +
+      '① 要做的事需要你没有的工具——创建角色、技能、MCP 或定时任务，把文件呈交给用户，这些只有主 Agent 能做；' +
+      '② 需要别的成员配合（改不归你负责的部分）；③ 你的结果需要主 Agent 据此安排下一步。' +
+      '调用后照常写完最终回复，它会作为结论交给主 Agent：写清要它做什么，并原样附上它需要的材料（如角色草案全文）——主 Agent 看不到你的工具调用和结果。' +
+      '自己能做完的事不要用它；一轮只需调用一次。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        reason: {
+          type: 'string',
+          description: '一句话说明要主 Agent 做什么（20 字以内），会显示在主对话里，如「用草案生成角色名片」「请后端改接口返回格式」。'
+        }
+      },
+      required: ['reason']
     }
   }
 }

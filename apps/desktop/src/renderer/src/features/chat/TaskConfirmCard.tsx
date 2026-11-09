@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarClock, Check, AlertTriangle, Pencil, ChevronUp, BellRing } from 'lucide-react'
+import { CalendarClock, Check, AlertTriangle, Pencil, ChevronUp } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useChat, type ChatBlock } from '../../store/chat'
 import { useExtensions } from '../../store/extensions'
@@ -11,19 +11,17 @@ import { TaskModelSelect, TaskPersonaSelect } from './TaskPickers'
 
 /**
  * 定时任务确认名片（autotaskcard）——**唯一的授权时刻**。
- * 模型调 create_task 只写下建议草稿；此名片是可编辑信封（标题/指令/日程/人格/模型/结果），
+ * 模型调 create_task 只写下建议草稿；此名片是可编辑信封（标题/指令/日程/人格/模型），
  * 用户核对并点「创建」才真正建任务与独占会话（`resolveAutotask('create', input)`）。
  * 创建后触发零交互，故授权在此一次性议定完毕（对齐「创建时批准、执行时零交互」铁律）；
  * 工具全放行（含 skill/mcp）、读写与命令执行不设限、通知固定开启——
  * 故名片不再有类型/写入根/工具白名单/通知开关。
  *
  * 版式（对比稿 design/task-card.html 方案 A）：三个状态同一副骨架——表头（闹钟 + 「定时任务 ·」+ 标题，右侧编辑 /
- * 收起 / 已创建）+ 键值行（时间 / 执行 / 结果 / 指令）+ 底栏按钮。pending 默认**摘要**，点「编辑」原地展开表单，
+ * 收起 / 已创建）+ 键值行（时间 / 执行 / 指令）+ 底栏按钮。pending 默认**摘要**，点「编辑」原地展开表单，
  * 日程无效 / 指令为空 / 创建失败时自动展开；created 换成灰底终态，dismissed 只剩一行。
  * 日程一栏整块交给 ./ScheduleEditor（与任务编辑弹窗共用同一控件，cron 反解/拼装再下沉 ./schedule 单一真源）。
- *
- * 创建出来默认独立运行；创建后的卡右上角有「完成后通知本对话」（对比稿 design/task-card-bind.html 方案 A）：开了即把任务
- * 绑定本对话（没有新情况不打扰，有事才把结果交到本对话；见主进程 handoff.ts），再点一下改回独立运行。
+ * 创建出来的任务独立运行：结果记在任务自己的对话里，完成后系统通知。
  */
 
 /**
@@ -91,8 +89,8 @@ export function TaskConfirmCard({
 }
 
 /**
- * 已决终态：created（表头右上角「完成后通知本对话」+「查看任务」+ 绿勾，下面时间 / 执行两行，开了通知再多一行结果）/
- * dismissed（已忽略一行）。任务从 store 的列表实时取：开关、改日程都即时反映；任务已删则只剩表头。
+ * 已决终态：created（表头右上角「查看任务」+ 绿勾，下面时间 / 执行两行）/ dismissed（已忽略一行）。
+ * 任务从 store 的列表实时取：改日程等即时反映；任务已删则只剩表头。
  */
 function TaskTerminalCard({
   block,
@@ -102,9 +100,8 @@ function TaskTerminalCard({
   onOpen?: (taskId: string) => void
 }): React.JSX.Element {
   const { t, locale } = useI18n()
-  const { currentSessionId } = useChat()
   const { personas } = useExtensions()
-  const { tasks, setNotifyOrigin } = useTasks()
+  const { tasks } = useTasks()
   const modelLabel = useModelLabel()
   const nextShort = useNextShort()
   const task = useMemo(
@@ -128,9 +125,6 @@ function TaskTerminalCard({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig, locale])
-  // 「完成后通知本对话」：只有在本对话里创建的任务才能开（卡只出现在创建它的对话里）。
-  const canNotify = !!task && task.originSessionId === currentSessionId
-  const notifyOn = !!task?.ownerSessionId
 
   if (block.status === 'dismissed') {
     return (
@@ -152,19 +146,8 @@ function TaskTerminalCard({
         <CalendarClock size={15} />
         <span className="autotaskcard__kind">{t('tasks.cardTitle')} ·</span>
         <span className="autotaskcard__ctitle">{title}</span>
-        {/* 右上角：「完成后通知本对话」开关 +「查看任务」+ 绿色对勾（悬停提示已创建），不另占一行 */}
+        {/* 右上角：「查看任务」+ 绿色对勾（悬停提示已创建），不另占一行 */}
         <span className="autotaskcard__headacts">
-          {canNotify && task && (
-            <button
-              type="button"
-              className={`btn btn--ghost btn--sm autotaskcard__notify${notifyOn ? ' is-on' : ''}`}
-              aria-pressed={notifyOn}
-              title={t(notifyOn ? 'tasks.notifyChatOn' : 'tasks.notifyChatOff')}
-              onClick={() => void setNotifyOrigin(task.id, !notifyOn)}
-            >
-              <BellRing size={12} /> {t('tasks.notifyChat')}
-            </button>
-          )}
           {block.taskId && onOpen && (
             <button className="btn btn--ghost btn--sm" onClick={() => block.taskId && onOpen(block.taskId)}>
               {t('tasks.createdOpen')}
@@ -189,15 +172,6 @@ function TaskTerminalCard({
           <span className="autotaskcard__v">
             {personaName} · {modelLabel(task.auth.modelRef)}
           </span>
-          {notifyOn && (
-            <>
-              <span className="autotaskcard__k">{t('tasks.fResult')}</span>
-              <span className="autotaskcard__v">
-                {t('tasks.notifyChat')}
-                <span className="autotaskcard__dim"> · {t('tasks.notifyChatHint')}</span>
-              </span>
-            </>
-          )}
         </div>
       )}
     </div>

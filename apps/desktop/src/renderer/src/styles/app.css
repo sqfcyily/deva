@@ -5853,16 +5853,6 @@ select.autotaskcard__input {
 .autotaskcard__form .autotaskcard__field:first-child {
   margin-top: 0;
 }
-/* created 态右上角的「完成后通知本对话」：开了变成主题色底的选中态 */
-.autotaskcard__notify.is-on {
-  background: var(--accent-tint);
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 600;
-}
-.autotaskcard__notify.is-on:hover {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-}
 
 /* dismissed：紧凑终态行（编辑器已卸载）。 */
 .autotaskcard--dismissed {

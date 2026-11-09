@@ -56,6 +56,7 @@ import {
   Send,
   CircleStop,
   MessagesSquare,
+  Forward,
   UsersRound,
   BookOpen,
   type LucideIcon
@@ -105,12 +106,13 @@ const TOOL_META: Record<string, { key: string; icon: LucideIcon }> = {
   tool_search: { key: 'toolSearch', icon: BookOpen },
   // 内置浏览器：时间轴上按动作区分（见 BROWSER_META）；这里是不知道动作时（如底部状态行）的通用说法。
   browser: { key: 'browser', icon: Globe },
-  // 项目成员（见 services/members.ts）：主智能体添加成员 / 派任务 / 中止，成员查看主对话。
+  // 项目成员（见 services/members.ts）：主智能体添加成员 / 派任务 / 中止，成员查看主对话、把结论交给主对话处理。
   create_member: { key: 'createMember', icon: UserPlus },
   member_send: { key: 'memberSend', icon: Send },
   member_stop: { key: 'memberStop', icon: CircleStop },
   member_status: { key: 'memberStatus', icon: UsersRound },
-  read_main: { key: 'readMain', icon: MessagesSquare }
+  read_main: { key: 'readMain', icon: MessagesSquare },
+  report_to_main: { key: 'reportToMain', icon: Forward }
 }
 
 /** browser 工具的各个动作：每个动作有自己的动词与图标（打开网页、查看页面、点击……）。 */
@@ -248,6 +250,11 @@ function flowObject(
   }
   if (MEMBER_TOOLS.has(name)) return null
   if (name === 'read_main') return null
+  // 交给主对话处理：对象写要主对话做的事。
+  if (name === 'report_to_main') {
+    const reason = (args as { reason?: unknown } | null)?.reason
+    return typeof reason === 'string' && reason.trim() ? { text: reason.trim(), full: reason.trim() } : null
+  }
   if (args && typeof args === 'object') {
     const o = args as { command?: unknown; path?: unknown; pattern?: unknown; url?: unknown }
     if (typeof o.command === 'string' && o.command.trim()) return { text: o.command, full: o.command }
@@ -1351,7 +1358,8 @@ const QUIET_TOOLS = new Set([
   'member_send',
   'member_stop',
   'member_status',
-  'read_main'
+  'read_main',
+  'report_to_main'
 ])
 
 /** 子智能体被用户亲手停下的结局摘要（后台「已停止」/ 前台「已中止」）：不当作出错展示。 */

@@ -467,15 +467,34 @@ export function setSkillEnabled(id: string, enabled: boolean): void {
 
 // ── 运行期（chat.ts 直接调用）───────────────────────────────────────────────
 
-/** 技能在这个角色的对话里是否可用：已启用，且可用角色含该角色（内置技能恒可用）。 */
-function usableBy(s: SkillRecord, personaId: string): boolean {
-  return s.enabled && (s.source === 'builtin' || allowsPersona('skills', s.id, personaId))
+/**
+ * 内置元技能离不开的工具。对话里没有这个工具时（成员会话、定时任务、子智能体都剔除了创建类工具），该技能既不列出
+ * 也不加载——不然模型看到清单会以为自己能做，加载后才发现调不了。
+ */
+const BUILTIN_REQUIRES: Record<string, string> = {
+  'create-skill': 'create_skill',
+  'create-agent': 'propose_agent',
+  'create-mcp': 'create_mcp'
 }
 
-/** 该角色可用技能的 name+description 摘要，随消息下发给模型（渐进式披露的便宜清单）。 */
-export function enabledSkillSummaries(personaId: string): { name: string; description: string }[] {
+/**
+ * 技能在这个角色的对话里是否可用：已启用，且可用角色含该角色（内置技能恒可用）。
+ * hasTool = 本轮是否提供某个工具（省略 = 不按工具筛）：内置元技能所需的工具不在时不可用。
+ */
+function usableBy(s: SkillRecord, personaId: string, hasTool?: (name: string) => boolean): boolean {
+  if (!s.enabled) return false
+  if (s.source !== 'builtin') return allowsPersona('skills', s.id, personaId)
+  const need = BUILTIN_REQUIRES[s.id]
+  return !need || !hasTool || hasTool(need)
+}
+
+/** 该角色可用技能的 name+description 摘要，随消息下发给模型（渐进式披露的便宜清单）。hasTool 见 usableBy。 */
+export function enabledSkillSummaries(
+  personaId: string,
+  hasTool?: (name: string) => boolean
+): { name: string; description: string }[] {
   return listSkills()
-    .filter((s) => usableBy(s, personaId))
+    .filter((s) => usableBy(s, personaId, hasTool))
     .map((s) => ({ name: s.name, description: s.description }))
 }
 
@@ -486,18 +505,19 @@ export function hasEnabledSkills(): boolean {
 
 /**
  * 按显示名（大小写不敏感）加载该角色**可用**技能的完整正文（已启用且对该角色开放）。
- * 供 `skill` 工具与 `/name` 显式触发；未命中返回 null。
+ * 供 `skill` 工具与 `/name` 显式触发；未命中返回 null。hasTool 见 usableBy。
  * `dir` = 自定义技能的文件夹绝对路径（内置技能不落盘，无此项）：多文件技能正文里的相对路径
  * 以它为基准，调用方须一并告知模型，否则子文档无从定位。
  */
 export function loadSkillInstructionsByName(
   name: string,
-  personaId: string
+  personaId: string,
+  hasTool?: (name: string) => boolean
 ): { name: string; instructions: string; allowedTools: string[]; dir?: string } | null {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return null
   for (const s of listSkills()) {
-    if (!usableBy(s, personaId)) continue
+    if (!usableBy(s, personaId, hasTool)) continue
     if (s.name.toLowerCase() === wanted || s.id.toLowerCase() === wanted) {
       return {
         name: s.name,

@@ -241,24 +241,6 @@ export function updateTask(input: TaskUpdateInput): TaskRecord | null {
  * 独立运行的任务只删记录，任务对话留在对话列表里由用户自行删除。任务对话经 setTaskSessionPurger 注入的删除器删
  * （正在跑的一轮由它中止），chat.ts 装载前退化为只删记录。
  */
-/**
- * 开 / 关「完成后通知本对话」（创建后在卡上或任务详情里切换）：开 = 绑定创建它的对话（结果回到那个对话，任务对话从
- * 左侧列表收进标题栏的闹钟入口）；关 = 恢复独立运行。只能绑回创建它的对话（originSessionId），别的对话不认。
- */
-export function setTaskNotifyOrigin(id: string, on: boolean): TaskRecord | null {
-  ensureLoaded()
-  const t = cache.get(id)
-  if (!t) return null
-  const want = on && t.originSessionId ? t.originSessionId : undefined
-  if ((t.ownerSessionId ?? undefined) === want) return t
-  if (want) t.ownerSessionId = want
-  else delete t.ownerSessionId
-  t.updatedAt = Date.now()
-  persist()
-  publishSessionsChanged()
-  return t
-}
-
 export function deleteTask(id: string): void {
   ensureLoaded()
   const t = cache.get(id)
@@ -468,10 +450,6 @@ export function registerTasksIpc(getWindow: () => BrowserWindow | null): void {
   })
   ipcMain.handle('tasks:set-status', (_e, id: string, status: TaskStatus): TaskRecord | null =>
     setTaskStatus(id, status)
-  )
-  // 「完成后通知本对话」开关（创建后在卡上 / 任务详情里切换）。
-  ipcMain.handle('tasks:set-notify-origin', (_e, id: string, on: boolean): TaskRecord | null =>
-    setTaskNotifyOrigin(id, on === true)
   )
   // 确认名片实时预览：校验日程 + 人读摘要 + 下次触发（只读，不建任务）。
   ipcMain.handle(

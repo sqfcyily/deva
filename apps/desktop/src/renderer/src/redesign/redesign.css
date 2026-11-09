@@ -2438,6 +2438,13 @@ body.cf-resizing-y * {
   line-height: 20px;
   cursor: default;
 }
+/*
+ * 没有头像的标签（如「新建成员」）：上面的下沉 2px 是按头像打底的基线算的；没有头像时基线就是名字本身，
+ * 再下沉会比相邻文字低 2px，改为直接对齐基线。
+ */
+.cf-mention:not(:has(> .cf-mention__face)) {
+  vertical-align: baseline;
+}
 .cf-mention__face {
   flex: none;
   width: 16px;

@@ -42,7 +42,7 @@ import { mentionRanges } from '../../../shared/mention'
  * 换成 contentEditable 是为了能给**会生效**的片段单独上色——textarea 只有一整段纯文本，做不到局部样式：
  *  · 消息开头的 `/指令`（已启用技能、整条只有它的 /compact /rewind）。识别规则与主进程 chat.ts sendMessage 一致：
  *    去掉前导空白后以 `/` 开头、取最长的 [A-Za-z0-9_-]+ 作为名字，再由调用方判定是否认得（isToken）；
- *  · 正文任意位置的 `@名字`（本对话成员、可 @ 的角色、@新成员），认法同主进程 handleMentions（见 shared/mention.ts）：
+ *  · 正文任意位置的 `@名字`（本对话成员、可 @ 的角色、@新建成员），认法同主进程 handleMentions（见 shared/mention.ts）：
  *    显示成成员标签（头像 + 名字，见 MentionNode）；还可能接着敲成更长名字时先只上色（见 $syncTokens）。
  * 输入框里始终只有一个段落：纯文本模式下回车 / 粘贴的换行都是段内 LineBreakNode。
  */
@@ -265,9 +265,9 @@ export interface ComposerEditorHandlers {
   onPaste: (e: ClipboardEvent) => boolean
   /** 开头 `/name` 是否会生效（name 为去掉斜杠的原文，whole 为去首尾空白的整条消息）。 */
   isToken: (name: string, whole: string) => boolean
-  /** 正文里 `@名字` 会生效的名字（本对话成员、可 @ 的角色、新成员标记）；空 = 不认 @。 */
+  /** 正文里 `@名字` 会生效的名字（本对话成员、可 @ 的角色、新建成员标记）；空 = 不认 @。 */
   mentionNames: readonly string[]
-  /** 成员标签的头像（图片地址，名字不含 @）；null = 不放头像（如「新成员」）。 */
+  /** 成员标签的头像（图片地址，名字不含 @）；null = 不放头像（如「新建成员」）。 */
   mentionFace: (name: string) => string | null
 }
 

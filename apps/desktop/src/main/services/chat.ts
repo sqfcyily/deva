@@ -66,6 +66,7 @@ import {
   readMainRound,
   readMainTool,
   recentMainContext,
+  reportToMainTool,
   resolveMemberFolder,
   rootLabel,
   type MemberProgressGroup,
@@ -1945,7 +1946,8 @@ function memberSystemPrompt(p: {
     `【职责】${p.member.duty || '（未写明）'}。负责的文件夹：${p.folder}。`,
     `【环境】${loc}`,
     `【工作方式】独立完成任务，按任务说明去做；说明里没交代清楚、需要更早的上下文时，用 read_main 往前翻主对话（用户与${p.owner}的对话）。任务说明里提到却没写清楚的内容（如「按刚才定的方案」「上面那个报错」），先用 read_main 把来龙去脉看明白再动手，不要猜；某一轮被截短了就按轮号读全文。拿不准的地方能选合理默认就照默认去做，并在结论里写明假设；只有卡住、且用户的回答会改变你接下来怎么做时，才用 ask_user 直接问用户（用户在主对话里回答，不经过${p.owner}）。改动大、方案有多种走法时，可以先用 exit_plan 提交计划请用户批准再动手。只改你负责的部分：需要别的部分配合改动时不要自己去改，在结论里写明需要谁改什么。`,
-    `【结论】你的最终回复会原样转给用户：直接写结果，不寒暄、不复述任务；简要写明做了什么、改了哪些文件（路径）、验证情况（运行了什么、结果如何）、遗留问题或需要决定的事；不要复述过程流水账。`,
+    `【能力边界】你只能用工具表里有的工具。创建角色、技能、MCP 或定时任务，以及把文件呈交给用户，都只有${p.owner}能做，你没有这些工具：不要对用户说你能做，也不要让用户自己去找${p.owner}转达。遇到这类事、需要别的成员配合、或你的结果需要${p.owner}据此安排下一步时，先做完你能做的部分（如起草角色的设定），再用 report_to_main 把这件事交给${p.owner}，它会接着处理。`,
+    `【结论】你的最终回复会原样转给用户（调用了 report_to_main 时改为交给${p.owner}）：直接写结果，不寒暄、不复述任务；简要写明做了什么、改了哪些文件（路径）、验证情况（运行了什么、结果如何）、遗留问题或需要决定的事；不要复述过程流水账。`,
     '【工具使用】动手前先了解现状：已知具体文件/符号时直接用 read_file / grep 等查看，面广时可交给子智能体（run_subagent，只能前台运行）；查找与阅读请用 glob / grep / read_file / list_dir，不要用 run_command 跑 find、grep、cat、ls 代替；write_file 会覆盖整个文件，务必先读后写、保留无关内容。彼此没有依赖的工具调用请在同一次回复里一并发出。调用失败时据回灌的原因改道，切勿原样反复重试。',
     '【工程纪律】只做派给你的事，不擅自加功能或做没要求的重构；贴合所在文件既有的风格，优先复用现有实现；改完能验证就验证（类型检查、测试或构建），没验证过的不要说成已通过；出了问题先找根因，不用跳过测试、吞掉报错之类的办法让表面看起来正常。',
     '【执行与安全边界】写入/修改文件、执行命令都无需授权，直接调用对应工具即可，文件读写与命令执行均不设任何限制；删除、覆盖、强推等破坏性操作执行前请自行核对目标无误。',
@@ -2385,7 +2387,7 @@ interface AgentLoopArgs {
    */
   listMembers?: () => MemberListingItem[]
   /**
-   * 成员相关工具的执行（主对话：create_member / member_send / member_stop；成员会话：read_main）。
+   * 成员相关工具的执行（主对话：create_member / member_send / member_stop；成员会话：read_main / report_to_main）。
    * 不过权限闸门——它们只改会话属性、起后台回合或读主对话正文。未传则按不可用处理。
    */
   memberTool?: (tc: { id: string; name: string; args: unknown }) => Promise<MemberToolResult>
@@ -2556,6 +2558,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     string,
     { toolUseId: string; model: ChatModelConfig; reportToMe: boolean; group: string }
   >()
+  /**
+   * 成员会话 id → 本轮调用 report_to_main 时写的说明（要主智能体做什么）：本轮结束时结论改为唤醒主智能体处理，
+   * 不以成员的身份直接回复用户（见 reportMemberTurn）。轮结束即取走。
+   */
+  const memberToMain = new Map<string, string>()
   /** 同一轮派出、要唤醒主智能体的几项里，已有交差（未被停止）却还在等其余几项的组（见 reportMemberTurn）。 */
   const memberGroupsWaiting = new Set<string>()
   /**
@@ -3165,7 +3172,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     return sendToMember(main, member, str('task'), str('message'), tc.id, model, a.report_to_me === true, turnId)
   }
 
-  /** 成员会话的成员工具（read_main：往前翻主对话的正文）。 */
+  /** 成员会话的成员工具（read_main：往前翻主对话的正文；report_to_main：本轮结论交给主智能体处理）。 */
   async function memberSideTool(
     memberId: string,
     tc: { id: string; name: string; args: unknown }
@@ -3173,8 +3180,19 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const sub = getSession(memberId)
     const main = sub?.parentId ? getSession(sub.parentId) : undefined
     if (!main) return { content: '找不到主对话（可能已被删除）。', summary: '找不到主对话', isError: true }
-    const a = (tc.args ?? {}) as { before?: unknown; round?: unknown; offset?: unknown }
+    const a = (tc.args ?? {}) as { before?: unknown; round?: unknown; offset?: unknown; reason?: unknown }
     const owner = personaName(main)
+    if (tc.name === 'report_to_main') {
+      const reason = typeof a.reason === 'string' ? a.reason.trim().replace(/\s+/g, ' ') : ''
+      memberToMain.set(memberId, reason || '处理成员的结论')
+      return {
+        content:
+          `已记下：本轮结束后，你的最终回复会作为结论交给${owner}处理（唤醒它），不再以你的身份直接回复用户。` +
+          `现在写最终回复：写清要${owner}做什么，并原样附上它需要的材料（${owner}看不到你的工具调用和结果）。`,
+        summary: `交给${owner}`,
+        isError: false
+      }
+    }
     return {
       content:
         typeof a.round === 'number'
@@ -3190,6 +3208,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
    * 结论原文（不调用模型，见 commitMemberReports）；出错时不显示，唤醒主智能体处理；被停止的不显示也不唤醒。
    * 派任务时设了 report_to_me 的改为以通知唤醒主智能体处理（同一轮派出的几项等最后一个交差再唤醒一次）。
    * 用户直接跟成员说的话以不唤醒的通知同步给主智能体。
+   * 成员本轮调用了 report_to_main（见 memberToMain）：不论是派来的任务还是用户直接说的话，都改为唤醒主智能体处理。
    */
   function reportMemberTurn(
     sub: StoredSession,
@@ -3200,11 +3219,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ): void {
     const dispatch = memberDispatches.get(sub.id)
     memberDispatches.delete(sub.id)
+    const askedMain = memberToMain.get(sub.id)
+    memberToMain.delete(sub.id)
     const main = sub.parentId ? getSession(sub.parentId) : undefined
     const ref = main?.members?.find((m) => m.sessionId === sub.id)
     if (!main || !ref) return
     const status: MemberRunStatus =
       endReason === 'aborted' ? 'stopped' : endReason === 'error' ? 'failed' : 'done'
+    // 成员要主智能体接着处理的事（report_to_main）；被停止的不算。
+    const toMain = status === 'stopped' ? undefined : askedMain
+    const owner = personaName(main)
     const conclusion = text.trim() || (error ? `执行出错：${error}` : '（没有给出结论。）')
     ref.last = {
       text: conclusion.length > 200 ? `${conclusion.slice(0, 200)}…` : conclusion,
@@ -3223,6 +3247,26 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 主对话不必插话），随它下一次开口时一并看到。
     if (!dispatch) {
       const said = lastDirectUserText(sub.messages)
+      // 成员判断要主智能体处理（如建角色、呈交文件这类它没有工具的事）：唤醒主智能体。用户在成员会话里已看到成员的回复。
+      if (toMain) {
+        enqueueNotice(main.id, {
+          toolUseId: '',
+          headline: `成员「${ref.name}」请${owner}处理：${toMain}`,
+          body: [
+            MEMBER_NOTICE_TAG,
+            `用户直接在成员「${ref.name}」的会话里说了话（不是你派的任务），成员把这件事交给你处理。`,
+            `用户说：${said || '（无文字）'}`,
+            `要你做的事：${toMain}`,
+            '成员的结论：',
+            conclusion,
+            '用户在成员的会话里已看到上面的结论。请按成员的说明接着处理（只有你能做的事你来做，要别的成员配合的用 member_send 派），处理完在这里简短回复用户。',
+            '</成员通知>'
+          ].join('\n'),
+          wake: true,
+          model
+        })
+        return
+      }
       enqueueNotice(main.id, {
         toolUseId: '',
         headline: `你和成员「${ref.name}」的对话`,
@@ -3256,7 +3300,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         wake = status !== 'stopped' || memberGroupsWaiting.has(dispatch.group)
         memberGroupsWaiting.delete(dispatch.group)
       }
-    }
+    } else if (toMain) wake = true
     if (!wake && !deferred) {
       // 不要汇总、正常交回：成员以自己的身份（头像和名字）在主对话里回复（不调用模型，见 commitMemberReports）。
       if (status === 'done') {
@@ -3294,14 +3338,22 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 要唤醒主智能体处理的（含同组还在等其余几项的）：结论以通知交给它，唤醒后由它回复用户。
     enqueueNotice(main.id, {
       toolUseId: dispatch.toolUseId,
-      headline: `成员「${ref.name}」${label}${ref.task ? `：${ref.task}` : ''}`,
+      headline: toMain
+        ? `成员「${ref.name}」请${owner}处理：${toMain}`
+        : `成员「${ref.name}」${label}${ref.task ? `：${ref.task}` : ''}`,
       body: [
         MEMBER_NOTICE_TAG,
         `成员：${ref.name}`,
         ...(ref.task ? [`任务：${ref.task}`] : []),
         `状态：${label}${status === 'failed' && error ? `（${error}）` : ''}`,
+        ...(toMain ? [`要你做的事：${toMain}`] : []),
         '结论：',
         conclusion,
+        ...(toMain
+          ? [
+              '成员没有直接回复用户，用户还没看到这份结论。请按成员的说明接着处理（只有你能做的事你来做，要别的成员配合的用 member_send 派），再回复用户。'
+            ]
+          : []),
         '</成员通知>'
       ].join('\n'),
       wake,
@@ -3331,7 +3383,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       if (typeof r === 'string') full.push(p.name)
       else added.push(r)
     }
-    // 「@新成员」（@ 联想里的「新建成员」，见 shared/mention.ts）：请主智能体按用户写的需求建一位成员。
+    // 「@新建成员」（@ 联想里的「新建成员」，见 shared/mention.ts）：请主智能体按用户写的需求建一位成员。
     // 有成员或角色正好叫这个名字时，按点名处理。
     const newTokens = NEW_MEMBER_TOKENS.filter(
       (tk) => has(tk) && !named.some((m) => m.name === tk) && !roles.some((p) => p.name === tk)
@@ -3865,6 +3917,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const listsSkills = depth === 0 && tools.some((t) => t.name === 'skill')
     const listsMemory = depth === 0
     const offeredTools = new Set(tools.map((t) => t.name))
+    // 技能清单与加载按本轮工具表筛：创建角色 / 技能 / MCP 的内置技能，在没有对应工具的对话里（成员会话、定时任务、
+    // 子智能体）不列出也不加载，免得模型以为自己能做。
+    const hasTool = (n: string): boolean => offeredTools.has(n)
     // 原地打转计数（见 shared/limits.ts）：最近一次调用的指纹及其连续次数，跨步累计，任一处不同即重来。
     let repeat = { key: '', count: 0, tool: '' }
     // 已打转到 REPEAT_STOP 次的那次调用：非空即下一步改发收尾请求。
@@ -3936,7 +3991,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // 技能或记忆有变化（含轮内刚装的技能、别的对话或面板改的记忆、轮中挂载带来的项目记忆）、或压缩 / 删轮
         // 抹掉了先前的告知 → 把差异附在本次请求才首发的末条消息上。每次（含重发）现算：已告知过即无事，故幂等；
         // 压缩自愈后的重发也能补上被摘要掉的清单。
-        if (listsSkills) attachListing(history, (h) => skillListingPart(h, enabledSkillSummaries(personaId)))
+        if (listsSkills)
+          attachListing(history, (h) => skillListingPart(h, enabledSkillSummaries(personaId, hasTool)))
         if (listsMemory)
           attachListing(history, (h) => memoryListingPart(h, ctx.workspaceRoot))
         // 项目成员名单：主对话的主轮，名单有增减或更新时附上（同技能清单）。
@@ -4456,7 +4512,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         if (tc.name === 'skill') {
           const a = (tc.args ?? {}) as { name?: unknown }
           const wanted = typeof a.name === 'string' ? a.name.trim() : ''
-          const found = wanted ? loadSkillInstructionsByName(wanted, personaId) : null
+          const found = wanted ? loadSkillInstructionsByName(wanted, personaId, hasTool) : null
           // 技能接着要用的按需加载工具：用法一并附上，省得再查一步（本步已给过的不重复）。
           const usages = found
             ? skillToolUsages(found.allowedTools, new Set([...pendingUsage].filter((n) => !usageGiven.has(n))))
@@ -4466,7 +4522,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             ? `已加载技能「${found.name}」，请严格据此指令完成用户任务：\n\n${skillDirNote(found.dir)}${found.instructions}` +
               (usages ? `\n\n${usages.text}` : '')
             : `未找到名为「${wanted}」的可用技能。当前可用技能：${
-                enabledSkillSummaries(personaId).map((s) => s.name).join('、') || '（无）'
+                enabledSkillSummaries(personaId, hasTool).map((s) => s.name).join('、') || '（无）'
               }。`
           const skillSummary = found ? `已加载技能「${found.name}」` : '未找到该技能'
           args.onToolSummary?.(tc.id, skillSummary)
@@ -4488,7 +4544,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           continue
         }
 
-        // 成员工具（create_member / member_send / member_stop / read_main）：只在工具表里有它时受理，
+        // 成员工具（create_member / member_send / member_stop / read_main / report_to_main）：只在工具表里有它时受理，
         // 不过权限闸门（只改会话属性、起后台回合、读主对话正文）。
         if (MAIN_MEMBER_TOOLS.has(tc.name) || MEMBER_SIDE_TOOLS.has(tc.name) || tc.name === HANDOFF_TOOL) {
           const r: MemberToolResult =
@@ -4981,9 +5037,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       buildToolSearchTool(),
       subagentTool,
       buildSendToSubagentTool(),
-      // 项目成员：主对话的交互轮提供 create_member / member_send / member_stop，成员会话提供 read_main；定时任务都不给。
+      // 项目成员：主对话的交互轮提供 create_member / member_send / member_stop，成员会话提供 read_main / report_to_main；
+      // 定时任务都不给。
       ...(isMember
-        ? [readMainTool()]
+        ? [readMainTool(), reportToMainTool()]
         : unattended
           ? handoffOwner
             ? [handoffTool(handoffOwner)]
@@ -5066,7 +5123,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         interactive: !unattended,
         allowAskUser: !unattended,
         allowSubagents: true,
-        // 项目成员：主对话的交互轮附成员名单、受理成员工具；成员会话受理 read_main。
+        // 项目成员：主对话的交互轮附成员名单、受理成员工具；成员会话受理 read_main / report_to_main。
         listMembers: !unattended && !isMember ? () => memberListing(sessionId) : undefined,
         memberTool: isMember
           ? (tc) => memberSideTool(sessionId, tc)
@@ -5207,8 +5264,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       // 通知随那条消息一并带上）。用户刚按了停止就不起——通知留着，随下一条消息带给模型。
       if (endReason !== 'aborted' && !continued) wakeForNotices(sessionId)
       // 成员会话：结论交回主对话（插入的消息接着起了一轮的，等那一轮结束再交；会话被删的不交）。
-      if (isMember && !continued && abortCauses.get(turnId) !== 'deleted')
-        reportMemberTurn(session, endReason, replyText, replyError, turnModel)
+      if (isMember && !continued) {
+        if (abortCauses.get(turnId) !== 'deleted') reportMemberTurn(session, endReason, replyText, replyError, turnModel)
+        else memberToMain.delete(sessionId)
+      }
     }
     const abortCause = abortCauses.get(turnId)
     abortCauses.delete(turnId)
@@ -5359,7 +5418,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     let slashUsages: ReturnType<typeof skillToolUsages> = null
     const slashMatch = /^\/([A-Za-z0-9_-]+)[ \t]*([\s\S]*)$/.exec(text.trim())
     if (slashMatch) {
-      const loaded = loadSkillInstructionsByName(slashMatch[1], resolvePersonaId(session.personaId))
+      // 成员会话没有创建类工具：/create-agent 等不展开（同技能清单，见 runAgentLoop 的 hasTool）。
+      const loaded = loadSkillInstructionsByName(
+        slashMatch[1],
+        resolvePersonaId(session.personaId),
+        session.parentId ? (n) => !MEMBER_EXCLUDED.has(n) : undefined
+      )
       if (loaded) {
         const rest = slashMatch[2].trim()
         effectiveText =
@@ -5709,7 +5773,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
     // action === 'create'
     if (!taskInput || typeof taskInput !== 'object') return { ok: false, error: 'no-input' }
-    // 记下在哪个对话里创建（创建后卡上 / 任务详情里可开「完成后通知本对话」，只能绑回这个对话）；创建时不绑定。
+    // 记下在哪个对话里创建；创建出来独立运行，不绑定这个对话。
     const res: CreateTaskResult = createTask({ ...taskInput, originSessionId: sessionId })
     if (!res.ok) return { ok: false, error: res.error }
     s.autotasks = { ...s.autotasks, [toolUseId]: { status: 'created', taskId: res.task.id } }

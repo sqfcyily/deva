@@ -285,6 +285,7 @@ const zhCN: MessageTree = {
       memberStop: '中止成员任务',
       memberStatus: '查看成员状态',
       readMain: '查看主对话',
+      reportToMain: '交给主对话处理',
       skill: '加载技能',
       toolSearch: '查看工具用法',
       createTask: '创建定时任务',
@@ -362,6 +363,7 @@ const zhCN: MessageTree = {
         memberStop: '已中止',
         memberStatus: '已查看成员状态',
         readMain: '已查看主对话',
+        reportToMain: '已交给主对话处理',
         skill: '已加载技能',
         toolSearch: '已查看用法',
         browser: '已操作浏览器',
@@ -411,6 +413,7 @@ const zhCN: MessageTree = {
         memberStop: '正在中止',
         memberStatus: '正在查看成员状态',
         readMain: '正在查看主对话',
+        reportToMain: '正在交给主对话',
         skill: '正在加载技能',
         toolSearch: '正在查看用法',
         browser: '正在操作浏览器',
@@ -460,6 +463,7 @@ const zhCN: MessageTree = {
         memberStop: '中止',
         memberStatus: '查看成员状态',
         readMain: '查看主对话',
+        reportToMain: '交给主对话处理',
         skill: '加载技能',
         toolSearch: '查看用法',
         browser: '操作浏览器',
@@ -965,21 +969,12 @@ const zhCN: MessageTree = {
     runNowAlreadyQueuedHint: '前面还有任务在运行，轮到它时会自动开始，不会重复加入。',
     deleteConfirm: '删除后其运行历史一并清除；独占会话仍保留在对话列表，可另行删除。',
     deleteBoundConfirm: '删除后其运行历史与任务对话一并清除，无法恢复。',
-    // 名片与详情的「结果」行：交给本对话的主角色，或独立运行
-    fResult: '结果',
+    // 名片的键值行
     rowTime: '时间',
     rowExec: '执行',
     rowPrompt: '指令',
-    // 创建后的卡 / 任务详情上的「完成后通知本对话」开关（见 design/task-card-bind.html 方案 A）
-    notifyChat: '完成后通知本对话',
-    notifyChatHint: '没有新情况不打扰',
-    notifyChatOn: '已开启，点一下改回独立运行',
-    notifyChatOff: '开了以后任务的结果回到这个对话，需要处理的交给主角色',
-    // 详情页：绑定对话的任务多一行「通知对话 对话名」，不提供「改为独立运行」
+    // 详情页：绑定对话的任务多一行「通知对话 对话名」
     fNotifyChat: '通知对话',
-    // 两种任务的图标提示：通知对话的是铃铛，独立运行的是日历钟
-    kindBound: '完成后通知对话的定时任务',
-    kindAlone: '独立运行的定时任务',
     // 管理页（左列表 + 右详情）
     searchPlaceholder: '搜索任务',
     // 新建入口（搜索框旁的 + 菜单，布局同「添加角色」）
@@ -1073,11 +1068,11 @@ const zhCN: MessageTree = {
       note: '{owner} 的附注',
       empty: '{name} 还没有收到任务，也可以直接跟它说。',
       mentionHint: '加入本对话，由 {owner} 派活',
-      // @ 联想：已是本对话成员的标签；「新建成员」（写入 @新成员，后面写需求）
+      // @ 联想：已是本对话成员的标签；「新建成员」（写入 @新建成员，后面写需求）
       tag: '成员',
       newMember: '新建成员',
       newMemberDesc: '描述职责，由 {owner} 创建；仅参与当前对话，不作为全局角色',
-      newToken: '新成员',
+      newToken: '新建成员',
       // 成员在等用户处理（主对话输入框上方的通知行）
       waitAsk: '{name} 在等你回答',
       waitPlan: '{name} 提交了计划，等你批准',
@@ -1361,7 +1356,7 @@ const zhCN: MessageTree = {
       arch: '拱门',
       scallop: '花边',
       burst: '星芒',
-      clover: '四叶',
+      cloud: '云朵',
       diamond: '菱形',
       pebble: '鹅卵石',
       tilt: '斜方',
@@ -1716,6 +1711,7 @@ const en: MessageTree = {
       memberStop: 'Stop member task',
       memberStatus: 'Check member status',
       readMain: 'Read main chat',
+      reportToMain: 'Hand off to main chat',
       skill: 'Load skill',
       toolSearch: 'Look up tool usage',
       createTask: 'Create scheduled task',
@@ -1782,6 +1778,7 @@ const en: MessageTree = {
         memberStop: 'Stopped',
         memberStatus: 'Checked member status',
         readMain: 'Read the main chat',
+        reportToMain: 'Handed off to main chat',
         skill: 'Loaded skill',
         toolSearch: 'Read usage:',
         browser: 'Used browser',
@@ -1831,6 +1828,7 @@ const en: MessageTree = {
         memberStop: 'Stopping',
         memberStatus: 'Checking member status',
         readMain: 'Reading the main chat',
+        reportToMain: 'Handing off to main chat',
         skill: 'Loading skill',
         toolSearch: 'Reading usage:',
         browser: 'Using browser',
@@ -1880,6 +1878,7 @@ const en: MessageTree = {
         memberStop: 'Stop',
         memberStatus: 'Check member status',
         readMain: 'Read the main chat',
+        reportToMain: 'Hand off to main chat',
         skill: 'Load skill',
         toolSearch: 'Read usage:',
         browser: 'Use browser',
@@ -2395,17 +2394,10 @@ const en: MessageTree = {
     deleteConfirm:
       'Its run history will also be removed. The dedicated conversation stays in your chat list and can be deleted separately.',
     deleteBoundConfirm: 'Its run history and its conversation will be removed. This cannot be undone.',
-    fResult: 'Result',
     rowTime: 'When',
     rowExec: 'Run as',
     rowPrompt: 'Prompt',
-    notifyChat: 'Report to this chat',
-    notifyChatHint: 'stays quiet when nothing is new',
-    notifyChatOn: 'On — click to run on its own again',
-    notifyChatOff: 'Results come back to this chat; anything that needs action goes to the main role',
     fNotifyChat: 'Reports to',
-    kindBound: 'Scheduled task that reports to a chat',
-    kindAlone: 'Scheduled task that runs on its own',
     // Management page (list + detail)
     searchPlaceholder: 'Search tasks',
     // Create entry (+ menu beside the search box, same layout as “Add persona”)
@@ -2780,7 +2772,7 @@ const en: MessageTree = {
       arch: 'Arch',
       scallop: 'Scallop',
       burst: 'Burst',
-      clover: 'Clover',
+      cloud: 'Cloud',
       diamond: 'Diamond',
       pebble: 'Pebble',
       tilt: 'Tilted square',

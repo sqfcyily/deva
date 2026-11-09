@@ -233,7 +233,7 @@ function roundPolyPath(pts: Pt[], rad: number): string {
 
 /**
  * 全部形状（编辑器按此顺序列出）。路径为 0..100 单位方框内的绝对路径，只用 M / L / Q / A / Z（mapPath 依赖这点）。
- * 前 7 个对称、后 6 个非对称。
+ * 前 7 个对称（云朵照参考图略不对称，顶替四叶留在原位）、后 6 个非对称。
  */
 export const AVATAR_SHAPES = [
   'circle',
@@ -241,7 +241,7 @@ export const AVATAR_SHAPES = [
   'arch',
   'scallop',
   'burst',
-  'clover',
+  'cloud',
   'diamond',
   'pebble',
   'tilt',
@@ -258,8 +258,16 @@ const SHAPE_PATHS: Record<AvatarShape, string> = {
   arch: 'M4 50A46 46 0 0 1 96 50L96 86Q96 98 84 98L16 98Q4 98 4 86Z',
   scallop: ptsPath(polarPts((t) => 47 + 3 * Math.cos(12 * t), 192)),
   burst: ptsPath(polarPts((t) => 41.5 + 8.5 * Math.pow((1 + Math.cos(8 * t)) / 2, 1.4), 192)),
-  // 四个圆的平滑并集：叶与叶之间是圆弧过渡（|sin| 极坐标版在凹处有尖角，用户嫌不够柔滑）
-  clover: ptsPath(fitPts(smoothUnionPts([[30, 30, 28], [70, 30, 28], [30, 70, 28], [70, 70, 28]], 4.5))),
+  // 五团云（参考图 1.png，对比稿 design/avatar-cloud.html）：左上一团最大最高、右上一团小而低，两侧两团最大，底一团；
+  // 五个圆的位置、大小与平滑半径照原图轮廓拟合（加权误差约 0.5%）。别做左右对称——会把顶上两团间的凹口填平，用户嫌平。取代四叶（用户删掉）
+  cloud: ptsPath(
+    fitPts(
+      smoothUnionPts(
+        [[37.21, 30.76, 26.99], [67.01, 29.52, 20.25], [72.41, 57.87, 28.64], [23.21, 56.95, 29.07], [49.2, 72.17, 25]],
+        2.35
+      )
+    )
+  ),
   diamond: roundPolyPath([[50, 1], [99, 50], [50, 99], [1, 50]], 15),
   // 参考图 3 第 5 个：从原图取轮廓拟合三、四次谐波，起伏放大 2.5 倍（原样几乎看不出不是圆）
   pebble: ptsPath(
@@ -300,6 +308,7 @@ const SHAPE_PATHS: Record<AvatarShape, string> = {
 /**
  * 新角色随机形状的取样池。菱形上半部收窄、头部会越过两侧斜边，只供手选。
  * **池的顺序与长度决定 'auto' 头像分到的形状**（同 seededPalette 的色池）：增删、调序会让它们换形状。
+ * 换形状请原位替换（云朵即顶替四叶的位置），其余 'auto' 头像才不受影响。
  */
 const SHAPE_POOL: AvatarShape[] = AVATAR_SHAPES.filter((s) => s !== 'diamond')
 
@@ -421,7 +430,9 @@ export function parseAvatarSpec(raw: string | null | undefined): AvatarSpec | nu
     if (Object.keys(sel).length) spec.selections = sel
     if (Object.keys(col).length) spec.colors = col
     if (typeof obj.background === 'string' && obj.background) spec.background = obj.background
-    if (isAvatarShape(obj.shape) || obj.shape === AUTO_SHAPE) spec.shape = obj.shape
+    // 四叶已删、原位换成云朵：存成四叶的头像读成云朵（下次保存即写回 cloud）
+    const shape = obj.shape === 'clover' ? 'cloud' : obj.shape
+    if (isAvatarShape(shape) || shape === AUTO_SHAPE) spec.shape = shape
     return spec.selections || spec.colors || spec.background || spec.shape ? spec : null
   } catch {
     return null
