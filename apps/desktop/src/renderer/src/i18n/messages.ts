@@ -1250,6 +1250,15 @@ const zhCN: MessageTree = {
     newline: '换行',
     cancel: '取消',
     attachSkipped: '以下文件类型不支持或过大，未添加：{names}',
+    attachView: '查看 {name}',
+    attachFolder: '文件夹',
+    // 应用内看大图（点附件缩略图打开）
+    viewer: {
+      title: '查看图片',
+      prev: '上一张（←）',
+      next: '下一张（→）',
+      failed: '图片无法显示'
+    },
     save: '保存',
     profileTabChats: '对话',
     profileTabCaps: '能力',
@@ -2630,6 +2639,14 @@ const en: MessageTree = {
     newline: 'newline',
     cancel: 'Cancel',
     attachSkipped: 'Skipped unsupported or oversized files: {names}',
+    attachView: 'View {name}',
+    attachFolder: 'Folder',
+    viewer: {
+      title: 'Image viewer',
+      prev: 'Previous (←)',
+      next: 'Next (→)',
+      failed: "Can't display this image"
+    },
     save: 'Save',
     profileTabChats: 'Chats',
     profileTabCaps: 'Capabilities',

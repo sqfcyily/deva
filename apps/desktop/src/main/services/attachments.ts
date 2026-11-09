@@ -5,6 +5,7 @@ import { promises as fs } from 'fs'
 import { basename, dirname, extname, join, resolve } from 'path'
 import type { ContentPart } from '../providers/types'
 import { trustRoot } from './fs-guard'
+import { sniffImageMime, thumbnailDataUrl } from './image-read'
 
 /**
  * 附加文件服务（主进程）。
@@ -180,6 +181,22 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
         return { path: abs, name: basename(abs) || abs }
       })
     )
+  })
+
+  // 输入框里的图片附件：缩略图（full=false）或原图（full=true，点开看大图）。只认本次运行里用户亲手
+  // 选中 / 粘贴 / 拖入的图片（白名单），渲染层仍读不了任意路径。读不到（文件已被删改）返回 null。
+  ipcMain.handle('fs:attachment-image', async (_e, path: unknown, full: unknown): Promise<string | null> => {
+    if (typeof path !== 'string' || !path) return null
+    const abs = resolve(path)
+    if (!allowed.has(abs) || classify(extname(abs)) !== 'image') return null
+    try {
+      const buf = await fs.readFile(abs)
+      if (buf.length > MAX_IMAGE) return null
+      const mime = sniffImageMime(buf) ?? IMAGE_MIME[extname(abs).toLowerCase()]
+      return full === true ? `data:${mime};base64,${buf.toString('base64')}` : thumbnailDataUrl(buf, mime)
+    } catch {
+      return null
+    }
   })
 
   ipcMain.handle('fs:pick-attachments', async (): Promise<PickedAttachment[]> => {

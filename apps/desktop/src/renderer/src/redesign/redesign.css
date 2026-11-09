@@ -3195,11 +3195,242 @@ body.cf-resizing-y * {
 }
 
 /* ---------------------------- Composer 附件贴片行 ---------------------------- */
+/* ---------------------------- 附件：图片缩略图 + 文件卡片（见 attachments.tsx） ---------------------------- */
+/* 输入框与消息里同一套：图片是缩略图（点开看大图），文件 / 文件夹是卡片（类型图标 + 名称 + 类型与大小）。 */
 .cf-composer__files {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.cf-att {
+  position: relative;
+  flex: none;
+}
+.cf-att__thumb {
+  display: block;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.cf-att--sent .cf-att__thumb {
+  width: 112px; /* 宽度由行内样式按原图比例给出，这里是比例未知时的占位 */
+  height: 112px;
+  border-radius: 10px;
+}
+.cf-att__thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  -webkit-user-drag: none;
+}
+.cf-att__thumb:hover img {
+  filter: brightness(0.94);
+}
+.cf-att__thumb.is-loading {
+  background: linear-gradient(90deg, var(--bg-inset) 0%, var(--bg-active) 50%, var(--bg-inset) 100%) 0 0 / 200% 100%;
+  animation: cf-att-shimmer 1s linear infinite;
+}
+@keyframes cf-att-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+.cf-att__thumb.is-broken {
+  display: grid;
+  place-items: center;
+  color: var(--fg-subtle);
+  cursor: default;
+}
+/* 右上角的移除键：悬停或键盘聚焦到这一项时才露出，平时不打扰。 */
+.cf-att__x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 2px solid var(--bg-elevated);
+  border-radius: var(--radius-full);
+  background: var(--fg);
+  color: var(--bg-elevated);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.cf-att:hover .cf-att__x,
+.cf-att:focus-within .cf-att__x {
+  opacity: 1;
+}
+.cf-fcard {
+  width: 216px;
+  height: 56px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-inset);
+}
+.cf-fcard.is-sent {
+  background: var(--bg);
+}
+.cf-fcard__ico {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius);
+  color: var(--tc);
+  background: color-mix(in srgb, var(--tc) 13%, transparent);
+}
+.cf-fcard__txt {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cf-fcard__name {
+  font-size: 12.5px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-fcard__meta {
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+/* 消息里的附件：靠右，缩略图一行、文件卡片一行，在正文气泡上方 */
+.cf-sent {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   gap: 6px;
   margin-bottom: var(--space-2);
+}
+.cf-sent:last-child {
+  margin-bottom: 0;
+}
+.cf-sent__row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.cf-sent__row.is-files {
+  gap: 8px;
+}
+
+/* 看大图：遮罩上居中只放图片本身（不套窗口、不加边框），下方一行文件信息。上方让出标题栏，两侧留给切换箭头。
+   不设关闭键（铺满时关闭键挨着系统的关闭按钮，容易误关 Deva），Esc / 点遮罩关闭。 */
+.cf-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-overlay) + 300); /* 高于模态框，低于 toast */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: calc(var(--titlebar-h) + 16px) 68px 20px;
+  background: rgba(0, 0, 0, 0.72);
+  -webkit-app-region: no-drag;
+  user-select: none;
+  outline: none;
+  animation: cf-viewer-in 0.14s ease;
+}
+@keyframes cf-viewer-in {
+  from {
+    opacity: 0;
+  }
+}
+.cf-viewer__img {
+  display: block;
+  min-height: 0;
+  max-width: 100%;
+  /* 窗口高 − 标题栏 − 上下留白 36 − 间距 12 − 文件信息一行约 20 */
+  max-height: calc(100vh - var(--titlebar-h) - 68px);
+  object-fit: contain;
+  border-radius: 4px;
+  -webkit-user-drag: none;
+}
+.cf-viewer__caption {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  max-width: 100%;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 20px;
+  color: rgba(255, 255, 255, 0.92);
+}
+.cf-viewer__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.cf-viewer__meta {
+  flex: none;
+  color: rgba(255, 255, 255, 0.6);
+}
+.cf-viewer__failed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 40px 24px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+}
+.cf-viewer__nav {
+  position: absolute;
+  top: 50%;
+  width: 40px;
+  height: 40px;
+  margin-top: -20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+}
+.cf-viewer__nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+.cf-viewer__nav.is-prev {
+  left: var(--space-4);
+}
+.cf-viewer__nav.is-next {
+  right: var(--space-4);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-viewer,
+  .cf-att__thumb.is-loading {
+    animation: none;
+  }
+  .cf-att__x {
+    transition: none;
+  }
 }
 
 /* ---------------------------- 角色资料卡：名片头 + 对话 / 能力标签 ---------------------------- */

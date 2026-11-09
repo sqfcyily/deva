@@ -41,11 +41,17 @@ export type ToolStatus = 'running' | 'ok' | 'error' | 'denied'
 
 export type AttachKind = 'image' | 'document' | 'text' | 'folder'
 
-/** 用户消息上的附件贴片（仅名称 + 类型；文件夹另带绝对路径，供悬停显示）。 */
+/** 用户消息上的附件贴片（名称 + 类型；文件夹另带绝对路径，供悬停显示）。 */
 export interface AttachChip {
   name: string
   kind: AttachKind
   path?: string
+  /** 文件大小（字节；文件夹没有）：附件卡片上显示「PDF · 1.2 MB」。 */
+  size?: number
+  /** 图片在对话记录里的位置（主进程重建时给出），取缩略图 / 原图用。 */
+  ref?: string
+  /** 刚发出、还没从主进程重载的图片：发送时的本地路径（已授权），取缩略图 / 原图用，不显示。 */
+  file?: string
 }
 
 /** ask_user 候选项（与 preload/主进程对齐）。 */
@@ -282,6 +288,8 @@ export interface SendAttachment {
   path: string
   name: string
   kind: AttachKind
+  /** 文件大小（字节），乐观气泡的附件卡片显示用。 */
+  size?: number
 }
 
 /**
@@ -1915,9 +1923,16 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         id: genId(),
         role: 'user',
         blocks,
-        // 文件夹带上绝对路径（贴片悬停显示，同主进程重建）；文件的路径是临时落盘位置，不带。
+        // 文件夹带上绝对路径（贴片悬停显示，同主进程重建）；图片记下本地路径（file）供取缩略图 / 原图——
+        // 重载后改由主进程给的 ref 定位。其余文件的路径是临时落盘位置，不带。
         attachments: atts.length
-          ? atts.map((a) => ({ name: a.name, kind: a.kind, ...(a.kind === 'folder' ? { path: a.path } : {}) }))
+          ? atts.map((a) => ({
+              name: a.name,
+              kind: a.kind,
+              ...(a.size !== undefined && a.kind !== 'folder' ? { size: a.size } : {}),
+              ...(a.kind === 'folder' ? { path: a.path } : {}),
+              ...(a.kind === 'image' ? { file: a.path } : {})
+            }))
           : undefined
       }
 

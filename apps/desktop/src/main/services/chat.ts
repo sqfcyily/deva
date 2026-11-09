@@ -140,6 +140,7 @@ import {
 } from './chat-store'
 import { trimHistoryImages } from './image-trim'
 import { ATTACH_FOLDER_PREFIX, ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
+import { thumbnailDataUrl } from './image-read'
 import { isEn } from '../locale'
 import {
   BROWSER_GUIDE,
@@ -438,11 +439,32 @@ type DisplayBlock =
   /** 回合进行中插入的消息（见 INSERT_MARKER）：执行步骤里的一个节点，排在它送达时的两步之间。 */
   | { kind: 'insert'; text: string }
 
-/** 用户消息上的附件贴片（仅名称 + 类型；文件夹另带绝对路径，供悬停显示）。 */
+/** 用户消息上的附件贴片（名称 + 类型；文件夹另带绝对路径，供悬停显示）。 */
 export interface AttachmentChip {
   name: string
   kind: 'image' | 'document' | 'text' | 'folder'
   path?: string
+  /** 文件大小（字节；文件夹没有）：附件卡片上显示「PDF · 1.2 MB」。 */
+  size?: number
+  /**
+   * 图片在对话记录里的位置「消息下标:内容块下标:指纹」（见 imageRef）：界面据此取缩略图与原图
+   * （chat:attachment-image），不随展示消息回传 base64。
+   */
+  ref?: string
+}
+
+/** base64 串解码后的字节数。 */
+function base64Bytes(b64: string): number {
+  return Math.max(0, Math.floor((b64.length * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0))
+}
+
+/**
+ * 图片附件的 ref。按轮删除后后面的消息下标会前移，同一个「下标:块下标」可能换成另一张图——带上内容指纹
+ * （长度 + 中段几个字符，不必整串哈希），取图时对不上就不给，界面按 ref 缓存的缩略图也不会张冠李戴。
+ */
+function imageRef(msgIndex: number, partIndex: number, data: string): string {
+  const mid = Math.floor(data.length / 2)
+  return `${msgIndex}:${partIndex}:${data.length.toString(36)}${data.slice(mid, mid + 8)}`
 }
 
 export type DisplayMessage =
@@ -512,9 +534,13 @@ function toDisplayMessages(
   /** 子智能体 id → 类型与任务标题（来自子智能体记录索引），给续聊卡补标题。 */
   subagentLookup?: (id: string) => { agent: string; description: string } | undefined,
   background: Record<string, 'running' | 'ok' | 'error'> = {},
-  durations: Record<string, number> = {}
+  durations: Record<string, number> = {},
+  /** messages[0] 在整份对话记录里的下标：只转换末尾几条时（如 emitTurnStart）图片的 ref 仍指向记录里的真实位置。 */
+  indexBase = 0
 ): DisplayMessage[] {
   const out: DisplayMessage[] = []
+  /** 正在处理的消息在整份对话记录里的下标（图片附件的 ref 用）。 */
+  let curIndex = indexBase
   let lastAssistant: Extract<DisplayMessage, { role: 'assistant' }> | null = null
 
   // 预扫：收集所有已存在 tool_result 的 toolUseId。用于判定 ask_user 是否「曾被答复过」——
@@ -718,15 +744,22 @@ function toDisplayMessages(
     // 真实用户消息（可能带附件）：附件在前、提问正文在最后一个 text 块
     const atts: AttachmentChip[] = []
     const textParts = parts.filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text')
-    for (const p of parts) {
-      if (p.type === 'image') atts.push({ name: p.name ?? '图片', kind: 'image' })
-      else if (p.type === 'document') atts.push({ name: p.name ?? '文档', kind: 'document' })
-    }
+    parts.forEach((p, pi) => {
+      if (p.type === 'image')
+        atts.push({ name: p.name ?? '图片', kind: 'image', size: base64Bytes(p.data), ref: imageRef(curIndex, pi, p.data) })
+      else if (p.type === 'document') atts.push({ name: p.name ?? '文档', kind: 'document', size: base64Bytes(p.data) })
+    })
     for (let i = 0; i < textParts.length - 1; i++) {
       const tp = textParts[i]
-      if (tp.text.startsWith(ATTACH_TEXT_PREFIX))
-        atts.push({ name: tp.text.slice(ATTACH_TEXT_PREFIX.length).split('\n')[0].trim(), kind: 'text' })
-      else if (tp.text.startsWith(ATTACH_FOLDER_PREFIX)) {
+      if (tp.text.startsWith(ATTACH_TEXT_PREFIX)) {
+        // 注入形如「前缀 + 文件名\n```\n正文\n```」，大小按正文算。
+        const body = tp.text.slice(tp.text.indexOf('\n') + 1).replace(/^```\n/, '').replace(/\n```$/, '')
+        atts.push({
+          name: tp.text.slice(ATTACH_TEXT_PREFIX.length).split('\n')[0].trim(),
+          kind: 'text',
+          size: Buffer.byteLength(body, 'utf8')
+        })
+      } else if (tp.text.startsWith(ATTACH_FOLDER_PREFIX)) {
         const dir = tp.text.slice(ATTACH_FOLDER_PREFIX.length).split('\n')[0].trim()
         atts.push({ name: basename(dir) || dir, kind: 'folder', path: dir })
       }
@@ -740,6 +773,7 @@ function toDisplayMessages(
   // 提示可能锚在最前（after=0，几乎不出现）、任意消息之后、或全部消息之后（after=length，最常见）。
   flushNotices(0)
   for (let i = 0; i < messages.length; i++) {
+    curIndex = indexBase + i
     processOne(messages[i])
     flushNotices(i + 1)
   }
@@ -2369,7 +2403,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 已归档的对话开始新一轮（发消息 / 定时任务运行 / 后台任务通知）即移回列表：渲染层收到 turn_start
     // 会重拉列表，故须在发出前落盘。
     if (getSession(sessionId)?.archived) setSessionArchived(sessionId, false)
-    const [user] = toDisplayMessages(history.slice(-1))
+    // 只转换末条，但图片 ref 要指向它在整份记录里的位置（末条下标）。
+    const [user] = toDisplayMessages(history.slice(-1), {}, [], {}, {}, {}, {}, [], undefined, {}, {}, history.length - 1)
     if (user?.role === 'user') emit(turnId, sessionId, { type: 'turn_start', user })
   }
 
@@ -5417,6 +5452,28 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle(
     'chat:load-session',
     (_e, sessionId: string, _workspaceRoot: string | null): DisplayMessage[] => loadDisplay(sessionId)
+  )
+
+  // 对话记录里的图片附件：缩略图（full=false）或原图（full=true，点开看大图）。ref 即展示层附件上的
+  // 「消息下标:内容块下标:指纹」（imageRef）——按轮删除 / 回滚 / 压缩后展示层整份重载，ref 随之更新；
+  // 对不上（那里已不是这张图）返回 null，界面显示类型图标占位。
+  ipcMain.handle(
+    'chat:attachment-image',
+    (_e, sessionId: unknown, ref: unknown, full: unknown): string | null => {
+      if (typeof sessionId !== 'string' || typeof ref !== 'string') return null
+      const at = /^(\d+):(\d+):/.exec(ref)
+      const msg = at ? getSession(sessionId)?.messages[Number(at[1])] : undefined
+      if (!at || msg?.role !== 'user' || typeof msg.content === 'string') return null
+      const pi = Number(at[2])
+      const part = msg.content[pi]
+      if (part?.type !== 'image' || imageRef(Number(at[1]), pi, part.data) !== ref) return null
+      if (full === true) return `data:${part.mediaType};base64,${part.data}`
+      try {
+        return thumbnailDataUrl(Buffer.from(part.data, 'base64'), part.mediaType)
+      } catch {
+        return null
+      }
+    }
   )
 
   // 载入历史 + 进行中回合的 turnId（无则 null），同一时刻取出：渲染层据此接上别处发起、仍在跑的一轮——

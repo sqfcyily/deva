@@ -46,6 +46,35 @@ export function sniffImageMime(buf: Buffer): ImageMime | null {
   return null
 }
 
+/** 附件缩略图：短边 240px（输入框里 56px 的方图、消息里 112px 高的缩略图在 2 倍屏上都够清晰），长边不超 960px。 */
+const THUMB_SHORT = 240
+const THUMB_LONG = 960
+
+/**
+ * 图片 → 缩略图 data URI（界面显示附件用，不发给模型）。原图已够小就原样返回；nativeImage 解不开的格式
+ * （GIF / WebP）也原样返回，由界面自己解码——附件本身限 5MB，原样交出去也不大。`mime` 为图片实际格式。
+ */
+export function thumbnailDataUrl(buf: Buffer, mime: string): string {
+  const original = (): string => `data:${mime};base64,${buf.toString('base64')}`
+  let img: NativeImage
+  try {
+    img = nativeImage.createFromBuffer(buf)
+  } catch {
+    return original()
+  }
+  if (img.isEmpty()) return original()
+  const { width, height } = img.getSize()
+  const scale = Math.min(1, THUMB_SHORT / Math.min(width, height), THUMB_LONG / Math.max(width, height))
+  if (scale >= 1) return original()
+  const out = img.resize({
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+    quality: 'good'
+  })
+  // 照片出 JPEG（体积小）；截图等出 PNG（保文字锐度与透明）。
+  return mime === 'image/jpeg' ? `data:image/jpeg;base64,${out.toJPEG(85).toString('base64')}` : out.toDataURL()
+}
+
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`

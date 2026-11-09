@@ -137,6 +137,10 @@ export interface AttachmentChip {
   name: string
   kind: 'image' | 'document' | 'text' | 'folder'
   path?: string
+  /** 文件大小（字节；文件夹没有）。 */
+  size?: number
+  /** 图片在对话记录里的位置，取缩略图 / 原图用（chat.attachmentImage）。 */
+  ref?: string
 }
 
 /** 会话元信息（左侧列表用，与 chat-store.ts 对齐）。 */
@@ -935,6 +939,9 @@ const api = {
       size: number
       data: Uint8Array | null
     }): Promise<PickedAttachment> => ipcRenderer.invoke('fs:paste-attachment', file),
+    /** 已选为附件的图片：缩略图，full 为 true 时取原图（data URI）；不是本次选中的图片或读不到为 null */
+    attachmentImage: (path: string, full = false): Promise<string | null> =>
+      ipcRenderer.invoke('fs:attachment-image', path, full),
     /**
      * 拖入 / 粘贴的条目里哪些是文件夹：按下标返回文件夹的位置，不是文件夹（或取不到路径）为 null。
      * 路径在这里从 File 对象取出、直接交主进程——页面只能递 File，递不了路径，伪造不出「用户拖入的文件夹」。
@@ -1112,6 +1119,9 @@ const api = {
     /** 载入某会话历史，重建展示气泡 */
     loadSession: (sessionId: string, workspaceRoot: string | null): Promise<DisplayMessage[]> =>
       ipcRenderer.invoke('chat:load-session', sessionId, workspaceRoot),
+    /** 对话记录里的图片附件（ref 见 AttachmentChip）：缩略图，full 为 true 时取原图（data URI）；对不上为 null */
+    attachmentImage: (sessionId: string, ref: string, full = false): Promise<string | null> =>
+      ipcRenderer.invoke('chat:attachment-image', sessionId, ref, full),
     /** 载入历史 + 进行中回合的 turnId（同一时刻取出，用于接上别处发起、仍在跑的一轮） */
     /** 接上某会话：历史 + 进行中的回合（turnId 与开始时刻 startedAt，空闲时都为 null）。 */
     attachSession: (

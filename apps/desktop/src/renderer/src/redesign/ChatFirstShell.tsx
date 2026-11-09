@@ -35,8 +35,6 @@ import {
   Copy,
   Download,
   ExternalLink,
-  FileText,
-  FileCode2,
   Folder,
   FolderMinus,
   FolderOpen,
@@ -46,7 +44,6 @@ import {
   GitCommitHorizontal,
   GitMerge,
   Globe,
-  Image as ImageIcon,
   Info,
   Lightbulb,
   ListChecks,
@@ -76,6 +73,7 @@ import {
 } from 'lucide-react'
 import { BotsPane } from './BotsPane'
 import { useComposerEditor, type ComposerKey } from './composer-editor'
+import { AttachmentList } from './attachments'
 import { UpdateSection } from './UpdateSection'
 // 关于页的应用图标：直接用安装包图标的源文件，图形只维护一份
 import devaIcon from '../../../../build/icon.svg'
@@ -196,15 +194,6 @@ import { useProfile } from '../store/profile'
  */
 
 /* ============================ 小工具 ============================ */
-
-/** 附件类型 → 图标。 */
-function iconFor(kind: AttachKind): React.ReactNode {
-  if (kind === 'image') return <ImageIcon size={13} />
-  if (kind === 'document') return <FileText size={13} />
-  if (kind === 'text') return <FileCode2 size={13} />
-  if (kind === 'folder') return <Folder size={13} />
-  return <Paperclip size={13} />
-}
 
 /** 路径末段（跨平台）。 */
 function basename(p: string): string {
@@ -5131,6 +5120,7 @@ function Conversation({
         elapsedSec={i === messages.length - 1 ? streamStatus.elapsedSec : 0}
         footer={statusInMsg && !selecting && i === messages.length - 1 ? statusLine : undefined}
         dataTurn={turn}
+        sessionId={currentSessionId}
         onAsk={onAsk}
         onPlan={onPlan}
         onMountReq={onMountReq}
@@ -5633,6 +5623,7 @@ function ConvMessage({
   elapsedSec,
   footer,
   dataTurn,
+  sessionId,
   onAsk,
   onPlan,
   onMountReq,
@@ -5656,6 +5647,8 @@ function ConvMessage({
   footer?: React.ReactNode
   /** 该消息所属的对话轮下标（0 基）；标注在根节点上，供右键菜单定位「删除此轮」。前言/未知为 undefined。 */
   dataTurn?: number
+  /** 消息所在的对话：附件图片按它向主进程取缩略图 / 原图。 */
+  sessionId: string
   onAsk: (key: string, answers: string[]) => void
   onPlan: (key: string, decision: 'approve' | 'keep' | 'ignore', feedback?: string) => void
   onMountReq: (key: string, path: string | null) => void
@@ -5802,14 +5795,25 @@ function ConvMessage({
       <div className="cf-msg is-user" data-turn={dataTurn}>
         <div className="cf-msg__body">
           {msg.attachments && msg.attachments.length > 0 && (
-            <div className="msg__attachments">
-              {msg.attachments.map((a, i) => (
-                <span key={i} className="attach-chip attach-chip--sent" title={a.path ?? a.name}>
-                  {iconFor(a.kind)}
-                  <span className="attach-chip__name">{a.name}</span>
-                </span>
-              ))}
-            </div>
+            <AttachmentList
+              variant="sent"
+              entries={msg.attachments.map((a, i) => ({
+                id: String(i),
+                name: a.name,
+                kind: a.kind,
+                size: a.size,
+                title: a.path ?? a.name,
+                // 重载的记录按 ref 取图；刚发出、还没重载的按发送时的本地路径。
+                src:
+                  a.kind !== 'image'
+                    ? undefined
+                    : a.ref
+                      ? { sessionId, ref: a.ref }
+                      : a.file
+                        ? { path: a.file }
+                        : undefined
+              }))}
+            />
           )}
           {text && <UserText text={text} />}
         </div>
@@ -6410,7 +6414,12 @@ function Composer({
     setPending([])
     void onSend(
       text,
-      atts.map((p) => ({ path: p.path, name: p.name, kind: p.kind as AttachKind }))
+      atts.map((p) => ({
+        path: p.path,
+        name: p.name,
+        kind: p.kind as AttachKind,
+        ...(p.kind === 'folder' ? {} : { size: p.size })
+      }))
     ).then((sent) => {
       // 未发出（未选模型 / 请求失败，原因已 toast）：把草稿放回——但别覆盖用户在此期间新敲的内容；
       // 此间已切到别的会话的，放回原会话的草稿里。
@@ -6631,29 +6640,20 @@ function Composer({
               saveLayout({ composerHeight: undefined })
             }}
           />
-          {pending.length > 0 && (
-            <div className="cf-composer__files">
-              {pending.map((p) => (
-                <span
-                  key={p.path}
-                  className={`attach-chip${p.supported ? '' : ' is-bad'}`}
-                  title={p.kind === 'folder' ? p.path : p.reason || p.name}
-                >
-                  {iconFor((p.supported ? p.kind : 'text') as AttachKind)}
-                  <span className="attach-chip__name">{p.name}</span>
-                  <button
-                    className="attach-chip__x"
-                    onClick={() => removePending(p.path)}
-                    title={t('cf.cancel')}
-                    aria-label={t('cf.cancel')}
-                  >
-                    {/* 用图标而非「✕」字符：字符的字形落在基线上，偏离悬停圆的中心。 */}
-                    <X size={12} strokeWidth={2.2} />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
+          {/* 待发附件：图片缩略图（点开看大图）在前，文件 / 文件夹卡片在后；悬停露出右上角的移除键。 */}
+          <AttachmentList
+            variant="composer"
+            entries={pending.map((p) => ({
+              id: p.path,
+              name: p.name,
+              // 不受支持的进不了 pending（addPicked 已滤掉），兜底按文本卡片画。
+              kind: p.kind === 'unsupported' ? 'text' : p.kind,
+              size: p.kind === 'folder' ? undefined : p.size,
+              title: p.kind === 'folder' ? p.path : p.reason || p.name,
+              src: p.kind === 'image' ? { path: p.path } : undefined
+            }))}
+            onRemove={removePending}
+          />
           {/* 输入区：Lexical 接管的 contentEditable（子节点归编辑器管，React 不渲染内容）；占位提示叠在其上。 */}
           <div className="cf-draft" style={{ height: boxH }}>
             <div
