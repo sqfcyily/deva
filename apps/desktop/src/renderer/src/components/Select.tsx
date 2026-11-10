@@ -50,6 +50,8 @@ interface CommonProps<V> {
   'aria-label'?: string
   /** 加在触发框上（如固定最小宽度）。 */
   className?: string
+  /** 加在浮层上（如固定宽度）。 */
+  menuClassName?: string
 }
 interface SingleProps<V> extends CommonProps<V> {
   multiple?: false
@@ -87,7 +89,7 @@ interface MenuPos {
 }
 
 export function Select<V>(props: SingleProps<V> | MultiProps<V>): React.JSX.Element {
-  const { items, inline, mono, placeholder, className } = props
+  const { items, inline, mono, placeholder, className, menuClassName } = props
   const uid = useId()
   const listId = `${uid}-list`
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -267,7 +269,7 @@ export function Select<V>(props: SingleProps<V> | MultiProps<V>): React.JSX.Elem
               aria-multiselectable={props.multiple || undefined}
               className={`select-menu${inline ? ' select-menu--inline' : ''}${mono ? ' select-menu--mono' : ''}${
                 scrolls ? ' is-scroll' : ''
-              }`}
+              }${menuClassName ? ` ${menuClassName}` : ''}`}
               style={pos}
             >
               {items.map((e, k) => {

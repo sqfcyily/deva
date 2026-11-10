@@ -54,13 +54,13 @@ import {
   MEMBER_NOTICE_TAG,
   MEMBER_SIDE_TOOLS,
   MEMBER_TASK_MARKER,
+  NO_FOLDER,
   activeMembers,
   buildTaskMessage,
   findMember,
   lastDirectUserText,
   lastReplyText,
   mainMemberTools,
-  memberRoot,
   parseTaskMessage,
   readMainPage,
   readMainRound,
@@ -74,6 +74,7 @@ import {
   type MemberRunStatus
 } from './members'
 import { NEW_MEMBER_TOKENS } from '../../shared/mention'
+import { slashTokens } from '../../shared/slash'
 import { memoryPromptSection } from './memory'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
 import {
@@ -107,11 +108,10 @@ import {
 import { sealedDecision } from './sealed'
 import {
   createTask,
-  deleteTask,
   findTaskBySession,
+  releaseTasksOwnedBy,
   setTaskSessionPurger,
   syncTaskModel,
-  tasksOwnedBy,
   type CreateTaskResult
 } from './tasks'
 import type { TaskCreateInput, TaskRecord } from './tasks-types'
@@ -151,7 +151,7 @@ import {
   type StoredSession
 } from './chat-store'
 import { trimHistoryImages } from './image-trim'
-import { ATTACH_FOLDER_PREFIX, ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
+import { ATTACH_FOLDER_PREFIX, ATTACH_PATH_PREFIX, ATTACH_TEXT_PREFIX, buildAttachmentPart } from './attachments'
 import { thumbnailDataUrl } from './image-read'
 import { isEn } from '../locale'
 import {
@@ -454,7 +454,8 @@ type DisplayBlock =
 /** 用户消息上的附件贴片（名称 + 类型；文件夹另带绝对路径，供悬停显示）。 */
 export interface AttachmentChip {
   name: string
-  kind: 'image' | 'document' | 'text' | 'folder'
+  /** file = 只把位置交给模型的文件（见 attachments.ts ATTACH_PATH_PREFIX），带 path。 */
+  kind: 'image' | 'document' | 'text' | 'folder' | 'file'
   path?: string
   /** 文件大小（字节；文件夹没有）：附件卡片上显示「PDF · 1.2 MB」。 */
   size?: number
@@ -787,6 +788,9 @@ function toDisplayMessages(
       } else if (tp.text.startsWith(ATTACH_FOLDER_PREFIX)) {
         const dir = tp.text.slice(ATTACH_FOLDER_PREFIX.length).split('\n')[0].trim()
         atts.push({ name: basename(dir) || dir, kind: 'folder', path: dir })
+      } else if (tp.text.startsWith(ATTACH_PATH_PREFIX)) {
+        const file = tp.text.slice(ATTACH_PATH_PREFIX.length).split('\n')[0].trim()
+        atts.push({ name: basename(file) || file, kind: 'file', path: file })
       }
     }
     const question = textParts.length ? textParts[textParts.length - 1].text : ''
@@ -2772,11 +2776,20 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
   }
 
+  /**
+   * 成员的文件夹：以成员会话的 focusRoot 为准（用户在成员对话里挂 / 卸，同普通对话）；会话丢了才看名单。
+   * 不跟随主对话：没给文件夹的成员就是没有文件夹。
+   */
+  function memberFolder(m: MemberRef): string | null {
+    const sub = getSession(m.sessionId)
+    return sub ? (sub.focusRoot ?? null) : m.root
+  }
+
   /** 名单里的一项交给模型时的写法（见 listing.ts memberListingPart）。 */
   function memberItem(m: MemberRef, mainRoot: string | null): MemberListingItem {
     return {
       name: m.name,
-      folder: rootLabel(m.root, mainRoot),
+      folder: rootLabel(memberFolder(m), mainRoot),
       duty: m.duty,
       ...(m.origin === 'mention' ? { fromRole: getPersona(m.personaId)?.name ?? m.name } : {})
     }
@@ -2800,6 +2813,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
   /**
    * 往主对话名单里加一个成员（或恢复同名的已移除成员），建好成员会话。失败返回原因（成员已满 / 重名）。
+   * root：成员的文件夹，null = 不指定（新成员没有文件夹；恢复的成员保留原来的文件夹）。
    * restored = 恢复的是之前移除的成员：会话与上下文都还在，调用方要如实告诉主智能体（别让它以为是新建的）。
    * 只改内存与磁盘，不通知渲染层——调用方汇总后 publishSessionsChanged。
    */
@@ -2810,18 +2824,18 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (findMember(main.members, p.name)) return `已有名为「${p.name}」的成员。`
     if (activeMembers(main.members).length >= MAX_MEMBERS)
       return `成员已满 ${MAX_MEMBERS} 个，请先请用户在成员卡片里移除一个。`
-    // 同名的已移除成员：恢复它（保留它的工作记录），职责与文件夹按这次的更新。
+    // 同名的已移除成员：恢复它（保留它的工作记录），职责与文件夹按这次的更新（这次没给的保留原样）。
     const prior = main.members?.find(
       (m) => m.removed && m.name.toLowerCase() === p.name.toLowerCase() && getSession(m.sessionId)
     )
     if (prior) {
       prior.removed = undefined
-      prior.root = p.root
       prior.duty = p.duty || prior.duty
-      saveProject(main.id)
       const sub = getSession(prior.sessionId)
-      if (sub) {
-        sub.focusRoot = memberRoot(prior, main.focusRoot ?? null)
+      prior.root = p.root ?? memberFolder(prior)
+      saveProject(main.id)
+      if (sub && p.root) {
+        sub.focusRoot = p.root
         saveProject(sub.id)
       }
       return { ref: prior, restored: true }
@@ -2837,7 +2851,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
     const sub = ensureSession(ref.sessionId, {
       personaId: ref.personaId,
-      focusRoot: memberRoot(ref, main.focusRoot ?? null),
+      focusRoot: ref.root,
       model: memberModelRef(ref, main),
       effort: main.effort
     })
@@ -2895,19 +2909,16 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   /**
-   * 成员会话里挂载 / 卸载文件夹：写回主对话名单（成员负责的文件夹以名单为准，名单随消息下发，主智能体会收到更新）。
-   * null = 不限，跟随主对话的工作目录；与主对话工作目录相同也记作不限。
+   * 成员会话里挂载 / 卸载文件夹（null = 卸载，成员没有文件夹）：同步写回主对话名单（名单随消息下发，主智能体会收到更新）。
    */
   function setMemberFolder(sub: StoredSession, folder: string | null): void {
     const main = sub.parentId ? getSession(sub.parentId) : undefined
     const ref = main?.members?.find((m) => m.sessionId === sub.id)
-    const mainRoot = main?.focusRoot ?? null
-    const root = folder && !sameRoot(folder, mainRoot) ? folder : null
     if (main && ref) {
-      ref.root = root
+      ref.root = folder
       saveProject(main.id)
     }
-    sub.focusRoot = root ?? mainRoot
+    sub.focusRoot = folder
     saveProject(sub.id)
     publishSessionsChanged()
   }
@@ -2922,6 +2933,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (!name) return fail('缺少成员名（name）。')
     if (name.length > 16 || /[\s@]/.test(name)) return fail('成员名请用 2～6 个字、不含空格和 @，如「前端」。')
     const mainRoot = main.focusRoot ?? null
+    // 没给文件夹 = 不指定：成员没有工作目录（不跟随主对话），用户之后可以在成员的对话里为它选。
     let root: string | null = null
     if (folder.trim()) {
       root = resolveMemberFolder(folder, mainRoot)
@@ -2933,7 +2945,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         /* 不存在 */
       }
       if (!isDir) return fail(`文件夹不存在：${root}。请确认路径，或省略 folder。`)
-      if (sameRoot(root, mainRoot)) root = null
     }
     const r = addMember(main, {
       name,
@@ -2945,10 +2956,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (typeof r === 'string') return fail(r)
     publishSessionsChanged()
     const item = memberItem(r.ref, mainRoot)
+    const where = item.folder === NO_FOLDER ? '（未指定文件夹）' : `（负责 ${item.folder}）`
     return {
       content: r.restored
-        ? `已恢复之前移除的成员「${r.ref.name}」：${r.ref.duty || '（未写职责）'}（负责 ${item.folder}）。它用的还是原来的会话，之前做过的任务和上下文都还在，不用把旧结论再交给它一遍。用 member_send 给它派任务。`
-        : `已添加成员「${r.ref.name}」：${r.ref.duty || '（未写职责）'}（负责 ${item.folder}）。用 member_send 给它派任务。`,
+        ? `已恢复之前移除的成员「${r.ref.name}」：${r.ref.duty || '（未写职责）'}${where}。它用的还是原来的会话，之前做过的任务和上下文都还在，不用把旧结论再交给它一遍。用 member_send 给它派任务。`
+        : `已添加成员「${r.ref.name}」：${r.ref.duty || '（未写职责）'}${where}。用 member_send 给它派任务。`,
       summary: r.restored ? `已恢复成员「${r.ref.name}」` : `已添加成员「${r.ref.name}」`,
       isError: false,
       listing: memberAddedRecord(item)
@@ -2985,9 +2997,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       note: note || title,
       context: first ? recentMainContext(main.messages, owner) : ''
     })
-    // 每次派任务都按主对话同步：工作目录、模型（被 @ 的角色设了偏好模型就用它）、思考等级。
-    // 用户在成员会话里亲自改过的模型 / 思考等级以成员为准，不覆盖。
-    sub.focusRoot = memberRoot(member, main.focusRoot ?? null)
+    // 每次派任务都按主对话同步：模型（被 @ 的角色设了偏好模型就用它）、思考等级。用户在成员会话里亲自改过的
+    // 以成员为准，不覆盖。文件夹是成员自己的，不跟随主对话。
     if (!member.modelSet) sub.model = memberModelRef(member, main)
     if (!member.effortSet && main.effort) sub.effort = main.effort
     const prevTask = member.task
@@ -3103,7 +3114,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const blocks = pick.map((m) => {
       const item = memberItem(m, mainRoot)
       const lines = [
-        `【${m.name}】${item.fromRole ? '（协助者）' : ''}负责 ${item.folder}：${m.duty || '（未写职责）'}`
+        `【${m.name}】${item.fromRole ? '（协助者）' : ''}${item.folder === NO_FOLDER ? '未指定文件夹' : `负责 ${item.folder}`}：${m.duty || '（未写职责）'}`
       ]
       if (busySessions.has(m.sessionId)) {
         const since = busySince.get(m.sessionId)
@@ -3379,7 +3390,14 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     for (const p of roles) {
       if (!has(p.name) || named.some((m) => m.name.toLowerCase() === p.name.toLowerCase())) continue
       if (named.some((m) => m.name.includes(p.name)) || added.some((a) => a.ref.name.includes(p.name))) continue
-      const r = addMember(main, { name: p.name, root: null, duty: p.description, origin: 'mention', personaId: p.id })
+      // @ 请来协助本对话：带上主对话当前的文件夹（成为它自己的，用户可在它的对话里卸载 / 换）。
+      const r = addMember(main, {
+        name: p.name,
+        root: main.focusRoot ?? null,
+        duty: p.description,
+        origin: 'mention',
+        personaId: p.id
+      })
       if (typeof r === 'string') full.push(p.name)
       else added.push(r)
     }
@@ -4623,7 +4641,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             // 渲染层同步更新自己的绑定覆盖层（见 store 的 respondMount），两侧不会在下次 send 打架。
             ctx.workspaceRoot = picked
             const s = getSession(sessionId)
-            // 成员会话：写回主对话名单（成员负责的文件夹以名单为准）。
+            // 成员会话：同步写回主对话名单。
             if (s?.parentId) setMemberFolder(s, picked)
             else if (s) s.focusRoot = picked
             // 措辞刻意只陈述「本次」：工作区可被用户随时切换，而这条 tool_result 会永久留在上下文里。
@@ -5088,11 +5106,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               },
               owner: personaName(parentSession),
               workspaceRoot: effectiveRoot,
-              folder: memberRef?.root
-                ? rootLabel(memberRef.root, mainRoot)
-                : '不限（与主对话同一工作目录）',
+              folder: effectiveRoot ? rootLabel(effectiveRoot, mainRoot) : '未指定（需要时用户会为你选择，或使用绝对路径）',
               personas,
-              // 全局记忆只读；有文件夹（自己的或跟随主对话的）时可读写该文件夹的项目私有记忆。
+              // 全局记忆只读；有文件夹时可读写该文件夹的项目私有记忆。
               memory: memoryPromptSection({ writable: false, projectWritable: true, root: effectiveRoot }),
               projectDoc
             })
@@ -5411,29 +5427,41 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (!busySessions.has(sessionId)) repairDanglingToolUses(session)
     const history = session.messages
 
-    // 「/技能名」显式触发：命中本对话角色可用的技能 → 剥离该 token，把完整正文预置进本条消息（这一轮即生效）。
-    // 未命中则原样保留（用户可能只是打了个斜杠），不做任何处理。
+    // 「/技能名」显式触发（消息开头或正文中间，认法见 shared/slash.ts）：命中本对话角色可用的技能 → 把完整正文
+    // 预置进本条消息（这一轮即生效）；开头的那个从原话里剥掉（同以前），正文中间的留在原话里（是句子的一部分）。
+    // 未命中的原样保留（用户可能只是打了个斜杠），不做任何处理。
     let effectiveText = text
     // 技能接着要用的按需加载工具的用法（见 tool-search.ts）：作为正文之前的独立块一并带上，省得模型再查一步。
     let slashUsages: ReturnType<typeof skillToolUsages> = null
-    const slashMatch = /^\/([A-Za-z0-9_-]+)[ \t]*([\s\S]*)$/.exec(text.trim())
-    if (slashMatch) {
+    const activated: { loaded: NonNullable<ReturnType<typeof loadSkillInstructionsByName>>; start: number; end: number }[] =
+      []
+    for (const tk of slashTokens(text)) {
       // 成员会话没有创建类工具：/create-agent 等不展开（同技能清单，见 runAgentLoop 的 hasTool）。
       const loaded = loadSkillInstructionsByName(
-        slashMatch[1],
+        tk.name,
         resolvePersonaId(session.personaId),
         session.parentId ? (n) => !MEMBER_EXCLUDED.has(n) : undefined
       )
-      if (loaded) {
-        const rest = slashMatch[2].trim()
-        effectiveText =
-          `（用户通过 /${loaded.name} 显式激活了技能「${loaded.name}」，请严格据下述指令完成本次任务）\n` +
-          `===== 技能指令：${loaded.name} =====\n${skillDirNote(loaded.dir)}${loaded.instructions}\n===== 指令结束 =====` +
-          (rest ? `\n\n用户补充：${rest}` : '')
-        // 成员会话不提供创建类工具，那几个的用法不附。
-        const usable = loaded.allowedTools.filter((n) => !session.parentId || !MEMBER_EXCLUDED.has(n))
-        slashUsages = skillToolUsages(usable, unknownUsages(history, new Set(usable)))
-      }
+      if (loaded && !activated.some((x) => x.loaded.name === loaded.name)) activated.push({ loaded, ...tk })
+    }
+    if (activated.length) {
+      const lead = activated.find((x) => x.start === text.length - text.trimStart().length)
+      const rest = (lead ? text.slice(0, lead.start) + text.slice(lead.end) : text).trim()
+      const names = activated.map((x) => x.loaded.name)
+      effectiveText =
+        `（用户通过 ${names.map((n) => `/${n}`).join('、')} 显式激活了技能${names.map((n) => `「${n}」`).join('')}，请严格据下述指令完成本次任务）\n` +
+        activated
+          .map(
+            ({ loaded }) =>
+              `===== 技能指令：${loaded.name} =====\n${skillDirNote(loaded.dir)}${loaded.instructions}\n===== 指令结束 =====`
+          )
+          .join('\n') +
+        (rest ? `\n\n${lead ? '用户补充' : '用户的消息'}：${rest}` : '')
+      // 成员会话不提供创建类工具，那几个的用法不附。
+      const usable = [...new Set(activated.flatMap((x) => x.loaded.allowedTools))].filter(
+        (n) => !session.parentId || !MEMBER_EXCLUDED.has(n)
+      )
+      slashUsages = skillToolUsages(usable, unknownUsages(history, new Set(usable)))
     }
 
     // 构建本条用户消息：附件内容块在前，提问正文（最后一个 text 块）在后
@@ -5818,16 +5846,15 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // 删绑定任务时连任务对话一起删（tasks.ts deleteTask）：正在跑的一轮由 purgeSession 中止。
   setTaskSessionPurger(purgeSession)
 
-  // 删除某会话（含会话级授权）。id 全局唯一 → 按 id 删。主对话连同它的成员会话、绑定的定时任务及其任务对话一并删除。
+  // 删除某会话（含会话级授权）。id 全局唯一 → 按 id 删。主对话连同它的成员会话一并删除；在它里面运行的定时任务
+  // 改为独立运行（任务与任务对话保留，任务对话回到左侧列表）。
   ipcMain.handle(
     'chat:delete-session',
     (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
       const members = getSession(sessionId)?.members ?? []
-      const owned = tasksOwnedBy(sessionId)
       purgeSession(sessionId)
       for (const m of members) purgeSession(m.sessionId)
-      // 任务记录与任务对话一起删（deleteTask 经 setTaskSessionPurger 中止正在跑的一轮并删对话）。
-      for (const t of owned) deleteTask(t.id)
+      releaseTasksOwnedBy(sessionId)
       return { ok: true }
     }
   )

@@ -1,6 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, FileCode2, FileText, Folder, Image as ImageIcon, X } from 'lucide-react'
+import {
+  AppWindow,
+  ChevronLeft,
+  ChevronRight,
+  File as FileIcon,
+  FileArchive,
+  FileAudio,
+  FileCode2,
+  FileSpreadsheet,
+  FileText,
+  FileVideo,
+  Folder,
+  Image as ImageIcon,
+  Presentation,
+  X
+} from 'lucide-react'
 import { useI18n } from '../i18n/i18n'
 import type { AttachKind } from '../store/chat'
 
@@ -108,18 +123,77 @@ function metaLine(name: string, size?: number): string {
   return [extLabel(name), size !== undefined ? formatSize(size) : ''].filter(Boolean).join(' · ')
 }
 
-const TYPE_COLOR: Record<AttachKind, string> = {
-  document: 'var(--danger)',
-  text: 'var(--accent)',
-  folder: 'var(--warning)',
-  image: 'var(--fg-subtle)'
+/**
+ * 文件卡片按类型显示的图标与颜色（对比稿 design/file-type-icons.html 方案 B：线框图标 + 类型色浅底）。
+ * 按扩展名归类，与附件怎么交给模型（kind）无关：同是「只给位置」的文件，Word 蓝、Excel 绿、程序灰。
+ */
+type FileCategory =
+  | 'word'
+  | 'excel'
+  | 'ppt'
+  | 'pdf'
+  | 'archive'
+  | 'program'
+  | 'video'
+  | 'audio'
+  | 'image'
+  | 'code'
+  | 'text'
+  | 'folder'
+  | 'other'
+
+const CATEGORY_EXT: [FileCategory, string[]][] = [
+  ['word', ['doc', 'docx', 'docm', 'dot', 'dotx', 'rtf', 'odt', 'wps', 'pages']],
+  ['excel', ['xls', 'xlsx', 'xlsm', 'xlsb', 'csv', 'tsv', 'ods', 'et', 'numbers']],
+  ['ppt', ['ppt', 'pptx', 'pptm', 'pps', 'ppsx', 'odp', 'dps', 'key']],
+  ['pdf', ['pdf']],
+  ['archive', ['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'zst', 'iso', 'cab']],
+  ['program', ['exe', 'msi', 'dmg', 'pkg', 'apk', 'ipa', 'appimage', 'deb', 'rpm', 'msix', 'appx', 'dll', 'so', 'dylib', 'sys']],
+  ['video', ['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv', 'm4v', '3gp']],
+  ['audio', ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'wma', 'opus', 'amr']],
+  ['image', ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'heic', 'heif', 'ico', 'svg']],
+  ['text', ['txt', 'md', 'markdown', 'log', 'rst']]
+]
+const EXT_CATEGORY = new Map(CATEGORY_EXT.flatMap(([c, exts]) => exts.map((e) => [e, c] as const)))
+
+function categoryOf(kind: AttachKind, name: string): FileCategory {
+  if (kind === 'folder') return 'folder'
+  const hit = EXT_CATEGORY.get(extLabel(name).toLowerCase())
+  if (hit) return hit
+  // 认不出扩展名的：能当文本读进消息的算代码 / 配置，其余是「其他」。
+  return kind === 'text' ? 'code' : kind === 'document' ? 'pdf' : kind === 'image' ? 'image' : 'other'
 }
 
-function TypeIcon({ kind, size }: { kind: AttachKind; size: number }): React.JSX.Element {
-  if (kind === 'document') return <FileText size={size} strokeWidth={1.8} />
-  if (kind === 'text') return <FileCode2 size={size} strokeWidth={1.8} />
-  if (kind === 'folder') return <Folder size={size} strokeWidth={1.8} />
-  return <ImageIcon size={size} strokeWidth={1.8} />
+const CATEGORY_COLOR: Record<FileCategory, string> = {
+  word: 'var(--ft-word)',
+  excel: 'var(--ft-excel)',
+  ppt: 'var(--ft-ppt)',
+  pdf: 'var(--danger)',
+  archive: 'var(--ft-archive)',
+  program: 'var(--ft-program)',
+  video: 'var(--ft-video)',
+  audio: 'var(--ft-audio)',
+  image: 'var(--fg-subtle)',
+  code: 'var(--accent)',
+  text: 'var(--ft-text)',
+  folder: 'var(--warning)',
+  other: 'var(--fg-subtle)'
+}
+
+const CATEGORY_ICON: Record<FileCategory, typeof FileIcon> = {
+  word: FileText,
+  excel: FileSpreadsheet,
+  ppt: Presentation,
+  pdf: FileText,
+  archive: FileArchive,
+  program: AppWindow,
+  video: FileVideo,
+  audio: FileAudio,
+  image: ImageIcon,
+  code: FileCode2,
+  text: FileText,
+  folder: Folder,
+  other: FileIcon
 }
 
 /** 右上角的移除键：悬停或键盘聚焦到这一项时才露出。 */
@@ -219,14 +293,16 @@ export function FileCard({
 }): React.JSX.Element {
   const { t } = useI18n()
   const meta = kind === 'folder' ? t('cf.attachFolder') : metaLine(name, size)
+  const category = categoryOf(kind, name)
+  const Icon = CATEGORY_ICON[category]
   return (
     <span
       className={`cf-att cf-fcard${sent ? ' is-sent' : ''}`}
       title={title ?? name}
-      style={{ '--tc': TYPE_COLOR[kind] } as React.CSSProperties}
+      style={{ '--tc': CATEGORY_COLOR[category] } as React.CSSProperties}
     >
       <span className="cf-fcard__ico">
-        <TypeIcon kind={kind} size={19} />
+        <Icon size={19} strokeWidth={1.8} />
       </span>
       <span className="cf-fcard__txt">
         <span className="cf-fcard__name">{name}</span>

@@ -113,7 +113,8 @@ export interface ChatRenameSessionRequest {
 }
 
 /** 附件类型（与 services/attachments.ts 对齐）。 */
-export type AttachmentKind = 'image' | 'document' | 'text' | 'unsupported'
+/** file = 只把位置交给模型的文件（Word 等读不进消息的格式、超过体积上限的）。 */
+export type AttachmentKind = 'image' | 'document' | 'text' | 'file' | 'unsupported'
 
 /** 一次挑选返回的附件描述（不含正文/base64）。 */
 export interface PickedAttachment {
@@ -132,10 +133,14 @@ export interface DroppedFolder {
   name: string
 }
 
+/** 拖入 / 粘贴的一项：文件夹，或带真实路径的文件（与 services/attachments.ts 对齐）。 */
+export type DroppedEntry = { folder: DroppedFolder } | { file: PickedAttachment }
+
 /** 用户消息上的附件贴片（与 services/chat.ts 对齐）：文件夹另带绝对路径。 */
 export interface AttachmentChip {
   name: string
-  kind: 'image' | 'document' | 'text' | 'folder'
+  /** file = 只把位置交给模型的文件，带 path。 */
+  kind: 'image' | 'document' | 'text' | 'folder' | 'file'
   path?: string
   /** 文件大小（字节；文件夹没有）。 */
   size?: number
@@ -174,7 +179,7 @@ export interface MemberMeta {
   origin: 'created' | 'mention'
   /** 设定来源角色 id。 */
   personaId: string
-  /** 负责的文件夹（绝对路径）；null = 不限，与主对话同一工作目录。 */
+  /** 负责的文件夹（绝对路径）；null = 没有文件夹（不跟随主对话）。以成员会话的 focusRoot 为准。 */
   root: string | null
   duty: string
   addedAt: number
@@ -566,9 +571,9 @@ export interface TaskRecord {
   schedule: TaskSchedule
   auth: TaskAuthorization
   sessionId: string
-  /** 绑定的主对话 id（见 services/tasks-types.ts）：任务对话不进左侧列表，从主对话标题栏的定时任务入口进入。 */
+  /** 运行方式「在会话中运行」所在的会话 id（见 services/tasks-types.ts）；缺省 = 独立运行。 */
   ownerSessionId?: string
-  /** 在哪个对话里创建的；据此提供「完成后通知对话」开关。 */
+  /** 在哪个对话里创建的（对话里的确认名片）。 */
   originSessionId?: string
   status: TaskStatus
   createdAt: number
@@ -585,6 +590,8 @@ export interface TaskCreateInput {
   auth: TaskAuthorization
   /** 在哪个对话里创建的（由主进程 resolveAutotask 填，渲染层不传）。 */
   originSessionId?: string
+  /** 运行方式：在这个会话中运行；缺省 = 独立运行。 */
+  ownerSessionId?: string
 }
 export interface TaskUpdateInput {
   id: string
@@ -592,6 +599,8 @@ export interface TaskUpdateInput {
   prompt?: string
   schedule?: TaskSchedule
   auth?: Partial<TaskAuthorization>
+  /** 运行方式：会话 id = 在该会话中运行，null = 独立运行，缺省 = 不改。 */
+  ownerSessionId?: string | null
 }
 /** 创建结果：成功带记录，失败带稳定错误码（渲染层据此本地化）。 */
 export type CreateTaskResult =
@@ -943,10 +952,11 @@ const api = {
     attachmentImage: (path: string, full = false): Promise<string | null> =>
       ipcRenderer.invoke('fs:attachment-image', path, full),
     /**
-     * 拖入 / 粘贴的条目里哪些是文件夹：按下标返回文件夹的位置，不是文件夹（或取不到路径）为 null。
-     * 路径在这里从 File 对象取出、直接交主进程——页面只能递 File，递不了路径，伪造不出「用户拖入的文件夹」。
+     * 拖入 / 粘贴的条目：按下标返回文件夹的位置，或带真实路径的文件（已判定并授权，同选择框）；取不到路径的
+     * （截图等）为 null，由调用方照旧交字节。路径在这里从 File 对象取出、直接交主进程——页面只能递 File，
+     * 递不了路径，伪造不出「用户拖入的文件 / 文件夹」。
      */
-    droppedFolders: (files: File[]): Promise<(DroppedFolder | null)[]> => {
+    droppedEntries: (files: File[]): Promise<(DroppedEntry | null)[]> => {
       const paths = files.map((f) => {
         try {
           return webUtils.getPathForFile(f)
@@ -954,7 +964,7 @@ const api = {
           return ''
         }
       })
-      return ipcRenderer.invoke('fs:dropped-folders', paths)
+      return ipcRenderer.invoke('fs:dropped-entries', paths)
     }
   },
   /** 应用配置（~/.deva/config.json 非敏感项）：同步读（首帧防闪烁）+ 异步读/写。 */

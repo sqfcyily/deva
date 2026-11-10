@@ -477,7 +477,7 @@ export function clearOperating(sessionId: string): void {
 /**
  * 请用户在网页上亲自操作：展开窗口、切到该标签、外框出提示条（「完成，继续」「跳过」），等用户处理。
  * 用户操作的就是 Deva 正在用的同一个页面，完成后不需要重新加载。
- * opts.show = false：不弹窗口（成员会话：由主对话输入框上方的通知行提醒，用户点「去处理」再打开）；
+ * opts.show = false：不弹窗口（成员会话：由主对话末尾的胶囊提醒，用户点「去处理」再打开）；
  * opts.who：提示条上署谁的名字（成员名；缺省用标签所属角色的名字）。
  */
 export function requestHandoff(

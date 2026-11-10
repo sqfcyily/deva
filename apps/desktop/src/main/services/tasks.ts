@@ -4,7 +4,7 @@ import { join } from 'path'
 import { randomUUID } from 'crypto'
 import { getDevaHome } from './config'
 import { publishSessionsChanged } from './chat-bus'
-import { rebindSessionPersona, syncSessionBinding } from './chat-store'
+import { listSessions, rebindSessionPersona, syncSessionBinding } from './chat-store'
 import { nextRun, parseCron, isValidTimeZone, describeSchedule, parseWallIso } from './schedule'
 import {
   ERROR_PAUSE_THRESHOLD,
@@ -124,6 +124,36 @@ export function tasksOwnedBy(ownerSessionId: string): TaskRecord[] {
   return [...cache.values()].filter((t) => t.ownerSessionId === ownerSessionId)
 }
 
+/**
+ * 「在会话中运行」能选的会话：存在的普通对话（不是成员会话、不是任务自己的对话）。不合格返回 undefined（= 独立运行）。
+ */
+function validOwner(sessionId: unknown, taskSessionId?: string): string | undefined {
+  if (typeof sessionId !== 'string' || !sessionId || sessionId.startsWith('task-') || sessionId === taskSessionId)
+    return undefined
+  const meta = listSessions().find((s) => s.id === sessionId)
+  return meta && !meta.parentId ? sessionId : undefined
+}
+
+/**
+ * 会话被删除：在它里面运行的任务改为独立运行（任务和它的对话都保留，任务对话回到左侧列表）。
+ * 返回改了几个任务。
+ */
+export function releaseTasksOwnedBy(ownerSessionId: string): number {
+  ensureLoaded()
+  let n = 0
+  for (const t of cache.values()) {
+    if (t.ownerSessionId !== ownerSessionId) continue
+    delete t.ownerSessionId
+    t.updatedAt = Date.now()
+    n++
+  }
+  if (n) {
+    persist()
+    publishSessionsChanged()
+  }
+  return n
+}
+
 /** 创建结果：成功带记录，失败带稳定错误码（渲染层据此本地化）。 */
 export type CreateTaskResult =
   | { ok: true; task: TaskRecord }
@@ -181,6 +211,7 @@ export function createTask(input: TaskCreateInput): CreateTaskResult {
     ...(typeof input.originSessionId === 'string' && input.originSessionId
       ? { originSessionId: input.originSessionId }
       : {}),
+    ...(validOwner(input.ownerSessionId) ? { ownerSessionId: input.ownerSessionId } : {}),
     status: 'active',
     createdAt: now,
     updatedAt: now,
@@ -191,6 +222,8 @@ export function createTask(input: TaskCreateInput): CreateTaskResult {
   }
   cache.set(id, task)
   persist()
+  // 在会话中运行：任务对话不进左侧列表，那个会话的标题栏出现定时任务入口。
+  if (task.ownerSessionId) publishSessionsChanged()
   return { ok: true, task }
 }
 
@@ -212,6 +245,15 @@ export function updateTask(input: TaskUpdateInput): TaskRecord | null {
       })
     )
       publishSessionsChanged()
+  }
+  // 运行方式：null = 独立运行，会话 id = 在该会话中运行（不合格的会话按独立运行处理）。切换后任务对话进出左侧列表。
+  if (input.ownerSessionId !== undefined) {
+    const owner = input.ownerSessionId === null ? undefined : validOwner(input.ownerSessionId, t.sessionId)
+    if ((t.ownerSessionId ?? undefined) !== owner) {
+      if (owner) t.ownerSessionId = owner
+      else delete t.ownerSessionId
+      publishSessionsChanged()
+    }
   }
   if (input.schedule && typeof input.schedule === 'object') {
     const sched = input.schedule

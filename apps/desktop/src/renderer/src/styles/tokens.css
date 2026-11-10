@@ -66,6 +66,16 @@
   --danger: #e5484d;
   --info: #3a7bd5;
 
+  /* 附件卡片的文件类型色（见 redesign/attachments.tsx；PDF / 代码 / 文件夹沿用 danger / accent / warning） */
+  --ft-word: #2f6fdb;
+  --ft-excel: #1e8c4e;
+  --ft-ppt: #d0542b;
+  --ft-archive: #c99a1a;
+  --ft-program: #6b6b78;
+  --ft-video: #8e4ec6;
+  --ft-audio: #d6409f;
+  --ft-text: #6b6b78;
+
   --titlebar-bg: #f2f2f4;
   --activitybar-bg: #efeff1;
   --scrollbar: rgba(0, 0, 0, 0.18);
@@ -123,6 +133,15 @@
   --warning: #fcc419;
   --danger: #ff6b6b;
   --info: #74b3ff;
+
+  --ft-word: #6b9cf0;
+  --ft-excel: #3fb877;
+  --ft-ppt: #f07a52;
+  --ft-archive: #e0b43a;
+  --ft-program: #a1a1aa;
+  --ft-video: #b585e8;
+  --ft-audio: #ee6fb8;
+  --ft-text: #a1a1aa;
 
   --titlebar-bg: #1b1b1d;
   --activitybar-bg: #171718;

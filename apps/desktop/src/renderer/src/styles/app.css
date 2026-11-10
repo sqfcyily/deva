@@ -2214,6 +2214,13 @@ button.tl__line:hover {
 .ask__actions--nav {
   justify-content: space-between;
 }
+/* 操作行左侧一组：分步向导的「上一步」与附加项（如成员的「打开对话」）；单题时把附加项推到左边。 */
+.ask__actions-start {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: auto;
+}
 .ask__resolved {
   display: flex;
   align-items: center;
@@ -3275,8 +3282,37 @@ button.tl__line:hover {
 }
 .msg__mount-actions {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+/* 去卡头的成员选文件夹卡（主对话末尾，见 MountRequestCard bare）：问句 + 灰字说明，右侧一组按钮，同提问卡排版。 */
+.msg__mount-q {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.msg__mount-sub {
+  margin-top: 2px;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+/* 主对话的文件夹名：同行内代码的小灰底 */
+.msg__mount-sub code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-inset);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.msg__mount-actions-end {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 .permission__resolved {
   font-size: 12px;
@@ -5943,6 +5979,59 @@ select.autotaskcard__input {
 .select-menu--mono .select-menu__name {
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+/* 定时任务表单工具条里的下拉框（运行方式）：收起态做成与角色 / 模型同款的贴片（.chip） */
+.select.select--chip {
+  width: auto;
+  height: 28px;
+  gap: 5px;
+  padding: 0 8px;
+  border-color: transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.select.select--chip:has(> .select__lead) {
+  padding-left: 6px;
+}
+.select.select--chip:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.select.select--chip.is-open,
+.select.select--chip:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+  background: var(--bg-active);
+  color: var(--fg);
+}
+.select--chip .select__label {
+  max-width: 168px;
+}
+.select--chip .select__caret {
+  width: 13px;
+  height: 13px;
+}
+.select--chip .select-icon {
+  width: 16px;
+  height: 16px;
+  background: none;
+  color: inherit;
+}
+.select--chip .select-ava {
+  width: 16px;
+  height: 16px;
+}
+/* 运行方式的浮层：固定宽度，长标题省略 */
+.select-menu.select-menu--runmode {
+  width: 300px;
 }
 
 /* 选项与收起态共用的小图形 */

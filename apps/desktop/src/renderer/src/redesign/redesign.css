@@ -799,6 +799,12 @@ body.cf-resizing-y * {
 .cf-group__face {
   position: absolute;
 }
+/* 小号的会话群组头像（定时任务「运行方式」列表）：按 38px 的群组头像整体缩放（见 SessionFace） */
+.cf-sessface {
+  display: block;
+  width: 38px;
+  height: 38px;
+}
 /* 堆叠效果：重叠处沿头像形状画一圈与行底同色的分隔环（SVG 里的 --hm-ring），外露 2px */
 .cf-group.is-overlap .cf-group__face {
   --hm-ring: var(--row-bg);
@@ -1918,6 +1924,154 @@ body.cf-resizing-y * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * 高度可过渡的折叠块（见 ChatFirstShell Fold）：收起 = 行高 1fr → 0fr + 淡出，展开反之。内容裁在 .cf-fold__in 里；
+ * 收起后内容 visibility: hidden（等过渡放完才藏，不能再被 Tab 到）。时长用 --fold-dur，各处自己覆盖。
+ */
+.cf-fold {
+  --fold-dur: 0.22s;
+  display: grid;
+  grid-template-rows: 1fr;
+  transition:
+    grid-template-rows var(--fold-dur) ease,
+    opacity var(--fold-dur) ease,
+    margin-top var(--fold-dur) ease;
+}
+.cf-fold > .cf-fold__in {
+  min-height: 0;
+  overflow: hidden;
+}
+.cf-fold.is-closed {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+.cf-fold.is-closed > .cf-fold__in {
+  visibility: hidden;
+  transition: visibility 0s linear var(--fold-dur);
+}
+@media (prefers-reduced-motion: reduce) {
+  .cf-fold,
+  .cf-fold.is-closed > .cf-fold__in {
+    transition: none;
+  }
+}
+
+/*
+ * 成员在等你处理（对话末尾，见 MemberAsks，对比稿 design/member-ask-inline.html 方案 A）：每件一枚居中胶囊，外观同上面的
+ * .cf-mprogress__pill；展开的那件下面直接是卡片（宽同定时任务交来的结果 560px，卡头由胶囊代替）。处理完换成回执胶囊，
+ * 停留后整行收起（MemberAsks 的 MEMBER_RECEIPT_HOLD_MS / MEMBER_ROW_OUT_MS 与这里的 --fold-dur 对应）。
+ * 一行是一个折叠块：收起时连同消息列的行间距一起收掉（margin-top 抵消 gap），贴底时画面平滑下移，不跳。
+ */
+.cf-mask {
+  --fold-dur: 0.3s;
+}
+.cf-mask.is-closed {
+  margin-top: calc(-1 * var(--space-5));
+}
+.cf-mask > .cf-fold__in {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.cf-mask__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(100%, 560px);
+  padding: 3px 10px 3px 4px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--bg-inset);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+button.cf-mask__pill {
+  cursor: pointer;
+}
+button.cf-mask__pill:hover {
+  color: var(--fg);
+}
+.cf-mask__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 网页上等你操作：胶囊末尾「去处理」 */
+.cf-mask__go {
+  flex: none;
+  color: var(--accent);
+  font-weight: 500;
+}
+.cf-mask__chev {
+  flex: none;
+  color: var(--fg-subtle);
+  transition: transform 0.15s;
+}
+.cf-mask__pill.is-open .cf-mask__chev {
+  transform: rotate(180deg);
+}
+/* 新成员还没有头像：同尺寸的文件夹图标圆片 */
+.cf-mask__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  color: var(--fg-muted);
+}
+/* 回执：绿勾（用户确认色），跳过 / 忽略为灰 */
+.cf-mask__pill.is-done {
+  padding-left: 8px;
+  animation: cf-mcard-in 0.15s ease;
+}
+.cf-mask__pill.is-done svg {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.cf-mask__pill.is-done.is-ok svg {
+  color: var(--success);
+}
+/* 卡片一层折叠块：收起时连同胶囊与卡片之间的 6px 一起收掉 */
+.cf-mask__fold {
+  width: min(100%, 560px);
+}
+.cf-mask__fold.is-closed {
+  margin-top: -6px;
+}
+.cf-mask__card > .ask,
+.cf-mask__card > .msg__plan,
+.cf-mask__card > .msg__mount {
+  margin-top: 0;
+  border-radius: var(--radius-lg);
+}
+/* 没有卡头，问题本身当标题 */
+.cf-mask__card .ask__question {
+  font-weight: 600;
+}
+/* 卡片操作行里的「打开对话」：弱化的文字按钮，排在左侧 */
+.cf-mask__open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.cf-mask__open:hover {
+  color: var(--fg);
 }
 
 /* 底部工作状态指示器（思考中/生成回答/等待作答…）：跳过头像列，与消息正文左缘对齐（同 .cf-msg 的 32px 头像 + 列间距） */
@@ -5262,6 +5416,11 @@ body.cf-pop-open * {
   opacity: 0.4;
   cursor: default;
 }
+/* 删除定时任务：悬停转红（同移除成员） */
+.cf-members__ib.is-danger:hover {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
 /* 任务对话的标题栏：任务名前只放图标（不带灰底），名字后的日程与下次运行时间；右侧立即运行 / 暂停 / 编辑 */
 .cf-conv__ticon {
   flex: none;
@@ -5459,7 +5618,7 @@ body.cf-pop-open * {
   color: var(--fg-muted);
 }
 
-/* ── 项目成员：交差通知的锚点 / 等你处理的通知行（见 ChatFirstShell MemberWaits） ── */
+/* ── 项目成员：交差通知的锚点 ── */
 
 /* 成员交差的通知：不显示，只留一个不占高度的锚点（抵消消息列的行间距）。 */
 .cf-msg.is-quiet {
@@ -5467,97 +5626,4 @@ body.cf-pop-open * {
   height: 0;
   margin-top: calc(-1 * var(--space-5));
   overflow: hidden;
-}
-
-/* 输入框上方：成员在等你回答 / 批准 / 选文件夹，一条一行，点开当场处理。 */
-.cf-mwaits {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: var(--space-2);
-}
-.cf-mwait {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-}
-.cf-mwait__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 34px;
-  padding: 5px 10px 5px 8px;
-  border: none;
-  background: transparent;
-  color: var(--fg);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-.cf-mwait__row:hover {
-  background: var(--bg-hover);
-}
-.cf-mwait__text {
-  flex: none;
-  font-weight: 500;
-}
-/* 新成员还没有头像：用同尺寸的文件夹图标圆片代替 */
-.cf-mwait__icon {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: var(--radius-full);
-  background: var(--bg-inset);
-  color: var(--fg-muted);
-}
-.cf-mwait__sub {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-muted);
-}
-.cf-mwait__act {
-  flex: none;
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  color: var(--accent);
-  font-weight: 500;
-}
-.cf-mwait__act svg {
-  transition: transform 0.15s ease;
-}
-.cf-mwait.is-open .cf-mwait__act svg {
-  transform: rotate(180deg);
-}
-.cf-mwait__card {
-  max-height: min(55vh, 480px);
-  overflow-y: auto;
-  padding: 2px 12px 10px;
-  border-top: 1px solid var(--border);
-}
-.cf-mwait__open {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 6px;
-  padding: 2px 4px;
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.cf-mwait__open:hover {
-  color: var(--fg);
 }

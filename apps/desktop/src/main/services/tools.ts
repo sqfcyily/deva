@@ -32,6 +32,7 @@ import {
 import type { ImagePart, ListingRecord, ToolSpec } from '../providers/types'
 import { BROWSER_BRIEF, BROWSER_GUIDE, browserToolSpec, runBrowserTool, type MemberHandoff } from './browser'
 import { deferTool } from './tool-search'
+import { OFFICE_EXT, officeText } from './office-text'
 
 /**
  * Agent 工具集。工具名遵循 ^[a-zA-Z0-9_-]{1,64}$（各家 API 均不允许点号），
@@ -45,7 +46,7 @@ const fullToolSpecs: ToolSpec[] = [
   {
     name: 'read_file',
     description:
-      '读取工作区内一个文本文件，返回带行号的内容（便于定位与后续精确编辑）。默认从第 1 行起最多读 2000 行，超过 2000 字符的行会被截断；可用 offset（起始行，1 起）/ limit（行数）分段读取大文件，已知目标位置时建议只读相关片段。单次返回内容过大会报错，届时请缩小范围或先用 grep 定位。path 可相对项目根或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。',
+      '读取工作区内一个文本文件，返回带行号的内容（便于定位与后续精确编辑）。默认从第 1 行起最多读 2000 行，超过 2000 字符的行会被截断；可用 offset（起始行，1 起）/ limit（行数）分段读取大文件，已知目标位置时建议只读相关片段。单次返回内容过大会报错，届时请缩小范围或先用 grep 定位。path 可相对项目根或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。Word / Excel / PowerPoint 文件（.docx / .xlsx / .pptx）返回从中提取的纯文字（不含格式与图片），同样带行号、可分段读取，但不能用 edit_file 修改。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -661,6 +662,8 @@ export interface ToolResult {
 }
 
 const MAX_READ_BYTES = 2 * 1024 * 1024
+/** read_file 读 Office 文件（.docx / .xlsx / .pptx）的体积上限：文件里多是图片，文字只占一小部分。 */
+const MAX_OFFICE_BYTES = 50 * 1024 * 1024
 /**
  * read_file 文本护栏（对齐 Claude Code Read）：未给 limit 时默认最多读 2000 行；单行超 2000 字符截断；
  * 单次返回超字符上限（≈25k token）直接报错要求缩小范围——宁可让模型多调一次，也不让一次读取吞掉半个上下文窗口。
@@ -1344,6 +1347,50 @@ function execCapture(
   })
 }
 
+/**
+ * read_file 的文本结果：按 offset / limit 取一段，带行号返回（超长行截断、超出单次上限报错）。
+ * extraNote：附在结尾说明里的一句（如 Office 文件「这是提取的纯文字」）。
+ */
+function numberedText(text: string, a: Record<string, unknown>, extraNote?: string): ToolResult {
+  // 行终止符统一：\r\n、孤立 \r（老式 Mac）、\n 一律视为换行，行内容不含 \r——
+  // 与 GUI 显示、grep 行号、edit_file 匹配保持一致（此前 split('\n') 会把 \r 留在行内，
+  // 显示层不可见却参与匹配，导致「所见非所匹配」）。
+  const lines = text.split(/\r\n|\r|\n/)
+  // 文件以换行结尾会在 split 后多出一个空尾元素（幽灵空行）——去掉这个由末尾终止符产生的空行。
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
+  const total = lines.length
+  const start = Math.min(Math.max(1, toInt(a.offset) ?? 1), total)
+  const lim = toInt(a.limit)
+  const end = Math.min(start - 1 + (lim && lim > 0 ? lim : READ_DEFAULT_LINES), total)
+  let clipped = 0
+  const numbered = lines
+    .slice(start - 1, end)
+    .map((ln, i) => {
+      if (ln.length > READ_LINE_CHARS_MAX) {
+        clipped++
+        ln = `${ln.slice(0, READ_LINE_CHARS_MAX)}…（本行共 ${ln.length} 字符，已截断）`
+      }
+      return `${String(start + i).padStart(6, ' ')}\t${ln}`
+    })
+    .join('\n')
+  if (numbered.length > READ_OUTPUT_MAX)
+    return {
+      content: `（第 ${start}–${end} 行共约 ${numbered.length} 字符，超过单次读取上限 ${READ_OUTPUT_MAX} 字符，未返回；请用 offset/limit 缩小范围，或用 grep 定位所需内容）`,
+      summary: '读取范围过大',
+      isError: true
+    }
+  const notes: string[] = []
+  if (end < total)
+    notes.push(`仅显示第 ${start}–${end} 行（共 ${total} 行）；如需后续内容，用 offset=${end + 1} 继续读取。`)
+  if (clipped) notes.push(`有 ${clipped} 行超过 ${READ_LINE_CHARS_MAX} 字符，已截断显示。`)
+  if (extraNote) notes.push(extraNote)
+  const ranged = start > 1 || end < total
+  return {
+    content: (numbered || '（空文件）') + (notes.length ? `\n\n（${notes.join('')}）` : ''),
+    summary: ranged ? `第 ${start}–${end}/${total} 行` : `${total} 行`
+  }
+}
+
 /** read_file 的图片分支：整形（必要时缩放）后作为图片块返回，content 只留一句文字说明。 */
 function readImageResult(buf: Buffer, mime: ImageMime, abs: string): ToolResult {
   const img = prepareImage(buf, mime, basename(abs))
@@ -1398,7 +1445,29 @@ export async function executeTool(
     if (name === 'read_file') {
       const abs = resolvePath(ctx.workspaceRoot, a.path)
       const stat = await fs.stat(abs)
-      const imageExt = IMAGE_EXT.has(extname(abs).toLowerCase())
+      const ext = extname(abs).toLowerCase()
+      // Word / Excel / PowerPoint：解压取文字，同文本一样带行号返回（附件按路径交给模型时靠它读）。
+      if (OFFICE_EXT.has(ext)) {
+        if (stat.size > MAX_OFFICE_BYTES)
+          return {
+            content: `（文件超过 ${formatBytes(MAX_OFFICE_BYTES)}，未加载）`,
+            summary: '文件过大',
+            isError: true
+          }
+        const text = officeText(await fs.readFile(abs), ext)
+        if (text === null)
+          return {
+            content: '（无法解析这个文件：可能已加密、已损坏，或其实是旧版格式）',
+            summary: '无法解析',
+            isError: true
+          }
+        return numberedText(
+          text,
+          a,
+          `以上是从 ${ext.slice(1).toUpperCase()} 文件中提取的纯文字（不含格式与图片），不能用 edit_file 修改原文件。`
+        )
+      }
+      const imageExt = IMAGE_EXT.has(ext)
       if (imageExt && stat.size > MAX_IMAGE_SOURCE_BYTES)
         return {
           content: `（图片超过 ${formatBytes(MAX_IMAGE_SOURCE_BYTES)}，未加载）`,
@@ -1420,42 +1489,7 @@ export async function executeTool(
       if (looksBinary(buf))
         return { content: '（疑似二进制文件，未加载）', summary: '二进制', isError: true }
       if (buf.length === 0) return { content: '（空文件）', summary: '0 行' }
-      // 行终止符统一：\r\n、孤立 \r（老式 Mac）、\n 一律视为换行，行内容不含 \r——
-      // 与 GUI 显示、grep 行号、edit_file 匹配保持一致（此前 split('\n') 会把 \r 留在行内，
-      // 显示层不可见却参与匹配，导致「所见非所匹配」）。
-      const lines = buf.toString('utf8').split(/\r\n|\r|\n/)
-      // 文件以换行结尾会在 split 后多出一个空尾元素（幽灵空行）——去掉这个由末尾终止符产生的空行。
-      if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-      const total = lines.length
-      const start = Math.min(Math.max(1, toInt(a.offset) ?? 1), total)
-      const lim = toInt(a.limit)
-      const end = Math.min(start - 1 + (lim && lim > 0 ? lim : READ_DEFAULT_LINES), total)
-      let clipped = 0
-      const numbered = lines
-        .slice(start - 1, end)
-        .map((ln, i) => {
-          if (ln.length > READ_LINE_CHARS_MAX) {
-            clipped++
-            ln = `${ln.slice(0, READ_LINE_CHARS_MAX)}…（本行共 ${ln.length} 字符，已截断）`
-          }
-          return `${String(start + i).padStart(6, ' ')}\t${ln}`
-        })
-        .join('\n')
-      if (numbered.length > READ_OUTPUT_MAX)
-        return {
-          content: `（第 ${start}–${end} 行共约 ${numbered.length} 字符，超过单次读取上限 ${READ_OUTPUT_MAX} 字符，未返回；请用 offset/limit 缩小范围，或用 grep 定位所需内容）`,
-          summary: '读取范围过大',
-          isError: true
-        }
-      const notes: string[] = []
-      if (end < total)
-        notes.push(`仅显示第 ${start}–${end} 行（共 ${total} 行）；如需后续内容，用 offset=${end + 1} 继续读取。`)
-      if (clipped) notes.push(`有 ${clipped} 行超过 ${READ_LINE_CHARS_MAX} 字符，已截断显示。`)
-      const ranged = start > 1 || end < total
-      return {
-        content: (numbered || '（空文件）') + (notes.length ? `\n\n（${notes.join('')}）` : ''),
-        summary: ranged ? `第 ${start}–${end}/${total} 行` : `${total} 行`
-      }
+      return numberedText(buf.toString('utf8'), a)
     }
 
     if (name === 'present_files') {

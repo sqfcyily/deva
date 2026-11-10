@@ -581,7 +581,10 @@ export function BlockView({
   onPlan,
   onMountReq,
   onOpenProposal,
-  onOpenAutotask
+  onOpenAutotask,
+  bare,
+  extra,
+  hint
 }: {
   block: ChatBlock
   thinkingDone: boolean
@@ -594,6 +597,15 @@ export function BlockView({
   onOpenProposal?: (block: Extract<ChatBlock, { kind: 'agentcard' }>) => void
   /** created 态定时任务名片「打开任务会话」（缺省 → 不显跳转）。 */
   onOpenAutotask?: (taskId: string) => void
+  /**
+   * 待处理的提问 / 计划 / 挂载卡不画卡头：主对话末尾成员在等你处理时，卡片上方的胶囊已经写明谁在等什么
+   * （见 ChatFirstShell MemberAsks）。已处理的卡不受影响。
+   */
+  bare?: boolean
+  /** 待处理的提问 / 计划 / 挂载卡操作行里附加的一项（成员的「打开对话」），排在左侧按钮之后。 */
+  extra?: React.ReactNode
+  /** bare 时选文件夹卡问句下面的一行说明（「不限」是什么意思，由调用方按场景给）。 */
+  hint?: React.ReactNode
 }): React.JSX.Element | null {
   const { t } = useI18n()
 
@@ -627,15 +639,15 @@ export function BlockView({
   }
 
   if (block.kind === 'ask') {
-    return <AskCard block={block} onAsk={onAsk} />
+    return <AskCard block={block} onAsk={onAsk} bare={bare} extra={extra} />
   }
 
   if (block.kind === 'plan') {
-    return <PlanReviewCard block={block} onPlan={onPlan} />
+    return <PlanReviewCard block={block} onPlan={onPlan} bare={bare} extra={extra} />
   }
 
   if (block.kind === 'mount') {
-    return <MountRequestCard block={block} onMountReq={onMountReq} />
+    return <MountRequestCard block={block} onMountReq={onMountReq} bare={bare} extra={extra} hint={hint} />
   }
 
   // 步骤边界标记：只服务于重连时丢残缺尾部的判定，不渲染。
@@ -681,10 +693,17 @@ export function BlockView({
  */
 function MountRequestCard({
   block,
-  onMountReq
+  onMountReq,
+  bare,
+  extra,
+  hint
 }: {
   block: Extract<ChatBlock, { kind: 'mount' }>
   onMountReq?: (key: string, path: string | null) => void
+  /** 见 BlockView 同名参数。 */
+  bare?: boolean
+  extra?: React.ReactNode
+  hint?: React.ReactNode
 }): React.JSX.Element {
   const { t } = useI18n()
   const decided = block.decided
@@ -698,17 +717,42 @@ function MountRequestCard({
   const member = block.member
   if (member !== undefined) {
     const name = (s: string): string => s.split('{name}').join(member)
-    return (
-      <div className={`msg__mount${decided ? ' is-decided' : ''}${decided === 'mounted' ? ' is-ok' : ''}`}>
-        <div className="msg__mount-head">
-          <FolderOpen size={14} />
-          <span className="msg__mount-title">{name(t('chat.mount.memberTitle'))}</span>
-          {decided && (
-            <span className={decided === 'mounted' ? 'msg__mount-badge msg__mount-badge--ok' : 'msg__mount-badge'}>
-              {decided === 'mounted' ? t('chat.mount.memberPicked') : t('chat.mount.memberSkipped')}
-            </span>
+    // 主对话末尾成员在等你选文件夹（对比稿 design/member-mount-card.html 方案 A）：排版同提问卡——加粗问句、
+    // 一行灰字说明「不限」，左边附加项（打开对话），右边「不限」与主按钮「选择文件夹…」。
+    if (bare && !decided)
+      return (
+        <div className="msg__mount">
+          <div className="msg__mount-q">{name(t('chat.mount.memberAsk'))}</div>
+          {hint && <div className="msg__mount-sub">{hint}</div>}
+          {onMountReq && (
+            <div className="msg__mount-actions">
+              {extra}
+              <div className="msg__mount-actions-end">
+                <button type="button" className="btn btn--sm" onClick={() => onMountReq(block.key, null)}>
+                  {t('chat.mount.memberSkip')}
+                </button>
+                <button type="button" className="btn btn--sm btn--primary" onClick={pick}>
+                  <FolderOpen size={14} />
+                  {t('chat.mount.memberPick')}
+                </button>
+              </div>
+            </div>
           )}
         </div>
+      )
+    return (
+      <div className={`msg__mount${decided ? ' is-decided' : ''}${decided === 'mounted' ? ' is-ok' : ''}`}>
+        {!(bare && !decided) && (
+          <div className="msg__mount-head">
+            <FolderOpen size={14} />
+            <span className="msg__mount-title">{name(t('chat.mount.memberTitle'))}</span>
+            {decided && (
+              <span className={decided === 'mounted' ? 'msg__mount-badge msg__mount-badge--ok' : 'msg__mount-badge'}>
+                {decided === 'mounted' ? t('chat.mount.memberPicked') : t('chat.mount.memberSkipped')}
+              </span>
+            )}
+          </div>
+        )}
         <div className="msg__mount-body">
           {decided === 'mounted' ? (
             <span>
@@ -727,6 +771,7 @@ function MountRequestCard({
             <button type="button" className="btn btn--sm" onClick={() => onMountReq(block.key, null)}>
               {t('chat.mount.memberSkip')}
             </button>
+            {extra}
           </div>
         )}
       </div>
@@ -736,19 +781,21 @@ function MountRequestCard({
     <div
       className={`msg__mount${decided ? ' is-decided' : ''}${decided === 'mounted' ? ' is-ok' : ''}`}
     >
-      <div className="msg__mount-head">
-        <FolderOpen size={14} />
-        <span className="msg__mount-title">{t('chat.mount.cardTitle')}</span>
-        {decided && (
-          <span
-            className={
-              decided === 'mounted' ? 'msg__mount-badge msg__mount-badge--ok' : 'msg__mount-badge'
-            }
-          >
-            {decided === 'mounted' ? t('chat.mount.mounted') : t('chat.mount.skipped')}
-          </span>
-        )}
-      </div>
+      {!(bare && !decided) && (
+        <div className="msg__mount-head">
+          <FolderOpen size={14} />
+          <span className="msg__mount-title">{t('chat.mount.cardTitle')}</span>
+          {decided && (
+            <span
+              className={
+                decided === 'mounted' ? 'msg__mount-badge msg__mount-badge--ok' : 'msg__mount-badge'
+              }
+            >
+              {decided === 'mounted' ? t('chat.mount.mounted') : t('chat.mount.skipped')}
+            </span>
+          )}
+        </div>
+      )}
       <div className="msg__mount-body">
         {decided === 'mounted' ? (
           <span>
@@ -779,6 +826,7 @@ function MountRequestCard({
           >
             {t('chat.mount.skip')}
           </button>
+          {extra}
         </div>
       )}
     </div>
@@ -796,10 +844,15 @@ function MountRequestCard({
  */
 function PlanReviewCard({
   block,
-  onPlan
+  onPlan,
+  bare,
+  extra
 }: {
   block: Extract<ChatBlock, { kind: 'plan' }>
   onPlan?: (key: string, decision: 'approve' | 'keep' | 'ignore', feedback?: string) => void
+  /** 见 BlockView 同名参数。 */
+  bare?: boolean
+  extra?: React.ReactNode
 }): React.JSX.Element {
   const { t } = useI18n()
   const decided = block.decided
@@ -816,46 +869,48 @@ function PlanReviewCard({
     <div
       className={`msg__plan${decided ? ' is-decided' : ''}${decided === 'approve' ? ' is-ok' : ''}`}
     >
-      <div
-        className={decided ? 'msg__plan-head is-toggle' : 'msg__plan-head'}
-        role={decided ? 'button' : undefined}
-        tabIndex={decided ? 0 : undefined}
-        aria-expanded={decided ? open : undefined}
-        title={decided ? (open ? t('chat.plan.collapse') : t('chat.plan.expand')) : undefined}
-        onClick={decided ? () => setOpen((v) => !v) : undefined}
-        onKeyDown={
-          decided
-            ? (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setOpen((v) => !v)
+      {!(bare && !decided) && (
+        <div
+          className={decided ? 'msg__plan-head is-toggle' : 'msg__plan-head'}
+          role={decided ? 'button' : undefined}
+          tabIndex={decided ? 0 : undefined}
+          aria-expanded={decided ? open : undefined}
+          title={decided ? (open ? t('chat.plan.collapse') : t('chat.plan.expand')) : undefined}
+          onClick={decided ? () => setOpen((v) => !v) : undefined}
+          onKeyDown={
+            decided
+              ? (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    setOpen((v) => !v)
+                  }
                 }
+              : undefined
+          }
+        >
+          {decided && (
+            <ChevronRight size={14} className={open ? 'msg__plan-caret is-open' : 'msg__plan-caret'} />
+          )}
+          <ClipboardList size={14} className="msg__plan-icon" />
+          <span className="msg__plan-title">{t('chat.plan.cardTitle')}</span>
+          {decided && !open && summary && <span className="msg__plan-summary">{summary}</span>}
+          {decided && (
+            <span
+              className={
+                decided === 'approve' ? 'msg__plan-badge msg__plan-badge--approved' : 'msg__plan-badge'
               }
-            : undefined
-        }
-      >
-        {decided && (
-          <ChevronRight size={14} className={open ? 'msg__plan-caret is-open' : 'msg__plan-caret'} />
-        )}
-        <ClipboardList size={14} className="msg__plan-icon" />
-        <span className="msg__plan-title">{t('chat.plan.cardTitle')}</span>
-        {decided && !open && summary && <span className="msg__plan-summary">{summary}</span>}
-        {decided && (
-          <span
-            className={
-              decided === 'approve' ? 'msg__plan-badge msg__plan-badge--approved' : 'msg__plan-badge'
-            }
-          >
-            {decided === 'approve'
-              ? t('chat.plan.approved')
-              : decided === 'keep'
-                ? t('chat.plan.kept')
-                : decided === 'ignore'
-                  ? t('chat.plan.ignored')
-                  : t('chat.plan.cancelled')}
-          </span>
-        )}
-      </div>
+            >
+              {decided === 'approve'
+                ? t('chat.plan.approved')
+                : decided === 'keep'
+                  ? t('chat.plan.kept')
+                  : decided === 'ignore'
+                    ? t('chat.plan.ignored')
+                    : t('chat.plan.cancelled')}
+            </span>
+          )}
+        </div>
+      )}
       {showBody && (
         <div className="msg__plan-body">
           <Markdown text={block.plan} />
@@ -906,6 +961,7 @@ function PlanReviewCard({
           <button type="button" className="btn btn--sm" onClick={() => setRefining(true)}>
             {t('chat.plan.keep')}
           </button>
+          {extra}
           <div className="msg__plan-actions-end">
             <button type="button" className="btn btn--sm" onClick={() => onPlan(block.key, 'ignore')}>
               {t('chat.plan.ignore')}
@@ -962,10 +1018,15 @@ function draftToAnswer(d: AskDraft): string {
  */
 function AskCard({
   block,
-  onAsk
+  onAsk,
+  bare,
+  extra
 }: {
   block: Extract<ChatBlock, { kind: 'ask' }>
   onAsk: (key: string, answers: string[]) => void
+  /** 见 BlockView 同名参数。 */
+  bare?: boolean
+  extra?: React.ReactNode
 }): React.JSX.Element {
   const { t } = useI18n()
   const { questions } = block
@@ -1223,7 +1284,7 @@ function AskCard({
             {multiQ && givenAnswers.length > 0 && ` ${givenAnswers.length}/${questions.length}`}
           </span>
         </div>
-      ) : (
+      ) : bare ? null : (
         <div className="ask__head">
           <span className="ask__head-icon">
             <MessageCircleQuestion size={15} />
@@ -1280,14 +1341,17 @@ function AskCard({
           </div>
           {/* 标准向导底部导航：左「上一步」固定；右侧非末题为「下一步」、末题变「提交」。 */}
           <div className="ask__actions ask__actions--nav">
-            <button
-              type="button"
-              className="btn btn--sm"
-              onClick={() => goStep(step - 1)}
-              disabled={step === 0}
-            >
-              {t('chat.ask.prev')}
-            </button>
+            <span className="ask__actions-start">
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={() => goStep(step - 1)}
+                disabled={step === 0}
+              >
+                {t('chat.ask.prev')}
+              </button>
+              {extra}
+            </span>
             {step < last ? (
               <button
                 type="button"
@@ -1319,6 +1383,7 @@ function AskCard({
             {renderBody(0)}
           </div>
           <div className="ask__actions">
+            {extra && <span className="ask__actions-start">{extra}</span>}
             <button
               type="button"
               className="btn btn--primary btn--sm"

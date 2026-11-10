@@ -71,13 +71,14 @@ export interface TaskRecord {
   /** 独占会话 id（创建时铸；每次触发向该会话追加一轮）。 */
   sessionId: string
   /**
-   * 绑定的主对话 id（在协作对话里创建的任务）：任务仍在自己的任务对话里运行，有事才把结果交给这个对话的主角色
-   * （见 chat.ts 的 deliver_result）。绑定后任务对话不进左侧列表，从主对话标题栏的定时任务入口进入；删除主对话时
-   * 任务与任务对话一并删除；删除任务时任务对话一并删除。缺省 = 独立运行（结果只记在任务对话里，完成后通知）。
+   * 运行方式「在会话中运行」时所在的会话 id（编辑定时任务的弹窗里选）：任务仍在自己的任务对话里运行，有事才把结果
+   * 交给这个会话的主角色（见 chat.ts 的 deliver_result）。此时任务对话不进左侧列表，从该会话标题栏的定时任务入口进入；
+   * 删除该会话时任务改为独立运行（任务对话回到左侧列表）；删除任务时任务对话一并删除。
+   * 缺省 = 独立运行（结果只记在任务对话里，完成后通知）。
    * **不要**给任务对话设 parentId：带 parentId 的会话会被 runTurn 当成成员。
    */
   ownerSessionId?: string
-  /** 在哪个对话里创建的（对话里的确认名片）；管理页手动新建的缺省。任务详情页据此提供「完成后通知对话」开关。 */
+  /** 在哪个对话里创建的（对话里的确认名片）；管理页手动新建的缺省。 */
   originSessionId?: string
   status: TaskStatus
   createdAt: number
@@ -100,6 +101,8 @@ export interface TaskCreateInput {
   auth: TaskAuthorization
   /** 在哪个对话里创建的（对话里的确认名片带上；管理页手动新建的不带）。见 TaskRecord.originSessionId。 */
   originSessionId?: string
+  /** 运行方式：在这个会话中运行；缺省 = 独立运行。见 TaskRecord.ownerSessionId。 */
+  ownerSessionId?: string
 }
 
 /** 更新入参（部分字段；id 定位）。日程改变则重算 nextRunAt。 */
@@ -109,6 +112,8 @@ export interface TaskUpdateInput {
   prompt?: string
   schedule?: TaskSchedule
   auth?: Partial<TaskAuthorization>
+  /** 运行方式：会话 id = 在该会话中运行，null = 独立运行，缺省 = 不改。 */
+  ownerSessionId?: string | null
 }
 
 /** tasks.json 磁盘形状。 */

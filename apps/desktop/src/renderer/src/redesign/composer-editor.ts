@@ -8,6 +8,7 @@ import {
   $isElementNode,
   $isRangeSelection,
   $isTextNode,
+  $setSelection,
   CLEAR_HISTORY_COMMAND,
   COMMAND_PRIORITY_HIGH,
   COMMAND_PRIORITY_LOW,
@@ -36,12 +37,13 @@ import { registerPlainText } from '@lexical/plain-text'
 import { createEmptyHistoryState, registerHistory } from '@lexical/history'
 import { $canShowPlaceholder } from '@lexical/text'
 import { mentionRanges } from '../../../shared/mention'
+import { slashTokens } from '../../../shared/slash'
 
 /*
  * 对话输入框的编辑器内核（Lexical 纯文本模式，取代原 textarea）。
  * 换成 contentEditable 是为了能给**会生效**的片段单独上色——textarea 只有一整段纯文本，做不到局部样式：
- *  · 消息开头的 `/指令`（已启用技能、整条只有它的 /compact /rewind）。识别规则与主进程 chat.ts sendMessage 一致：
- *    去掉前导空白后以 `/` 开头、取最长的 [A-Za-z0-9_-]+ 作为名字，再由调用方判定是否认得（isToken）；
+ *  · `/指令`：开头或正文中间的已启用技能，以及整条只有它的 /compact /rewind。认法与主进程 chat.ts sendMessage
+ *    一致（shared/slash.ts：`/` 在开头或空白之后，名字取最长的 [A-Za-z0-9_-]+），再由调用方判定是否认得（isToken）；
  *  · 正文任意位置的 `@名字`（本对话成员、可 @ 的角色、@新建成员），认法同主进程 handleMentions（见 shared/mention.ts）：
  *    显示成成员标签（头像 + 名字，见 MentionNode）；还可能接着敲成更长名字时先只上色（见 $syncTokens）。
  * 输入框里始终只有一个段落：纯文本模式下回车 / 粘贴的换行都是段内 LineBreakNode。
@@ -132,9 +134,6 @@ export class MentionNode extends DecoratorNode<null> {
 
 const $isMentionNode = (node: LexicalNode | null | undefined): node is MentionNode => node instanceof MentionNode
 
-/** 开头指令：去掉前导空白后的 `/name`（name 取最长的 [A-Za-z0-9_-]+，同主进程的贪婪匹配）。 */
-const LEADING_SLASH_RE = /^(\s*)\/([A-Za-z0-9_-]+)/
-
 /**
  * 用 next 原位替换 node，并把落在 node 上的光标按原偏移挪到 next 上
  * （LexicalNode.replace 默认把光标甩到新节点末尾，打字中途会跳光标）。
@@ -190,7 +189,7 @@ function $swapForMention(piece: TextNode): void {
 }
 
 /**
- * 让文档里的特殊节点与「会生效的片段」保持一致：开头 `/指令` 与还在敲的 `@名字` 是 SlashTokenNode（只上色），
+ * 让文档里的特殊节点与「会生效的片段」保持一致：`/指令` 与还在敲的 `@名字` 是 SlashTokenNode（只上色），
  * 定形的 `@名字` 是 MentionNode（成员标签）。位置或文字不对的降回普通文本，该有却没有的从所在文本节点里切出来
  * 换上。每次只改一处后返回——改动会再次弄脏 root，Lexical 先合并相邻普通文本再重跑本变换，直到收敛。
  * 返回值：是否还有只上色、未成标签的 `@名字`（光标移开时要再同步一次把它定形）。
@@ -201,9 +200,9 @@ function $syncTokens(isToken: (name: string, whole: string) => boolean, mentionN
   const leaves = $isElementNode(block) ? block.getChildren() : []
   const text = leaves.map((n) => n.getTextContent()).join('')
   const want: { start: number; end: number; chip: boolean }[] = []
-  const m = LEADING_SLASH_RE.exec(text)
-  if (m && isToken(m[2], root.getTextContent().trim()))
-    want.push({ start: m[1].length, end: m[0].length, chip: false })
+  const whole = root.getTextContent().trim()
+  for (const tk of slashTokens(text))
+    if (isToken(tk.name, whole)) want.push({ start: tk.start, end: tk.end, chip: false })
   const caret = $caretOffset(block, leaves)
   for (const r of mentionRanges(text, mentionNames))
     if (!want.some((w) => r.start < w.end && w.start < r.end))
@@ -253,12 +252,50 @@ function $syncTokens(isToken: (name: string, whole: string) => boolean, mentionN
   return pending
 }
 
+/**
+ * 光标所在的「词」以 `/` 或 `@` 开头（在开头或空白之后）：外层据此弹出技能 / 成员联想，采纳时替换 [start, end)。
+ * query = `/` `@` 之后到光标的部分；end 延伸到这个词的末尾（光标在词中间时采纳也会整个换掉）；
+ * alone = 除了这个词，输入框里没有别的内容（/compact、/rewind 只在这时可选）。
+ */
+export interface ComposerTrigger {
+  char: '/' | '@'
+  query: string
+  start: number
+  end: number
+  alone: boolean
+}
+
+/** 光标处的联想触发词（见 ComposerTrigger）；没有或选区未折叠时为 null。 */
+function $triggerAt(): ComposerTrigger | null {
+  const block = $getRoot().getFirstChild()
+  const leaves = $isElementNode(block) ? block.getChildren() : []
+  const caret = $caretOffset(block, leaves)
+  if (caret === null) return null
+  const text = leaves.map((n) => n.getTextContent()).join('')
+  let start = caret
+  while (start > 0 && !/\s/.test(text[start - 1])) start--
+  const char = text[start]
+  if (char !== '/' && char !== '@') return null
+  const query = text.slice(start + 1, caret)
+  const word = char === '/' ? /[A-Za-z0-9_-]/ : /[^\s@]/
+  if (![...query].every((c) => word.test(c))) return null
+  let end = caret
+  while (end < text.length && word.test(text[end])) end++
+  return { char, query, start, end, alone: !text.slice(0, start).trim() && !text.slice(end).trim() }
+}
+
+const sameTrigger = (a: ComposerTrigger | null, b: ComposerTrigger | null): boolean =>
+  a === b ||
+  (!!a && !!b && a.char === b.char && a.query === b.query && a.start === b.start && a.end === b.end && a.alone === b.alone)
+
 /** 输入框交给外层处理的按键（其余按键走 Lexical 纯文本默认行为）。 */
 export type ComposerKey = 'enter' | 'up' | 'down' | 'tab' | 'escape'
 
 export interface ComposerEditorHandlers {
   /** 文本变化（含程序写入）；内容未变的更新（如仅移动光标）不触发。 */
   onChange: (text: string) => void
+  /** 光标处的联想触发词变了（打字、移动光标都会；见 ComposerTrigger）。 */
+  onTrigger: (trigger: ComposerTrigger | null) => void
   /** 返回 true = 已处理（须自行 preventDefault），false = 交还编辑器默认行为。 */
   onKey: (key: ComposerKey, e: KeyboardEvent) => boolean
   /** 粘贴：返回 true = 已接管（如粘贴文件转附件），false = 按纯文本粘贴。 */
@@ -280,6 +317,8 @@ export interface ComposerEditor {
   getText: () => string
   /** 整体替换内容，光标置于末尾；focus=true 时顺带聚焦。 */
   setText: (text: string, focus?: boolean) => void
+  /** 把全文 [start, end) 换成 text，光标放在换上的内容之后，并聚焦（采纳联想用，其余内容不动）。 */
+  replaceRange: (start: number, end: number, text: string) => void
   /** 清空撤销历史（发送后调用，免得撤销把已发出的内容找回来）。 */
   clearHistory: () => void
   /** isToken / mentionNames 的判定依据（技能列表、附件数、成员名单）变了：重新识别要上色的片段与成员标签。 */
@@ -305,6 +344,7 @@ export function useComposerEditor(handlers: ComposerEditorHandlers): ComposerEdi
     let skipped = false
     /** 还有只上色、未成标签的 @名字：光标移开时再同步一次，把它做成标签。 */
     let pending = false
+    let lastTrigger: ComposerTrigger | null = null
     const key = <E extends KeyboardEvent | null>(command: LexicalCommand<E>, name: ComposerKey) =>
       editor.registerCommand(
         command,
@@ -336,16 +376,20 @@ export function useComposerEditor(handlers: ComposerEditorHandlers): ComposerEdi
         COMMAND_PRIORITY_LOW
       ),
       editor.registerUpdateListener(({ editorState }) => {
-        const [text, blank] = editorState.read(() => [
-          $getRoot().getTextContent(),
-          $canShowPlaceholder(editor.isComposing())
-        ])
+        const [text, blank, trigger] = editorState.read(
+          () => [$getRoot().getTextContent(), $canShowPlaceholder(editor.isComposing()), $triggerAt()] as const
+        )
         setEmpty(blank)
-        if (text !== lastText) {
-          lastText = text
-          // 同步刷新外层：下一次按键（如紧跟的 Enter）读到的联想 / 发送状态已是最新文本，与受控 textarea 一致。
-          flushSync(() => handlersRef.current.onChange(text))
-        }
+        const textChanged = text !== lastText
+        const triggerChanged = !sameTrigger(trigger, lastTrigger)
+        lastText = text
+        lastTrigger = trigger
+        // 同步刷新外层：下一次按键（如紧跟的 Enter）读到的联想 / 发送状态已是最新文本，与受控 textarea 一致。
+        if (textChanged || triggerChanged)
+          flushSync(() => {
+            if (textChanged) handlersRef.current.onChange(text)
+            if (triggerChanged) handlersRef.current.onTrigger(trigger)
+          })
         if (skipped && !editor.isComposing()) {
           skipped = false
           editor.update(() => $getRoot().markDirty(), { tag: HISTORY_MERGE_TAG })
@@ -414,6 +458,46 @@ export function useComposerEditor(handlers: ComposerEditorHandlers): ComposerEdi
     [update]
   )
 
+  const replaceRange = useCallback(
+    (start: number, end: number, text: string) =>
+      update(
+        () => {
+          const block = $getRoot().getFirstChild()
+          const leaves = $isElementNode(block) ? block.getChildren() : []
+          // 通常整段落在一个文本节点里（正在敲的词）：就地替换，光标随之移到新内容之后，别处的标签不动。
+          let offset = 0
+          for (const n of leaves) {
+            const size = n.getTextContentSize()
+            if ($isTextNode(n) && offset <= start && end <= offset + size) {
+              n.spliceText(start - offset, end - start, text, true)
+              return
+            }
+            offset += size
+          }
+          // 跨了节点（少见）：整段重写，光标放在新内容之后。
+          const all = leaves.map((n) => n.getTextContent()).join('')
+          const root = $getRoot()
+          root.clear()
+          const p = $createParagraphNode()
+          root.append(p)
+          p.select()
+          const sel = $getSelection()
+          if (!$isRangeSelection(sel)) return
+          sel.insertRawText(all.slice(0, start) + text)
+          const caret = $getSelection()?.clone() ?? null
+          const tail = all.slice(end)
+          if (tail) {
+            const after = $getSelection()
+            if ($isRangeSelection(after)) after.insertRawText(tail)
+            if (caret) $setSelection(caret)
+          }
+        },
+        [],
+        true
+      ),
+    [update]
+  )
+
   const clearHistory = useCallback(
     () => editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined),
     [editor]
@@ -424,5 +508,5 @@ export function useComposerEditor(handlers: ComposerEditorHandlers): ComposerEdi
     [update]
   )
 
-  return { rootRef, empty, getText, setText, clearHistory, refreshToken }
+  return { rootRef, empty, getText, setText, replaceRange, clearHistory, refreshToken }
 }

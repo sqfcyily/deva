@@ -15,7 +15,8 @@ import { sniffImageMime, thumbnailDataUrl } from './image-read'
  * 防止渲染层伪造任意路径读盘。大文件 base64 只在主进程内产生，绝不回传渲染层。
  */
 
-export type AttachmentKind = 'image' | 'document' | 'text' | 'unsupported'
+/** file = 只把位置交给模型的文件（内容读不进消息：Word 等格式，或超过体积上限），模型按路径用工具读。 */
+export type AttachmentKind = 'image' | 'document' | 'text' | 'file' | 'unsupported'
 
 export interface PickedAttachment {
   path: string
@@ -35,11 +36,17 @@ export const ATTACH_TEXT_PREFIX = '[附件文件] '
 /** 文件夹附件注入模型时的前缀标记：其后是绝对路径（首行），供历史重建识别为「文件夹」。 */
 export const ATTACH_FOLDER_PREFIX = '[附件文件夹] '
 
+/** 只给位置的文件附件注入模型时的前缀标记：其后是绝对路径（首行），供历史重建识别为「文件」。 */
+export const ATTACH_PATH_PREFIX = '[附件文件路径] '
+
 /** 拖入 / 粘贴的条目里认出的文件夹。 */
 export interface DroppedFolder {
   path: string
   name: string
 }
+
+/** 拖入 / 粘贴的一项：文件夹，或带真实路径的文件（已按选择框同样的规则判定并授权）。 */
+export type DroppedEntry = { folder: DroppedFolder } | { file: PickedAttachment }
 
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png',
@@ -82,6 +89,12 @@ const allowed = new Set<string>()
 const allowedDirs = new Set<string>()
 
 /**
+ * 本会话内只给位置的文件（绝对路径）：内容读不进消息（不支持的格式、超过体积上限），发送时只告诉模型位置。
+ * 与 allowed 同样只认用户亲手选中 / 拖入 / 粘贴的。
+ */
+const allowedFiles = new Set<string>()
+
+/**
  * 粘贴附件的落盘目录。粘贴来的只有字节、没有路径（截图尤其如此），故由主进程写到这里再走同一套
  * 白名单——渲染层只交内容、从不交路径，「不能伪造任意路径读盘」的不变式不变。
  * 白名单是内存态、随重启清空，上次运行留下的文件已无用：注册 IPC 时整目录清掉。
@@ -95,26 +108,29 @@ const PASTE_DIR = join(tmpdir(), 'deva-paste')
  */
 const pasted = new Map<string, PickedAttachment>()
 
-/** 统一的类型/体积判定：合规者登记白名单。选择框与粘贴两路共用，限额只此一处。 */
-function inspect(abs: string, size: number): PickedAttachment {
+/**
+ * 统一的类型/体积判定：能直接读进消息的登记 allowed；读不进的（不支持的格式、超过体积上限）登记 allowedFiles，
+ * 改为只把位置交给模型（kind = file）。选择框、拖入与粘贴共用，限额只此一处。
+ * byPath = false：这份文件没有可交给模型的位置（粘贴来的大文件没读字节、没落盘），读不进就是不支持。
+ */
+function inspect(abs: string, size: number, byPath = true): PickedAttachment {
   const name = basename(abs)
   const ext = extname(abs).toLowerCase()
   const kind = classify(ext)
-  let supported = kind !== 'unsupported'
   let reason: string | undefined
   if (kind === 'unsupported') reason = '暂不支持的文件类型'
-  else if (kind === 'image' && size > MAX_IMAGE) {
-    supported = false
-    reason = '图片过大（>5MB）'
-  } else if (kind === 'document' && size > MAX_PDF) {
-    supported = false
-    reason = 'PDF 过大（>20MB）'
-  } else if (kind === 'text' && size > MAX_TEXT) {
-    supported = false
-    reason = '文本过大（>512KB）'
+  else if (kind === 'image' && size > MAX_IMAGE) reason = '图片过大（>5MB）'
+  else if (kind === 'document' && size > MAX_PDF) reason = 'PDF 过大（>20MB）'
+  else if (kind === 'text' && size > MAX_TEXT) reason = '文本过大（>512KB）'
+  if (!reason) {
+    allowed.add(abs)
+    return { path: abs, name, ext, size, kind, supported: true }
   }
-  if (supported) allowed.add(abs)
-  return { path: abs, name, ext, size, kind, supported, reason }
+  if (byPath) {
+    allowedFiles.add(abs)
+    return { path: abs, name, ext, size, kind: 'file', supported: true }
+  }
+  return { path: abs, name, ext, size, kind, supported: false, reason }
 }
 
 /** 粘贴文件名：剥掉路径与 Windows 非法字符；截图等无名/通用名（image.png）按时间戳重命名。 */
@@ -149,7 +165,8 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
       const name = pasteName(file.name, file.mime || '')
       // 每份内容独占一个子目录：不同内容的同名文件（如两张 image.png）互不覆盖，名字仍保持原样展示。
       const abs = join(PASTE_DIR, randomUUID(), name)
-      const pre = inspect(abs, file.data ? file.data.byteLength : file.size)
+      // 读不进消息的也落盘，把临时位置交给模型；太大没读字节的没有位置可给。
+      const pre = inspect(abs, file.data ? file.data.byteLength : file.size, !!file.data)
       // 先登记再落盘：同一批里的重复项（并发调用）也拿到同一条。
       pasted.set(key, pre)
       if (!file.data || !pre.supported) return pre
@@ -165,20 +182,24 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
     }
   )
 
-  // 拖入 / 粘贴的条目：按下标逐个回答「是不是文件夹」，是则登记并返回位置，否则 null（文件照旧走字节）。
+  // 拖入 / 粘贴的条目：按下标逐个回答。文件夹登记并返回位置；带真实路径的文件按选择框同样的规则判定
+  // （读得进消息的照常读，读不进的只交位置）；取不到路径的（截图等）为 null，照旧走字节。
   // 文件夹同时登记为受信根：用户亲手拖进来的目录与在系统对话框里选的同等可信，未挂载时渲染层会直接
   // 挂载它，挂载后的资源管理器 / git 面板都要求目录在受信根内。
-  ipcMain.handle('fs:dropped-folders', async (_e, paths: unknown): Promise<(DroppedFolder | null)[]> => {
+  ipcMain.handle('fs:dropped-entries', async (_e, paths: unknown): Promise<(DroppedEntry | null)[]> => {
     if (!Array.isArray(paths)) return []
     return Promise.all(
-      paths.map(async (p): Promise<DroppedFolder | null> => {
+      paths.map(async (p): Promise<DroppedEntry | null> => {
         if (typeof p !== 'string' || !p) return null
         const abs = resolve(p)
         const st = await fs.stat(abs).catch(() => null)
-        if (!st?.isDirectory()) return null
-        allowedDirs.add(abs)
-        trustRoot(abs)
-        return { path: abs, name: basename(abs) || abs }
+        if (st?.isDirectory()) {
+          allowedDirs.add(abs)
+          trustRoot(abs)
+          return { folder: { path: abs, name: basename(abs) || abs } }
+        }
+        if (st?.isFile()) return { file: inspect(abs, st.size) }
+        return null
       })
     )
   })
@@ -209,6 +230,7 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
           name: '支持的文件',
           extensions: [
             'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf',
+            'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt',
             'txt', 'md', 'markdown', 'json', 'yaml', 'yml', 'toml', 'csv', 'log',
             'js', 'jsx', 'ts', 'tsx', 'vue', 'svelte', 'html', 'css', 'scss', 'xml',
             'py', 'go', 'rs', 'java', 'kt', 'c', 'h', 'cpp', 'cs', 'php', 'sh', 'sql'
@@ -261,6 +283,23 @@ export async function buildAttachmentPart(
           '（用户附上了这个文件夹的位置，内容未展开；需要时用 list_dir / glob / grep / read_file 按绝对路径查看）'
       }
     }
+  // 读不进消息的文件：只给位置，模型按需用工具读（read_file 能取 Word / Excel / PowerPoint 的文字）。
+  if (allowedFiles.has(abs)) {
+    const st = await fs.stat(abs).catch(() => null)
+    if (!st?.isFile()) return { note: `文件已不存在：${name}` }
+    const size =
+      st.size < 1024 * 1024
+        ? `${Math.max(1, Math.round(st.size / 1024))} KB`
+        : `${(st.size / 1024 / 1024).toFixed(1)} MB`
+    return {
+      part: {
+        type: 'text',
+        text:
+          `${ATTACH_PATH_PREFIX}${abs}\n` +
+          `（用户附上了这个文件（${size}），内容没有直接放进消息；需要时按上面的绝对路径读取：.docx / .xlsx / .pptx 用 read_file 可读出文字，其他格式视情况用命令或技能处理）`
+      }
+    }
+  }
   if (!allowed.has(abs)) return { note: `已忽略未授权文件：${name}` }
   const kind = classify(extname(abs).toLowerCase())
   try {

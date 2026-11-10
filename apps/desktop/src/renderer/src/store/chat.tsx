@@ -39,7 +39,8 @@ import { formatTokens } from '../../../shared/context'
 
 export type ToolStatus = 'running' | 'ok' | 'error' | 'denied'
 
-export type AttachKind = 'image' | 'document' | 'text' | 'folder'
+/** file = 只把位置交给模型的文件（Word 等读不进消息的格式、超过体积上限的）。 */
+export type AttachKind = 'image' | 'document' | 'text' | 'folder' | 'file'
 
 /** 用户消息上的附件贴片（名称 + 类型；文件夹另带绝对路径，供悬停显示）。 */
 export interface AttachChip {
@@ -234,7 +235,7 @@ export type ChatBlock =
    */
   | { kind: 'insert'; text: string }
 
-/** 成员会话里正等用户处理的交互卡（提问 / 计划 / 选文件夹）：主对话输入框上方以通知行呈现，点开当场处理。 */
+/** 成员会话里正等用户处理的交互卡（提问 / 计划 / 选文件夹）：主对话末尾以胶囊 + 卡片呈现，当场处理。 */
 export type PendingCard = Extract<ChatBlock, { kind: 'ask' | 'plan' | 'mount' }>
 
 export interface ChatMessage {
@@ -559,7 +560,7 @@ interface ChatContextValue {
   /** 设置**当前对话**的思考等级（只改当前对话，立即落库；不动全局「最近使用」，那由调用方另记）。 */
   setSessionEffort: (level: EffortLevel) => void
   /**
-   * 各会话正等用户处理的交互卡（键=sessionId，见 PendingCard）：主对话据此为成员显示「在等你回答」的通知行。
+   * 各会话正等用户处理的交互卡（键=sessionId，见 PendingCard）：主对话据此在末尾为成员显示「在等你回答」的胶囊与卡片。
    * 卡片答复 / 在别处收敛 / 该会话本轮结束即移除。
    */
   pendingCards: Record<string, PendingCard[]>
@@ -1469,7 +1470,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 其余是本层没缓存的后台回合 —— 内容以主进程 + 磁盘为唯一真源，绝不在此凑合拼装。
       const localStreaming = runtimesRef.current.get(sid)?.streaming === true
 
-      // 交互卡另记一份到 pendingCards（不 return，照常并入气泡）：成员会话的卡没人打开着看，主对话靠它显示通知行。
+      // 交互卡另记一份到 pendingCards（不 return，照常并入气泡）：成员会话的卡没人打开着看，主对话靠它在末尾显示胶囊与卡片。
       if (ev.type === 'ask_user' || ev.type === 'plan_review' || ev.type === 'mount_request') {
         const card: PendingCard =
           ev.type === 'ask_user'
@@ -1923,14 +1924,14 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         id: genId(),
         role: 'user',
         blocks,
-        // 文件夹带上绝对路径（贴片悬停显示，同主进程重建）；图片记下本地路径（file）供取缩略图 / 原图——
-        // 重载后改由主进程给的 ref 定位。其余文件的路径是临时落盘位置，不带。
+        // 文件夹与只给位置的文件带上绝对路径（贴片悬停显示，同主进程重建；这两种重建后没有大小，这里也不写）；
+        // 图片记下本地路径（file）供取缩略图 / 原图——重载后改由主进程给的 ref 定位。其余文件的路径是临时落盘位置，不带。
         attachments: atts.length
           ? atts.map((a) => ({
               name: a.name,
               kind: a.kind,
-              ...(a.size !== undefined && a.kind !== 'folder' ? { size: a.size } : {}),
-              ...(a.kind === 'folder' ? { path: a.path } : {}),
+              ...(a.size !== undefined && a.kind !== 'folder' && a.kind !== 'file' ? { size: a.size } : {}),
+              ...(a.kind === 'folder' || a.kind === 'file' ? { path: a.path } : {}),
               ...(a.kind === 'image' ? { file: a.path } : {})
             }))
           : undefined
@@ -2052,8 +2053,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     // 尚未建档的惰性会话由主进程跳过，仍随首发 chat:send 经 ensureSession 落库。
     const mountFocus = (path: string | null): void => {
       const sid = sessionIdRef.current
-      // 成员会话的文件夹以主进程为准（卸载 = 跟随主对话的工作目录，不是「没有目录」）：不写覆盖层，
-      // 否则覆盖层里的 null 会随下一次发送把成员的工作目录清掉。
+      // 成员会话的文件夹以主进程为准（挂 / 卸同时写回主对话的成员名单）：不写覆盖层，随刷新取落库值。
       if (!isMemberSession(sid)) setBinding(sid, { focusRoot: path })
       void (async () => {
         await window.deva.chat.setFocus({ sessionId: sid, focusRoot: path })

@@ -560,7 +560,7 @@ async function act(
         closePage(page.id)
         page = moved
       }
-      // 成员：不弹窗口，主对话输入框上方出通知行（用户点「去处理」再打开），用户没在看 Deva 时弹系统通知
+      // 成员：不弹窗口，主对话末尾出胶囊（用户点「去处理」再打开），用户没在看 Deva 时弹系统通知
       const waiting = requestHandoff(page, reason, message, signal, member ? { show: false, who: member.name } : {})
       member?.notify(reason)
       const r = await waiting

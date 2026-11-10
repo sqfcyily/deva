@@ -24,6 +24,7 @@ import {
   listMemories,
   type MemoryEntry
 } from './memory'
+import { NO_FOLDER } from './members'
 
 /** 内容摘要：内容变了即视为更新，需重新告知。 */
 function digestOf(content: string): string {
@@ -221,7 +222,7 @@ export interface MemberListingItem {
 }
 
 function memberLine(m: MemberListingItem): string {
-  const where = m.folder === '不限' ? '' : `（负责 ${m.folder}）`
+  const where = m.folder === NO_FOLDER ? '（未指定文件夹）' : `（负责 ${m.folder}）`
   const role = m.fromRole ? `［协助者：用户 @ 请来的角色「${m.fromRole}」］` : ''
   return `- ${m.name}${where}${role}：${m.duty || '（未写职责）'}`
 }

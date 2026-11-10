@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, Check } from 'lucide-react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { CalendarClock, ChevronDown, Check } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useModels } from '../../store/models'
 import { useExtensions } from '../../store/extensions'
+import { useChat, type SessionMeta } from '../../store/chat'
+import { Select } from '../../components/Select'
 
 /**
  * 任务表单内嵌的**受控**模型 / 人格选择器——镜像对话输入框 ModelPicker 的 chip + model-pick 菜单
@@ -113,6 +115,137 @@ export function TaskModelSelect({
         </>
       )}
     </div>
+  )
+}
+
+/** 运行方式菜单里最多列出的会话数（按最近更新）；当前选中的会话不在其中时另外补上。 */
+const RUN_MODE_MAX_CHATS = 12
+
+/** 「在「X」中运行」里会话名的显示宽度上限（按半角计，中文等全角字符算 2）：运行方式贴片 / 任务详情。 */
+export const RUN_CHAT_TITLE_CHIP = 14
+export const RUN_CHAT_TITLE_DETAIL = 24
+
+/** 占两格的字符：中日韩文字与标点、谚文、全角符号，以及表情等增补平面字符（高位代理）。 */
+const WIDE_CHAR =
+  /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]|[\ud800-\udbff]/
+
+/**
+ * 会话名过长时截短，留出「在「」中运行」的位置，整句不被截掉：按显示宽度算（中日韩与全角字符算 2，其余算 1），
+ * 超出 max 时截到 max 以内并补「…」。完整名字由调用方放在悬停提示里。
+ */
+export function clipChatTitle(name: string, max: number): string {
+  const units = (c: string): number => (WIDE_CHAR.test(c) ? 2 : 1)
+  const chars = Array.from(name)
+  if (chars.reduce((n, c) => n + units(c), 0) <= max) return name
+  let used = 0
+  let out = ''
+  for (const c of chars) {
+    // 留 1 格给省略号（省略号本身按 1 计，与半角同宽）。
+    if (used + units(c) > max - 1) break
+    used += units(c)
+    out += c
+  }
+  return `${out.trimEnd()}…`
+}
+
+/** 「独立运行」在下拉框里的值（会话 id 不会是空串）。 */
+const RUN_ALONE = ''
+
+/**
+ * 受控运行方式选择器（编辑定时任务的弹窗里，排在角色 / 模型前面）。value 为会话 id（= 在该会话中运行）或 null
+ * （= 独立运行，默认）。用统一下拉框（同技能 / MCP 的「可用角色」）：第一项「独立运行」，其下「在会话中运行」一组列出
+ * 最近的普通会话（不含成员会话、任务自己的对话、已归档的），每行是会话头像 + 标题 + 第二行（挂了文件夹写文件夹名，
+ * 否则写角色名，同左侧对话列表）。收起态做成与角色 / 模型同款的贴片。浮层渲染到 body，不会被弹窗的滚动区裁掉。
+ * 会话删除后主进程把任务改回独立运行，这里拿不到该会话时同样按独立运行显示。
+ */
+export function TaskRunModeSelect({
+  value,
+  taskSessionId,
+  faceOf,
+  onChange
+}: {
+  value: string | null
+  /** 任务自己的对话 id（编辑态）：不能选它本身。 */
+  taskSessionId?: string
+  /** 会话头像（同左侧对话列表：有成员时是群组头像），size 为边长。 */
+  faceOf: (session: SessionMeta, size: number) => ReactNode
+  onChange: (sessionId: string | null) => void
+}): React.JSX.Element {
+  const { t } = useI18n()
+  const { sessions } = useChat()
+  const { personas } = useExtensions()
+
+  const chats = useMemo(() => {
+    const usable = sessions
+      .filter((s) => !s.id.startsWith('task-') && s.id !== taskSessionId && !s.archived)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, RUN_MODE_MAX_CHATS)
+    const cur = value ? sessions.find((s) => s.id === value) : undefined
+    return cur && !usable.some((s) => s.id === cur.id) ? [cur, ...usable] : usable
+  }, [sessions, taskSessionId, value])
+  const current = value ? sessions.find((s) => s.id === value) : undefined
+  const titleOf = (title: string): string => title || t('chat.untitled')
+  // 第二行：挂了文件夹写文件夹名，否则写角色名（同左侧对话列表）。
+  const subOf = (s: SessionMeta): string | undefined => {
+    if (s.focusRoot) return s.focusRoot.split(/[\\/]/).filter(Boolean).pop()
+    return personas.find((p) => p.id === s.personaId)?.name
+  }
+
+  const display = current ? (
+    <>
+      <span className="select__lead">
+        <span className="select-ava">{faceOf(current, 16)}</span>
+      </span>
+      <span className="select__label">
+        {t('tasks.runInChatNamed').replace('{name}', clipChatTitle(titleOf(current.title), RUN_CHAT_TITLE_CHIP))}
+      </span>
+    </>
+  ) : (
+    <>
+      <span className="select__lead">
+        <span className="select-icon">
+          <CalendarClock size={13} />
+        </span>
+      </span>
+      <span className="select__label">{t('tasks.runAlone')}</span>
+    </>
+  )
+
+  return (
+    <Select<string>
+      inline
+      className="select--chip"
+      menuClassName="select-menu--runmode"
+      aria-label={t('tasks.fRunMode')}
+      value={current ? current.id : RUN_ALONE}
+      display={display}
+      onChange={(v) => onChange(v === RUN_ALONE ? null : v)}
+      items={[
+        {
+          value: RUN_ALONE,
+          label: t('tasks.runAlone'),
+          sub: t('tasks.runAloneHint'),
+          lead: (
+            <span className="select-icon">
+              <CalendarClock size={14} />
+            </span>
+          )
+        },
+        // 没有可选的会话：只剩「独立运行」一项，不留空的分组标题。
+        ...(chats.length
+          ? [
+              { separator: true as const },
+              { group: t('tasks.runInChat') },
+              ...chats.map((s) => ({
+                value: s.id,
+                label: titleOf(s.title),
+                sub: subOf(s),
+                lead: <span className="select-ava">{faceOf(s, 26)}</span>
+              }))
+            ]
+          : [])
+      ]}
+    />
   )
 }
 

@@ -42,7 +42,10 @@ export interface MemberRef {
   origin: 'created' | 'mention'
   /** 设定来源角色：created = 默认角色 Deva（2026-11-09 前建的是当时主对话的角色），mention = 被 @ 的角色。 */
   personaId: string
-  /** 负责的文件夹（绝对路径）；null = 不限，与主对话同一工作目录。 */
+  /**
+   * 负责的文件夹（绝对路径）；null = 没有文件夹（用户可在成员对话里自己挂）。与成员会话的 focusRoot 同步，读取以成员会话为准
+   * （见 chat.ts memberFolder）：2026-11-09 前 null 表示「跟随主对话」，那些成员会话的 focusRoot 已是当时主对话的目录。
+   */
   root: string | null
   /** 一句话职责。 */
   duty: string
@@ -91,14 +94,12 @@ export function findMember(list: MemberRef[] | undefined, name: string): MemberR
   return activeMembers(list).find((m) => m.name.toLowerCase() === want)
 }
 
-/** 成员实际的工作目录：自己的文件夹，没有则跟随主对话。 */
-export function memberRoot(m: MemberRef, mainRoot: string | null): string | null {
-  return m.root ?? mainRoot
-}
+/** 成员没有文件夹时名单里的写法。 */
+export const NO_FOLDER = '未指定'
 
-/** 文件夹在名单与界面上的写法：主对话工作目录下的写相对路径，其余写绝对路径；不限写「不限」。 */
+/** 文件夹在名单与界面上的写法：主对话工作目录下的写相对路径，其余写绝对路径；没有文件夹写「未指定」。 */
 export function rootLabel(root: string | null, mainRoot: string | null): string {
-  if (!root) return '不限'
+  if (!root) return NO_FOLDER
   if (mainRoot) {
     const base = mainRoot.replace(/[\\/]+$/, '')
     const lowerRoot = root.toLowerCase()
@@ -110,10 +111,13 @@ export function rootLabel(root: string | null, mainRoot: string | null): string 
   return root
 }
 
-/** create_member 的 folder 参数 → 绝对路径（相对路径以主对话工作目录为基准）。空 = 不限（null）。 */
+/**
+ * create_member 的 folder 参数 → 绝对路径（相对路径以主对话工作目录为基准，「.」= 主对话工作目录本身）。
+ * 空 = 不指定文件夹（null）；主对话没挂文件夹时相对路径解析不了，也是 null（调用方报错）。
+ */
 export function resolveMemberFolder(folder: string, mainRoot: string | null): string | null {
   const f = folder.trim()
-  if (!f || f === '.' || f === './') return null
+  if (!f) return null
   if (isAbsolute(f)) return resolve(f)
   return mainRoot ? resolve(mainRoot, f) : null
 }
@@ -327,7 +331,8 @@ export function mainMemberTools(): ToolSpec[] {
           },
           folder: {
             type: 'string',
-            description: '它负责的文件夹：相对当前工作目录的路径（如 web）或绝对路径；省略表示不限，与你在同一工作目录。'
+            description:
+              '它负责的文件夹：相对当前工作目录的路径（如 web；整个当前工作目录写 .）或绝对路径。省略表示不指定文件夹（成员没有工作目录，用户之后可以在成员的对话里为它选）。'
           },
           pick_folder: {
             type: 'boolean',
