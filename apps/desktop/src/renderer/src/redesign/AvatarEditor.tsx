@@ -14,7 +14,6 @@ import {
   partsForSlot,
   randomizeSpec,
   resolveShape,
-  shapeMask,
   shapePath,
   type AvatarSpec
 } from '../components/humation'
@@ -145,7 +144,7 @@ export function AvatarEditor({
     <div className="cf-avapanel">
       <div className="cf-avaedit">
         <div className="cf-avaedit__side">
-          {/* 头像本体就是上传入口：悬停浮出遮层，点击直接唤起系统文件选择器。 */}
+          {/* 头像本体就是上传入口：悬停整枚压暗、中间浮出图标，点击直接唤起系统文件选择器。 */}
           <button
             type="button"
             className="cf-avaedit__preview"
@@ -153,7 +152,7 @@ export function AvatarEditor({
             onClick={() => fileRef.current?.click()}
           >
             <PersonaFace seed={seed} spec={avatar} image={avatarImage} title={title || t('cf.fAvatar')} />
-            <span className="cf-avaedit__upload" title={t('cf.avaImgUpload')} style={{ mask: shapeMask(shape) }}>
+            <span className="cf-avaedit__upload" title={t('cf.avaImgUpload')}>
               <ImagePlus size={20} aria-hidden="true" />
             </span>
           </button>

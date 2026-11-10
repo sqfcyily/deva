@@ -3979,8 +3979,16 @@ button.cf-mask__pill:hover {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: filter 0.15s ease;
 }
-/* 形状不定，不再画圆形描边环；悬停靠遮层提示，键盘聚焦给一圈外框 */
+/* 悬停整枚压暗（同编辑头像的大预览 .cf-avaedit__preview）：用滤镜不用遮层，探出底板的头发、头饰一起暗。 */
+.cf-me__avatar:hover > svg,
+.cf-me__avatar:hover > img,
+.cf-me__avatar:focus-visible > svg,
+.cf-me__avatar:focus-visible > img {
+  filter: brightness(0.55);
+}
+/* 形状不定，不再画圆形描边环；悬停整枚压暗 + 图标提示，键盘聚焦给一圈外框 */
 .cf-me__avatar:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
@@ -3993,7 +4001,7 @@ button.cf-mask__pill:hover {
   align-items: center;
   justify-content: center;
   color: #fff;
-  background: rgba(0, 0, 0, 0.45);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
   opacity: 0;
   transition: opacity 0.15s ease;
 }
@@ -4256,8 +4264,17 @@ button.cf-mask__pill:hover {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: filter 0.15s ease;
 }
-/* 悬停遮层：盖住整张头像，浮出上传图标；不悬停时 opacity:0 但仍可点（整块都是入口）。 */
+/* 悬停：整枚头像压暗（对比稿 design/avatar-upload-hover.html 方案 A）。用滤镜而不是盖遮层：头部与头饰画在
+   底板之外（探出），按底板形状裁的遮层只盖得住底板里那半截头；滤镜作用于头像画出的全部内容，探出部分一起暗。 */
+.cf-avaedit__preview:hover > svg,
+.cf-avaedit__preview:hover > img,
+.cf-avaedit__preview:focus-visible > svg,
+.cf-avaedit__preview:focus-visible > img {
+  filter: brightness(0.55);
+}
+/* 上传图标：浮在头像中间，悬停才出现（不悬停时 opacity:0，整块仍可点）；投影保证浅色头像上也看得清。 */
 .cf-avaedit__upload {
   position: absolute;
   inset: 0;
@@ -4265,7 +4282,7 @@ button.cf-mask__pill:hover {
   align-items: center;
   justify-content: center;
   color: #fff;
-  background: rgba(0, 0, 0, 0.45);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.45));
   opacity: 0;
   transition: opacity 0.15s ease;
 }
@@ -4339,10 +4356,12 @@ button.cf-mask__pill:hover {
   color: var(--fg-muted);
 }
 /* 配色选择器：自适应网格，每格一枚色板 + 文字 */
+/* 配色（发色 / 肤色 / 上衣色 / 背景色）排成一排：按内容宽度紧挨着排，编辑弹窗里四项正好一行；
+   原先每格至少 110px 的网格只放得下三格，背景色被挤到第二行。窗口窄到放不下时才换行。 */
 .cf-avaedit__colors {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
   margin-top: 4px;
 }
 .cf-avaedit__swatch {
