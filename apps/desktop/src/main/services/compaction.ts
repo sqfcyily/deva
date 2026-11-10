@@ -4,6 +4,7 @@ import { getConfig } from './config'
 import { save as saveProject, type StoredSession } from './chat-store'
 import { todoSnapshotText } from './todos'
 import { modelOverrides } from './model-resolve'
+import { stubLongInforms } from './handoff'
 import {
   DEFAULT_CONTEXT_WINDOW,
   autoContextWindow,
@@ -608,7 +609,8 @@ export async function compactSession(args: {
 
   const toSummarize = msgs.slice(0, boundary)
   const tail = msgs.slice(boundary)
-  const transcript = buildTranscript(toSummarize, locale, transcriptBudget(window))
+  // 定时任务只是告知的长内容：摘要里同样只留标题（同发给模型时，见 handoff.ts stubLongInforms）。
+  const transcript = buildTranscript(stubLongInforms(toSummarize), locale, transcriptBudget(window))
 
   args.onStart?.()
   let summary = ''

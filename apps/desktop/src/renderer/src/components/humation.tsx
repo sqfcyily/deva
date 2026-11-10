@@ -340,15 +340,20 @@ export function shapePath(shape: AvatarShape): string {
 }
 
 const maskCache = new Map<string, string>()
-/** 形状蒙版（CSS mask-image 值）：给头像上的遮层 / 扫光用，与头像同形（形状恒铺满头像框）。 */
-export function shapeMask(shape: AvatarShape): string {
+/** 形状蒙版图（只有 url(...)）：要自定位置与大小时用，如群组头像整体扫光——几枚头像的形状拼成一个蒙版。 */
+export function shapeMaskImage(shape: AvatarShape): string {
   let v = maskCache.get(shape)
   if (!v) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="${SHAPE_PATHS[shape]}"/></svg>`
-    v = `url("data:image/svg+xml,${encodeURIComponent(svg)}") center / 100% 100% no-repeat`
+    v = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
     maskCache.set(shape, v)
   }
   return v
+}
+
+/** 形状蒙版（CSS mask 值）：给头像上的遮层 / 扫光用，与头像同形（形状恒铺满头像框）。 */
+export function shapeMask(shape: AvatarShape): string {
+  return `${shapeMaskImage(shape)} center / 100% 100% no-repeat`
 }
 
 type Box = { x: number; y: number; s: number }

@@ -54,6 +54,7 @@ import {
   CircleCheckBig,
   UserPlus,
   Send,
+  CalendarClock,
   CircleStop,
   MessagesSquare,
   Forward,
@@ -217,6 +218,20 @@ function memberObject(name: string, args: unknown): { who: string; task: string 
  * 后台任务面板等）或认不出这个名字时返回 null，只写名字。
  */
 export const MemberFaceContext = createContext<((name: string) => React.ReactNode) | null>(null)
+
+/**
+ * 本对话里在会话中运行的定时任务（主角色的 member_send / member_status 也能点到它们，见主进程 askTask）：
+ * has = 这个名字是不是定时任务；only = 只有定时任务、没有成员。查看状态的步骤据此写「已查看定时任务」而不是「成员状态」。
+ */
+export const TaskNamesContext = createContext<{ has: (name: string) => boolean; only: boolean } | null>(null)
+
+/** 这一步是不是在查看定时任务（member_status 点名定时任务，或不点名而本对话只有定时任务）。 */
+function useTaskStatusStep(step: { name: string; args: unknown }): boolean {
+  const tasks = useContext(TaskNamesContext)
+  if (step.name !== 'member_status' || !tasks) return false
+  const member = memberObject(step.name, step.args)
+  return member ? tasks.has(member.who) : tasks.only
+}
 
 /** tool_search 查的是哪些工具：写工具的显示名（不认识的写原名）。不在 TOOL_META 里的名片类工具另有文案键。 */
 const USAGE_NAME_KEY: Record<string, string> = { create_task: 'createTask', propose_agent: 'proposeAgent' }
@@ -1458,10 +1473,10 @@ function stepTitle(step: ToolStep, t: (key: string) => string): string | undefin
 }
 
 /** 节点图标：执行中转圈、失败打叉，其余按工具类型（未知工具为扳手）。 */
-function stepIcon(step: ToolStep, size: number): React.JSX.Element {
+function stepIcon(step: ToolStep, size: number, taskStatus = false): React.JSX.Element {
   if (step.status === 'running') return <Loader2 size={size} className="spin" />
   if (isFailed(step.status)) return <XCircle size={size} />
-  const Icon = toolMeta(step.name, step.args)?.icon ?? Wrench
+  const Icon = taskStatus ? CalendarClock : (toolMeta(step.name, step.args)?.icon ?? Wrench)
   return <Icon size={size} />
 }
 
@@ -1475,7 +1490,7 @@ function stepIcon(step: ToolStep, size: number): React.JSX.Element {
 export function ToolText({ step }: { step: ToolStep }): React.JSX.Element {
   const { t } = useI18n()
   const faceOf = useContext(MemberFaceContext)
-  const key = verbKey(step.name, step.args)
+  const key = useTaskStatusStep(step) ? 'taskStatus' : verbKey(step.name, step.args)
   const obj = flowObject(step.name, step.args, t)
   const member = memberObject(step.name, step.args)
   const reason = failReason(step, t)
@@ -1518,6 +1533,8 @@ function TimelineTool({ step }: { step: ToolStep }): React.JSX.Element {
   const { t } = useI18n()
   const { skills } = useExtensions()
   const [open, setOpen] = useState(false)
+  // 查看定时任务：节点用日历钟（同任务入口），不用成员的人形图标。
+  const taskStatus = useTaskStatusStep(step)
   const state = step.status === 'running' ? ' is-run' : isFailed(step.status) ? ' is-err' : ''
   const command = step.name === 'run_command' ? flowObject(step.name, step.args)?.full : undefined
   let title = stepTitle(step, t)
@@ -1530,7 +1547,7 @@ function TimelineTool({ step }: { step: ToolStep }): React.JSX.Element {
   if (!command)
     return (
       <li className={`tl__item${state}`}>
-        <span className="tl__node">{stepIcon(step, 14)}</span>
+        <span className="tl__node">{stepIcon(step, 14, taskStatus)}</span>
         <div className="tl__main">
           <div className="tl__line" title={title}>
             <ToolText step={step} />

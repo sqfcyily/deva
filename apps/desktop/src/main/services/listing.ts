@@ -219,26 +219,34 @@ export interface MemberListingItem {
   duty: string
   /** 被 @ 加入的角色：记下角色名，名单里注明。 */
   fromRole?: string
+  /** 在本对话中运行的定时任务（不是成员，但同样可以 member_send / member_status）：人读的日程。duty 是指令开头。 */
+  schedule?: string
 }
 
 function memberLine(m: MemberListingItem): string {
+  if (m.schedule) return `- ${m.name}［定时任务：${m.schedule}］：${m.duty || '（未写指令）'}`
   const where = m.folder === NO_FOLDER ? '（未指定文件夹）' : `（负责 ${m.folder}）`
   const role = m.fromRole ? `［协助者：用户 @ 请来的角色「${m.fromRole}」］` : ''
   return `- ${m.name}${where}${role}：${m.duty || '（未写职责）'}`
 }
+
+/** 名单一项的内容摘要原文。定时任务才拼上日程——成员照旧，已告知的成员不会因此被重发一遍。 */
+function memberContent(m: MemberListingItem): string {
+  return `${m.folder}|${m.duty}|${m.fromRole ?? ''}${m.schedule ? `|${m.schedule}` : ''}`
+}
+
+/** 名单里出现定时任务时附的说明：它们不是成员，能做什么、不能做什么。 */
+const TASK_LISTING_NOTE =
+  '标「定时任务」的不是成员，是在本对话中运行的定时任务：它按时自动运行，把结果以自己的身份发到本对话（较长的在你的上下文里只留标题）。' +
+  '用户追问它发来的内容时，用 member_send 转给它，由它在自己的对话里回答；需要它最近一次发来的全文（如转给别的成员）时用 member_status。' +
+  '不要给它派与它的任务无关的工作。'
 
 /**
  * 本对话的项目成员名单（见 members.ts）与历史里已告知的差异；一致则返回 null。
  * 名单只记名字、文件夹、职责——成员忙闲随时在变，不进名单（派任务时工具结果会说明）。
  */
 export function memberListingPart(history: Message[], members: MemberListingItem[]): TextPart | null {
-  const d = diffListing(
-    history,
-    'members',
-    members,
-    (m) => m.name,
-    (m) => `${m.folder}|${m.duty}|${m.fromRole ?? ''}`
-  )
+  const d = diffListing(history, 'members', members, (m) => m.name, memberContent)
   if (!d) return null
   const lines: string[] = []
   if (d.initial) {
@@ -255,14 +263,12 @@ export function memberListingPart(history: Message[], members: MemberListingItem
       )
     if (d.removed.length) lines.push(`以下成员已移除，不要再派任务给他们：${d.removed.join('、')}`)
   }
+  if (d.listed.some((m) => m.schedule)) lines.push(TASK_LISTING_NOTE)
   lines.push('（以上由系统自动附带，不是用户发来的消息；成员再有增减时会另行告知，以最近的告知为准。）')
   return { type: 'text', text: lines.join('\n'), listing: d.record }
 }
 
 /** create_member / @ 加入成功：结果里已写明该成员，记为已告知（挂在 tool_result 或提示块上）。 */
 export function memberAddedRecord(m: MemberListingItem): ListingRecord {
-  return {
-    kind: 'members',
-    listed: [{ key: m.name, digest: digestOf(`${m.folder}|${m.duty}|${m.fromRole ?? ''}`) }]
-  }
+  return { kind: 'members', listed: [{ key: m.name, digest: digestOf(memberContent(m)) }] }
 }

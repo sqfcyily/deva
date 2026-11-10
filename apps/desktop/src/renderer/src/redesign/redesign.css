@@ -799,6 +799,10 @@ body.cf-resizing-y * {
 .cf-group__face {
   position: absolute;
 }
+/* 群组头像整体扫光：位置与大小由组件按各枚头像的外包框给出（不铺满 38px 方框），蒙版是各枚形状的并集 */
+.cf-group .cf-group__sweep {
+  inset: auto;
+}
 /* 小号的会话群组头像（定时任务「运行方式」列表）：按 38px 的群组头像整体缩放（见 SessionFace） */
 .cf-sessface {
   display: block;
@@ -3542,7 +3546,9 @@ button.cf-mask__pill:hover {
 }
 
 /* 看大图：遮罩上居中只放图片本身（不套窗口、不加边框），下方一行文件信息。上方让出标题栏，两侧留给切换箭头。
-   不设关闭键（铺满时关闭键挨着系统的关闭按钮，容易误关 Deva），Esc / 点遮罩关闭。 */
+   不设关闭键（铺满时关闭键挨着系统的关闭按钮，容易误关 Deva），Esc / 点遮罩关闭。
+   遮罩深浅与弹窗（.cf-modal__backdrop / .modal__backdrop）一致；浅色主题下底色只是中灰，
+   所以文件信息、切换箭头、读取失败各自垫一层深色半透明底，不靠遮罩衬托白字。 */
 .cf-viewer {
   position: fixed;
   inset: 0;
@@ -3553,7 +3559,7 @@ button.cf-mask__pill:hover {
   justify-content: center;
   gap: 12px;
   padding: calc(var(--titlebar-h) + 16px) 68px 20px;
-  background: rgba(0, 0, 0, 0.72);
+  background: rgba(0, 0, 0, 0.42);
   -webkit-app-region: no-drag;
   user-select: none;
   outline: none;
@@ -3568,8 +3574,8 @@ button.cf-mask__pill:hover {
   display: block;
   min-height: 0;
   max-width: 100%;
-  /* 窗口高 − 标题栏 − 上下留白 36 − 间距 12 − 文件信息一行约 20 */
-  max-height: calc(100vh - var(--titlebar-h) - 68px);
+  /* 窗口高 − 标题栏 − 上下留白 36 − 间距 12 − 文件信息一行 24 */
+  max-height: calc(100vh - var(--titlebar-h) - 72px);
   object-fit: contain;
   border-radius: 4px;
   -webkit-user-drag: none;
@@ -3581,6 +3587,9 @@ button.cf-mask__pill:hover {
   gap: 10px;
   max-width: 100%;
   min-width: 0;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(0, 0, 0, 0.55);
   font-size: 12.5px;
   line-height: 20px;
   color: rgba(255, 255, 255, 0.92);
@@ -3594,7 +3603,7 @@ button.cf-mask__pill:hover {
 }
 .cf-viewer__meta {
   flex: none;
-  color: rgba(255, 255, 255, 0.6);
+  color: rgba(255, 255, 255, 0.65);
 }
 .cf-viewer__failed {
   display: flex;
@@ -3602,8 +3611,10 @@ button.cf-mask__pill:hover {
   align-items: center;
   gap: var(--space-2);
   padding: 40px 24px;
+  border-radius: var(--radius-lg);
+  background: rgba(0, 0, 0, 0.55);
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.75);
 }
 .cf-viewer__nav {
   position: absolute;
@@ -3616,12 +3627,12 @@ button.cf-mask__pill:hover {
   padding: 0;
   border: 0;
   border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.4);
+  color: rgba(255, 255, 255, 0.9);
   cursor: pointer;
 }
 .cf-viewer__nav:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(0, 0, 0, 0.6);
   color: #fff;
 }
 .cf-viewer__nav.is-prev {
@@ -5363,18 +5374,39 @@ body.cf-pop-open * {
 }
 
 /*
- * 绑定在本对话上的定时任务（见 design/task-entry-README.md）：标题栏成员入口旁的闹钟入口与下拉复用 .cf-members__*；
- * 任务没有头像，用管理面板任务行同款的圆角方块图标（.cf-tface）。
+ * 绑定在本对话上的定时任务（见 design/task-entry-README.md）：标题栏成员入口旁的闹钟入口与下拉复用 .cf-members__*。
  */
-.cf-tface {
+/*
+ * 定时任务以自己的身份发言的头像（对比稿 design/task-avatar-badge.html 方案 D）：任务所用角色的头像 + 右下角方形角标。
+ * 角标是半透明浅色遮罩、背后模糊透出头像，托着绿色日历钟（同定时任务页里已完成任务的颜色）；不加底色外圈。
+ */
+.cf-taskface {
+  position: relative;
   flex: none;
-  display: inline-grid;
-  place-items: center;
-  border-radius: var(--radius);
-  background: var(--bg-inset);
-  color: var(--accent);
+  width: var(--sz);
+  height: var(--sz);
 }
-/* 任务行右侧：下次运行时间（暂停时写「已暂停」）；悬停换成「立即运行」「暂停」 */
+.cf-taskface__badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(3px) saturate(1.3);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.07);
+  color: var(--success);
+  pointer-events: none;
+}
+/* 深色主题遮罩仍是浅色（与头像对比清楚）；绿色取深一档，浅底上才压得住 */
+:root[data-theme='dark'] .cf-taskface__badge {
+  background: rgba(255, 255, 255, 0.78);
+  color: #2b8a3e;
+}
+/* 任务行右侧：只在暂停时写「已暂停」（不写下次运行时间）；悬停换成「立即运行」「暂停」「删除」 */
 .cf-members__next {
   flex: none;
   align-self: flex-start;
@@ -5453,9 +5485,9 @@ body.cf-pop-open * {
 .cf-handoff__pill {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   max-width: min(100%, 560px);
-  padding: 3px 10px 3px 4px;
+  padding: 3px 10px 3px 8px;
   border: none;
   border-radius: var(--radius-full);
   background: var(--bg-inset);
@@ -5470,6 +5502,11 @@ body.cf-pop-open * {
 .cf-handoff__pill b {
   font-weight: 600;
   color: var(--fg);
+}
+/* 胶囊与全文框标题前的日历钟：绿色（同任务发言头像的角标、定时任务页里已完成任务的图标） */
+.cf-handoff__ic {
+  flex: none;
+  color: var(--success);
 }
 .cf-handoff__text {
   min-width: 0;

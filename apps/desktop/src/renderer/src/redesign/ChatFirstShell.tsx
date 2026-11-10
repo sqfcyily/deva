@@ -161,6 +161,7 @@ import {
   resolveSpec,
   serializeAvatarSpec,
   shapeMask,
+  shapeMaskImage,
   type AvatarSpec
 } from '../components/humation'
 import { useTheme } from '../theme/ThemeContext'
@@ -179,7 +180,8 @@ import {
   groupBlocks,
   hasProcess,
   splitProcess,
-  MemberFaceContext
+  MemberFaceContext,
+  TaskNamesContext
 } from '../features/chat/blocks'
 import { ModelSettings } from '../features/settings/ModelSettings'
 import { AvatarEditor } from './AvatarEditor'
@@ -523,6 +525,20 @@ export function ChatFirstShell(): React.JSX.Element {
     [personas]
   )
   const defaultPersonaId = defaultPersona?.id
+
+  // 定时任务以自己的身份发言时的头像用任务所用的角色（未指定或角色已删 = 默认角色，同主进程执行时），见 TaskSpeakerFace。
+  // 消息里只记了任务名：先找在当前对话中运行的同名任务，再找全部（改为独立运行后，旧消息仍按原角色画）。
+  const taskPersonaOf = useCallback(
+    (title: string): Persona | undefined => {
+      const name = title.trim()
+      const task =
+        tasks.find((x) => x.ownerSessionId === currentSessionId && x.title === name) ??
+        tasks.find((x) => x.title === name)
+      const pid = task?.auth.personaId
+      return (pid ? personas.find((p) => p.id === pid) : undefined) ?? defaultPersona
+    },
+    [tasks, personas, defaultPersona, currentSessionId]
+  )
 
   // 对话归属的角色：未绑定、或绑定的角色已不存在（如手动删了角色文件）一律算默认角色，与主进程执行时一致
   // （见 personas.ts resolvePersonaId）。列表头像、筛选、搜索、资料卡都读这里；只改显示，不改对话里存的绑定。
@@ -1004,6 +1020,7 @@ export function ChatFirstShell(): React.JSX.Element {
                 onRemoveMember={(m) => removeMemberFrom(currentSessionId, m)}
                 pendingCards={pendingCards}
                 boundTasks={taskOf || memberOf ? [] : boundTasks.filter((x) => x.ownerSessionId === currentSessionId)}
+                taskPersonaOf={taskPersonaOf}
                 onOpenTask={(task) => selectSession(task.sessionId)}
                 onRunTask={runBoundTask}
                 onToggleTask={toggleBoundTask}
@@ -1548,11 +1565,17 @@ function MemberAsks({
 
 /* ---------------- 绑定在本对话上的定时任务（对比稿 design/task-entry.html 方案 A + M2） ---------------- */
 
-/** 定时任务的「头像」：同管理面板任务行的图标（圆角方块里的日历钟），任务没有角色头像。 */
-function TaskFace({ size }: { size: number }): React.JSX.Element {
+/**
+ * 定时任务以自己的身份在对话里发言时的头像（对比稿 design/task-avatar-badge.html 方案 D）：任务所用角色的头像，
+ * 右下角压一枚方形角标——半透明遮罩托着绿色日历钟（同定时任务页里已完成任务的图标）。不挂悬停提示：名字旁边写着任务名。
+ */
+function TaskSpeakerFace({ persona, size }: { persona?: Persona; size: number }): React.JSX.Element {
   return (
-    <span className="cf-tface" style={{ width: size, height: size }} aria-hidden="true">
-      <CalendarClock size={Math.round(size * 0.52)} />
+    <span className="cf-taskface" style={{ '--sz': `${size}px` } as React.CSSProperties}>
+      <Avatar persona={persona} size={size} plain />
+      <span className="cf-taskface__badge" aria-hidden="true">
+        <CalendarClock size={13} strokeWidth={2.4} />
+      </span>
     </span>
   )
 }
@@ -1670,8 +1693,9 @@ function TaskBar({
 }
 
 /**
- * 闹钟列表里的一行（同管理面板的任务行：状态色图标、标题、第二行触发时间）：右侧下次运行时间（正在运行时是转圈 + 用时，
- * 暂停时写「已暂停」），悬停换成「立即运行」「暂停 / 继续」「删除」（删除先弹确认框）。点整行进入任务对话。
+ * 闹钟列表里的一行（同管理面板的任务行：状态色图标、标题、第二行触发时间）：不写下次运行时间，右侧只在暂停时写「已暂停」，
+ * 悬停换成「立即运行」「暂停 / 继续」「删除」（删除先弹确认框）。点整行进入任务对话。
+ * 正在运行时第二行的触发时间换成「转圈 + 已运行时长」（同成员列表第二行的工作中）。
  */
 function TaskBarRow({
   task,
@@ -1691,21 +1715,8 @@ function TaskBarRow({
   onDelete: () => void
 }): React.JSX.Element {
   const { t } = useI18n()
-  const when = useShortTime()
   const desc = useSchedulePreview(task.schedule)
   const paused = task.status === 'paused' || task.status === 'error'
-  const next = busy ? (
-    <>
-      <Loader2 size={12} className="spin cf-members__now" />
-      {startedAt ? formatDuration(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), t) : t('cf.task.running')}
-    </>
-  ) : paused ? (
-    t('cf.task.paused')
-  ) : task.nextRunAt != null ? (
-    fill(t('cf.task.next'), { time: when(task.nextRunAt) })
-  ) : (
-    t('tasks.nextNever')
-  )
   return (
     <div className="cf-members__row">
       <button type="button" className="cf-members__open" onClick={onOpen}>
@@ -1717,12 +1728,25 @@ function TaskBarRow({
             <span className="cf-members__name">{task.title || t('chat.untitled')}</span>
           </span>
           <span className="cf-members__sub">
-            <Clock size={11} />
-            <span className="cf-members__text">{desc || task.schedule.cron || task.schedule.at || ''}</span>
+            {busy ? (
+              <>
+                <Loader2 size={11} className="spin cf-members__now" />
+                <span className="cf-members__time">
+                  {startedAt
+                    ? formatDuration(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), t)
+                    : t('cf.task.running')}
+                </span>
+              </>
+            ) : (
+              <>
+                <Clock size={11} />
+                <span className="cf-members__text">{desc || task.schedule.cron || task.schedule.at || ''}</span>
+              </>
+            )}
           </span>
         </span>
       </button>
-      <span className="cf-members__next">{next}</span>
+      {paused && <span className="cf-members__next">{t('cf.task.paused')}</span>}
       <span className="cf-members__acts">
         {!paused && (
           <button
@@ -1824,7 +1848,10 @@ function TaskLogHead({
   )
 }
 
-/** 定时任务交来要处理的结果（对比稿 M2）：居中一行灰底「闹钟 任务名 摘要」，点开是带任务名的全文框。 */
+/**
+ * 定时任务交来要处理的结果（对比稿 M2）：居中一行灰底「日历钟 任务名 摘要」，点开是带任务名的全文框。
+ * 图标用绿色日历钟（同任务发言头像的角标、定时任务页里已完成任务的图标）。
+ */
 function HandoffNotice({ handoff }: { handoff: HandoffInfo }): React.JSX.Element {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
@@ -1837,7 +1864,7 @@ function HandoffNotice({ handoff }: { handoff: HandoffInfo }): React.JSX.Element
         title={t(open ? 'cf.task.collapse' : 'cf.task.expand')}
         onClick={() => setOpen((v) => !v)}
       >
-        <TaskFace size={18} />
+        <CalendarClock size={15} className="cf-handoff__ic" aria-hidden="true" />
         <span className="cf-handoff__text">
           <b>{handoff.title}</b> {handoff.summary}
         </span>
@@ -1846,7 +1873,7 @@ function HandoffNotice({ handoff }: { handoff: HandoffInfo }): React.JSX.Element
       {open && (
         <div className="cf-handoff__box">
           <div className="cf-handoff__who">
-            <TaskFace size={16} />
+            <CalendarClock size={14} className="cf-handoff__ic" aria-hidden="true" />
             {handoff.title}
           </div>
           <Markdown text={handoff.content} />
@@ -2291,6 +2318,7 @@ function Rail({
         .map((m) => memberPersona(m, personas, personas.find((p) => p.id === s.personaId)))
         .filter((p): p is Persona => !!p)}
       state={sessionStates[s.id]}
+      membersBusy={(s.members ?? []).some((m) => !m.removed && !!sessionStates[m.sessionId]?.streaming)}
       browserPages={browserPages[s.id] ?? 0}
       tasks={tasksBySession[s.id] ?? []}
       active={s.id === currentSessionId}
@@ -3666,7 +3694,8 @@ function AddMenu({
  * 写 +N 的第 4 枚自然在最上面；人物脸朝左，被压住的多是右侧头发与下方肩膀，脸仍露着。
  * 主角色排第一位（左 / 上 / 左上）；头像一律框内构图，压处的分隔环取行底色。
  * 两人时头像放大到 28px，左右各越出头像列 3px（落在行内边距与文字间距里，不挤文字）。
- * 生成中的扫光只扫主角色那一枚，待处理 / 未读红点在方框右上角。
+ * 工作中（主角色或任一成员）整个群组头像当一个整体扫光：一道光带连续扫过所有头像（蒙版是各枚头像形状的并集），
+ * 不是每枚各扫各的；待处理 / 未读红点在方框右上角。
  */
 const GROUP_LAYOUT: Record<1 | 2 | 3 | 4, { size: number; ring: boolean; at: [number, number][] }> = {
   // 只剩一位（主角色不存在、只有一个成员）：照单人头像画满
@@ -3690,6 +3719,33 @@ function GroupFace({
   const shown = people.slice(0, 4)
   const more = people.length > 4 ? people.length - 3 : 0
   const layout = GROUP_LAYOUT[shown.length as 1 | 2 | 3 | 4]
+  // 整体扫光的范围：各枚头像的外包框（两人时左右各越出 3px）；蒙版按各枚的位置与大小拼成形状并集。
+  let sweep: React.JSX.Element | null = null
+  if (busy && shown.length) {
+    const at = shown.map((_, i) => layout.at[i])
+    const x0 = Math.min(...at.map(([x]) => x))
+    const y0 = Math.min(...at.map(([, y]) => y))
+    const box = layout.size
+    const mask = shown
+      .map((p, i) => {
+        const shape = resolveShape(p.id, parseAvatarSpec(p.avatar))
+        return `${shapeMaskImage(shape)} ${at[i][0] - x0}px ${at[i][1] - y0}px / ${box}px ${box}px no-repeat`
+      })
+      .join(', ')
+    sweep = (
+      <span
+        className="cf-ava__sweep cf-group__sweep"
+        aria-hidden="true"
+        style={{
+          left: x0,
+          top: y0,
+          width: Math.max(...at.map(([x]) => x)) + box - x0,
+          height: Math.max(...at.map(([, y]) => y)) + box - y0,
+          mask
+        }}
+      />
+    )
+  }
   return (
     <span className={`cf-group${layout.ring ? ' is-overlap' : ''}`} title={title}>
       {shown.map((p, i) => {
@@ -3702,9 +3758,6 @@ function GroupFace({
             style={{ left: x, top: y, width: layout.size, height: layout.size }}
           >
             <PersonaFace seed={p.id} spec={spec} image={p.avatarImage} compact />
-            {busy && i === 0 && (
-              <span className="cf-ava__sweep" aria-hidden="true" style={{ mask: shapeMask(resolveShape(p.id, spec)) }} />
-            )}
             {more > 0 && i === 3 && (
               <span className="cf-group__more" style={{ mask: shapeMask(resolveShape(p.id, spec)) }}>
                 +{more}
@@ -3713,6 +3766,7 @@ function GroupFace({
           </span>
         )
       })}
+      {sweep}
       {dot && <span className="cf-ava__dot" aria-hidden="true" />}
     </span>
   )
@@ -3723,6 +3777,7 @@ function ThreadRow({
   owner,
   memberFaces,
   state,
+  membersBusy,
   browserPages,
   tasks,
   active,
@@ -3734,6 +3789,8 @@ function ThreadRow({
   /** 成员的显示身份（未移除的，按加入先后）：有成员时头像换成群组头像（GroupFace）。 */
   memberFaces: Persona[]
   state?: SessionLiveState
+  /** 有成员正在工作：群组头像同样整体扫光（主角色闲着、成员还在做时，列表里也看得出这个对话还在干活）。定时任务不算。 */
+  membersBusy: boolean
   /** 这个对话在内置浏览器里开着几个网页（>0 时标题旁打地球徽标）。 */
   browserPages: number
   /** 绑定在这个对话上的定时任务（>0 时打闹钟徽标，悬停列出任务名）。 */
@@ -3762,7 +3819,7 @@ function ThreadRow({
         {memberFaces.length > 0 ? (
           <GroupFace
             people={owner ? [owner, ...memberFaces] : memberFaces}
-            busy={state?.streaming}
+            busy={state?.streaming || membersBusy}
             dot={!active && !session.archived && (state?.attention || state?.unread)}
             title={fill(t('cf.member.threadBadge'), {
               n: String(members.length),
@@ -4896,6 +4953,7 @@ function Conversation({
   onRemoveMember,
   pendingCards,
   boundTasks,
+  taskPersonaOf,
   onOpenTask,
   onRunTask,
   onToggleTask,
@@ -4950,6 +5008,8 @@ function Conversation({
   pendingCards: Record<string, PendingCard[]>
   /** 绑定在本对话上的定时任务：标题栏成员入口旁的闹钟入口（见 TaskBar）。 */
   boundTasks: TaskRecord[]
+  /** 定时任务以自己的身份发言时，按任务名找它所用的角色（头像用，见 TaskSpeakerFace）。 */
+  taskPersonaOf: (title: string) => Persona | undefined
   /** 打开某个任务的任务对话（整页切换，同成员对话）。 */
   onOpenTask: (task: TaskRecord) => void
   onRunTask: (task: TaskRecord) => void
@@ -4983,7 +5043,18 @@ function Conversation({
   const scrollRef = useRef<HTMLDivElement>(null)
   // 成员在内置浏览器里等你操作（登录、验证等）：同提问 / 计划，在对话末尾放一枚胶囊提醒（见 MemberAsks）。
   const browserState = useBrowserState()
+  // 在本对话中运行的定时任务名（小写）：主角色的 member_send / member_status 也能点到它们（见 blocks.tsx TaskNamesContext）。
+  // 与成员同名的让给成员（主进程同样先找成员）。
+  const taskNames = useMemo(() => {
+    const memberNames = new Set([...members, ...formerMembers].map((m) => m.meta.name.toLowerCase()))
+    return new Set(boundTasks.map((x) => x.title.trim().toLowerCase()).filter((n) => n && !memberNames.has(n)))
+  }, [boundTasks, members, formerMembers])
+  const taskNameCtx = useMemo(
+    () => ({ has: (name: string) => taskNames.has(name.trim().toLowerCase()), only: taskNames.size > 0 && !members.length }),
+    [taskNames, members]
+  )
   // 执行步骤里成员名前的小头像（派任务、建成员等，见 blocks.tsx MemberFaceContext）：按名字在主对话名单里找，含已移除的。
+  // 定时任务名前不放图标。
   const memberFace = useCallback(
     (name: string): React.ReactNode => {
       const key = name.trim().toLowerCase()
@@ -5448,7 +5519,7 @@ function Conversation({
   const renderMsg = (m: ChatMessage, i: number, turn?: number): React.JSX.Element => {
     const report = reportOf(i)
     // 成员交差：以该成员的身份画（头像 + 名字 + 结论原文）；认不出是哪位成员时退回带标题行的写法。
-    // 定时任务告知的：以任务的身份画（闹钟头像 + 任务名）。
+    // 定时任务告知的：以任务的身份画（任务所用角色的头像 + 定时任务角标 + 任务名）。
     const speaker = report?.persona
     return (
       <ConvMessage
@@ -5457,6 +5528,7 @@ function Conversation({
         report={report && !speaker && !report.task ? report : undefined}
         owner={speaker ?? owner}
         taskSpeaker={report?.task}
+        taskPersona={report?.task ? taskPersonaOf(report.task) : undefined}
         taskOwner={memberView?.owner}
         active={!selecting && streaming && i === messages.length - 1}
         latest={i === messages.length - 1}
@@ -5729,7 +5801,9 @@ function Conversation({
   // 执行步骤里成员名前的小头像（见 blocks.tsx MemberFaceContext）；成员对话里没有成员工具，不提供。
   return (
     <MemberFaceContext.Provider value={memberView ? null : memberFace}>
-      <MentionContext.Provider value={mentionLookup}>{view}</MentionContext.Provider>
+      <TaskNamesContext.Provider value={memberView ? null : taskNameCtx}>
+        <MentionContext.Provider value={mentionLookup}>{view}</MentionContext.Provider>
+      </TaskNamesContext.Provider>
     </MemberFaceContext.Provider>
   )
 }
@@ -5960,6 +6034,7 @@ function ConvMessage({
   report,
   owner,
   taskSpeaker,
+  taskPersona,
   taskOwner,
   active,
   latest,
@@ -5977,8 +6052,10 @@ function ConvMessage({
   /** 成员交差的回复：标题行（「前端已完成：任务」）单独画、前面带成员的小头像（msg 里已去掉这一行）。 */
   report?: MemberReportHead
   owner?: Persona
-  /** 绑定的定时任务告知的那条：以任务的身份画（闹钟头像 + 任务名），不用 owner。 */
+  /** 绑定的定时任务告知的那条：以任务的身份画（taskPersona 的头像 + 定时任务角标 + 任务名），不用 owner。 */
   taskSpeaker?: string
+  /** 定时任务所用的角色（见 TaskSpeakerFace）。 */
+  taskPersona?: Persona
   /** 成员对话里派任务的主对话角色：主智能体派来的任务画成它说的话。 */
   taskOwner?: Persona
   active: boolean
@@ -6212,7 +6289,7 @@ function ConvMessage({
   const name = <span className="cf-msg__name">{taskSpeaker ?? owner?.name ?? t('cf.assistant')}</span>
   return (
     <div className="cf-msg" data-turn={dataTurn}>
-      {taskSpeaker ? <TaskFace size={32} /> : <Avatar persona={owner} size={32} />}
+      {taskSpeaker ? <TaskSpeakerFace persona={taskPersona} size={32} /> : <Avatar persona={owner} size={32} />}
       <div className="cf-msg__body">
         {!split && <div className="cf-msg__head">{name}</div>}
         <div
