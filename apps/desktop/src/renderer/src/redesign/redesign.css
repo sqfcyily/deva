@@ -799,10 +799,6 @@ body.cf-resizing-y * {
 .cf-group__face {
   position: absolute;
 }
-/* 群组头像整体扫光：位置与大小由组件按各枚头像的外包框给出（不铺满 38px 方框），蒙版是各枚形状的并集 */
-.cf-group .cf-group__sweep {
-  inset: auto;
-}
 /* 小号的会话群组头像（定时任务「运行方式」列表）：按 38px 的群组头像整体缩放（见 SessionFace） */
 .cf-sessface {
   display: block;
@@ -814,13 +810,14 @@ body.cf-resizing-y * {
   --hm-ring: var(--row-bg);
   --hm-ring-w: 4px;
 }
-/* 超过四人：第 4 枚盖半透明深色层（按头像形状蒙版）写白色 +N，任何头像颜色上都看得清 */
+/* 超过四人：第 4 枚盖半透明深色层写白色 +N，任何头像颜色上都看得清。深色层画在头像 SVG 里（PersonaFace veil），
+   与底板同形，生成中跟着变成星芒；这里只放文字。 */
 .cf-group__more {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.38);
+  pointer-events: none;
   color: #fff;
   /* 遮罩调浅后浅色头像上白字偏弱，加一点柔和投影托住 */
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.45);
@@ -967,49 +964,7 @@ body.cf-resizing-y * {
   object-fit: cover;
 }
 
-/* 忙碌（对话生成中）：一道高光斜带自左向右扫过头像，作就地「思考/生成中」指示。
-   遮层与 .cf-ava__face 同框（inset:0），按头像形状蒙版（行内 mask，形状恒铺满头像框），故光带只在底板内可见。 */
-.cf-ava__sweep {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-/* 光带本体：一条 40% 宽、倾斜 25° 的渐变竖条，靠 left 位移扫过（不用 transform 是为了让
-   rotate 保持静态、位移单独走动画，二者互不干扰）。
-   亮芯两侧各压一道极淡暗边：生成头像的底色（BG_TONES）里有马卡龙浅底，自定义照片也什么底都有，
-   浅底上单靠白亮芯几乎看不见。暗边就是给浅底兜底——深底白亮一闪、
-   浅底「暗—亮—暗」一道波纹，两种都读得出。别当多余删掉。 */
-.cf-ava__sweep::after {
-  content: '';
-  position: absolute;
-  top: -50%;
-  left: -60%;
-  width: 40%;
-  height: 200%;
-  background: linear-gradient(
-    100deg,
-    transparent 0%,
-    rgba(0, 0, 0, 0.12) 28%,
-    rgba(255, 255, 255, 0.85) 50%,
-    rgba(0, 0, 0, 0.12) 72%,
-    transparent 100%
-  );
-  transform: rotate(25deg);
-  animation: cf-sweep 2.2s ease-in-out infinite;
-}
-/* 扫到头后留一段停顿（65%→100%），读起来是「一闪一闪」而非连续频闪。 */
-@keyframes cf-sweep {
-  0% {
-    left: -60%;
-  }
-  65% {
-    left: 120%;
-  }
-  100% {
-    left: 120%;
-  }
-}
+/* 忙碌（对话生成中）不在这里画：头像底板变成星芒并转动，见 components/humation.tsx 的 useBusyMorph。 */
 
 /* 待你处理 / 有新消息：头像右上角一枚静态红点。 */
 .cf-ava__dot {
@@ -1035,15 +990,6 @@ body.cf-resizing-y * {
   background: var(--danger);
   box-shadow: 0 0 0 2px var(--bg-inset);
   pointer-events: none;
-}
-
-/* 减动效：停动画，但把光带停在头像中间当静态高光——否则它停在 left:-60% 整个看不见，
-   忙碌状态就彻底没了指示。 */
-@media (prefers-reduced-motion: reduce) {
-  .cf-ava__sweep::after {
-    animation: none;
-    left: 30%;
-  }
 }
 
 /* ---------------------------- 中列：单人对话 ---------------------------- */

@@ -18,9 +18,10 @@
  *  - 「探出」构图：身体按形状裁切，头部与配件画在底板前、可越出上沿；头像占位尺寸不变；
  *    ≤20px 与叠放处用 `compact`（框内构图，整枚按形状裁切），避免轮廓杂乱；
  *  - 上传图片按同一形状裁切、不探出；透明背景的图片按主体包围盒摆放，可以探出。
- *  形状恒铺满头像框（两种构图都是），故外层遮层 / 扫光用 `shapeMask(shape)` 即可与头像同形。
+ *  形状恒铺满头像框（两种构图都是），故外层遮层用 `shapeMask(shape)` 即可与头像同形；
+ *  但生成中（busy）底板会变成星芒，要跟着变的遮层用 FaceProps.veil 画在 SVG 里。
  */
-import { Component, useEffect, useId, useState, type ReactNode } from 'react'
+import { Component, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { humation1 } from '@humation/assets-humation-1'
 import { createAvatar, createPartPreview, getPartsForSlot, resolvePartId } from '@humation/core'
 import type { PartOption } from '@humation/core'
@@ -174,6 +175,10 @@ function rotatePts(pts: Pt[], deg: number): Pt[] {
   const s = Math.sin(a)
   return pts.map(([x, y]) => [50 + (x - 50) * c - (y - 50) * s, 50 + (x - 50) * s + (y - 50) * c])
 }
+/** 星芒的极坐标半径（八个角）：星芒形状与「生成中」的星芒共用。 */
+function burstR(t: number): number {
+  return 41.5 + 8.5 * Math.pow((1 + Math.cos(8 * t)) / 2, 1.4)
+}
 /** 等比缩放并居中进 0..100 方框（四周留 m）。 */
 function fitPts(pts: Pt[], m = 2): Pt[] {
   const xs = pts.map((p) => p[0])
@@ -257,7 +262,7 @@ const SHAPE_PATHS: Record<AvatarShape, string> = {
   squircle: ptsPath(superellipsePts(48, 4.2)),
   arch: 'M4 50A46 46 0 0 1 96 50L96 86Q96 98 84 98L16 98Q4 98 4 86Z',
   scallop: ptsPath(polarPts((t) => 47 + 3 * Math.cos(12 * t), 192)),
-  burst: ptsPath(polarPts((t) => 41.5 + 8.5 * Math.pow((1 + Math.cos(8 * t)) / 2, 1.4), 192)),
+  burst: ptsPath(polarPts(burstR, 192)),
   // 五团云（参考图 1.png，对比稿 design/avatar-cloud.html）：左上一团最大最高、右上一团小而低，两侧两团最大，底一团；
   // 五个圆的位置、大小与平滑半径照原图轮廓拟合（加权误差约 0.5%）。别做左右对称——会把顶上两团间的凹口填平，用户嫌平。取代四叶（用户删掉）
   cloud: ptsPath(
@@ -645,6 +650,10 @@ export type FaceProps = {
   className?: string
   /** 框内构图：整枚按形状裁切、不探出。≤20px 与叠放处用。 */
   compact?: boolean
+  /** 生成中：底板从原形状慢慢变成星芒并转动，人物跟着星芒裁；结束后变回原形状（见 useBusyMorph）。 */
+  busy?: boolean
+  /** 盖一层半透明深色（与底板同形，生成中跟着变）：群组头像超过四人时写 +N 的那一枚用。 */
+  veil?: boolean
 }
 
 /**
@@ -670,7 +679,136 @@ export function HumationFace(props: Omit<FaceProps, 'image'>): React.JSX.Element
   return <PersonaFace {...props} />
 }
 
-function FaceSvg({ seed, spec, image, size, title, className, compact }: FaceProps): React.JSX.Element {
+/* ───────────────────── 生成中：底板变星芒并转动 ───────────────────── */
+// 对比稿 design/avatar-busy-burst.html（单人，人物跟着星芒）与 design/group-busy-burst.html（群组：谁在工作谁变）。
+// 每帧底板 = 原形状与「转到当前角度的星芒」按进度混合（沿 MORPH_N 个方向插值半径）。只有星芒那一项在转、原形状不转，
+// 所以生成在任何时刻结束都能直接平滑变回原形状，不用先把角度转回去。
+
+const MORPH_N = 120
+/** 变成星芒 / 变回原形状的时长（秒）。 */
+const MORPH_IN = 1.4
+const MORPH_OUT = 1.0
+/** 星芒转一圈的秒数。 */
+const SPIN_PERIOD = 10
+
+const radiiCache = new Map<AvatarShape, Float32Array>()
+let probeCtx: CanvasRenderingContext2D | null | undefined
+/** 形状在 MORPH_N 个方向上到中心 (50,50) 的距离（t 从正上方顺时针，同 polarPts），沿射线二分求边界。 */
+function shapeRadii(shape: AvatarShape): Float32Array | null {
+  const hit = radiiCache.get(shape)
+  if (hit) return hit
+  if (probeCtx === undefined) probeCtx = document.createElement('canvas').getContext('2d')
+  if (!probeCtx) return null
+  const path = new Path2D(SHAPE_PATHS[shape])
+  const out = new Float32Array(MORPH_N)
+  for (let i = 0; i < MORPH_N; i++) {
+    const t = (i / MORPH_N) * Math.PI * 2
+    const dx = Math.sin(t)
+    const dy = -Math.cos(t)
+    let lo = 0
+    let hi = 80
+    for (let j = 0; j < 24; j++) {
+      const mid = (lo + hi) / 2
+      if (probeCtx.isPointInPath(path, 50 + dx * mid, 50 + dy * mid)) lo = mid
+      else hi = mid
+    }
+    out[i] = lo
+  }
+  radiiCache.set(shape, out)
+  return out
+}
+
+const easeInOut = (x: number): number => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)
+
+/** 全应用共用一个 requestAnimationFrame：只有正在生成或正在变回的头像在里面，都停了就不再跑。 */
+type MorphStep = (dt: number) => boolean
+const morphs = new Set<MorphStep>()
+let morphRaf = 0
+let morphLast = 0
+function morphTick(ts: number): void {
+  const dt = morphLast ? Math.min(0.05, (ts - morphLast) / 1000) : 0
+  morphLast = ts
+  for (const step of morphs) if (!step(dt)) morphs.delete(step)
+  if (morphs.size) morphRaf = requestAnimationFrame(morphTick)
+  else {
+    morphRaf = 0
+    morphLast = 0
+  }
+}
+let reduceMotion: MediaQueryList | null | undefined
+function runMorph(step: MorphStep): void {
+  morphs.add(step)
+  if (!morphRaf) morphRaf = requestAnimationFrame(morphTick)
+}
+
+type MorphEls = {
+  plate: React.RefObject<SVGPathElement | null>
+  ring: React.RefObject<SVGPathElement | null>
+  clipS: React.RefObject<SVGPathElement | null>
+  clipH: React.RefObject<SVGPathElement | null>
+  veil: React.RefObject<SVGPathElement | null>
+}
+
+/**
+ * 生成中的变形：busy 打开 → MORPH_IN 秒变成星芒并持续转动；关闭 → MORPH_OUT 秒变回原形状后停下。
+ * 直接改 DOM 上的路径（底板、分隔环、两个裁切、遮层同一条），不经 React 重渲染；React 只在形状 / 构图变了时改 d，
+ * 下一帧就按新的形状接着画。系统「减少动画」：不渐变、不转动，生成中直接显示静止的星芒。
+ */
+function useBusyMorph(busy: boolean, shape: AvatarShape, box: Box, rest: string, els: MorphEls): void {
+  const st = useRef({ busy, p: 0, phi: 0, shape, box, rest })
+  st.current.busy = busy
+  st.current.shape = shape
+  st.current.box = box
+  st.current.rest = rest
+  const stepRef = useRef<MorphStep | null>(null)
+
+  useEffect(() => {
+    if (!busy && st.current.p === 0) return
+    if (stepRef.current && morphs.has(stepRef.current)) return
+    const paint = (e: number, phi: number): void => {
+      const s = st.current
+      let d = s.rest
+      const rs = e > 0 ? shapeRadii(s.shape) : null
+      if (rs) {
+        const k = s.box.s / 100
+        d = ''
+        for (let i = 0; i < MORPH_N; i++) {
+          const t = (i / MORPH_N) * Math.PI * 2
+          const r = (1 - e) * rs[i] + e * burstR(t - phi)
+          d += `${i ? 'L' : 'M'}${r2(s.box.x + (50 + r * Math.sin(t)) * k)} ${r2(s.box.y + (50 - r * Math.cos(t)) * k)}`
+        }
+        d += 'Z'
+      }
+      for (const ref of [els.plate, els.ring, els.clipS, els.clipH, els.veil]) ref.current?.setAttribute('d', d)
+    }
+    const step: MorphStep = (dt) => {
+      const s = st.current
+      reduceMotion ??= window.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null
+      if (reduceMotion?.matches) {
+        s.p = s.busy ? 1 : 0
+        s.phi = 0
+        paint(s.p, 0)
+        return false
+      }
+      s.p = s.busy ? Math.min(1, s.p + dt / MORPH_IN) : Math.max(0, s.p - dt / MORPH_OUT)
+      s.phi = s.p > 0 ? (s.phi + (dt * Math.PI * 2) / SPIN_PERIOD) % (Math.PI * 2) : 0
+      paint(easeInOut(s.p), s.phi)
+      return s.busy || s.p > 0
+    }
+    stepRef.current = step
+    runMorph(step)
+  }, [busy, els])
+
+  // 卸载：退出共用的动画循环
+  useEffect(
+    () => () => {
+      if (stepRef.current) morphs.delete(stepRef.current)
+    },
+    []
+  )
+}
+
+function FaceSvg({ seed, spec, image, size, title, className, compact, busy, veil }: FaceProps): React.JSX.Element {
   const rid = useId()
   const id = 'hm' + rid.replace(/[^a-zA-Z0-9_-]/g, '')
   const cut = useCutout(image || undefined)
@@ -718,6 +856,16 @@ function FaceSvg({ seed, spec, image, size, title, className, compact }: FacePro
   }
 
   const d = mapPath(shape, box)
+  const plateRef = useRef<SVGPathElement>(null)
+  const ringRef = useRef<SVGPathElement>(null)
+  const clipSRef = useRef<SVGPathElement>(null)
+  const clipHRef = useRef<SVGPathElement>(null)
+  const veilRef = useRef<SVGPathElement>(null)
+  const els = useMemo<MorphEls>(
+    () => ({ plate: plateRef, ring: ringRef, clipS: clipSRef, clipH: clipHRef, veil: veilRef }),
+    []
+  )
+  useBusyMorph(!!busy, shape, box, d, els)
   const cls = `hm-ava hm-ava--${kind}${pop ? ' is-pop' : ''}${className ? ` ${className}` : ''}`
   return (
     <svg
@@ -732,26 +880,29 @@ function FaceSvg({ seed, spec, image, size, title, className, compact }: FacePro
       style={style}
     >
       {title ? <title>{title}</title> : null}
+      {/* 底板、分隔环、两个裁切、遮层是同一条路径：生成中由 useBusyMorph 一起改（人物跟着星芒裁） */}
       <defs>
         <clipPath id={`${id}s`}>
-          <path d={d} />
+          <path ref={clipSRef} d={d} />
         </clipPath>
         {pop && (
           <clipPath id={`${id}h`}>
-            <path d={d} />
+            <path ref={clipHRef} d={d} />
             <rect x={box.x - 60} y={box.y - 80} width={box.s + 120} height={80 + box.s / 2} />
           </clipPath>
         )}
       </defs>
       {/* 叠放时的描边环：由外层 --hm-ring / --hm-ring-w 打开，按屏幕像素计宽（一半压在底板下） */}
       <path
+        ref={ringRef}
         d={d}
         fill="none"
         vectorEffect="non-scaling-stroke"
         style={{ stroke: 'var(--hm-ring, none)', strokeWidth: 'var(--hm-ring-w, 0)' }}
       />
-      <path d={d} fill={plateFill} />
+      <path ref={plateRef} d={d} fill={plateFill} />
       {content}
+      {veil && <path ref={veilRef} d={d} fill="rgba(0, 0, 0, 0.38)" />}
     </svg>
   )
 }

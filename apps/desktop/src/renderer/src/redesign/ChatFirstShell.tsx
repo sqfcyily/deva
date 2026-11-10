@@ -161,7 +161,6 @@ import {
   resolveSpec,
   serializeAvatarSpec,
   shapeMask,
-  shapeMaskImage,
   type AvatarSpec
 } from '../components/humation'
 import { useTheme } from '../theme/ThemeContext'
@@ -2309,17 +2308,21 @@ function Rail({
     onReorderPersonas([id, ...ids.filter((x) => x !== id)])
   }
   // 对话行（对话列表与已归档对话共用）：右键菜单记下是否已归档，菜单项随之不同。
-  const threadRow = (s: SessionMeta): React.JSX.Element => (
+  const threadRow = (s: SessionMeta): React.JSX.Element => {
+    const owner = personas.find((p) => p.id === s.personaId)
+    // 成员的显示身份与是否在工作，一一对应（认不出身份的成员两边一起去掉）。
+    const members = (s.members ?? [])
+      .filter((m) => !m.removed)
+      .map((m) => ({ persona: memberPersona(m, personas, owner), working: !!sessionStates[m.sessionId]?.streaming }))
+      .filter((x): x is { persona: Persona; working: boolean } => !!x.persona)
+    return (
     <ThreadRow
       key={s.id}
       session={s}
-      owner={personas.find((p) => p.id === s.personaId)}
-      memberFaces={(s.members ?? [])
-        .filter((m) => !m.removed)
-        .map((m) => memberPersona(m, personas, personas.find((p) => p.id === s.personaId)))
-        .filter((p): p is Persona => !!p)}
+      owner={owner}
+      memberFaces={members.map((x) => x.persona)}
       state={sessionStates[s.id]}
-      membersBusy={(s.members ?? []).some((m) => !m.removed && !!sessionStates[m.sessionId]?.streaming)}
+      membersWorking={members.map((x) => x.working)}
       browserPages={browserPages[s.id] ?? 0}
       tasks={tasksBySession[s.id] ?? []}
       active={s.id === currentSessionId}
@@ -2336,7 +2339,8 @@ function Rail({
         })
       }}
     />
-  )
+    )
+  }
   return (
     <aside
       ref={asideRef}
@@ -3695,8 +3699,8 @@ function AddMenu({
  * 写 +N 的第 4 枚自然在最上面；人物脸朝左，被压住的多是右侧头发与下方肩膀，脸仍露着。
  * 主角色排第一位（左 / 上 / 左上）；头像一律框内构图，压处的分隔环取行底色。
  * 两人时头像放大到 28px，左右各越出头像列 3px（落在行内边距与文字间距里，不挤文字）。
- * 工作中（主角色或任一成员）整个群组头像当一个整体扫光：一道光带连续扫过所有头像（蒙版是各枚头像形状的并集），
- * 不是每枚各扫各的；待处理 / 未读红点在方框右上角。
+ * 生成中谁在工作谁变星芒（对比稿 design/group-busy-burst.html 方案 A）：主角色在回复就是主角色那枚，成员在工作就是
+ * 那位成员；写 +N 的第 4 枚代表它自己和没露脸的人，其中任何一位在工作它就变。待处理 / 未读红点在方框右上角。
  */
 const GROUP_LAYOUT: Record<1 | 2 | 3 | 4, { size: number; ring: boolean; at: [number, number][] }> = {
   // 只剩一位（主角色不存在、只有一个成员）：照单人头像画满
@@ -3708,66 +3712,43 @@ const GROUP_LAYOUT: Record<1 | 2 | 3 | 4, { size: number; ring: boolean; at: [nu
 }
 function GroupFace({
   people,
-  busy,
+  working,
   dot,
   title
 }: {
   people: Persona[]
-  busy?: boolean
+  /** 与 people 一一对应：这一位是否在工作（主角色在回复 / 成员在干活）。 */
+  working?: boolean[]
   dot?: boolean
   title?: string
 }): React.JSX.Element {
   const shown = people.slice(0, 4)
   const more = people.length > 4 ? people.length - 3 : 0
   const layout = GROUP_LAYOUT[shown.length as 1 | 2 | 3 | 4]
-  // 整体扫光的范围：各枚头像的外包框（两人时左右各越出 3px）；蒙版按各枚的位置与大小拼成形状并集。
-  let sweep: React.JSX.Element | null = null
-  if (busy && shown.length) {
-    const at = shown.map((_, i) => layout.at[i])
-    const x0 = Math.min(...at.map(([x]) => x))
-    const y0 = Math.min(...at.map(([, y]) => y))
-    const box = layout.size
-    const mask = shown
-      .map((p, i) => {
-        const shape = resolveShape(p.id, parseAvatarSpec(p.avatar))
-        return `${shapeMaskImage(shape)} ${at[i][0] - x0}px ${at[i][1] - y0}px / ${box}px ${box}px no-repeat`
-      })
-      .join(', ')
-    sweep = (
-      <span
-        className="cf-ava__sweep cf-group__sweep"
-        aria-hidden="true"
-        style={{
-          left: x0,
-          top: y0,
-          width: Math.max(...at.map(([x]) => x)) + box - x0,
-          height: Math.max(...at.map(([, y]) => y)) + box - y0,
-          mask
-        }}
-      />
-    )
-  }
   return (
     <span className={`cf-group${layout.ring ? ' is-overlap' : ''}`} title={title}>
       {shown.map((p, i) => {
-        const spec = parseAvatarSpec(p.avatar)
         const [x, y] = layout.at[i]
+        const veiled = more > 0 && i === 3
+        const busy = veiled ? !!working?.slice(3).some(Boolean) : !!working?.[i]
         return (
           <span
             key={`${i}:${p.id}`}
             className="cf-group__face"
             style={{ left: x, top: y, width: layout.size, height: layout.size }}
           >
-            <PersonaFace seed={p.id} spec={spec} image={p.avatarImage} compact />
-            {more > 0 && i === 3 && (
-              <span className="cf-group__more" style={{ mask: shapeMask(resolveShape(p.id, spec)) }}>
-                +{more}
-              </span>
-            )}
+            <PersonaFace
+              seed={p.id}
+              spec={parseAvatarSpec(p.avatar)}
+              image={p.avatarImage}
+              compact
+              busy={busy}
+              veil={veiled}
+            />
+            {veiled && <span className="cf-group__more">+{more}</span>}
           </span>
         )
       })}
-      {sweep}
       {dot && <span className="cf-ava__dot" aria-hidden="true" />}
     </span>
   )
@@ -3778,7 +3759,7 @@ function ThreadRow({
   owner,
   memberFaces,
   state,
-  membersBusy,
+  membersWorking,
   browserPages,
   tasks,
   active,
@@ -3790,8 +3771,8 @@ function ThreadRow({
   /** 成员的显示身份（未移除的，按加入先后）：有成员时头像换成群组头像（GroupFace）。 */
   memberFaces: Persona[]
   state?: SessionLiveState
-  /** 有成员正在工作：群组头像同样整体扫光（主角色闲着、成员还在做时，列表里也看得出这个对话还在干活）。定时任务不算。 */
-  membersBusy: boolean
+  /** 与 memberFaces 一一对应：这位成员是否正在工作（群组头像里谁在工作谁变星芒）。定时任务不算。 */
+  membersWorking: boolean[]
   /** 这个对话在内置浏览器里开着几个网页（>0 时标题旁打地球徽标）。 */
   browserPages: number
   /** 绑定在这个对话上的定时任务（>0 时打闹钟徽标，悬停列出任务名）。 */
@@ -3814,13 +3795,13 @@ function ThreadRow({
       onClick={onClick}
       onContextMenu={onContext}
     >
-      {/* 对话中（streaming）→ 头像上一道扫光指示；有新消息 / 待你处理 → 右上角红点。
+      {/* 对话中（streaming）→ 头像底板变成星芒并转动；有新消息 / 待你处理 → 右上角红点。
           正在查看的对话不打红点（内容就在眼前），已归档的也不打（归档即不再提醒）。 */}
       <span className="cf-thread__face">
         {memberFaces.length > 0 ? (
           <GroupFace
             people={owner ? [owner, ...memberFaces] : memberFaces}
-            busy={state?.streaming || membersBusy}
+            working={owner ? [!!state?.streaming, ...membersWorking] : membersWorking}
             dot={!active && !session.archived && (state?.attention || state?.unread)}
             title={fill(t('cf.member.threadBadge'), {
               n: String(members.length),
@@ -8716,7 +8697,7 @@ function Avatar({
   plain?: boolean
   /** 框内构图（不探出）：≤20px 自动启用；尺寸由 CSS 决定的小头像（成员名前）显式传。 */
   compact?: boolean
-  /** 忙碌（对话生成中）：头像上叠一道自左向右扫过的高光带，作就地「思考/生成中」指示。 */
+  /** 忙碌（对话生成中）：底板从原形状慢慢变成星芒并转动，结束后变回（见 humation.tsx useBusyMorph）。 */
   busy?: boolean
   /** 待你处理（问答 / 计划 / 挂载 / 待确认名片）：右上角红点。 */
   attention?: boolean
@@ -8725,20 +8706,15 @@ function Avatar({
 }): React.JSX.Element | null {
   const profile = useProfile()
   const style = { ...(size ? { '--sz': `${size}px` } : {}) } as React.CSSProperties
-  const cls = `cf-ava${busy ? ' is-busy' : ''}${user ? ' is-user' : ''}`
+  const cls = `cf-ava${user ? ' is-user' : ''}`
   const seed = user ? USER_AVATAR_SEED : (persona?.id ?? '')
   const spec = user ? profile.avatar : parseAvatarSpec(persona?.avatar)
-  // 遮层必须排在 .cf-ava__face 之后：同为 inset:0 的绝对定位兄弟，靠文档顺序压在头像之上；红点再压在最上。
-  // 扫光按头像形状裁（形状恒铺满头像框）。
-  const sweep = busy ? (
-    <span className="cf-ava__sweep" aria-hidden="true" style={{ mask: shapeMask(resolveShape(seed, spec)) }} />
-  ) : null
+  // 红点排在 .cf-ava__face 之后，靠文档顺序压在头像之上。
   const marks = unread || attention ? <span className="cf-ava__dot" aria-hidden="true" /> : null
   // 非用户、非角色（理论上罕见）：空占位圈。
   if (!user && !persona)
     return (
       <div className={cls} style={style}>
-        {sweep}
         {marks}
       </div>
     )
@@ -8755,9 +8731,9 @@ function Avatar({
           image={user ? profile.avatarImage : (persona as Persona).avatarImage}
           title={title}
           compact={compact ?? (size ?? 28) <= 20}
+          busy={busy}
         />
       </span>
-      {sweep}
       {marks}
     </div>
   )
