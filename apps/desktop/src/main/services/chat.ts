@@ -40,15 +40,18 @@ import {
   TOOL_SEARCH,
   USAGE_SUMMARY,
   buildToolSearchTool,
+  deferTool,
   fitToolSearch,
   isUsageGateResult,
   runToolSearch,
   searchedNames,
   skillToolUsages,
   unknownUsages,
-  usageGateResult
+  usageGateResult,
+  usageListingPart
 } from './tool-search'
 import {
+  DEFERRED_MEMBER_TOOLS,
   MAIN_MEMBER_TOOLS,
   MAX_MEMBERS,
   MEMBER_NOTICE_TAG,
@@ -2177,6 +2180,18 @@ const MEMBER_EXCLUDED = new Set(['create_skill', 'propose_agent', 'create_mcp', 
 /** 成员没有文件夹（自己的、跟随的主对话的都没有）时剔除：只剩全局记忆，而全局记忆对成员只读。 */
 const MEMBER_MEMORY_TOOLS = new Set(['memory_write', 'memory_delete'])
 
+/**
+ * 主对话工具表里的成员工具：派任务 / 查状态换成按需加载的版本（见 members.ts DEFERRED_MEMBER_TOOLS）。
+ * 首次组工具表时才登记，不在模块初始化时调用成员模块，免受模块加载顺序牵连；之后复用同一份。
+ */
+let mainMemberToolSpecs: ToolSpec[] | undefined
+function mainTurnMemberTools(): ToolSpec[] {
+  return (mainMemberToolSpecs ??= mainMemberTools().map((t) => {
+    const brief = DEFERRED_MEMBER_TOOLS[t.name]
+    return brief ? deferTool(t, brief) : t
+  }))
+}
+
 /** 两个工作目录是否同一处（去掉末尾分隔符、不分大小写）。 */
 function sameRoot(a: string | null, b: string | null): boolean {
   const norm = (p: string | null): string => (p ?? '').replace(/[\\/]+$/, '').toLowerCase()
@@ -4280,9 +4295,15 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           attachListing(history, (h) => skillListingPart(h, enabledSkillSummaries(personaId, hasTool)))
         if (listsMemory)
           attachListing(history, (h) => memoryListingPart(h, ctx.workspaceRoot))
-        // 项目成员名单：主对话的主轮，名单有增减或更新时附上（同技能清单）。
+        // 项目成员名单：主对话的主轮，名单有增减或更新时附上（同技能清单）。有成员（含本对话的定时任务）时
+        // 派任务 / 查状态才用得上：这两个按需加载的工具，用法还不在上下文里就随名单一并附上，免得调用时被拦。
         const listMembers = args.listMembers
-        if (listMembers) attachListing(history, (h) => memberListingPart(h, listMembers()))
+        if (listMembers)
+          attachListing(history, (h) => {
+            const members = listMembers()
+            const guided = Object.keys(DEFERRED_MEMBER_TOOLS).filter((n) => offeredTools.has(n))
+            return [memberListingPart(h, members), members.length ? usageListingPart(h, guided) : null]
+          })
         pendingUsage = unknownUsages(history, offeredTools)
 
         for await (const ev of streamChat(
@@ -5336,7 +5357,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           ? handoffOwner
             ? [handoffTool(handoffOwner)]
             : []
-          : mainMemberTools()),
+          : mainTurnMemberTools()),
       ...getMcpToolSpecs(rolePersonaId)
     ]
     // tool_search 的可选工具名按筛选后的工具表收窄（成员会话没有 create_* 等）。

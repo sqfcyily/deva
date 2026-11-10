@@ -9,7 +9,7 @@
  * 用法是否已在上下文里从历史折叠（listing.ts guidesAnnounced）：压缩 / 删轮抹掉后再调用会被拦一次，用法随之补上。
  * 界面上被拦下的调用画成一步「查看用法」，不画失败，也不铸名片（见 chat.ts 的工具循环与 toDisplayMessages）。
  */
-import type { ListingRecord, Message, ToolSpec } from '../providers/types'
+import type { ListingRecord, Message, TextPart, ToolSpec } from '../providers/types'
 import { guideRecord, guidesAnnounced } from './listing'
 
 export const TOOL_SEARCH = 'tool_search'
@@ -187,6 +187,24 @@ export function usageGateResult(name: string, given: boolean): { content: string
   return {
     content: `${GATE_PREFIX}以下是「${name}」的完整用法（无需再用 tool_search 查看），请按用法重新调用。\n\n${usage}`,
     listing: guideRecord([{ key: name, text: usage }])
+  }
+}
+
+/**
+ * 主动附上这些按需加载工具里、用法还不在上下文里的用法（如出现成员时附上派任务 / 查状态的用法），模型用到时
+ * 已看过完整说明、不会被拦。块附在消息里（见 listing.ts attachListing），挂用法记录，与 tool_search 查到的同样计入已告知。
+ */
+export function usageListingPart(history: Message[], names: string[]): TextPart | null {
+  const known = guidesAnnounced(history)
+  const entries = names
+    .filter((n) => !known.has(n))
+    .map((n) => ({ key: n, text: toolUsage(n) ?? '' }))
+    .filter((e) => e.text)
+  if (!entries.length) return null
+  return {
+    type: 'text',
+    text: [...entries.map((e) => e.text), '（以上用法由系统自动附带，不是用户发来的消息。）'].join('\n\n'),
+    listing: guideRecord(entries)
   }
 }
 

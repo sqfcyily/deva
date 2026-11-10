@@ -71,7 +71,7 @@ import {
   X
 } from 'lucide-react'
 import { BotsPane } from './BotsPane'
-import { useComposerEditor, type ComposerKey, type ComposerTrigger } from './composer-editor'
+import { triggerReplaceEnd, useComposerEditor, type ComposerKey, type ComposerTrigger } from './composer-editor'
 import { AttachmentList } from './attachments'
 import { UpdateSection } from './UpdateSection'
 // 关于页的应用图标：直接用安装包图标的源文件，图形只维护一份
@@ -1266,7 +1266,8 @@ function MemberBar({
  * 成员正等你处理的事（对比稿 design/member-ask-inline.html 方案 A）：主对话末尾、「N 位成员已完成」之后，每件一枚居中胶囊
  * 「后端在等你回答」（外观同 MemberProgressNotice），只写谁在等什么，不写问题 / 计划的具体内容。最早的一件在胶囊下面直接
  * 展开卡片（提问 / 计划 / 选文件夹；卡头由胶囊代替，操作行里「打开对话」进成员的对话），其余收成胶囊排在下面，点胶囊收起 /
- * 展开。处理完卡片收起，胶囊换成「✓ 已回答后端」，约 1 秒后整行收起，下一件自动展开。出现、展开、收起、离开都是高度过渡（见 Fold），
+ * 展开。处理完卡片收起，胶囊换成「✓ 已回答后端」留在原位，下一件自动展开；等这一批全部处理完（没有还在等的）约 1 秒后，
+ * 回执一起收起——几位成员同时在等、或主角色连着建几位成员时，不会处理一件就少一行、跳一下。出现、展开、收起、离开都是高度过渡（见 Fold），
  * 贴底时画面跟着平滑移动，不会跳一下。成员请你在网页上登录等（内置浏览器的
  * handoff）只放胶囊，点了打开浏览器窗口到那个网页。
  * 这些卡不进主对话记录、也不经主角色，答复直接回到成员的那一轮（对比稿 design/member-direct.html 的结论）。
@@ -1286,7 +1287,10 @@ type MemberWait = {
 type BrowserHandoffWait = { tab: string; reason: string; message: string }
 const BROWSER_WAIT_REASONS = new Set(['login', 'captcha', 'upload', 'confirm', 'other'])
 
-/** 处理完的回执「✓ 已回答后端」停留多久后开始收起（毫秒）。 */
+/**
+ * 全部处理完（没有还在等的）后，回执「✓ 已回答后端」再停留多久一起收起（毫秒）。也是连着来的下一件的宽限：主角色一步里
+ * 建几位成员时，选文件夹的卡是逐张弹出的，选完一张到下一张出现之间这一下不算「全部处理完」。
+ */
 const MEMBER_RECEIPT_HOLD_MS = 1100
 /** 一行（胶囊 + 卡片）收起的时长（毫秒），同 CSS .cf-mask 的 --fold-dur；放完再移除。 */
 const MEMBER_ROW_OUT_MS = 300
@@ -1402,21 +1406,27 @@ function MemberAsks({
     setPrev({ sig, waits })
   }
 
-  // 离开的节奏：回执停留 → 整行收起 → 移除。
+  // 开始收起的行：放完收起过渡即移除。
   useEffect(() => {
     for (const l of leaving) {
-      if (scheduled.current.has(l.seq)) continue
+      if (!l.out || scheduled.current.has(l.seq)) continue
       scheduled.current.add(l.seq)
-      const hold = l.out ? 0 : MEMBER_RECEIPT_HOLD_MS
-      if (!l.out)
-        timers.current.push(
-          window.setTimeout(() => setLeaving((ls) => ls.map((x) => (x.seq === l.seq ? { ...x, out: true } : x))), hold)
-        )
-      timers.current.push(
-        window.setTimeout(() => setLeaving((ls) => ls.filter((x) => x.seq !== l.seq)), hold + MEMBER_ROW_OUT_MS)
-      )
+      timers.current.push(window.setTimeout(() => setLeaving((ls) => ls.filter((x) => x.seq !== l.seq)), MEMBER_ROW_OUT_MS))
     }
   }, [leaving])
+
+  // 回执留在原位，直到没有还在等的（含网页上等你操作的）：再停留片刻，一起收起。期间又来了一件就重新等。
+  const holding = leaving.some((l) => !l.out)
+  // 你刚处理的那件在主进程撤下之前仍在 waits 里，不算还在等。
+  const pendingCount = waits.filter((w) => !leaving.some((l) => l.id === memberWaitId(w))).length
+  useEffect(() => {
+    if (!holding || pendingCount > 0) return
+    const h = window.setTimeout(
+      () => setLeaving((ls) => ls.map((x) => (x.out ? x : { ...x, out: true }))),
+      MEMBER_RECEIPT_HOLD_MS
+    )
+    return () => window.clearTimeout(h)
+  }, [holding, pendingCount])
 
   // 画的行 = 还在等的 + 正在离开的（插回原位）。
   const leavingIds = new Set(leaving.map((l) => l.id))
@@ -1426,7 +1436,8 @@ function MemberAsks({
   for (const l of [...leaving].sort((a, b) => a.index - b.index))
     rows.splice(Math.min(l.index, rows.length), 0, { w: l.wait, leave: l })
   if (!rows.length) return null
-  const openId = resolveOpen(waits)
+  // 刚处理的那件不参与：下一件随它收起同时展开，不等主进程撤下它。
+  const openId = resolveOpen(waits.filter((w) => !leavingIds.has(memberWaitId(w))))
 
   // 处理完一件：留回执，卡片收起，下一件自动展开。
   const done = (w: MemberWait, index: number, key: string, ok: boolean): void => {
@@ -1438,7 +1449,8 @@ function MemberAsks({
   }
 
   return (
-    <>
+    // 几件排成一组：组内行距比消息列小（见 CSS .cf-masks）。
+    <div className="cf-masks">
       {rows.map(({ w, leave }, index) => {
         const id = memberWaitId(w)
         const { sid, name, persona, isNew } = w
@@ -1559,7 +1571,7 @@ function MemberAsks({
           </Fold>
         )
       })}
-    </>
+    </div>
   )
 }
 
@@ -6634,14 +6646,15 @@ function Composer({
   }, [slashCur, slashOpen])
 
   /**
-   * 采纳候选：只把光标处那个 `/词`、`@词` 换成 `/name `、`@name `，其余内容不动，光标留在它之后。尾随空格便于
-   * 接着写（发送前会被 trim）；后面本来就是空白则不再加。
+   * 采纳候选：只把光标处已敲的 `/词`、`@词` 换成 `/name `、`@name `，光标后原有的文字不动（见 triggerReplaceEnd），
+   * 光标留在它之后。尾随空格便于接着写、也把名字与后面的文字隔开（发送前会被 trim）；后面本来就是空白则不再加。
    */
   const applySlash = (c: SlashCommand): void => {
     if (!trigger) return
     const token = c.kind === 'mention' || c.kind === 'newMember' ? `@${c.name}` : `/${c.name}`
-    const next = input.charAt(trigger.end)
-    composer.replaceRange(trigger.start, trigger.end, next && /\s/.test(next) ? token : `${token} `)
+    const end = triggerReplaceEnd(input, trigger, c.name)
+    const next = input.charAt(end)
+    composer.replaceRange(trigger.start, end, next && /\s/.test(next) ? token : `${token} `)
   }
 
   const name = owner?.name ?? t('cf.assistant')

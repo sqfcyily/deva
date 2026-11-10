@@ -1911,14 +1911,28 @@ body.cf-resizing-y * {
 /*
  * 成员在等你处理（对话末尾，见 MemberAsks，对比稿 design/member-ask-inline.html 方案 A）：每件一枚居中胶囊，外观同上面的
  * .cf-mprogress__pill；展开的那件下面直接是卡片（宽同定时任务交来的结果 560px，卡头由胶囊代替）。处理完换成回执胶囊，
- * 停留后整行收起（MemberAsks 的 MEMBER_RECEIPT_HOLD_MS / MEMBER_ROW_OUT_MS 与这里的 --fold-dur 对应）。
- * 一行是一个折叠块：收起时连同消息列的行间距一起收掉（margin-top 抵消 gap），贴底时画面平滑下移，不跳。
+ * 全部处理完后一起收起（MemberAsks 的 MEMBER_RECEIPT_HOLD_MS / MEMBER_ROW_OUT_MS 与这里的 --fold-dur 对应）。
+ * 几件排成一组（.cf-masks）：胶囊之间行距 8px，比消息列的 20px 紧；展开的卡片与下一枚胶囊之间 16px，免得胶囊看着像挂在
+ * 上一张卡下面。一行是一个折叠块，收起时连同组内行距一起收掉；整组都收起时，组连同消息列的行距一起收掉——
+ * 都用 margin-top 抵消 gap，贴底时画面平滑下移，不跳。
  */
+.cf-masks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  transition: margin-top 0.3s ease;
+}
+.cf-masks:not(:has(> .cf-mask:not(.is-closed))) {
+  margin-top: calc(-1 * var(--space-5));
+}
 .cf-mask {
   --fold-dur: 0.3s;
 }
 .cf-mask.is-closed {
-  margin-top: calc(-1 * var(--space-5));
+  margin-top: calc(-1 * var(--space-2));
+}
+.cf-mask:has(.cf-mask__fold:not(.is-closed)) + .cf-mask:not(.is-closed) {
+  margin-top: calc(var(--space-4) - var(--space-2));
 }
 .cf-mask > .cf-fold__in {
   display: flex;

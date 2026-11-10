@@ -253,8 +253,8 @@ function $syncTokens(isToken: (name: string, whole: string) => boolean, mentionN
 }
 
 /**
- * 光标所在的「词」以 `/` 或 `@` 开头（在开头或空白之后）：外层据此弹出技能 / 成员联想，采纳时替换 [start, end)。
- * query = `/` `@` 之后到光标的部分；end 延伸到这个词的末尾（光标在词中间时采纳也会整个换掉）；
+ * 光标所在的「词」以 `/` 或 `@` 开头（在开头或空白之后）：外层据此弹出技能 / 成员联想。
+ * query = `/` `@` 之后到光标的部分；end = 这个词的末尾（采纳时并不整个换掉，换到哪里见 triggerReplaceEnd）；
  * alone = 除了这个词，输入框里没有别的内容（/compact、/rewind 只在这时可选）。
  */
 export interface ComposerTrigger {
@@ -282,6 +282,22 @@ function $triggerAt(): ComposerTrigger | null {
   let end = caret
   while (end < text.length && word.test(text[end])) end++
   return { char, query, start, end, alone: !text.slice(0, start).trim() && !text.slice(end).trim() }
+}
+
+/**
+ * 采纳联想 name（不含 `/` `@`）时要换掉的区间终点：`/` `@` 与已敲的部分，再加上光标后与名字余下部分对得上的字
+ * （光标落在词中间时，如「@后|端」采纳「后端」）。光标后的其余文字是用户原有的内容，不能当成这个词一并换掉——
+ * 中文不靠空格分词，在一段话前敲 @ 时，这个「词」会一直延伸到整段话的末尾。
+ */
+export function triggerReplaceEnd(text: string, trigger: ComposerTrigger, name: string): number {
+  const caret = trigger.start + 1 + trigger.query.length
+  const typed = trigger.query.toLowerCase()
+  const full = name.toLowerCase()
+  const rest = full.startsWith(typed) ? full.slice(typed.length) : ''
+  const after = text.slice(caret, trigger.end).toLowerCase()
+  let k = 0
+  while (k < rest.length && k < after.length && rest[k] === after[k]) k++
+  return caret + k
 }
 
 const sameTrigger = (a: ComposerTrigger | null, b: ComposerTrigger | null): boolean =>

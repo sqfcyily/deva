@@ -315,7 +315,20 @@ export const MAIN_MEMBER_TOOLS = new Set(['create_member', 'member_send', 'membe
 /** 成员会话的成员工具名。 */
 export const MEMBER_SIDE_TOOLS = new Set(['read_main', 'report_to_main'])
 
-/** 主智能体的成员工具：创建、派任务、中止。描述写死（名单随消息下发），工具表稳定，提示缓存不受增减成员影响。 */
+/**
+ * 按需加载的成员工具（见 tool-search.ts）：没有成员的对话用不上，工具表里只留这句话与参数骨架；有成员时用法随
+ * 成员名单附上（见 chat.ts），模型用到时已看过完整说明。create_member 不按需加载（「默认不建成员」须在决定前看到），
+ * member_stop 本身就短。
+ */
+export const DEFERRED_MEMBER_TOOLS: Record<string, string> = {
+  member_send: '把任务（或对上次结果的修改意见）交给一个项目成员，成员在后台完成。',
+  member_status: '查看项目成员的当前状态与最近一次结论。'
+}
+
+/**
+ * 主智能体的成员工具：创建、派任务、中止、查状态。描述写死（名单随消息下发），工具表稳定，提示缓存不受增减成员影响。
+ * 这里是完整定义；进工具表前按 DEFERRED_MEMBER_TOOLS 换成按需加载的版本（见 chat.ts）。
+ */
 export function mainMemberTools(): ToolSpec[] {
   return [
     {

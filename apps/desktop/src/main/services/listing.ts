@@ -82,24 +82,28 @@ function diffListing<T>(
 }
 
 /**
- * 请求模型前调用：build 据历史算出清单块（无差异给 null），附到历史末条——它是这次请求才首次发出的那条
- * user 消息（用户提问 / 工具结果），附上去不碰已缓存的前缀。已告知过则 build 给 null，故重连重发时调用多少次都一样。
+ * 请求模型前调用：build 据历史算出清单块（可给多块，按序附上；无差异给 null），附到历史末条——它是这次请求才
+ * 首次发出的那条 user 消息（用户提问 / 工具结果），附上去不碰已缓存的前缀。已告知过则 build 给 null，故重连重发时
+ * 调用多少次都一样。
  * 末条是带标记的字符串消息（压缩摘要 / 自愈引导 / 后台通知）时不附：它们靠字符串前缀识别，改成块数组就
  * 认不出了——留给下一条消息（多为下一步的工具结果）。
  */
-export function attachListing(history: Message[], build: (history: Message[]) => TextPart | null): void {
+export function attachListing(
+  history: Message[],
+  build: (history: Message[]) => TextPart | null | (TextPart | null)[]
+): void {
   const i = history.length - 1
   const last = history[i]
   if (!last || last.role !== 'user') return
   if (isCompactionSummary(last) || isAutoNudge(last) || isTaskNotification(last)) return
-  const part = build(history)
-  if (!part) return
+  const parts = [build(history)].flat().filter((p): p is TextPart => p !== null)
+  if (!parts.length) return
   let content: ContentPart[]
-  if (typeof last.content === 'string') content = [part, { type: 'text', text: last.content }]
+  if (typeof last.content === 'string') content = [...parts, { type: 'text', text: last.content }]
   // 工具结果消息：协议要求 tool_result 块在前，文字跟在后面（同后台任务通知）。
-  else if (last.content.some((p) => p.type === 'tool_result')) content = [...last.content, part]
+  else if (last.content.some((p) => p.type === 'tool_result')) content = [...last.content, ...parts]
   // 用户提问：放最前，提问正文仍是最后一个 text 块（展示层只取它作气泡正文）。
-  else content = [part, ...last.content]
+  else content = [...parts, ...last.content]
   // 换新对象而不就地改：fork 的历史与主对话共享消息对象，按不可变对待。
   history[i] = { ...last, content }
 }
