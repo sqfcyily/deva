@@ -940,6 +940,7 @@ export function ChatFirstShell(): React.JSX.Element {
             target={tasksTarget}
             onTargetConsumed={() => setTasksTarget(null)}
             onAddByChat={addTaskByChat}
+            onOpenChat={openThread}
           />
         ) : (
           <>
@@ -4058,13 +4059,16 @@ function fmtAbs(ts: number, locale: 'zh-CN' | 'en'): string {
 function TasksPane({
   target,
   onTargetConsumed,
-  onAddByChat
+  onAddByChat,
+  onOpenChat
 }: {
   /** 外部导航意图（对话里「查看任务」）：非空则挂载即选中该任务；消费后经 onTargetConsumed 回清。 */
   target: string | null
   onTargetConsumed: () => void
   /** 「通过对话添加」：新建对话 + 预填引导语（实现于外壳，同「通过对话添加角色」）。 */
   onAddByChat: () => void
+  /** 打开某对话并切到对话页（运行历史的「查看对话」打开任务对话）。 */
+  onOpenChat: (sessionId: string) => void
 }): React.JSX.Element {
   const { t, locale } = useI18n()
   const { tasks, create, setStatus, runNow, update, remove } = useTasks()
@@ -4075,6 +4079,9 @@ function TasksPane({
     const s = chatSessions.find((x) => x.id === task.ownerSessionId)
     return s ? s.title || t('chat.untitled') : null
   }
+  // 任务对话在不在（运行历史标题右侧的「查看对话」，对比稿 design/task-run-view.html 方案 A）：对话要到第一次运行才建，
+  // 被用户删了则下次运行重建；不在时什么都不显示（用户定：不显示「对话已删除」）。
+  const hasChat = (task: TaskRecord): boolean => chatSessions.some((x) => x.id === task.sessionId)
   const { providers } = useModels()
   const { personas } = useExtensions()
   const dialog = useDialog()
@@ -4210,6 +4217,7 @@ function TasksPane({
           onRunNow={() => doRunNow(viewTask)}
           onDelete={() => doDelete(viewTask)}
           chatTitle={chatTitle(viewTask)}
+          onOpenChat={hasChat(viewTask) ? () => onOpenChat(viewTask.sessionId) : null}
         />
       ) : (
         <TasksEmpty hasTasks={tasks.length > 0} />
@@ -4508,7 +4516,8 @@ function TaskDetail({
   onSetStatus,
   onRunNow,
   onDelete,
-  chatTitle
+  chatTitle,
+  onOpenChat
 }: {
   task: TaskRecord
   personaName: string
@@ -4519,6 +4528,8 @@ function TaskDetail({
   onDelete: () => void
   /** 完成后通知的那个对话的标题（绑定任务才有）。 */
   chatTitle: string | null
+  /** 打开任务对话（停在最新一轮，即最近一次运行）；任务对话不在（还没运行过 / 被删了）为 null，不显示入口。 */
+  onOpenChat: (() => void) | null
 }): React.JSX.Element {
   const { t, locale } = useI18n()
   const rel = useRelativeTime()
@@ -4631,7 +4642,17 @@ function TaskDetail({
           </div>
 
           <div className="cf-tdetail__section">
-            <div className="cf-profile__convs-label">{t('tasks.runHistory')}</div>
+            {/* 标题右侧：一个任务只有一个对话，每次运行在里面追加一轮，所以只放一个入口，不逐行放。 */}
+            <div className="cf-tdetail__sechead">
+              <div className="cf-profile__convs-label">{t('tasks.runHistory')}</div>
+              {onOpenChat && (
+                <button type="button" className="cf-tdetail__chatlink" onClick={onOpenChat}>
+                  <MessageCircle size={13} />
+                  {t('tasks.viewChat')}
+                  <ChevronRight size={13} />
+                </button>
+              )}
+            </div>
             {history.length === 0 ? (
               <div className="cf-empty">{t('tasks.historyEmpty')}</div>
             ) : (

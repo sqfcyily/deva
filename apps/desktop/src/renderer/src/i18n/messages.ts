@@ -994,7 +994,9 @@ const zhCN: MessageTree = {
     runHistory: '运行历史',
     historyEmpty: '尚无运行记录',
     historyShowAll: '展开全部（共 {n} 次）',
-    historyCollapse: '收起'
+    historyCollapse: '收起',
+    // 运行历史标题右侧：打开任务对话
+    viewChat: '查看对话'
   },
   // 对话优先外壳（chat-first）专用文案。t 只收 key、不插值——含名字/计数/相对时间的动态串在 JS 组。
   cf: {
@@ -2435,7 +2437,8 @@ const en: MessageTree = {
     runHistory: 'Run history',
     historyEmpty: 'No runs yet',
     historyShowAll: 'Show all ({n} runs)',
-    historyCollapse: 'Show less'
+    historyCollapse: 'Show less',
+    viewChat: 'View chat'
   },
   // Chat-first shell strings. t takes a key only; dynamic strings (names/counts/relative time) are composed in JS.
   cf: {

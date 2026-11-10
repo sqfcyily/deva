@@ -4631,6 +4631,42 @@ button.cf-mask__pill:hover {
   width: 100%;
   margin-top: var(--space-5);
 }
+/* 运行历史标题行：左标题，右「查看对话」入口（对比稿 design/task-run-view.html 方案 A）。 */
+.cf-tdetail__sechead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 24px;
+  margin-bottom: var(--space-2);
+}
+.cf-tdetail__sechead .cf-profile__convs-label {
+  margin-bottom: 0;
+}
+/* 平时一行灰字，悬停变深 + 浅底；任务对话不在（还没运行过 / 被删了）时不显示。 */
+.cf-tdetail__chatlink {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.cf-tdetail__chatlink:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
 
 /* 操作按钮行（对齐 .cf-profile__actions，但可容纳 4 个动作、自动换行）。 */
 .cf-tdetail__actions {
