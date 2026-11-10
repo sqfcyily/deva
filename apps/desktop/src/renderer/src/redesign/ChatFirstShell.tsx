@@ -5376,6 +5376,9 @@ function Conversation({
   // - 非流式且有内容 → 提供「选择删除」（流式/改写中删除会撞上正在变的 messages，故此时不给）。
   // 选择态下让位给选择态自身交互；既无选中又不可删则不接管右键（放行系统默认菜单）。
   const onMsgsContextMenu = (e: React.MouseEvent): void => {
+    // 只认真正点在对话区里的右键：挂到 body 的浮层（卡片里下拉框的选项列表等）在 React 树里仍是对话区的子孙，
+    // 右键会冒泡上来误弹对话菜单。
+    if (!e.currentTarget.contains(e.target as Node)) return
     if (selecting) return
     const selection = (window.getSelection()?.toString() ?? '').trim()
     const canDelete = !streaming && messages.length > 0

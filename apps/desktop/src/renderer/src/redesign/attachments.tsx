@@ -483,6 +483,12 @@ export function ImageViewer({
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
+      // 右键不弹任何菜单：预览层虽挂在 body 上，React 事件仍沿组件树冒泡到对话区的右键菜单（删除这一轮等）；
+      // preventDefault 同时挡住主进程的原生复制菜单（页面里留着选区时会弹）。
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+      }}
     >
       {many && (
         <button
