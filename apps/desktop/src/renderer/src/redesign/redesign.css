@@ -5257,6 +5257,7 @@ body.cf-pop-open * {
 }
 /* 一位成员：点整行切到它的对话；行尾「移除成员」平时隐藏，悬停（或键盘聚焦）才出现，悬停变红 */
 .cf-members__row {
+  position: relative;
   display: flex;
   align-items: center;
   border-radius: 9px;
@@ -5312,8 +5313,13 @@ body.cf-pop-open * {
   gap: 7px;
   min-width: 0;
 }
+/* 名字放不下就截断加「…」（后面的状态签不收缩）；不截断会撑出下拉框、压到任务行悬停时的按钮 */
 .cf-members__name {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
 }
@@ -5421,28 +5427,39 @@ body.cf-pop-open * {
   background: rgba(255, 255, 255, 0.78);
   color: #2b8a3e;
 }
-/* 任务行右侧：只在暂停时写「已暂停」（不写下次运行时间）；悬停换成「立即运行」「暂停」「删除」 */
+/* 任务行右侧：只在暂停时写「已暂停」（不写下次运行时间）；悬停换成「立即运行」「暂停」「删除」。
+   放在名字那一行里推到行尾（与名字同行居中对齐），距行右缘 10px（含 __open 的右内边距 4px） */
 .cf-members__next {
   flex: none;
-  align-self: flex-start;
-  margin: 9px 10px 0 4px;
+  margin: 0 6px 0 auto;
   font-size: 12px;
   color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* 按钮浮在行的右端、不占位（对比稿 design/task-row-overlap.html 方案 B）：悬停时左缘一段渐隐盖住任务名与日程的末尾，
+   文字不重排不跳动；「已暂停」悬停只隐身不让位。底色两层：下层不透明的下拉底色、上层悬停浅底，合起来正好等于行悬停后的颜色 */
 .cf-members__acts {
-  flex: none;
-  display: none;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
   gap: 2px;
-  margin-right: 6px;
+  padding: 0 6px 0 30px;
+  border-radius: 0 9px 9px 0;
+  background:
+    linear-gradient(90deg, transparent, var(--bg-hover) 30px),
+    linear-gradient(90deg, transparent, var(--bg-elevated) 30px);
+  visibility: hidden;
 }
 .cf-members__row:hover .cf-members__next {
-  display: none;
+  visibility: hidden;
 }
 .cf-members__row:hover .cf-members__acts,
 .cf-members__acts:focus-within {
-  display: flex;
+  visibility: visible;
 }
 .cf-members__ib {
   display: grid;

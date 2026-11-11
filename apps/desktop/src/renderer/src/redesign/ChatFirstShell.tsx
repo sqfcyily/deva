@@ -1732,15 +1732,21 @@ function TaskBarRow({
   const { t } = useI18n()
   const desc = useSchedulePreview(task.schedule)
   const paused = task.status === 'paused' || task.status === 'error'
+  // 一次性任务跑完是终态（nextRunAt=null），暂停 / 继续都没有意义，不给按钮（同定时任务页详情）
+  const done = task.status === 'completed'
+  const title = task.title || t('chat.untitled')
   return (
     <div className="cf-members__row">
-      <button type="button" className="cf-members__open" onClick={onOpen}>
+      {/* 悬停时按钮浮在行尾会盖住名字末尾（名字过长平时也会截断），提示里给全名 */}
+      <button type="button" className="cf-members__open" title={title} onClick={onOpen}>
         <span className={`cf-trow__icon is-${task.status}`}>
           <CalendarClock size={16} />
         </span>
         <span className="cf-members__main">
+          {/* 「已暂停」和名字放在同一行里，才能与名字对齐 */}
           <span className="cf-members__line">
-            <span className="cf-members__name">{task.title || t('chat.untitled')}</span>
+            <span className="cf-members__name">{title}</span>
+            {paused && <span className="cf-members__next">{t('cf.task.paused')}</span>}
           </span>
           <span className="cf-members__sub">
             {busy ? (
@@ -1761,7 +1767,6 @@ function TaskBarRow({
           </span>
         </span>
       </button>
-      {paused && <span className="cf-members__next">{t('cf.task.paused')}</span>}
       <span className="cf-members__acts">
         {!paused && (
           <button
@@ -1775,15 +1780,17 @@ function TaskBarRow({
             <Play size={13} />
           </button>
         )}
-        <button
-          type="button"
-          className="cf-members__ib"
-          title={t(paused ? 'cf.task.resume' : 'cf.task.pause')}
-          aria-label={t(paused ? 'cf.task.resume' : 'cf.task.pause')}
-          onClick={onToggle}
-        >
-          {paused ? <Play size={13} /> : <Pause size={13} />}
-        </button>
+        {!done && (
+          <button
+            type="button"
+            className="cf-members__ib"
+            title={t(paused ? 'cf.task.resume' : 'cf.task.pause')}
+            aria-label={t(paused ? 'cf.task.resume' : 'cf.task.pause')}
+            onClick={onToggle}
+          >
+            {paused ? <Play size={13} /> : <Pause size={13} />}
+          </button>
+        )}
         <button
           type="button"
           className="cf-members__ib is-danger"
@@ -1852,9 +1859,12 @@ function TaskLogHead({
             <Play size={13} />
           </button>
         )}
-        <button type="button" className="cf-members__ib" title={t(paused ? 'cf.task.resume' : 'cf.task.pause')} onClick={onToggle}>
-          {paused ? <Play size={13} /> : <Pause size={13} />}
-        </button>
+        {/* 一次性任务跑完是终态，不给暂停 / 继续（同对话标题栏的定时任务列表） */}
+        {task.status !== 'completed' && (
+          <button type="button" className="cf-members__ib" title={t(paused ? 'cf.task.resume' : 'cf.task.pause')} onClick={onToggle}>
+            {paused ? <Play size={13} /> : <Pause size={13} />}
+          </button>
+        )}
         <button type="button" className="cf-members__ib" title={t('cf.task.edit')} onClick={onEdit}>
           <Pencil size={13} />
         </button>
