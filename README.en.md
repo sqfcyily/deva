@@ -17,6 +17,7 @@ One conversation, a whole AI team
 </p>
 
 <a href="https://github.com/sqfcyily/deva/releases"><b>Download</b></a> ·
+<a href="#model-breaking"><b>Model Breaking</b></a> ·
 <a href="#team-members"><b>Team Members</b></a> ·
 <a href="#features"><b>Features</b></a> ·
 <a href="#quick-start"><b>Quick Start</b></a> ·
@@ -34,6 +35,14 @@ Deva is a desktop AI agent that runs on your machine, with the conversation as i
 <p align="center">
   <img src="docs/screenshot.en.png" alt="Deva in dark mode: personal and multi-member conversations on different topics on the left; on the right, Deva relaunches a website with Design, Frontend and Backend members" width="100%" />
 </p>
+
+## Model Breaking
+
+Built-in persona 小码酱 (Xiaomajiang), tuned for Chinese models (DeepSeek, Kimi, Zhipu GLM, Qwen, etc.). No skill or MCP setup needed — just select the persona. Two core capabilities:
+
+- **Breaking** — jailbreak and prompt injection research: multi-turn bypass, adversarial suffixes, output shaping, RAG attacks and other prompt-level techniques; static removal of and adversarial response to safety / ethics injections, restoring the model's native output capability; targeted unpacking of Chinese-model refusal patterns.
+
+- **Reversing** — binary / software reverse engineering: static analysis to locate check functions, critical jumps and license logic; anti-debug, anti-VM and detection-bypass placeholder workflows and code snippets; local sample workflow (isolate → locate CHECK_FN → mark OFFSET / PATCH_BYTE → re-sign → verify with rollback copy).
 
 ## Team Members
 
@@ -157,7 +166,9 @@ Built-in personas:
 | Persona | Focus |
 | --- | --- |
 | Deva | Default persona. General-purpose assistant for coding, writing, research, data analysis and running commands |
-| 小码酱 (Xiaomajiang) | Technical persona focused on security research, reverse engineering and full-stack development |
+| 小码酱 (Xiaomajiang) | Model breaking: red teaming, reverse engineering and prompt security, plus full-stack development |
+
+See [Model Breaking](#model-breaking) for details.
 
 ### Engineering rules
 

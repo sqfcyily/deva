@@ -16,7 +16,7 @@
   <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-%E7%A4%BE%E5%8C%BA-FFB003?style=flat-square" alt="LINUX DO 社区" /></a>
 </p>
 
-<a href="https://github.com/sqfcyily/deva/releases"><b>下载</b></a> · <a href="#成员协作"><b>成员协作</b></a> · <a href="#功能"><b>功能</b></a> · <a href="#快速开始"><b>快速开始</b></a> · <a href="#工作方式"><b>工作方式</b></a> · <a href="#工具参考"><b>工具参考</b></a> · <a href="#安全模型"><b>安全模型</b></a> · <a href="#从源码构建"><b>从源码构建</b></a>
+<a href="https://github.com/sqfcyily/deva/releases"><b>下载</b></a> · <a href="#模型破甲"><b>模型破甲</b></a> · <a href="#成员协作"><b>成员协作</b></a> · <a href="#功能"><b>功能</b></a> · <a href="#快速开始"><b>快速开始</b></a> · <a href="#工作方式"><b>工作方式</b></a> · <a href="#工具参考"><b>工具参考</b></a> · <a href="#安全模型"><b>安全模型</b></a> · <a href="#从源码构建"><b>从源码构建</b></a>
 
 </div>
 
@@ -157,7 +157,9 @@ Deva 是运行在本机的桌面 AI Agent，以对话为唯一入口。交代一
 | 角色   | 定位                                 |
 | ---- | ---------------------------------- |
 | Deva | 默认角色。通用工作助手，覆盖编程、写作、资料整理、数据分析与命令执行 |
-| 小码酱  | 技术向角色，侧重安全研究、逆向工程与全栈开发             |
+| 小码酱  | 模型破甲：红队、逆向工程与提示词安全，兼顾全栈开发          |
+
+破甲与逆向能力详见[模型破甲](#模型破甲)。
 
 ### 工程规范
 
