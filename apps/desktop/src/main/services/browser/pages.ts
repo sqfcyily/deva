@@ -13,7 +13,7 @@
 import { app, BrowserWindow, session, type Session, type WebContents } from 'electron'
 import { existsSync } from 'fs'
 import { join, parse } from 'path'
-import { DIALOG_SHIM } from './page-scripts'
+import { BADGE_SHIM, DIALOG_SHIM } from './page-scripts'
 
 export const BROWSER_PARTITION = 'persist:deva-browser'
 /** 网页视口尺寸（CSS 像素）。 */
@@ -364,9 +364,12 @@ export function disposeAllPages(): void {
   reaper = null
 }
 
+/** 每个新文档开始时先装上的接管脚本：JS 对话框 + 屏蔽应用角标。 */
+const NEW_DOCUMENT_SHIM = `${DIALOG_SHIM};\n${BADGE_SHIM}`
+
 /**
- * attach CDP 并接管 JS 对话框（之后每个新文档都先装上接管脚本，当前文档补装一次）。
- * 须在加载网址之前调用，否则第一个页面里的 alert 会弹原生对话框。
+ * attach CDP 并装上接管脚本（之后每个新文档都先装上，当前文档补装一次）。
+ * 须在加载网址之前调用，否则第一个页面里的 alert 会弹原生对话框、网页能往 Deva 图标上挂角标。
  */
 export async function ensureCdp(page: BrowserPage): Promise<void> {
   if (page.cdpReady) return
@@ -384,8 +387,8 @@ export async function ensureCdp(page: BrowserPage): Promise<void> {
   })
   await timed(dbg.sendCommand('Network.enable'), 'Network.enable')
   await timed(dbg.sendCommand('Page.enable'), 'Page.enable')
-  await timed(dbg.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: DIALOG_SHIM }), 'addScript')
-  await timed(page.wc.executeJavaScript(DIALOG_SHIM), 'shim').catch(() => {})
+  await timed(dbg.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: NEW_DOCUMENT_SHIM }), 'addScript')
+  await timed(page.wc.executeJavaScript(NEW_DOCUMENT_SHIM), 'shim').catch(() => {})
 }
 
 function timed<T>(p: Promise<T>, what: string, ms = 5_000): Promise<T> {

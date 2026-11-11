@@ -358,3 +358,21 @@ export const DIALOG_SHIM = String.raw`(() => {
     rec('输入框', m, a ? '已按你的设定点了「取消」' : '待定：已默认点「取消」'); return null
   }
 })()`
+
+/**
+ * 新文档开始时注入：网页的应用角标接口（navigator.setAppBadge / clearAppBadge）改成什么都不做。
+ * Electron 允许任意网页调用它，并把数字画到整个应用的图标上（Windows 任务栏 / macOS Dock）。
+ * 例如在内置浏览器里登录 Telegram 网页版后，Deva 图标上会挂出它的未读数「99+」，看起来像 Deva 自己有待办。
+ * 保留接口（返回成功）而不删除，以免网站按「接口不存在」走别的分支。
+ * Chromium 已没有能关掉这个接口的特性开关（--disable-blink-features=Badging 实测无效），只能在页面里覆盖。
+ */
+export const BADGE_SHIM = String.raw`(() => {
+  try {
+    const noop = () => Promise.resolve()
+    for (const k of ['setAppBadge', 'clearAppBadge']) {
+      if (typeof Navigator.prototype[k] === 'function') {
+        Object.defineProperty(Navigator.prototype, k, { value: noop, writable: true, configurable: true })
+      }
+    }
+  } catch (e) {}
+})()`
