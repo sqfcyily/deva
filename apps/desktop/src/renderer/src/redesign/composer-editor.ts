@@ -335,6 +335,8 @@ export interface ComposerEditor {
   setText: (text: string, focus?: boolean) => void
   /** 把全文 [start, end) 换成 text，光标放在换上的内容之后，并聚焦（采纳联想用，其余内容不动）。 */
   replaceRange: (start: number, end: number, text: string) => void
+  /** 聚焦输入框，光标放在末尾，内容不动（引用后接着写）。 */
+  focusEnd: () => void
   /** 清空撤销历史（发送后调用，免得撤销把已发出的内容找回来）。 */
   clearHistory: () => void
   /** isToken / mentionNames 的判定依据（技能列表、附件数、成员名单）变了：重新识别要上色的片段与成员标签。 */
@@ -514,6 +516,11 @@ export function useComposerEditor(handlers: ComposerEditorHandlers): ComposerEdi
     [update]
   )
 
+  const focusEnd = useCallback(
+    () => update(() => void $getRoot().selectEnd(), [HISTORY_MERGE_TAG], true),
+    [update]
+  )
+
   const clearHistory = useCallback(
     () => editor.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined),
     [editor]
@@ -524,5 +531,5 @@ export function useComposerEditor(handlers: ComposerEditorHandlers): ComposerEdi
     [update]
   )
 
-  return { rootRef, empty, getText, setText, replaceRange, clearHistory, refreshToken }
+  return { rootRef, empty, getText, setText, replaceRange, focusEnd, clearHistory, refreshToken }
 }

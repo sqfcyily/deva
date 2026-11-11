@@ -1768,6 +1768,27 @@ body.cf-resizing-y * {
   line-clamp: var(--clamp-lines, 3);
   overflow: hidden;
 }
+/* 用户消息里的引用（右键「引用」带进来的 `> ` 段）：同回答里的引用（.md blockquote）左竖线 + 弱化字色，默认折叠 2 行。
+   同 .cf-msg__clamp 不加上下内边距，免得被截断的下一行漏进内边距；与前后正文隔 6px */
+.cf-msg__quote {
+  margin: 6px 0;
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--border-strong);
+  color: var(--fg-muted);
+}
+.cf-msg__quote:first-child {
+  margin-top: 0;
+}
+.cf-msg__quote:last-child {
+  margin-bottom: 0;
+}
+.cf-msg__quote.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--clamp-lines, 2);
+  line-clamp: var(--clamp-lines, 2);
+  overflow: hidden;
+}
 .cf-msg__more {
   display: flex;
   align-items: center;
@@ -3373,6 +3394,42 @@ button.cf-mask__pill:hover {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 10px;
+}
+/* 输入框里的引用条（右键「引用」，同 TG 的回复条），在待发附件之后、文字之前：左竖线 + 灰字一行（同消息里的引用 .cf-msg__quote），
+   超出省略、悬停看全文；右侧 ✕ 取消。一次一条，发送时以 `> ` 引用拼在消息开头 */
+.cf-quotebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--border-strong);
+}
+.cf-quotebar__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(13px * var(--chat-scale, 1));
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+.cf-quotebar__x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-subtle);
+  cursor: pointer;
+}
+.cf-quotebar__x:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 .cf-att {
   position: relative;

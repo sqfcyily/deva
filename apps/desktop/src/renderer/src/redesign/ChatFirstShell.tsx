@@ -64,6 +64,7 @@ import {
   Bot,
   Sparkles,
   Square,
+  TextQuote,
   Trash2,
   Unlock,
   UserMinus,
@@ -131,6 +132,7 @@ import {
   type EffortAdapter
 } from '../../../shared/effort'
 import { NEW_MEMBER_TOKENS, mentionRanges } from '../../../shared/mention'
+import { isQuoteLine } from '../../../shared/quote'
 import { useTasks } from '../store/tasks'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
@@ -515,10 +517,9 @@ export function ChatFirstShell(): React.JSX.Element {
   /**
    * 输入框预填（一次性、不自动发送）：用于「通过对话添加角色」——把引导语放进输入框交由用户
    * 自己审阅/修改后发送，而非替他发出。nonce 使相同文本也能重复触发；Composer 消费后回调置空。
+   * quote：放进输入框顶部的引用条（右键「引用」），不动输入的文字。
    */
-  const [composerPrefill, setComposerPrefill] = useState<{ text: string; nonce: number } | null>(
-    null
-  )
+  const [composerPrefill, setComposerPrefill] = useState<ComposerPrefill | null>(null)
 
   /** 兜底身份：优先 general，其次首个（花名册非空时）。 */
   const defaultPersona = useMemo(
@@ -1012,7 +1013,7 @@ export function ChatFirstShell(): React.JSX.Element {
                 onUnarchive={() => setArchived(currentSessionId, false)}
                 attention={sessionStates[currentSessionId]?.attention ?? false}
                 prefill={composerPrefill}
-                onPrefill={(text) => setComposerPrefill({ text, nonce: Date.now() })}
+                onPrefill={(text, quote) => setComposerPrefill({ text, nonce: Date.now(), quote })}
                 onPrefillConsumed={() => setComposerPrefill(null)}
                 members={currentMembers}
                 formerMembers={formerMembers}
@@ -5015,9 +5016,9 @@ function Conversation({
   /** 当前会话有待用户处理的卡片（问答 / 计划 / 挂载请求）：此时不开回滚面板。 */
   attention: boolean
   /** 输入框预填（一次性、不发送）；null 表示无待预填。 */
-  prefill: { text: string; nonce: number } | null
-  /** 请求预填输入框（回滚恢复对话后把该轮原问题放回去）。 */
-  onPrefill: (text: string) => void
+  prefill: ComposerPrefill | null
+  /** 请求预填输入框（回滚恢复对话后把该轮原问题放回去）；quote=true 是放进引用条（右键「引用」）。 */
+  onPrefill: (text: string, quote?: boolean) => void
   /** Composer 消费预填后回调，父层据此置空，避免重挂载时复活旧预填。 */
   onPrefillConsumed: () => void
   /** 当前主对话的成员（未移除的）：标题栏角色名后的一排头像，点开是成员卡片。 */
@@ -5123,12 +5124,14 @@ function Conversation({
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   // 右键菜单：记录光标位置、命中的轮下标（turn=null 表示未落在某一轮上），以及右键那一刻的选中文字与是否可删。
-  // selection 有值 → 提供「复制」；canDelete（非流式且有内容）→ 提供「选择删除」。二者各自独立成项。
+  // selection 有值 → 提供「复制」「引用」（quote 是右键那一刻按选区算好的引用文本）；canDelete（非流式且有内容）→
+  // 提供「选择删除」。二者各自独立成项。
   const [ctxMenu, setCtxMenu] = useState<{
     x: number
     y: number
     turn: number | null
     selection: string
+    quote: string
     canDelete: boolean
   } | null>(null)
   // 每条消息所属轮下标：与 groupTurns 同源（每遇 user +1），前言为 -1；供常态渲染在根节点标注 data-turn。
@@ -5206,11 +5209,10 @@ function Conversation({
       turn++
       // 成员交差的轮（不显示起点）不进索引：索引的是用户说的话。
       if (m.quiet) continue
-      let full = m.blocks
-        .map((b) => (b.kind === 'text' ? b.text : ''))
-        .join('')
-        .replace(/\s+/g, ' ')
-        .trim()
+      // 带引用（右键「引用」带进来的）时取正文，不带「>」；只有引用就用引用。
+      const raw = m.blocks.map((b) => (b.kind === 'text' ? b.text : '')).join('')
+      const segs = splitQuotes(raw)
+      let full = (segs ? (segs.find((s) => !s.quote) ?? segs[0]).text : raw).replace(/\s+/g, ' ').trim()
       if (!full && m.attachments?.length) full = m.attachments.map((a) => a.name).join(' ')
       if (!full) full = t('cf.toc.untitled')
       out.push({
@@ -5386,14 +5388,15 @@ function Conversation({
     // 右键会冒泡上来误弹对话菜单。
     if (!e.currentTarget.contains(e.target as Node)) return
     if (selecting) return
-    const selection = (window.getSelection()?.toString() ?? '').trim()
+    const sel = window.getSelection()
+    const selection = (sel?.toString() ?? '').trim()
     const canDelete = !streaming && messages.length > 0
     if (!selection && !canDelete) return
     e.preventDefault()
     const hit = (e.target as HTMLElement).closest('[data-turn]') as HTMLElement | null
     const n = hit ? Number(hit.dataset.turn) : NaN
     const turn = Number.isInteger(n) && n >= 0 ? n : null
-    setCtxMenu({ x: e.clientX, y: e.clientY, turn, selection, canDelete })
+    setCtxMenu({ x: e.clientX, y: e.clientY, turn, selection, quote: selection ? quoteOf(sel) : '', canDelete })
   }
   // 复制选中文字到系统剪贴板：优先走原生 clipboard 桥（sandbox 下最稳），失败回退 navigator.clipboard。
   const copySelection = (text: string): void => {
@@ -5750,7 +5753,17 @@ function Conversation({
                     label: t('common.copy'),
                     icon: <Copy size={14} />,
                     onClick: () => copySelection(ctxMenu.selection)
-                  }
+                  },
+                  // 引用：放进输入框顶部的引用条（同 TG 的回复，一次一条，再引用就替换），已输入的文字不动。
+                  ...(ctxMenu.quote
+                    ? [
+                        {
+                          label: t('cf.quote'),
+                          icon: <TextQuote size={14} />,
+                          onClick: () => onPrefill(ctxMenu.quote, true)
+                        }
+                      ]
+                    : [])
                 ]
               : []),
             // 落在某一轮上才给：回到的是「这一轮开始之前」，前言区（压缩摘要等）不算轮。
@@ -5969,42 +5982,155 @@ function MentionText({ text }: { text: string }): React.ReactNode {
   return <>{out}</>
 }
 
+/** 用户消息开头引用的折叠行数：比正文少，免得引用把真正的问题挤到「展开」后面。 */
+const USER_QUOTE_LINES = 2
+
+/**
+ * 聊天区右键「引用」：把选区转成 Markdown 引用（每行加 `> `）。选区两端落在同一个代码块里时先包成带语言的代码块，
+ * 保住缩进；其余按显示出来的文字（去掉行尾空白、连续空行并成一个）。
+ */
+function quoteOf(sel: Selection | null): string {
+  if (!sel || sel.isCollapsed) return ''
+  const elOf = (n: Node | null): Element | null => (n instanceof Element ? n : (n?.parentElement ?? null))
+  let text = sel.toString().replace(/\r\n?/g, '\n')
+  const code = elOf(sel.anchorNode)?.closest('.md-code')
+  if (code && code === elOf(sel.focusNode)?.closest('.md-code')) {
+    text = text.replace(/^(?:[ \t]*\n)+/, '').replace(/\s+$/, '')
+    if (!text) return ''
+    const lang = /language-([\w-]+)/.exec(code.querySelector('code')?.className ?? '')?.[1] ?? ''
+    text = '```' + lang + '\n' + text + '\n```'
+  } else {
+    text = text.trim().replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n')
+    if (!text) return ''
+  }
+  return text
+    .split('\n')
+    .map((l) => (l ? '> ' + l : '>'))
+    .join('\n')
+}
+
+/** 用户消息按引用切开的一段：quote=true 是引用（已去掉 `> ` 前缀与代码围栏行），否则是正文原文。 */
+type UserTextSeg = { quote: boolean; text: string }
+
+/**
+ * 把用户消息按引用切段：以 `>` 开头的连续行是一段引用（几段引用之间隔空行也并成一段），其余是正文。
+ * 引用里的空行并掉（折叠时两行都给内容）。没有引用返回 null（照原文显示）。
+ */
+function splitQuotes(text: string): UserTextSeg[] | null {
+  if (!/^ {0,3}>/m.test(text)) return null
+  const lines = text.split('\n')
+  const segs: UserTextSeg[] = []
+  let i = 0
+  while (i < lines.length) {
+    const start = i
+    if (isQuoteLine(lines[i])) {
+      let end = i
+      for (let j = i; j < lines.length; j++) {
+        if (isQuoteLine(lines[j])) end = j
+        else if (lines[j].trim()) break
+      }
+      i = end + 1
+      const body = lines
+        .slice(start, i)
+        .map((l) => l.replace(/^ {0,3}> ?/, ''))
+        .filter((l) => !/^\s*```/.test(l))
+        .join('\n')
+        .replace(/\n{2,}/g, '\n')
+        // 只去首尾空行，保住代码的行首缩进
+        .replace(/^\n+/, '')
+        .replace(/\s+$/, '')
+      if (body.trim()) segs.push({ quote: true, text: body })
+    } else {
+      while (i < lines.length && !isQuoteLine(lines[i])) i++
+      const body = lines
+        .slice(start, i)
+        .join('\n')
+        .replace(/^(?:[ \t]*\n)+/, '')
+        .replace(/\s+$/, '')
+      if (body) segs.push({ quote: false, text: body })
+    }
+  }
+  return segs.some((s) => s.quote) ? segs : null
+}
+
+/**
+ * 拆出开头的引用（保留 `> ` 格式）：发送失败放回、撤回插入、回滚填回时，把它放回输入框顶部的引用条。
+ * 开头不是引用返回 null。
+ */
+function leadingQuote(text: string): { quote: string; rest: string } | null {
+  const lines = text.split('\n')
+  let end = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (isQuoteLine(lines[i])) end = i
+    else if (lines[i].trim()) break
+  }
+  if (end < 0) return null
+  return {
+    quote: lines.slice(0, end + 1).join('\n').trim(),
+    rest: lines
+      .slice(end + 1)
+      .join('\n')
+      .replace(/^(?:[ \t]*\n)+/, '')
+      .replace(/\s+$/, '')
+  }
+}
+
+/** 引用条与正文拼成要发的消息：引用在前、空一行接正文；没写正文就只发引用。 */
+function withQuote(quote: string, text: string): string {
+  if (!quote) return text
+  return text.trim() ? `${quote}\n\n${text}` : quote
+}
+
+/** 引用的纯文字（去掉 `> ` 与代码围栏行）：full=false 时空白并成一个空格，给引用条与草稿预览显示一行。 */
+function quotePlain(quote: string, full = false): string {
+  const text = splitQuotes(quote)?.find((s) => s.quote)?.text ?? quote
+  return full ? text : text.replace(/\s+/g, ' ').trim()
+}
+
 /**
  * 用户消息正文：默认折叠到 {@link USER_TEXT_LINES} 行，超出时给出展开/收起按钮。
  * 折叠靠 CSS line-clamp，是否溢出则须实测——文本换行取决于主区宽度，无法静态判断。
  * clamp 落在内层 .cf-msg__clamp（无内边距），气泡 padding 留在外层 .cf-msg__text。
+ * 有引用（右键「引用」带进来的 `> ` 段）时按引用切段：引用单独成块（竖线 + 弱化字色，折叠到
+ * {@link USER_QUOTE_LINES} 行），正文各段照常折叠；任一段超出都给展开按钮，一起展开。
  */
 function UserText({ text }: { text: string }): React.JSX.Element {
   const { t } = useI18n()
-  const ref = useRef<HTMLDivElement>(null)
+  const refs = useRef<(HTMLDivElement | null)[]>([])
   const [expanded, setExpanded] = useState(false)
   const [overflow, setOverflow] = useState(false)
+  const segs = useMemo<UserTextSeg[]>(() => splitQuotes(text) ?? [{ quote: false, text }], [text])
 
-  // 只在收起态测量：此时 clientHeight 是 3 行高度、scrollHeight 是全文高度，二者不等即超出。
+  // 只在收起态测量：此时 clientHeight 是折叠后的高度、scrollHeight 是全文高度，二者不等即超出。
   // 展开态两者必然相等，故直接跳过、沿用上次判定，否则按钮会自己消失。
   useLayoutEffect(() => {
     if (expanded) return
-    const el = ref.current
-    if (!el) return
-    const measure = (): void => setOverflow(el.scrollHeight - el.clientHeight > 1)
+    const els = refs.current.slice(0, segs.length).filter((el): el is HTMLDivElement => el !== null)
+    if (!els.length) return
+    const measure = (): void => setOverflow(els.some((el) => el.scrollHeight - el.clientHeight > 1))
     measure()
     // 侧栏折叠、窗口缩放都会改变换行，需要重新判定。
     const ro = new ResizeObserver(measure)
-    ro.observe(el)
+    els.forEach((el) => ro.observe(el))
     return () => ro.disconnect()
-  }, [text, expanded])
+  }, [segs, expanded])
 
   return (
     <>
       <div className="cf-msg__text">
         {/* 折叠盒必须无内边距：气泡的下内边距会让被截断的下一行漏出「半个字」，详见 CSS 注释。 */}
-        <div
-          ref={ref}
-          className={`cf-msg__clamp${expanded ? '' : ' is-clamped'}`}
-          style={{ '--clamp-lines': String(USER_TEXT_LINES) } as React.CSSProperties}
-        >
-          <MentionText text={text} />
-        </div>
+        {segs.map((s, i) => (
+          <div
+            key={i}
+            ref={(el) => {
+              refs.current[i] = el
+            }}
+            className={`${s.quote ? 'cf-msg__quote' : 'cf-msg__clamp'}${expanded ? '' : ' is-clamped'}`}
+            style={{ '--clamp-lines': String(s.quote ? USER_QUOTE_LINES : USER_TEXT_LINES) } as React.CSSProperties}
+          >
+            {s.quote ? s.text : <MentionText text={s.text} />}
+          </div>
+        ))}
       </div>
       {overflow && (
         <button
@@ -6389,7 +6515,12 @@ interface SlashCommand {
  * 没写完的内容带到 B。只存非空的；不落盘，重启应用后清空。
  * 会话列表据此在其他会话行上显示「[草稿] …」（见 useDraftPreview）：只在进出会话时变动，打字不刷新列表。
  */
-type ComposerDraft = { text: string; pending: Picked[] }
+type ComposerDraft = { text: string; pending: Picked[]; quote?: string }
+/**
+ * 输入框预填（一次性、不发送）：nonce 使相同文本也能重复触发。quote=true 时 text 是引用（`> ` 格式），放进引用条；
+ * 否则整体替换输入框（开头的引用拆回引用条，见 leadingQuote）。
+ */
+type ComposerPrefill = { text: string; nonce: number; quote?: boolean }
 const composerDrafts = new Map<string, ComposerDraft>()
 const draftListeners = new Set<() => void>()
 
@@ -6413,7 +6544,10 @@ function subscribeDrafts(onChange: () => void): () => void {
  */
 let liveComposer: { sessionId: string; restore: (text: string) => void } | null = null
 
-/** 把文字放回某会话的输入框：排在已有内容之前，中间空一行。 */
+/**
+ * 把文字放回某会话的输入框：排在已有内容之前，中间空一行。开头的引用放回引用条；引用条里已有引用时，
+ * 这段引用就留在文字里（不覆盖用户新放的引用）。
+ */
 function restoreToComposer(sessionId: string, text: string): void {
   if (!text.trim()) return
   if (liveComposer?.sessionId === sessionId) {
@@ -6421,9 +6555,12 @@ function restoreToComposer(sessionId: string, text: string): void {
     return
   }
   const d = composerDrafts.get(sessionId)
+  const lq = d?.quote ? null : leadingQuote(text)
+  const body = lq ? lq.rest : text
   setComposerDraft(sessionId, {
-    text: d?.text.trim() ? `${text}\n\n${d.text}` : text,
-    pending: d?.pending ?? []
+    text: d?.text.trim() ? (body ? `${body}\n\n${d.text}` : d.text) : body,
+    pending: d?.pending ?? [],
+    quote: lq?.quote ?? d?.quote
   })
 }
 
@@ -6516,7 +6653,12 @@ function useDraftPreview(id: string): string | null {
   return useSyncExternalStore(subscribeDrafts, () => {
     const d = composerDrafts.get(id)
     if (!d) return null
-    return d.text.replace(/\s+/g, ' ').trim() || d.pending.map((p) => p.name).join(' ') || null
+    return (
+      d.text.replace(/\s+/g, ' ').trim() ||
+      d.pending.map((p) => p.name).join(' ') ||
+      (d.quote ? quotePlain(d.quote) : '') ||
+      null
+    )
   })
 }
 
@@ -6552,7 +6694,7 @@ function Composer({
   onJump: () => void
   /** 打开检查点回滚面板（/rewind、双击 Esc）；返回 false 表示此刻不可用（未打开）。 */
   onRewind: () => boolean
-  prefill: { text: string; nonce: number } | null
+  prefill: ComposerPrefill | null
   onPrefillConsumed: () => void
 }): React.JSX.Element {
   const { t, locale } = useI18n()
@@ -6569,6 +6711,13 @@ function Composer({
   const [pending, setPending] = useState<Picked[]>([])
   const pendingRef = useRef(pending)
   pendingRef.current = pending
+  /**
+   * 输入框顶部的引用条（右键「引用」，同 TG 的回复）：存 `> ` 格式的引用，'' = 没有。一次一条，再引用就替换；
+   * 发送时拼在消息开头（见 withQuote），只有引用也能发。随草稿按会话保存。
+   */
+  const [quote, setQuote] = useState('')
+  const quoteRef = useRef(quote)
+  quoteRef.current = quote
   const sessionRef = useRef(sessionId)
   sessionRef.current = sessionId
   // 输入框高度：固定高、不随内容长高，内容多了框内滚动；只能靠顶边手柄拖动调整。
@@ -6591,10 +6740,18 @@ function Composer({
   const lastEscRef = useRef(0)
 
   // 预填（不发送）：把父层注入的文本写进输入框，聚焦并将光标移到末尾，交由用户自己发送。
+  // 引用只换引用条、不动文字；整体替换时开头的引用拆回引用条（回滚填回带引用的原问题）。
   // nonce 变化触发一次；消费后立即回调置空（父层 prefill→null），guard 防重入与重挂载复活。
   useEffect(() => {
     if (!prefill) return
-    composer.setText(prefill.text, true)
+    if (prefill.quote) {
+      setQuote(prefill.text)
+      composer.focusEnd()
+    } else {
+      const lq = leadingQuote(prefill.text)
+      setQuote(lq ? lq.quote : '')
+      composer.setText(lq ? lq.rest : prefill.text, true)
+    }
     onPrefillConsumed()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill?.nonce])
@@ -6679,9 +6836,9 @@ function Composer({
         ? `Message ${name}…`
         : `跟 ${name} 说点什么…`)
   const supported = pending.filter((p) => p.supported)
-  const canSend = Boolean(input.trim()) || supported.length > 0
-  // 回合进行中有文字：唯一的按键是「发送」（插入当前轮）。只插文字，待发附件留在输入框里随下一条消息发出。
-  const canInsert = streaming && Boolean(input.trim())
+  const canSend = Boolean(input.trim()) || supported.length > 0 || Boolean(quote)
+  // 回合进行中有文字（或引用）：唯一的按键是「发送」（插入当前轮）。只插文字与引用，待发附件留在输入框里随下一条消息发出。
+  const canInsert = streaming && (Boolean(input.trim()) || Boolean(quote))
   /** 上一次插入的时刻：插入后输入框清空、同一位置随即变成停止键，短时间内不认停止，防双击把任务停掉。 */
   const insertedAtRef = useRef(0)
   const stopTurn = (): void => {
@@ -6824,17 +6981,20 @@ function Composer({
   const removePending = (path: string): void =>
     setPending((prev) => prev.filter((p) => p.path !== path))
 
-  // 插入当前轮：清空输入框交给主进程，当前步骤结束后送达；没插进去（原因已 toast）就把文字放回。
+  // 插入当前轮：清空输入框交给主进程，当前步骤结束后送达；没插进去（原因已 toast）就把文字放回（引用回到引用条）。
   const insertNow = (): void => {
     const text = composer.getText()
+    const q = quote
     // /compact、/rewind 是本地指令，回合进行中用不了，也不该当成消息插进去。
-    if (!text.trim() || /^\/(compact|rewind)$/i.test(text.trim())) return
+    if ((!text.trim() && !q) || (!q && /^\/(compact|rewind)$/i.test(text.trim()))) return
+    const full = withQuote(q, text)
     const sid = sessionId
     insertedAtRef.current = Date.now()
     composer.setText('')
     composer.clearHistory()
-    void onInsert(text).then((ok) => {
-      if (!ok) restoreToComposer(sid, text)
+    setQuote('')
+    void onInsert(full).then((ok) => {
+      if (!ok) restoreToComposer(sid, full)
     })
   }
 
@@ -6844,8 +7004,9 @@ function Composer({
       return
     }
     const text = composer.getText()
+    const q = quote
     const atts = pending.filter((p) => p.supported)
-    if (!text.trim() && atts.length === 0) return
+    if (!text.trim() && atts.length === 0 && !q) return
     // /rewind 纯渲染层指令：打开回滚面板、不发消息；此刻不可用则原样留在输入框。
     if (text.trim().toLowerCase() === '/rewind' && atts.length === 0) {
       if (onRewind()) composer.setText('')
@@ -6856,8 +7017,9 @@ function Composer({
     composer.setText('')
     composer.clearHistory()
     setPending([])
+    setQuote('')
     void onSend(
-      text,
+      withQuote(q, text),
       atts.map((p) => ({
         path: p.path,
         name: p.name,
@@ -6869,11 +7031,12 @@ function Composer({
       // 此间已切到别的会话的，放回原会话的草稿里。
       if (sent) return
       if (sessionRef.current !== sid) {
-        if (!composerDrafts.has(sid)) setComposerDraft(sid, { text, pending: prevPending })
+        if (!composerDrafts.has(sid)) setComposerDraft(sid, { text, pending: prevPending, quote: q })
         return
       }
       if (!composer.getText()) composer.setText(text)
       setPending((cur) => (cur.length ? cur : prevPending))
+      setQuote((cur) => cur || q)
     })
   }
 
@@ -6903,7 +7066,7 @@ function Composer({
       }
     }
     // 双击 Esc（仅空输入框、无待发附件时）打开回滚面板；联想浮层开着时 Esc 已在上面被它吃掉。
-    if (key === 'escape' && plain && !input.trim() && pending.length === 0 && !streaming) {
+    if (key === 'escape' && plain && !input.trim() && pending.length === 0 && !quote && !streaming) {
       const now = Date.now()
       if (now - lastEscRef.current <= 500) {
         lastEscRef.current = 0
@@ -6969,10 +7132,12 @@ function Composer({
     composer.setText(draft?.text ?? '')
     composer.clearHistory()
     setPending(draft?.pending ?? [])
+    setQuote(draft?.quote ?? '')
     return () => {
       const text = composer.getText()
       const kept = pendingRef.current
-      if (text.trim() || kept.length) setComposerDraft(sessionId, { text, pending: kept })
+      const q = quoteRef.current
+      if (text.trim() || kept.length || q) setComposerDraft(sessionId, { text, pending: kept, quote: q || undefined })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
@@ -6982,8 +7147,12 @@ function Composer({
     const entry = {
       sessionId,
       restore: (text: string): void => {
+        // 开头的引用放回引用条；引用条里已有（用户新放的）就留在文字里，不覆盖。
+        const lq = quoteRef.current ? null : leadingQuote(text)
+        if (lq) setQuote(lq.quote)
+        const body = lq ? lq.rest : text
         const cur = composer.getText()
-        composer.setText(cur.trim() ? `${text}\n\n${cur}` : text, true)
+        composer.setText(cur.trim() ? (body ? `${body}\n\n${cur}` : cur) : body, true)
       }
     }
     liveComposer = entry
@@ -7098,6 +7267,27 @@ function Composer({
             }))}
             onRemove={removePending}
           />
+          {/* 引用条（右键「引用」，同 TG 的回复）：在附件之后、文字之前；左竖线 + 灰字一行，悬停看全文；
+              ✕ 取消引用，焦点回到输入框。 */}
+          {quote && (
+            <div className="cf-quotebar">
+              <span className="cf-quotebar__text" title={quotePlain(quote, true)}>
+                {quotePlain(quote)}
+              </span>
+              <button
+                type="button"
+                className="cf-quotebar__x"
+                title={t('cf.quoteRemove')}
+                aria-label={t('cf.quoteRemove')}
+                onClick={() => {
+                  setQuote('')
+                  composer.focusEnd()
+                }}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
           {/* 输入区：Lexical 接管的 contentEditable（子节点归编辑器管，React 不渲染内容）；占位提示叠在其上。 */}
           <div className="cf-draft" style={{ height: boxH }}>
             <div

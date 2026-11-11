@@ -1311,6 +1311,8 @@ const zhCN: MessageTree = {
     select: '选择',
     selCancel: '取消',
     selectToDelete: '删除对话',
+    quote: '引用',
+    quoteRemove: '取消引用',
     deleteTurnsConfirm: '删除后所选轮次的消息将从对话与模型上下文中一并永久移除，无法恢复。',
     deletePersonaConfirm: '删除后该角色不可恢复，此操作无法撤销。',
     deletePersonaConfirmWithChats:
@@ -2742,6 +2744,8 @@ const en: MessageTree = {
     select: 'Select',
     selCancel: 'Cancel',
     selectToDelete: 'Delete conversation',
+    quote: 'Quote',
+    quoteRemove: 'Remove quote',
     deleteTurnsConfirm:
       'The selected turns will be permanently removed from both the conversation and the model context. This cannot be undone.',
     deletePersonaConfirm:

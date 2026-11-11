@@ -78,6 +78,7 @@ import {
 } from './members'
 import { NEW_MEMBER_TOKENS } from '../../shared/mention'
 import { slashTokens } from '../../shared/slash'
+import { withoutQuotes } from '../../shared/quote'
 import { memoryPromptSection } from './memory'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
 import {
@@ -3662,8 +3663,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
    * （作为本条用户消息里正文之前的独立 text 块，气泡里看不到），请它把这条消息交给被点名的成员。
    */
   function handleMentions(main: StoredSession, text: string): ContentPart | null {
-    if (!text.includes('@')) return null
-    const has = (name: string): boolean => text.includes(`@${name}`)
+    // 引用行（右键「引用」带进来的别人的话）里的 @ 不算点名；引用照样算这条消息的内容（下面 rest 用全文）。
+    const own = withoutQuotes(text)
+    if (!own.includes('@')) return null
+    const has = (name: string): boolean => own.includes(`@${name}`)
     const ownerId = resolvePersonaId(main.personaId)
     const named: MemberRef[] = activeMembers(main.members).filter((m) => has(m.name))
     const added: { ref: MemberRef; restored: boolean }[] = []
