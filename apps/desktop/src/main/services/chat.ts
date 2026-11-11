@@ -208,6 +208,7 @@ import {
   type CompactStatus
 } from './compaction'
 import { clearStaleToolResults } from './tool-results'
+import { seededShape } from '../../shared/avatar-shape'
 
 /**
  * 会话编排（Agent 主循环）。
@@ -3108,6 +3109,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       duty: p.duty,
       addedAt: Date.now()
     }
+    // 主智能体建的成员：头像形状此刻挑定并存下（按会话 id，与头像部件同种子），以后形状库怎么改都不换
+    if (ref.origin === 'created') ref.shape = seededShape(ref.sessionId)
     const sub = ensureSession(ref.sessionId, {
       personaId: ref.personaId,
       focusRoot: ref.root,

@@ -182,6 +182,8 @@ export interface MemberMeta {
   /** 负责的文件夹（绝对路径）；null = 没有文件夹（不跟随主对话）。以成员会话的 focusRoot 为准。 */
   root: string | null
   duty: string
+  /** 头像形状（主智能体建的成员创建时存下；@ 加入的与老成员没有）。 */
+  shape?: string
   addedAt: number
   removed?: boolean
   /** 最近一次派来的任务标题。 */

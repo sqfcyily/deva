@@ -14,6 +14,7 @@ import { setEnabled as setMcpEnabled } from './mcp-config'
 import { DEFAULT_PERSONAS, LEGACY_PROMPT_HASHES, type DefaultPersona } from './default-personas'
 import { fmScalar, fmString, parseFrontmatter } from './frontmatter'
 import { reassignTaskPersona } from './tasks'
+import { AUTO_SHAPE, legacyAutoShape } from '../../shared/avatar-shape'
 
 /**
  * Agent 提示词（Personas）服务：发现 / 解析 / 读写 `~/.deva/personas/<id>.md`（全局，与项目无关）。
@@ -293,6 +294,32 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
       enabled: input.enabled === true
     }
   )
+}
+
+/**
+ * 启动时一次性改写：2026-11-09 ~ 11-11 间手机端接受名片建的角色，头像形状存的是 'auto'（显示时按 id 现算）。
+ * 改成当时算出来的那个具体形状（legacyAutoShape，与界面显示的同一取法），角色从此形状固定、看上去不变。
+ * 其余字段原样保留；不是 JSON、没有 'auto' 的一律不碰。
+ */
+export function pinAutoAvatarShapes(): void {
+  for (const p of listPersonas()) {
+    if (!p.avatar.includes(AUTO_SHAPE)) continue
+    let spec: unknown
+    try {
+      spec = JSON.parse(p.avatar)
+    } catch {
+      continue
+    }
+    if (!spec || typeof spec !== 'object' || (spec as { shape?: unknown }).shape !== AUTO_SHAPE) continue
+    upsertPersona({
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      avatar: JSON.stringify({ ...spec, shape: legacyAutoShape(p.id) }),
+      model: p.model,
+      prompt: p.prompt
+    })
+  }
 }
 
 /** 技能 / MCP 的可用角色里剔除 keep 不认的角色；指定的角色都没了的项改回所有角色并停用（MCP 随之断开）。 */

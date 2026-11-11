@@ -49,6 +49,11 @@ export interface MemberRef {
   root: string | null
   /** 一句话职责。 */
   duty: string
+  /**
+   * 头像形状（shared/avatar-shape.ts 的形状名）：主智能体建的成员创建时挑定、存下，此后固定。
+   * @ 加入的角色用角色自己的头像，不存；2026-11-11 前建的成员没有，显示时按旧取法（legacyAutoShape）现算。
+   */
+  shape?: string
   addedAt: number
   /** 已移除：不再派任务，成员会话保留。 */
   removed?: boolean

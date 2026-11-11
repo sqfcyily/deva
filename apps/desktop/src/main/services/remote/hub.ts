@@ -20,6 +20,7 @@ import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from
 import { previewSchedule } from '../tasks'
 import type { TaskCreateInput } from '../tasks-types'
 import { paginate } from './paginate'
+import { seededShape } from '../../../shared/avatar-shape'
 import { getChannelConfig, updateChannelConfig } from './store'
 import type {
   ActionResult,
@@ -1237,13 +1238,14 @@ async function handleAction(a: InboundAction): Promise<ActionResult> {
       if (!raw) return { ok: false, message: '找不到这张名片对应的对话。' }
       if (getSession(v.sid)?.proposals?.[v.tool]) return { ok: false, message: '这张名片已经处理过了。' }
       if (v.a === 'accept') {
-        // 与桌面「接受」同：建角色并启用（头像由 id 确定性生成，之后可在电脑上改）。
-        // 新角色形状随机：'auto' 由渲染层 humation.tsx 按 id 挑形状（形状清单只在渲染层，主进程不解释）。
+        // 与桌面「接受」同：建角色并启用（头像部件与配色由 id 确定性生成，之后可在电脑上改）。
+        // 新角色形状此刻挑定并存成具体值，此后固定；按名字挑，与电脑上对话里的名片预览一致。
+        const name = str(raw.name) || '新角色'
         upsertPersona({
-          name: str(raw.name) || '新角色',
+          name,
           description: str(raw.description),
           prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
-          avatar: '{"shape":"auto"}',
+          avatar: JSON.stringify({ shape: seededShape(name) }),
           model: '',
           enabled: true
         })

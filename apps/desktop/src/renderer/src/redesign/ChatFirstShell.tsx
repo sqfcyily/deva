@@ -154,6 +154,8 @@ import {
   AUTO_SHAPE,
   PersonaFace,
   USER_AVATAR_SEED,
+  isAvatarShape,
+  seededShape,
   avatarDataUri,
   parseAvatarSpec,
   randomizeSpec,
@@ -1091,19 +1093,20 @@ function fill(s: string, vars: Record<string, string>): string {
   return Object.entries(vars).reduce((acc, [k, v]) => acc.split(`{${k}}`).join(v), s)
 }
 
-/** 新角色的头像 spec（只定形状、按 seed 随机；部件与配色仍按 seed 生成）。 */
-const AUTO_AVATAR = serializeAvatarSpec({ shape: AUTO_SHAPE })
+/** 老成员（2026-11-11 前建的，没存形状）的头像 spec：形状按旧取法现算（冻结，不随形状库变），部件与配色按 seed 生成。 */
+const LEGACY_MEMBER_AVATAR = serializeAvatarSpec({ shape: AUTO_SHAPE })
 
 /**
  * 成员的显示身份：用户 @ 加入的角色就用该角色本身（名字、头像不变）；主智能体创建的用成员名与职责，
- * 头像以成员会话 id 为种子生成（同角色没设头像时的做法），每个成员各不相同；形状按新角色随机（AUTO_SHAPE）。
+ * 头像以成员会话 id 为种子生成（同角色没设头像时的做法），每个成员各不相同；形状用创建时存下的 m.shape（老成员没有，按旧取法）。
  */
 function memberPersona(m: MemberMeta, personas: Persona[], fallback?: Persona): Persona | undefined {
   const own = personas.find((p) => p.id === m.personaId)
   if (m.origin === 'mention' && own) return own
   const base = own ?? fallback
   if (!base) return undefined
-  return { ...base, id: m.sessionId, name: m.name, desc: m.duty, avatar: AUTO_AVATAR, avatarImage: '', model: '' }
+  const avatar = isAvatarShape(m.shape) ? serializeAvatarSpec({ shape: m.shape }) : LEGACY_MEMBER_AVATAR
+  return { ...base, id: m.sessionId, name: m.name, desc: m.duty, avatar, avatarImage: '', model: '' }
 }
 
 /**
@@ -7542,7 +7545,7 @@ function PersonaEditor({
     editing
       ? resolveSpec(avatarSeed, parseAvatarSpec(editing.avatar))
       : proposing
-        ? resolveSpec(avatarSeed, { shape: AUTO_SHAPE })
+        ? resolveSpec(avatarSeed, { shape: seededShape(avatarSeed) })
         : randomizeSpec()
   )
   // 自定义头像（用户上传的图，data URI）：非空即盖过上面的 spec 生成头像。编辑态取已存图，

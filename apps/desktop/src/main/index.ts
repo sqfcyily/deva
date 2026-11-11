@@ -12,7 +12,7 @@ import { sweepCheckpoints } from './services/checkpoints'
 import { sweepSubagents } from './services/subagent-store'
 import { sweepMedia } from './services/media-store'
 import { registerSkillsIpc, startSkillsWatcher } from './services/skills'
-import { ensureSeededPersonas, pruneOrphanExtRoles, registerPersonasIpc } from './services/personas'
+import { ensureSeededPersonas, pinAutoAvatarShapes, pruneOrphanExtRoles, registerPersonasIpc } from './services/personas'
 import { registerProfileIpc } from './services/profile'
 import { registerMemoryIpc } from './services/memory'
 import {
@@ -355,6 +355,8 @@ if (!app.requestSingleInstanceLock()) {
   // 按 id 幂等 + 防删除后复活 + 将来新增默认角色可增量补种（守卫位 personas.seeded[id] 入 config）。
   // 每次启动顺带检查默认提示词：升级后有新版、且用户没改过（基线 personas.seededPrompt[id]）→ 换成新版。
   ensureSeededPersonas()
+  // 头像形状存成 'auto' 的旧角色（手机端接受名片建的）：改写成具体形状，此后固定。
+  pinAutoAvatarShapes()
   // 技能 / MCP 的可用角色里已不存在的角色：剔除，都没了的改回所有角色并停用（须在 MCP 自动连接之前）。
   pruneOrphanExtRoles()
   registerPersonasIpc()

@@ -14,7 +14,7 @@
  * 保存时也写入具体值 —— 故「所见（编辑器）＝所存＝各处所渲染」，绝无 seed 与存储不一致的漂移。
  *
  * 形状与构图（对比稿 design/avatar-shapes.html，2026-11-09 用户选定）：
- *  - 底板不再限定圆形，13 种形状；已有角色与「我」保持圆形，新加的角色创建时随机一个（菱形不进随机池），可在编辑器改；
+ *  - 底板不再限定圆形，15 种形状；已有角色与「我」保持圆形，新加的角色创建时随机一个并存成具体形状（菱形不进随机池），可在编辑器改；
  *  - 「探出」构图：身体按形状裁切，头部与配件画在底板前、可越出上沿；头像占位尺寸不变；
  *    ≤20px 与叠放处用 `compact`（框内构图，整枚按形状裁切），避免轮廓杂乱；
  *  - 上传图片按同一形状裁切、不探出；透明背景的图片按主体包围盒摆放，可以探出。
@@ -25,8 +25,17 @@ import { Component, useEffect, useId, useMemo, useRef, useState, type ReactNode 
 import { humation1 } from '@humation/assets-humation-1'
 import { createAvatar, createPartPreview, getPartsForSlot, resolvePartId } from '@humation/core'
 import type { PartOption } from '@humation/core'
+import {
+  AUTO_SHAPE,
+  SHAPE_POOL,
+  hashSeed,
+  isAvatarShape,
+  legacyAutoShape,
+  type AvatarShape
+} from '../../../shared/avatar-shape'
 
 export { humation1 }
+export { AUTO_SHAPE, AVATAR_SHAPES, isAvatarShape, seededShape, type AvatarShape } from '../../../shared/avatar-shape'
 
 /** 人类用户（「我」）的固定头像 seed —— 稳定、确定性，与角色区分（角色以 persona.id 为 seed）。 */
 export const USER_AVATAR_SEED = 'deva-you'
@@ -39,7 +48,7 @@ export interface AvatarSpec {
   colors?: Record<string, string>
   /** 背景色（hex 或 'transparent'）。 */
   background?: string
-  /** 底板形状（AVATAR_SHAPES 之一，或 AUTO_SHAPE = 按 seed 挑）；缺省圆形。 */
+  /** 底板形状（AVATAR_SHAPES 之一；旧数据可能是 AUTO_SHAPE，按 seed 挑）；缺省圆形。 */
   shape?: string
 }
 
@@ -114,15 +123,6 @@ function pick<T>(arr: readonly T[]): T {
  * 补上四项配色：既有色彩，又**保持确定性**——同一角色永远同一张脸，不会每次渲染漂移，
  * 名片预览与点开后的编辑器也必然一致。（`randomizeSpec` 是另一路：用户点「随机」时才真随机。）
  */
-function hashSeed(seed: string): number {
-  let h = 0x811c9dc5 // FNV-1a 32 位
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return h >>> 0
-}
-
 export function seededPalette(seed: string): { colors: Record<string, string>; background: string } {
   let s = hashSeed(seed) || 1 // xorshift32 不能从 0 起步
   const next = (n: number): number => {
@@ -237,32 +237,18 @@ function roundPolyPath(pts: Pt[], rad: number): string {
 }
 
 /**
- * 全部形状（编辑器按此顺序列出）。路径为 0..100 单位方框内的绝对路径，只用 M / L / Q / A / Z（mapPath 依赖这点）。
- * 前 7 个对称（云朵照参考图略不对称，顶替四叶留在原位）、后 6 个非对称。
+ * 各形状的路径（形状名单、随机池与按 seed 取样在 shared/avatar-shape.ts，主进程也用）。
+ * 路径为 0..100 单位方框内的绝对路径，只用 M / L / Q / A / Z（mapPath 依赖这点）。
  */
-export const AVATAR_SHAPES = [
-  'circle',
-  'squircle',
-  'arch',
-  'scallop',
-  'burst',
-  'cloud',
-  'diamond',
-  'pebble',
-  'tilt',
-  'leaf',
-  'blob',
-  'pick',
-  'bubble'
-] as const
-export type AvatarShape = (typeof AVATAR_SHAPES)[number]
-
 const SHAPE_PATHS: Record<AvatarShape, string> = {
   circle: 'M50 0A50 50 0 1 1 50 100A50 50 0 1 1 50 0Z',
   squircle: ptsPath(superellipsePts(48, 4.2)),
   arch: 'M4 50A46 46 0 0 1 96 50L96 86Q96 98 84 98L16 98Q4 98 4 86Z',
   scallop: ptsPath(polarPts((t) => 47 + 3 * Math.cos(12 * t), 192)),
   burst: ptsPath(polarPts(burstR, 192)),
+  // 六角软星（参考图 2026-11-11 橙色那枚）：原图轮廓的极坐标谐波几乎只有 6 次（12 次以上可忽略），
+  // 即 r = R(1 − 0.135·cos6t)：瓣尖在 ±30°/±90°/±150°，正上方是凹口——顶上两个瓣尖像一对耳朵
+  hexstar: ptsPath(fitPts(polarPts((t) => 50 - 6.75 * Math.cos(6 * t), 192))),
   // 五团云（参考图 1.png，对比稿 design/avatar-cloud.html）：左上一团最大最高、右上一团小而低，两侧两团最大，底一团；
   // 五个圆的位置、大小与平滑半径照原图轮廓拟合（加权误差约 0.5%）。别做左右对称——会把顶上两团间的凹口填平，用户嫌平。取代四叶（用户删掉）
   cloud: ptsPath(
@@ -302,6 +288,9 @@ const SHAPE_PATHS: Record<AvatarShape, string> = {
       )
     )
   ),
+  // 斜五边（参考图 2026-11-11 蓝色那枚）：只有 5 次谐波，r = R(1 + 0.098·sin5t)——瓣尖在 18°+72°k，
+  // 比「尖朝上」转了半格，一个尖正指右方，看着是歪着的
+  pentagon: ptsPath(fitPts(polarPts((t) => 50 + 4.9 * Math.sin(5 * t), 180))),
   leaf: 'M4 48A44 44 0 0 1 48 4L86 4Q96 4 96 14L96 52A44 44 0 0 1 52 96L14 96Q4 96 4 86Z',
   blob: ptsPath(polarPts((t) => 46.5 + 2.6 * Math.sin(3 * t + 0.8) + 1.6 * Math.cos(5 * t + 0.3) + 1.2 * Math.sin(2 * t))),
   // 拨片（参考图 1）：三个角各一个圆、中间一个大圆的平滑并集，边是外凸弧线——直边三角会把肩膀斜着切开
@@ -311,31 +300,14 @@ const SHAPE_PATHS: Record<AvatarShape, string> = {
 }
 
 /**
- * 新角色随机形状的取样池。菱形上半部收窄、头部会越过两侧斜边，只供手选。
- * **池的顺序与长度决定 'auto' 头像分到的形状**（同 seededPalette 的色池）：增删、调序会让它们换形状。
- * 换形状请原位替换（云朵即顶替四叶的位置），其余 'auto' 头像才不受影响。
- */
-const SHAPE_POOL: AvatarShape[] = AVATAR_SHAPES.filter((s) => s !== 'diamond')
-
-/**
- * spec.shape 的特殊值：按 seed 确定性挑一个形状。给「还没有具体头像、但算新角色」的身份用——
- * 对话名片预览与接受后的编辑器（seed = 角色名，两处一致）、手机端接受名片建的角色、主智能体建的项目成员。
- * 编辑器 resolveSpec 会把它解析成具体形状再保存。
- */
-export const AUTO_SHAPE = 'auto'
-
-export function isAvatarShape(v: unknown): v is AvatarShape {
-  return typeof v === 'string' && (AVATAR_SHAPES as readonly string[]).includes(v)
-}
-
-/**
- * 头像的形状：spec 里存了就用它（'auto' 按 seed 挑）；没存的一律圆形。
- * 用户定（2026-11-09）：已有角色与「我」保持圆形，新加的角色才随机——新角色在创建时把形状写进 spec
- * （手动新建走 randomizeSpec，其余入口写 AUTO_SHAPE），已有角色的 spec 里没有 shape，自然仍是圆形。
+ * 头像的形状：spec 里存了就用它；没存的一律圆形。
+ * 用户定（2026-11-09 / 11-11）：已有角色与「我」保持圆形，新加的角色才随机，且创建时就存成具体形状、此后固定——
+ * 手动新建走 randomizeSpec，名片走 seededShape（见 shared/avatar-shape.ts）。
+ * 'auto' 只剩旧数据（老成员显示时按它现算），取法冻结在当时的 12 个形状上（legacyAutoShape），形状库改了也不换。
  */
 export function resolveShape(seed: string, spec?: AvatarSpec | null): AvatarShape {
   const s = spec?.shape
-  if (s === AUTO_SHAPE) return SHAPE_POOL[hashSeed(`${seed}#shape`) % SHAPE_POOL.length]
+  if (s === AUTO_SHAPE) return legacyAutoShape(seed)
   return isAvatarShape(s) ? s : 'circle'
 }
 

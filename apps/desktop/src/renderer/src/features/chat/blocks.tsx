@@ -67,7 +67,7 @@ import { REPEAT_STOP, TASK_MAX_STEPS } from '../../../../shared/limits'
 import { useExtensions } from '../../store/extensions'
 import type { ChatBlock, ChatMessage, StreamStatus, ToolStatus } from '../../store/chat'
 import { CopyButton, Markdown } from './Markdown'
-import { AUTO_SHAPE, HumationFace, PersonaFace, USER_AVATAR_SEED } from '../../components/humation'
+import { HumationFace, PersonaFace, USER_AVATAR_SEED, seededShape } from '../../components/humation'
 import { useProfile } from '../../store/profile'
 import { TaskConfirmCard } from './TaskConfirmCard'
 import { DeliverablesCard } from './DeliverablesCard'
@@ -2245,8 +2245,8 @@ function AgentCard({
       }
     >
       <span className="agentcard__avatar">
-        {/* 提案中的智能体尚无 id：以名字为 seed 确定性生成头像（用户接受后可在编辑器改）；新角色形状随机，与接受后的编辑器一致。 */}
-        <HumationFace seed={name} spec={{ shape: AUTO_SHAPE }} title={name} />
+        {/* 提案中的智能体尚无 id：以名字为 seed 确定性生成头像（用户接受后可在编辑器改）；新角色形状按名字挑，与接受后的编辑器一致。 */}
+        <HumationFace seed={name} spec={{ shape: seededShape(name) }} title={name} />
       </span>
       <span className="agentcard__body">
         <span className="agentcard__title">{t('chat.agentcard.title')}</span>
