@@ -235,5 +235,12 @@ for (const s of scanList.sessions) {
 }
 ok('㉑ 回填/列表摘要不露引擎标记 ⟦deva:*⟧', !leak, leak)
 
+// ㉒ Web 控制台:GET / 页面壳免鉴权可取(同端口托管是浏览器接入前提,Origin 双重校验天然匹配);
+// 数据端点仍须 Bearer(用无效 token 打 /api/info 应 401,页面壳不改变鉴权面)
+const page = execSync(`curl -s http://127.0.0.1:4317/ -H "Origin: http://127.0.0.1:4317"`).toString()
+ok('㉒a 页面壳免鉴权可取', page.includes('Deva Web 控制台'), `len=${page.length}`)
+const shellNoAuth = execSync(`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4317/api/info -H "Origin: http://127.0.0.1:4317"`).toString().trim()
+ok('㉒b 数据端点仍须 Bearer', shellNoAuth === '401', `got ${shellNoAuth}`)
+
 console.log(`\n===== ${pass}/${pass + fail} PASS =====`)
 process.exit(fail ? 1 : 0)
