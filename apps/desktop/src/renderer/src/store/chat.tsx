@@ -26,6 +26,7 @@ import { useToast } from '../components/ToastProvider'
 import { useModels, findActive, hasUsableModel } from './models'
 import { useWorkspace } from './workspace'
 import { formatTokens } from '../../../shared/context'
+import { normalizeAgentDraft, normalizeAutotaskDraft, type AgentDraft, type AutotaskDraft } from '../../../shared/drafts'
 
 /**
  * 会话状态（渲染层）。
@@ -79,24 +80,8 @@ export interface SubagentChild {
   summary?: string
 }
 
-/** 角色名片草稿（与 preload/主进程 AgentDraft 对齐）：propose_agent 参数归一化后的形状。 */
-export interface AgentDraft {
-  name: string
-  desc: string
-  model: string
-  prompt: string
-}
-
-/**
- * 定时任务确认名片草稿（与 preload/主进程 AutotaskDraft 对齐）：create_task 参数归一化后的形状。
- * schedule 扁平化为恒有 at/cron/tz 字符串（不适用者为空串），便于编辑器双向绑定；tz 空 = 创建时按本地时区补。
- * 授权信封（人格/模型）不在草稿里——由用户在名片编辑并授权，此草稿只承载模型的建议部分。
- */
-export interface AutotaskDraft {
-  title: string
-  prompt: string
-  schedule: { kind: 'once' | 'recurring'; at: string; cron: string; tz: string }
-}
+/** 名片草稿（角色 / 定时任务）：与主进程共用 shared/drafts.ts。 */
+export type { AgentDraft, AutotaskDraft } from '../../../shared/drafts'
 
 /** 绑定的定时任务交来的结果（与 preload/主进程 HandoffInfo 对齐）。 */
 export interface HandoffInfo {
@@ -814,39 +799,6 @@ function reduceBackground(
   return reduceBlocks(blocks, ev)
 }
 
-/** 归一化 propose_agent 原始参数为角色草稿（实时路径；与主进程 normalizeAgentDraft 对齐）。 */
-function normalizeAgentDraft(input: unknown): AgentDraft {
-  const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
-  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-  return {
-    name: str(a.name).trim(),
-    desc: str(a.description).trim(),
-    model: '',
-    prompt: str(a.prompt)
-  }
-}
-
-/** 归一化 create_task 原始参数为定时任务草稿（实时路径；与主进程 normalizeAutotaskDraft 对齐）。 */
-function normalizeAutotaskDraft(input: unknown): AutotaskDraft {
-  const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
-  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-  const sched = (a.schedule && typeof a.schedule === 'object' ? a.schedule : {}) as Record<
-    string,
-    unknown
-  >
-  const schedKind = sched.kind === 'once' ? 'once' : 'recurring'
-  return {
-    title: str(a.title).trim(),
-    prompt: str(a.prompt),
-    schedule: {
-      kind: schedKind,
-      at: str(sched.at).trim(),
-      cron: str(sched.cron).trim(),
-      tz: str(sched.tz).trim()
-    }
-  }
-}
-
 /** 把一个流事件并入助手消息的块序列（纯函数，返回新数组）。 */
 function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
   const next = blocks.slice()
@@ -1482,9 +1434,42 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })()
     }
 
+    // 正文 / 思考增量按帧合并：每个 token 一条事件，逐条 setState 会让整棵组件树每个 token 重渲染一次。
+    // 同一会话的增量先排队，下一帧一次并入；窗口在后台时 rAF 不跑，另有 250ms 计时兜底（后台计时器
+    // 会被降频，但总会跑）。该会话的其它事件到达时先把排着的并入，保证事件先后顺序不变。
+    const pendingDeltas = new Map<string, StreamEvent[]>()
+    let deltaFrame = 0
+    let deltaTimer: ReturnType<typeof setTimeout> | null = null
+    const flushDeltas = (sid: string): void => {
+      const evs = pendingDeltas.get(sid)
+      if (!evs) return
+      pendingDeltas.delete(sid)
+      patchRuntime(sid, (r) => {
+        const messages = updateLastAssistant(r.messages, (blocks) => evs.reduce(reduceBlocks, blocks))
+        if (messages === r.messages && r.reconnecting === null) return r
+        return { ...r, messages, reconnecting: null }
+      })
+    }
+    const flushAllDeltas = (): void => {
+      if (deltaFrame) cancelAnimationFrame(deltaFrame)
+      if (deltaTimer) clearTimeout(deltaTimer)
+      deltaFrame = 0
+      deltaTimer = null
+      for (const sid of [...pendingDeltas.keys()]) flushDeltas(sid)
+    }
+    const queueDelta = (sid: string, ev: StreamEvent): void => {
+      const q = pendingDeltas.get(sid)
+      if (q) q.push(ev)
+      else pendingDeltas.set(sid, [ev])
+      if (!deltaFrame) deltaFrame = requestAnimationFrame(flushAllDeltas)
+      if (!deltaTimer) deltaTimer = setTimeout(flushAllDeltas, 250)
+    }
+
     const unsub = window.deva.chat.onEvent((payload) => {
       const sid = payload.sessionId
       const ev = payload.event as StreamEvent
+      const isDelta = ev.type === 'text_delta' || ev.type === 'thinking_delta'
+      if (!isDelta) flushDeltas(sid)
 
       // 本渲染层是否正为该会话流式一轮 = 建过「用户气泡 + 空助手位」脚手架：本层 send/compact 发起的，
       // 或别处发起、经 turn_start / attachSession 接上的。只有这样的会话才能把流事件正确拼进气泡；
@@ -1702,14 +1687,21 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         patchCardBlocks(sid, (blocks) => resolveCard(blocks, ev))
         return
       }
-      // 内容事件：并入消息；若正处于重连横幅则收起（任何真实内容到达即视为"已恢复"）。
+      // 内容事件：并入消息；若正处于重连横幅则收起（任何真实内容到达即视为"已恢复"）。增量按帧合并（见上）。
+      if (isDelta) {
+        queueDelta(sid, ev)
+        return
+      }
       patchRuntime(sid, (r) => {
         const messages = updateLastAssistant(r.messages, (blocks) => reduceBlocks(blocks, ev))
         if (messages === r.messages && r.reconnecting === null) return r
         return { ...r, messages, reconnecting: null }
       })
     })
-    return unsub
+    return () => {
+      unsub()
+      flushAllDeltas()
+    }
   }, [
     refreshSessions,
     patchRuntime,

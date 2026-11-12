@@ -31,6 +31,7 @@ import {
 } from './image-read'
 import type { ImagePart, ListingRecord, ToolSpec } from '../providers/types'
 import { BROWSER_BRIEF, BROWSER_GUIDE, browserToolSpec, runBrowserTool, type MemberHandoff } from './browser'
+import { builtinCategory, EDIT_TOOLS, pathKind } from './tool-catalog'
 import { deferTool } from './tool-search'
 import { OFFICE_EXT, officeText } from './office-text'
 
@@ -569,38 +570,7 @@ export function buildTodoTool(): ToolSpec {
  */
 export type ToolCategory = 'read' | 'edit' | 'exec' | 'mcp'
 
-export const EDIT_TOOLS = new Set(['write_file', 'edit_file'])
-// 执行类：命令行（受策略层 + 权限闸门约束）；内置浏览器会提交表单、改变网页状态，同归此类（定时任务照常可用）。
-const EXEC_TOOLS = new Set<string>(['run_command', 'browser'])
-/**
- * 明确的只读/无副作用内置工具白名单。ask_user / skill / run_subagent 均在循环内「闸门前特判」，
- * 恒放行执行（不真正走 evaluate），列在此处只是兜底：万一改动导致它们落到闸门，也按 read 放行。
- */
-const READ_TOOLS = new Set([
-  'read_file',
-  'list_dir',
-  'glob',
-  'grep',
-  'web_fetch',
-  'ask_user',
-  'skill',
-  // 查看按需加载工具的用法：同为闸门前特判，列此仅兜底。
-  'tool_search',
-  'run_subagent',
-  'send_to_subagent',
-  // 读记忆（主进程直读 ~/.deva 下的全局 / 项目记忆，无路径入参）；写/删记忆不在此集，落默认分支同 create_skill。
-  'memory_read',
-  // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「接受」（走渲染层 personas:upsert）。
-  'propose_agent',
-  // 惰性提议工具：不写盘、不弹权限框；真正的授权是用户在名片里点「创建」（走渲染层 chat:resolve-autotask）。
-  'create_task',
-  // exit_plan：提交计划，循环内「闸门前特判」，恒不落到 executeTool；列此仅兜底。
-  'exit_plan',
-  // todo_write：只写会话边车（待办清单），同为闸门前特判；列此仅兜底。
-  'todo_write',
-  // 交付文件：只核对文件存在，不读内容、不写盘；打开文件的是用户在交付卡上的点击。
-  'present_files'
-])
+// 内置工具的分类（read / edit / exec）登记在 tool-catalog.ts。
 
 /** 已连接 MCP 服务注册的命名空间化工具名（serverId__toolName）。连接时注册、断开时反注册。 */
 const mcpToolNames = new Set<string>()
@@ -615,13 +585,10 @@ export function isMcpTool(name: string): boolean {
 }
 
 export function toolCategory(name: string): ToolCategory {
-  if (EDIT_TOOLS.has(name)) return 'edit'
-  if (EXEC_TOOLS.has(name)) return 'exec'
-  if (READ_TOOLS.has(name)) return 'read'
-  if (mcpToolNames.has(name)) return 'mcp'
-  // 未知/幻觉工具名：一律按 mcp 走闸（ask），绝不再默认成 read 自动放行——关后门。
-  // 内置 create_skill 不列入任何集合，落此默认分支：交互对话照常执行（不弹授权框），密封执行由 SEALED_FORBIDDEN 拒绝。
-  return 'mcp'
+  // 内置工具按目录表分类；已连接的 MCP 工具、未知 / 幻觉工具名一律按 mcp 走闸，绝不默认成 read 自动放行——关后门。
+  // 目录表里没填分类的内置工具（create_skill、写 / 删记忆等）同样落此分支：交互对话照常执行（不弹授权框），
+  // 密封执行由 sealed.ts 的禁用清单拒绝。
+  return builtinCategory(name) ?? 'mcp'
 }
 
 export interface ToolContext {
@@ -790,12 +757,6 @@ export function writeTargetPath(
 /** present_files 一次最多交付的文件数。 */
 const PRESENT_MAX = 20
 
-/** 扫描类工具：省略 path 即隐含「项目根」，未挂载工作区时没有默认根可用。 */
-const SCAN_TOOLS = new Set(['list_dir', 'glob', 'grep'])
-
-/** 单文件类工具：path 是必填的落点，相对写法以项目根为基准。 */
-const FILE_PATH_TOOLS = new Set(['write_file', 'edit_file', 'read_file'])
-
 /**
  * 「本次调用是否缺少相对路径基准」——挂载工作区提示卡的**唯一判据**。
  *
@@ -830,9 +791,11 @@ export function needsWorkspaceMount(
   const a = (args ?? {}) as Record<string, unknown>
   // 先展开 ~ 再判 isAbsolute：`~/notes.txt` 是明确的主目录落点，不缺基准，不该打断用户。
   const p = typeof a.path === 'string' ? expandHome(a.path.trim()) : ''
-  if (FILE_PATH_TOOLS.has(name)) return p && !isAbsolute(p) ? { tool: name, path: p } : null
+  // 单文件类（path 是必填的落点）：相对写法缺基准。路径语义登记在 tool-catalog.ts。
+  const kind = pathKind(name)
+  if (kind === 'file') return p && !isAbsolute(p) ? { tool: name, path: p } : null
   // 扫描类：省略 path（隐含项目根）与相对 path 都缺基准，同样命中。
-  if (SCAN_TOOLS.has(name)) return isAbsolute(p) ? null : { tool: name, path: p }
+  if (kind === 'scan') return isAbsolute(p) ? null : { tool: name, path: p }
   return null
 }
 
@@ -1433,676 +1396,669 @@ function errorSummary(e: unknown): string {
   return line.length > 40 ? `${line.slice(0, 40)}…` : line || '失败'
 }
 
+/**
+ * 内置工具的执行入口：名字 → 处理函数。抛出的异常由 executeTool 统一兜成失败结果。
+ * 新增内置工具：在这里加一项，并在 tool-catalog.ts 写清它的权限分类与适用范围。
+ */
+const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>> = {
+  browser: (a, ctx) => runBrowserTool(a, ctx),
+  read_file: async (a, ctx) => {
+    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const stat = await fs.stat(abs)
+    const ext = extname(abs).toLowerCase()
+    // Word / Excel / PowerPoint：解压取文字，同文本一样带行号返回（附件按路径交给模型时靠它读）。
+    if (OFFICE_EXT.has(ext)) {
+      if (stat.size > MAX_OFFICE_BYTES)
+        return {
+          content: `（文件超过 ${formatBytes(MAX_OFFICE_BYTES)}，未加载）`,
+          summary: '文件过大',
+          isError: true
+        }
+      const text = officeText(await fs.readFile(abs), ext)
+      if (text === null)
+        return {
+          content: '（无法解析这个文件：可能已加密、已损坏，或其实是旧版格式）',
+          summary: '无法解析',
+          isError: true
+        }
+      return numberedText(
+        text,
+        a,
+        `以上是从 ${ext.slice(1).toUpperCase()} 文件中提取的纯文字（不含格式与图片），不能用 edit_file 修改原文件。`
+      )
+    }
+    const imageExt = IMAGE_EXT.has(ext)
+    if (imageExt && stat.size > MAX_IMAGE_SOURCE_BYTES)
+      return {
+        content: `（图片超过 ${formatBytes(MAX_IMAGE_SOURCE_BYTES)}，未加载）`,
+        summary: '图片过大',
+        isError: true
+      }
+    if (!imageExt && stat.size > MAX_READ_BYTES)
+      return {
+        content: '（文件超过 2MB，未加载；请用 grep 定位所需内容）',
+        summary: '文件过大',
+        isError: true
+      }
+    const buf = await fs.readFile(abs)
+    // 图片按魔数认（扩展名只用来放宽上面的体积门槛）：以图片块随结果返回，模型直接用视觉看。
+    const mime = sniffImageMime(buf)
+    if (mime) return readImageResult(buf, mime, abs)
+    if (stat.size > MAX_READ_BYTES)
+      return { content: '（文件超过 2MB，未加载）', summary: '文件过大', isError: true }
+    if (looksBinary(buf))
+      return { content: '（疑似二进制文件，未加载）', summary: '二进制', isError: true }
+    if (buf.length === 0) return { content: '（空文件）', summary: '0 行' }
+    return numberedText(buf.toString('utf8'), a)
+  },
+  present_files: async (a, ctx) => {
+    // 只核对、不读内容：解析后的路径经 delivered 交给循环记入边车，交付卡据此绘制。有一个路径不对就
+    // 整次报错，让模型修正后重新交付——交付卡只出现在成功的调用上，卡上每个文件交付时都确实存在。
+    const list = Array.isArray(a.paths) ? a.paths : []
+    if (list.length === 0)
+      return { content: '缺少 paths 参数：请列出要交付的文件路径。', summary: '参数无效', isError: true }
+    if (list.length > PRESENT_MAX)
+      return {
+        content: `一次最多交付 ${PRESENT_MAX} 个文件，请只列出最主要的成品。`,
+        summary: '文件过多',
+        isError: true
+      }
+    const files: string[] = []
+    const bad: string[] = []
+    const seen = new Set<string>()
+    for (const p of list) {
+      let abs: string
+      try {
+        abs = resolvePath(ctx.workspaceRoot, p)
+      } catch (e) {
+        bad.push(`${String(p)}：${(e as Error).message}`)
+        continue
+      }
+      if (seen.has(abs)) continue
+      seen.add(abs)
+      const stat = await fs.stat(abs).catch(() => null)
+      if (!stat) bad.push(`${abs}：文件不存在`)
+      else if (!stat.isFile())
+        bad.push(`${abs}：不是文件（目录请改为交付其中的入口文件，如 index.html）`)
+      else files.push(abs)
+    }
+    if (bad.length)
+      return {
+        content: `以下路径无法交付，请修正后重新调用（本次未向用户展示任何文件）：\n${bad.map((l) => `- ${l}`).join('\n')}`,
+        summary: `${bad.length} 个路径无效`,
+        isError: true
+      }
+    // 成功时只回一句：路径已在调用参数里，再列一遍只是白占上下文（失败时逐条列原因，模型要据此修正）。
+    // 合并过重复路径就说一声，免得模型对着「传了 2 个、展示 1 个」以为自己没传对。
+    const merged = list.length > files.length ? '（重复的路径已合并为一个。）' : ''
+    return {
+      content: `已交付 ${files.length} 个文件，交付卡将在本轮回复结束后显示在回复末尾。${merged}`,
+      summary: `${files.length} 个文件`,
+      delivered: files
+    }
+  },
+  list_dir: async (a, ctx) => {
+    // path 省略时回落项目根（与工具描述「默认项目根」一致）。
+    const abs = resolveReadDir(ctx.workspaceRoot, a.path)
+    const dirents = await fs.readdir(abs, { withFileTypes: true })
+    const rows = dirents
+      .filter((d) => d.isDirectory() || d.isFile())
+      .map((d) => ({ name: d.name, dir: d.isDirectory() }))
+      .sort((x, y) => (x.dir !== y.dir ? (x.dir ? -1 : 1) : x.name.localeCompare(y.name)))
+    const listing = rows.map((r) => (r.dir ? `${r.name}/` : r.name)).join('\n')
+    return { content: listing || '（空目录）', summary: `${rows.length} 项` }
+  },
+  glob: async (a, ctx) => {
+    const pattern = typeof a.pattern === 'string' ? a.pattern.trim() : ''
+    if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
+    const dir = resolveReadDir(ctx.workspaceRoot, a.path)
+    const re = globToRegExp(pattern)
+    const files = await collectFiles(dir)
+    const matched = files.filter((f) => re.test(f.rel))
+    const stated = await Promise.all(
+      matched.map(async (f) => {
+        let mtime = 0
+        try {
+          mtime = (await fs.stat(f.abs)).mtimeMs
+        } catch {
+          /* 忽略无法 stat 的条目 */
+        }
+        return { rel: displayPath(ctx.workspaceRoot, f.abs), mtime }
+      })
+    )
+    stated.sort((x, y) => y.mtime - x.mtime)
+    const shown = stated.slice(0, GLOB_RESULT_MAX)
+    const more = stated.length > shown.length
+    const listing = shown.map((f) => f.rel).join('\n')
+    return {
+      content:
+        (listing || '（无匹配文件）') +
+        (more ? `\n…（共 ${stated.length} 个，仅列前 ${GLOB_RESULT_MAX}）` : ''),
+      summary: `${stated.length} 个文件`
+    }
+  },
+  grep: async (a, ctx) => {
+    const pattern = typeof a.pattern === 'string' ? a.pattern : ''
+    if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
+    const { re, note } = compileGrepPattern(pattern, a.ignore_case === true)
+    const target = resolveReadDir(ctx.workspaceRoot, a.path)
+    let globRe: RegExp | null = null
+    // 不含 / 的 glob（如 *.ts）只匹配文件名，与 ripgrep 一致——否则只命中根目录文件、静默返回无匹配。
+    let globBase = false
+    if (typeof a.glob === 'string' && a.glob.trim()) {
+      const g = a.glob.trim().replace(/\\/g, '/')
+      globRe = globToRegExp(g)
+      globBase = !g.includes('/')
+    }
+    // path 可为目录（递归遍历）或单个文件（直接搜该文件）——修复「path 指向文件时静默返回无匹配」。
+    // 路径不存在则明确报错，而非误导性的空结果。
+    let st: import('fs').Stats
+    try {
+      st = await fs.stat(target)
+    } catch {
+      return { content: `路径不存在：${String(a.path ?? '.')}`, summary: '路径不存在', isError: true }
+    }
+    // 遍历遵守 .gitignore（同 ripgrep / Claude Code 的 Grep）：大项目里被忽略的构建产物、缓存目录动辄上万个
+    // 文件，不跳过的话既慢，还会占满 WALK_MAX 名额，让后面的源码目录根本扫不到。
+    const files = st.isFile()
+      ? [{ abs: target, rel: basename(target) }]
+      : walkFiles(target, true)
+    // 单个文件的匹配行（至多 GREP_MATCH_MAX 条，总数由下面汇总时截断）。
+    const searchFile = async (f: { abs: string }): Promise<string[]> => {
+      let buf: Buffer
+      try {
+        buf = await fs.readFile(f.abs)
+      } catch {
+        return []
+      }
+      if (buf.length > MAX_READ_BYTES || looksBinary(buf)) return []
+      // 与 read_file 一致的行拆分：\r 不残留在行内，正则锚点 ^/$ 与显示都基于同一「干净行」。
+      const lines = buf.toString('utf8').split(/\r\n|\r|\n/)
+      const hits: string[] = []
+      for (let i = 0; i < lines.length && hits.length < GREP_MATCH_MAX; i++) {
+        if (re.test(lines[i]))
+          hits.push(`${displayPath(ctx.workspaceRoot, f.abs)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
+      }
+      return hits
+    }
+    // 按遍历顺序分批并发读取，结果仍按遍历顺序汇总（输出稳定）；凑满上限即停止遍历。
+    const rows: string[] = []
+    let truncated = false
+    let batch: { abs: string }[] = []
+    const flush = async (): Promise<void> => {
+      const results = await Promise.all(batch.map(searchFile))
+      batch = []
+      for (const hits of results)
+        for (const row of hits) {
+          rows.push(row)
+          if (rows.length >= GREP_MATCH_MAX) {
+            truncated = true
+            return
+          }
+        }
+    }
+    for await (const f of files) {
+      if (globRe && !globRe.test(globBase ? basename(f.rel) : f.rel)) continue
+      batch.push(f)
+      if (batch.length >= GREP_CONCURRENCY) {
+        await flush()
+        if (truncated) break
+      }
+    }
+    if (!truncated && batch.length) await flush()
+    return {
+      content:
+        (note ? `${note}\n` : '') +
+        (rows.length
+          ? rows.join('\n') + (truncated ? `\n…（匹配过多，仅列前 ${GREP_MATCH_MAX} 处）` : '')
+          : '（无匹配）'),
+      summary: rows.length ? (truncated ? `${rows.length}+ 处` : `${rows.length} 处`) : '无匹配'
+    }
+  },
+  web_fetch: async (a, ctx) => {
+    const url = typeof a.url === 'string' ? a.url.trim() : ''
+    if (!url) return { content: '缺少 url 参数', summary: '参数无效', isError: true }
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return { content: `URL 无效：${url}`, summary: 'URL 无效', isError: true }
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      return {
+        content: `仅支持 http/https（收到 ${parsed.protocol}）`,
+        summary: '协议不支持',
+        isError: true
+      }
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS)
+    try {
+      const res = await httpFetch(url, {
+        signal: controller.signal,
+        redirect: 'follow',
+        headers: {
+          'user-agent': `Deva/${app.getVersion()} (+https://github.com/sqfcyily/deva)`,
+          accept: 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8'
+        }
+      })
+      const ct = (res.headers.get('content-type') || '').toLowerCase()
+      const buf = await readCapped(res, WEB_FETCH_MAX_BYTES)
+      if (!res.ok)
+        return {
+          content: `HTTP ${res.status} ${res.statusText}`.trim(),
+          summary: `HTTP ${res.status}`,
+          isError: true
+        }
+      const textual =
+        ct.includes('html') ||
+        ct.includes('json') ||
+        ct.includes('xml') ||
+        ct.includes('text') ||
+        ct.includes('javascript') ||
+        ct === ''
+      if (!textual && looksBinary(buf))
+        return {
+          content: `（非文本内容：${ct || '未知类型'}，未加载）`,
+          summary: '非文本',
+          isError: true
+        }
+      const raw = buf.toString('utf8')
+      const isHtml = ct.includes('html') || /^\s*(?:<!doctype html|<html)/i.test(raw)
+      let title: string | null = null
+      let text: string
+      if (isHtml) {
+        const r = htmlToText(raw)
+        title = r.title
+        text = r.text
+      } else {
+        text = raw
+      }
+      const header = [
+        `URL: ${res.url || url}`,
+        title ? `标题: ${title}` : null,
+        `类型: ${ct || '未知'}`
+      ]
+        .filter(Boolean)
+        .join('\n')
+      const body = text.trim() || '（无可读文本内容）'
+      // 正文过长：全文存文件，模型拿开头结尾预览与路径（同 run_command）；页面头信息恒在前。
+      return {
+        content: `${header}\n\n${spillLongOutput(body, WEB_TEXT_MAX, ctx.sessionId, 'web')}`,
+        summary: title ? title.slice(0, 40) : `${body.length} 字符`
+      }
+    } catch (e) {
+      const err = e as Error
+      if (err?.name === 'AbortError')
+        return {
+          content: `请求超时（>${WEB_FETCH_TIMEOUT_MS / 1000}s）`,
+          summary: '超时',
+          isError: true
+        }
+      return { content: `获取失败：${describeNetError(e)}`, summary: errorSummary(e), isError: true }
+    } finally {
+      clearTimeout(timer)
+    }
+  },
+  write_file: async (a, ctx) => {
+    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const content = typeof a.content === 'string' ? a.content : ''
+    // 父目录不存在时先自动创建，免得模型还得先 run_command mkdir。
+    await fs.mkdir(dirname(abs), { recursive: true })
+    if (a.append === true) {
+      // 追加段按已有文件的主导换行写入，免得 CRLF 文件尾部混进 LF 行。
+      const prev = await fs.readFile(abs, 'utf8').catch(() => '')
+      const body = dominantEol(prev) === '\r\n' ? normEol(content).replace(/\n/g, '\r\n') : content
+      await fs.appendFile(abs, body, 'utf8')
+      return { content: `已追加 ${Buffer.byteLength(body, 'utf8')} 字节`, summary: '已追加' }
+    }
+    // 原文件带 UTF-8 BOM 而新内容没有时补回（对标 CC Write）：丢了 BOM，Windows PowerShell 5.1
+    // 等会按 ANSI 读文件，中文变乱码。
+    const out =
+      content !== '' && !content.startsWith('\uFEFF') && (await hasUtf8Bom(abs)) ? '\uFEFF' + content : content
+    await fs.writeFile(abs, out, 'utf8')
+    return { content: `已写入 ${Buffer.byteLength(out, 'utf8')} 字节`, summary: '已写入' }
+  },
+  edit_file: async (a, ctx) => {
+    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const oldStr = typeof a.old_string === 'string' ? a.old_string : ''
+    const newStr = typeof a.new_string === 'string' ? a.new_string : ''
+    if (!oldStr)
+      return { content: 'old_string 不能为空；新建文件请用 write_file', summary: '参数无效', isError: true }
+    if (oldStr === newStr)
+      return { content: 'old_string 与 new_string 相同，无需编辑', summary: '无变化', isError: true }
+    let buf: Buffer
+    try {
+      buf = await fs.readFile(abs)
+    } catch {
+      return { content: `文件不存在或无法读取：${String(a.path)}`, summary: '不存在', isError: true }
+    }
+    if (looksBinary(buf))
+      return { content: '（疑似二进制文件，拒绝编辑）', summary: '二进制', isError: true }
+    const text = buf.toString('utf8')
+    // 非重叠出现次数统计：唯一性是精确编辑的安全前提。
+    const countOcc = (hay: string, needle: string): number => {
+      let c = 0
+      for (let idx = hay.indexOf(needle); idx !== -1; idx = hay.indexOf(needle, idx + needle.length))
+        c++
+      return c
+    }
+    // 两级匹配：
+    // ① 精确匹配（逐字节）——命中即原样 split/join 替换，文件其余字节（含 CRLF）分毫不动。
+    // ② 精确落空时，退回「换行规范化」匹配：把文件与 old/new 的 \r\n、孤立 \r 统一为 \n 再比对。
+    //    这修复了「用户/模型从 read_file 的干净显示复制 old_string，在 CRLF 文件上必然匹配失败」的问题
+    //    （read_file 现返回不含 \r 的行内容，old_string 天然无 \r，而磁盘文件是 \r\n）。
+    // new_string 一律按文件主导换行写入：单行 old_string 在 CRLF 文件上也能精确命中，
+    // 不转换的话模型写的多行 new_string 会以 LF 插入，与其余 CRLF 行混在一起。
+    const eol = dominantEol(text)
+    let count = countOcc(text, oldStr)
+    let workText = text
+    let workOld = oldStr
+    let workNew = normEol(newStr).replace(/\n/g, eol)
+    let normalized = false
+    if (count === 0) {
+      const tN = normEol(text)
+      const oN = normEol(oldStr)
+      const cN = countOcc(tN, oN)
+      if (cN > 0) {
+        normalized = true
+        count = cN
+        workText = tN
+        workOld = oN
+        workNew = normEol(newStr)
+      }
+    }
+    if (count === 0)
+      return {
+        content: '未找到 old_string（需与文件内容逐字符一致，含缩进/换行）',
+        summary: '未找到',
+        isError: true
+      }
+    const replaceAll = a.replace_all === true
+    if (count > 1 && !replaceAll)
+      return {
+        content: `old_string 匹配到 ${count} 处，不唯一。请多带上下文使其唯一，或传 replace_all。`,
+        summary: '不唯一',
+        isError: true
+      }
+    // split/join 逐字面量替换：绕开 String.replace 对 $ 的特殊解释。
+    let result = workText.split(workOld).join(workNew)
+    // 规范化匹配后需还原文件的主导换行风格：CRLF 主导则把 \n 复原为 \r\n（保「CRLF 文件换行保留」）。
+    // 纯 LF / 纯 CRLF 文件均可无损往返；仅极少见的混合换行文件会被统一（此路径本就是精确匹配失败的兜底）。
+    if (normalized && eol === '\r\n') result = result.replace(/\n/g, '\r\n')
+    // old/new 只差换行符时，按文件风格写入后与原文相同——如实报无变化，不谎称已替换。
+    if (result === text)
+      return {
+        content: 'old_string 与 new_string 仅换行符不同；换行符跟随文件原有风格，文件无变化',
+        summary: '无变化',
+        isError: true
+      }
+    await fs.writeFile(abs, result, 'utf8')
+    const n = replaceAll ? count : 1
+    const note = normalized ? '（已按换行规范匹配）' : ''
+    return { content: `已替换 ${n} 处${note}`, summary: replaceAll ? `已替换 ${n} 处` : '已编辑' }
+  },
+  run_command: async (a, ctx) => {
+    const command = typeof a.command === 'string' ? a.command.trim() : ''
+    if (!command)
+      return { content: '缺少有效的 command 参数', summary: '参数无效', isError: true }
+    // cwd：挂载了工作区 → 项目根；未挂载（对话优先外壳的「全机通用助手」）→ 回落用户主目录，
+    // 与终端面板 safeCwd 同一口径，不再因「未打开项目」整个不可用。
+    // cwd 只是相对路径基准，不是安全边界——命令执行不设任何限制。
+    let cwd = ctx.workspaceRoot
+    // 目录不存在（项目被移走/改名）同样回落主目录，避免 spawn 直接失败。
+    if (!cwd || !existsSync(cwd)) cwd = homedir()
+    const timeoutMs = Math.min(
+      Math.max(toInt(a.timeout) ?? EXEC_TIMEOUT_DEFAULT, 1000),
+      EXEC_TIMEOUT_MAX
+    )
+    const r = await execCapture(command, cwd, timeoutMs, ctx.signal)
+    // 输出过长：全文存文件，模型只拿开头和结尾（报错与汇总多在结尾）。恒显状态行追加在后，不会被省略。
+    const body = spillLongOutput(r.out, EXEC_OUTPUT_MAX, ctx.sessionId, 'command')
+    let status: string
+    let summary: string
+    if (r.spawnError) {
+      status = `（无法执行：${r.spawnError}）`
+      summary = '无法执行'
+    } else if (r.capped) {
+      status = `（输出超过 ${EXEC_CAPTURE_BYTES / 1024 / 1024}MB，已停止命令）`
+      summary = '输出过多'
+    } else if (r.aborted) {
+      status = '（已中止）'
+      summary = '已中止'
+    } else if (r.timedOut) {
+      status = `（超时 >${timeoutMs}ms，已强制结束）`
+      summary = '超时'
+    } else {
+      status = `（退出码：${r.code}）`
+      summary = `退出码 ${r.code}`
+    }
+    if (r.lingering) status += '（有子进程未能确认结束，可能仍在后台运行）'
+    const isError = Boolean(r.spawnError) || r.capped || r.aborted || r.timedOut || r.code !== 0
+    // 未挂载工作区时命令在用户主目录执行，失败多半只是「不在项目里」（典型：git 报 not a git
+    // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。命令文本里的相对路径无法
+    // 可靠判定（故 needsWorkspaceMount 不拦 run_command），改用这种「失败才提示」的事后自愈。
+    const cwdHint =
+      isError && !ctx.workspaceRoot
+        ? `\n（提示：当前未挂载工作区，命令在用户主目录 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或请用户挂载该项目为工作区。）`
+        : ''
+    const content = (body ? body + '\n' : '') + status + cwdHint
+    return { content, summary, isError }
+  },
+  create_skill: async (a, _ctx) => {
+    const skillName = typeof a.name === 'string' ? a.name.trim() : ''
+    const instructions = typeof a.instructions === 'string' ? a.instructions.trim() : ''
+    if (!skillName)
+      return { content: '缺少技能 name（技能显示名，/技能名 据此触发）', summary: '参数无效', isError: true }
+    if (!instructions)
+      return { content: '缺少 instructions（技能正文，即完整操作步骤）', summary: '参数无效', isError: true }
+    const allowedTools = Array.isArray(a.allowedTools)
+      ? a.allowedTools.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+      : []
+    // 直调主进程 upsertSkill（渲染层写不进 ~/.deva；本工具已过权限闸）——自动启用。
+    const rec = upsertSkill({
+      name: skillName,
+      description: typeof a.description === 'string' ? a.description : '',
+      trigger: typeof a.trigger === 'string' ? a.trigger : '',
+      allowedTools,
+      instructions,
+      enabled: true
+    })
+    return {
+      content: `已创建并启用技能「${rec.name}」(id: ${rec.id})，用户可用 /${rec.name} 触发。技能文件夹：${join(skillsDir(), rec.id)}（之后要补充脚本、参考文档等资源，直接写进这里）。`,
+      summary: '已创建技能'
+    }
+  },
+  memory_read: async (_a, ctx) => {
+    const globals = listMemories(GLOBAL_SCOPE)
+    const out = ['【全局记忆】', ...(globals.length ? globals.map(formatMemoryLine) : ['（当前尚无全局记忆）'])]
+    let total = globals.length
+    if (ctx.workspaceRoot) {
+      const projects = listMemories({ kind: 'project', root: ctx.workspaceRoot })
+      total += projects.length
+      out.push(
+        '',
+        `【项目私有记忆】（${ctx.workspaceRoot}）`,
+        ...(projects.length ? projects.map(formatMemoryLine) : ['（当前项目尚无私有记忆）'])
+      )
+    } else {
+      out.push('', '（未挂载工作区，无项目私有记忆）')
+    }
+    return { content: out.join('\n'), summary: `${total} 条` }
+  },
+  memory_write: async (a, ctx) => {
+    const content = typeof a.content === 'string' ? a.content : ''
+    const id = typeof a.id === 'string' && a.id.trim() ? a.id.trim() : undefined
+    // 显式给了 scope 就按它；省略时新增默认全局，带 id 更新则按 id 前缀定位（同 memory_delete），
+    // 免得模型更新 p_ 条目时漏写 scope 被默认成 global 而误报不符。
+    const explicit = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
+    const kind = explicit ?? (id ? scopeKindOfId(id) : ctx.globalMemoryReadonly ? 'project' : 'global')
+    if (kind === 'global' && ctx.globalMemoryReadonly)
+      return {
+        content:
+          '你是项目成员，全局记忆（用户本人的通用偏好）对你只读，由主角色来记；你只能写当前文件夹的项目私有记忆（scope="project"）。',
+        summary: '未写入',
+        isError: true
+      }
+    if (kind === 'project' && !ctx.workspaceRoot)
+      return {
+        content: id
+          ? `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`
+          : '当前未挂载工作区，无法写入项目私有记忆：请改用 scope="global"（若确属用户本人的通用偏好），或请用户先挂载项目。',
+        summary: '未写入',
+        isError: true
+      }
+    if (id && scopeKindOfId(id) !== kind)
+      return {
+        content: `id ${id} 属于${scopeKindOfId(id) === 'project' ? '项目私有记忆（scope="project"）' : '全局记忆（scope="global"）'}，与所给 scope 不符：更新时可省略 scope，按 id 自动定位；如要换作用域，请删除原条目后在新作用域新增。`,
+        summary: '参数无效',
+        isError: true
+      }
+    const scope: MemoryScope =
+      kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
+    // 直调主进程 memory 服务（去重 + 总量预算在服务内校验）。
+    const r = writeMemory(content, id, scope)
+    if (!r.ok) return { content: r.error, summary: '未写入', isError: true }
+    // 本结果即告知：挂上记录，记忆清单折叠时视这条为已告知，不再随后重复附带。
+    return {
+      content: `${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}`,
+      summary: r.created ? '已记住' : id ? '已更新' : '已存在',
+      listing: memoryWrittenRecord(r.entry)
+    }
+  },
+  memory_delete: async (a, ctx) => {
+    const id = typeof a.id === 'string' ? a.id.trim() : ''
+    if (!id) return { content: '缺少要删除的记忆 id', summary: '参数无效', isError: true }
+    const kind = scopeKindOfId(id)
+    if (kind === 'global' && ctx.globalMemoryReadonly)
+      return {
+        content: `${id} 是全局记忆，对项目成员只读，不能删除；需要删除请告诉用户由主角色处理。`,
+        summary: '未删除',
+        isError: true
+      }
+    if (kind === 'project' && !ctx.workspaceRoot)
+      return { content: `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`, summary: '未找到', isError: true }
+    const scope: MemoryScope =
+      kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
+    const removed = deleteMemory(id, scope)
+    if (!removed)
+      return { content: `不存在 id 为 ${id} 的记忆（可先用 memory_read 查看）`, summary: '未找到', isError: true }
+    return {
+      content: `已删除记忆：${formatMemoryLine(removed)}`,
+      summary: '已删除',
+      listing: memoryDeletedRecord(removed.id)
+    }
+  },
+  propose_agent: async (a, _ctx) => {
+    // 惰性工具：**不写任何东西**。草稿参数经 tool_call 事件的 args 到渲染层铸成名片，
+    // 用户点「接受」后才走渲染层 personas:upsert 真正建角色（零提权）。
+    const proposedName = typeof a.name === 'string' ? a.name.trim() : ''
+    if (!proposedName)
+      return { content: '缺少角色 name（角色显示名）', summary: '参数无效', isError: true }
+    return {
+      content: '已生成角色名片，等待用户在名片中查看并确认；请勿重复调用，也不要声称角色已创建。',
+      summary: '已生成角色名片'
+    }
+  },
+  create_task: async (a, _ctx) => {
+    // 惰性工具：**不写任何东西**。草稿参数经 tool_call 事件的 args 到渲染层铸成确认名片，
+    // 用户核对日程与授权、点「创建」后才走渲染层 chat:resolve-autotask 真正建任务（创建=授权时刻）。
+    const title = typeof a.title === 'string' ? a.title.trim() : ''
+    if (!title)
+      return { content: '缺少任务 title（任务标题）', summary: '参数无效', isError: true }
+    return {
+      content:
+        '已生成定时任务确认名片，等待用户核对日程与授权后点「创建」；请勿重复调用，也不要声称任务已创建。' +
+        '提醒用户：任务触发时会自动执行、期间不再确认，一切授权须在此名片里议定。',
+      summary: '已生成定时任务名片'
+    }
+  },
+  create_mcp: async (a, _ctx) => {
+    const serverName = typeof a.name === 'string' ? a.name.trim() : ''
+    if (!serverName)
+      return { content: '缺少 MCP 服务 name（显示名）', summary: '参数无效', isError: true }
+    const transport: 'stdio' | 'sse' | 'http' =
+      a.transport === 'sse' || a.transport === 'http' ? a.transport : 'stdio'
+
+    // 明文 map（env / headers）：仅保留字符串键值，密钥不走这里。
+    const plainMap = (v: unknown): Record<string, string> => {
+      const out: Record<string, string> = {}
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+          const key = k.trim()
+          if (key && typeof val === 'string') out[key] = val
+        }
+      }
+      return out
+    }
+    // 密钥字段名清单：模型只给「名字」，真实值由用户后填。
+    const secretNames = (v: unknown): string[] =>
+      Array.isArray(v)
+        ? Array.from(
+            new Set(
+              v
+                .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+                .map((s) => s.trim())
+            )
+          )
+        : []
+    // 合成 env / headers：明文键值 + 密钥字段名 → { secretRef } 占位（占位本身非敏感）。
+    const buildMap = (plainKey: string, secretKey: string): Record<string, McpValue> => {
+      const map: Record<string, McpValue> = { ...plainMap(a[plainKey]) }
+      for (const nm of secretNames(a[secretKey])) map[nm] = { secretRef: nm }
+      return map
+    }
+
+    const input: Parameters<typeof upsertServer>[0] = {
+      name: serverName,
+      description: typeof a.description === 'string' ? a.description : '',
+      transport,
+      enabled: true
+    }
+    let secretFields: string[] = []
+    if (transport === 'stdio') {
+      const command = typeof a.command === 'string' ? a.command.trim() : ''
+      if (!command)
+        return { content: 'stdio 传输缺少 command（启动命令，如 npx）', summary: '参数无效', isError: true }
+      input.command = command
+      input.args = Array.isArray(a.args)
+        ? a.args.filter((x): x is string => typeof x === 'string')
+        : []
+      input.env = buildMap('env', 'secretEnv')
+      secretFields = secretNames(a.secretEnv)
+    } else {
+      const url = typeof a.url === 'string' ? a.url.trim() : ''
+      if (!url)
+        return { content: `${transport} 传输缺少 url（服务地址）`, summary: '参数无效', isError: true }
+      input.url = url
+      input.headers = buildMap('headers', 'secretHeaders')
+      secretFields = secretNames(a.secretHeaders)
+    }
+
+    // 直调主进程 upsertServer（渲染层写不进 ~/.deva；本工具已过权限闸）——自动启用；
+    // 写入层的变更通知随即触发 mcp.ts 对账，后台连接（缺密钥则停在「待填密钥」）。
+    const rec = upsertServer(input)
+    const tail = secretFields.length
+      ? `\n⚠️ 以下字段为密钥占位、尚无真实值：${secretFields.join('、')}。请提示用户前往「扩展」页为该服务填写这些密钥（加密存储），填好后会自动连接。`
+      : '正在后台连接；连上后其工具从用户下一条消息起可用（本轮内不可用），连接结果可在「扩展」页查看。'
+    return {
+      content:
+        `已创建并启用 MCP 服务「${rec.name}」(id: ${rec.id}，传输 ${rec.transport})。${tail}`,
+      summary: '已创建 MCP 服务'
+    }
+  }
+}
+
 export async function executeTool(
   name: string,
   args: unknown,
   ctx: ToolContext
 ): Promise<ToolResult> {
   const a = (args ?? {}) as Record<string, unknown>
+  // 只认自有属性：模型若调用 toString / constructor 之类的名字，不能落到原型链上的方法。
+  const run = Object.prototype.hasOwnProperty.call(toolHandlers, name) ? toolHandlers[name] : undefined
+  if (!run) return { content: `未知工具：${name}`, summary: '未知工具', isError: true }
   try {
-    if (name === 'browser') return await runBrowserTool(a, ctx)
-
-    if (name === 'read_file') {
-      const abs = resolvePath(ctx.workspaceRoot, a.path)
-      const stat = await fs.stat(abs)
-      const ext = extname(abs).toLowerCase()
-      // Word / Excel / PowerPoint：解压取文字，同文本一样带行号返回（附件按路径交给模型时靠它读）。
-      if (OFFICE_EXT.has(ext)) {
-        if (stat.size > MAX_OFFICE_BYTES)
-          return {
-            content: `（文件超过 ${formatBytes(MAX_OFFICE_BYTES)}，未加载）`,
-            summary: '文件过大',
-            isError: true
-          }
-        const text = officeText(await fs.readFile(abs), ext)
-        if (text === null)
-          return {
-            content: '（无法解析这个文件：可能已加密、已损坏，或其实是旧版格式）',
-            summary: '无法解析',
-            isError: true
-          }
-        return numberedText(
-          text,
-          a,
-          `以上是从 ${ext.slice(1).toUpperCase()} 文件中提取的纯文字（不含格式与图片），不能用 edit_file 修改原文件。`
-        )
-      }
-      const imageExt = IMAGE_EXT.has(ext)
-      if (imageExt && stat.size > MAX_IMAGE_SOURCE_BYTES)
-        return {
-          content: `（图片超过 ${formatBytes(MAX_IMAGE_SOURCE_BYTES)}，未加载）`,
-          summary: '图片过大',
-          isError: true
-        }
-      if (!imageExt && stat.size > MAX_READ_BYTES)
-        return {
-          content: '（文件超过 2MB，未加载；请用 grep 定位所需内容）',
-          summary: '文件过大',
-          isError: true
-        }
-      const buf = await fs.readFile(abs)
-      // 图片按魔数认（扩展名只用来放宽上面的体积门槛）：以图片块随结果返回，模型直接用视觉看。
-      const mime = sniffImageMime(buf)
-      if (mime) return readImageResult(buf, mime, abs)
-      if (stat.size > MAX_READ_BYTES)
-        return { content: '（文件超过 2MB，未加载）', summary: '文件过大', isError: true }
-      if (looksBinary(buf))
-        return { content: '（疑似二进制文件，未加载）', summary: '二进制', isError: true }
-      if (buf.length === 0) return { content: '（空文件）', summary: '0 行' }
-      return numberedText(buf.toString('utf8'), a)
-    }
-
-    if (name === 'present_files') {
-      // 只核对、不读内容：解析后的路径经 delivered 交给循环记入边车，交付卡据此绘制。有一个路径不对就
-      // 整次报错，让模型修正后重新交付——交付卡只出现在成功的调用上，卡上每个文件交付时都确实存在。
-      const list = Array.isArray(a.paths) ? a.paths : []
-      if (list.length === 0)
-        return { content: '缺少 paths 参数：请列出要交付的文件路径。', summary: '参数无效', isError: true }
-      if (list.length > PRESENT_MAX)
-        return {
-          content: `一次最多交付 ${PRESENT_MAX} 个文件，请只列出最主要的成品。`,
-          summary: '文件过多',
-          isError: true
-        }
-      const files: string[] = []
-      const bad: string[] = []
-      const seen = new Set<string>()
-      for (const p of list) {
-        let abs: string
-        try {
-          abs = resolvePath(ctx.workspaceRoot, p)
-        } catch (e) {
-          bad.push(`${String(p)}：${(e as Error).message}`)
-          continue
-        }
-        if (seen.has(abs)) continue
-        seen.add(abs)
-        const stat = await fs.stat(abs).catch(() => null)
-        if (!stat) bad.push(`${abs}：文件不存在`)
-        else if (!stat.isFile())
-          bad.push(`${abs}：不是文件（目录请改为交付其中的入口文件，如 index.html）`)
-        else files.push(abs)
-      }
-      if (bad.length)
-        return {
-          content: `以下路径无法交付，请修正后重新调用（本次未向用户展示任何文件）：\n${bad.map((l) => `- ${l}`).join('\n')}`,
-          summary: `${bad.length} 个路径无效`,
-          isError: true
-        }
-      // 成功时只回一句：路径已在调用参数里，再列一遍只是白占上下文（失败时逐条列原因，模型要据此修正）。
-      // 合并过重复路径就说一声，免得模型对着「传了 2 个、展示 1 个」以为自己没传对。
-      const merged = list.length > files.length ? '（重复的路径已合并为一个。）' : ''
-      return {
-        content: `已交付 ${files.length} 个文件，交付卡将在本轮回复结束后显示在回复末尾。${merged}`,
-        summary: `${files.length} 个文件`,
-        delivered: files
-      }
-    }
-
-    if (name === 'list_dir') {
-      // path 省略时回落项目根（与工具描述「默认项目根」一致）。
-      const abs = resolveReadDir(ctx.workspaceRoot, a.path)
-      const dirents = await fs.readdir(abs, { withFileTypes: true })
-      const rows = dirents
-        .filter((d) => d.isDirectory() || d.isFile())
-        .map((d) => ({ name: d.name, dir: d.isDirectory() }))
-        .sort((x, y) => (x.dir !== y.dir ? (x.dir ? -1 : 1) : x.name.localeCompare(y.name)))
-      const listing = rows.map((r) => (r.dir ? `${r.name}/` : r.name)).join('\n')
-      return { content: listing || '（空目录）', summary: `${rows.length} 项` }
-    }
-
-    if (name === 'glob') {
-      const pattern = typeof a.pattern === 'string' ? a.pattern.trim() : ''
-      if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
-      const dir = resolveReadDir(ctx.workspaceRoot, a.path)
-      const re = globToRegExp(pattern)
-      const files = await collectFiles(dir)
-      const matched = files.filter((f) => re.test(f.rel))
-      const stated = await Promise.all(
-        matched.map(async (f) => {
-          let mtime = 0
-          try {
-            mtime = (await fs.stat(f.abs)).mtimeMs
-          } catch {
-            /* 忽略无法 stat 的条目 */
-          }
-          return { rel: displayPath(ctx.workspaceRoot, f.abs), mtime }
-        })
-      )
-      stated.sort((x, y) => y.mtime - x.mtime)
-      const shown = stated.slice(0, GLOB_RESULT_MAX)
-      const more = stated.length > shown.length
-      const listing = shown.map((f) => f.rel).join('\n')
-      return {
-        content:
-          (listing || '（无匹配文件）') +
-          (more ? `\n…（共 ${stated.length} 个，仅列前 ${GLOB_RESULT_MAX}）` : ''),
-        summary: `${stated.length} 个文件`
-      }
-    }
-
-    if (name === 'grep') {
-      const pattern = typeof a.pattern === 'string' ? a.pattern : ''
-      if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
-      const { re, note } = compileGrepPattern(pattern, a.ignore_case === true)
-      const target = resolveReadDir(ctx.workspaceRoot, a.path)
-      let globRe: RegExp | null = null
-      // 不含 / 的 glob（如 *.ts）只匹配文件名，与 ripgrep 一致——否则只命中根目录文件、静默返回无匹配。
-      let globBase = false
-      if (typeof a.glob === 'string' && a.glob.trim()) {
-        const g = a.glob.trim().replace(/\\/g, '/')
-        globRe = globToRegExp(g)
-        globBase = !g.includes('/')
-      }
-      // path 可为目录（递归遍历）或单个文件（直接搜该文件）——修复「path 指向文件时静默返回无匹配」。
-      // 路径不存在则明确报错，而非误导性的空结果。
-      let st: import('fs').Stats
-      try {
-        st = await fs.stat(target)
-      } catch {
-        return { content: `路径不存在：${String(a.path ?? '.')}`, summary: '路径不存在', isError: true }
-      }
-      // 遍历遵守 .gitignore（同 ripgrep / Claude Code 的 Grep）：大项目里被忽略的构建产物、缓存目录动辄上万个
-      // 文件，不跳过的话既慢，还会占满 WALK_MAX 名额，让后面的源码目录根本扫不到。
-      const files = st.isFile()
-        ? [{ abs: target, rel: basename(target) }]
-        : walkFiles(target, true)
-      // 单个文件的匹配行（至多 GREP_MATCH_MAX 条，总数由下面汇总时截断）。
-      const searchFile = async (f: { abs: string }): Promise<string[]> => {
-        let buf: Buffer
-        try {
-          buf = await fs.readFile(f.abs)
-        } catch {
-          return []
-        }
-        if (buf.length > MAX_READ_BYTES || looksBinary(buf)) return []
-        // 与 read_file 一致的行拆分：\r 不残留在行内，正则锚点 ^/$ 与显示都基于同一「干净行」。
-        const lines = buf.toString('utf8').split(/\r\n|\r|\n/)
-        const hits: string[] = []
-        for (let i = 0; i < lines.length && hits.length < GREP_MATCH_MAX; i++) {
-          if (re.test(lines[i]))
-            hits.push(`${displayPath(ctx.workspaceRoot, f.abs)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
-        }
-        return hits
-      }
-      // 按遍历顺序分批并发读取，结果仍按遍历顺序汇总（输出稳定）；凑满上限即停止遍历。
-      const rows: string[] = []
-      let truncated = false
-      let batch: { abs: string }[] = []
-      const flush = async (): Promise<void> => {
-        const results = await Promise.all(batch.map(searchFile))
-        batch = []
-        for (const hits of results)
-          for (const row of hits) {
-            rows.push(row)
-            if (rows.length >= GREP_MATCH_MAX) {
-              truncated = true
-              return
-            }
-          }
-      }
-      for await (const f of files) {
-        if (globRe && !globRe.test(globBase ? basename(f.rel) : f.rel)) continue
-        batch.push(f)
-        if (batch.length >= GREP_CONCURRENCY) {
-          await flush()
-          if (truncated) break
-        }
-      }
-      if (!truncated && batch.length) await flush()
-      return {
-        content:
-          (note ? `${note}\n` : '') +
-          (rows.length
-            ? rows.join('\n') + (truncated ? `\n…（匹配过多，仅列前 ${GREP_MATCH_MAX} 处）` : '')
-            : '（无匹配）'),
-        summary: rows.length ? (truncated ? `${rows.length}+ 处` : `${rows.length} 处`) : '无匹配'
-      }
-    }
-
-    if (name === 'web_fetch') {
-      const url = typeof a.url === 'string' ? a.url.trim() : ''
-      if (!url) return { content: '缺少 url 参数', summary: '参数无效', isError: true }
-      let parsed: URL
-      try {
-        parsed = new URL(url)
-      } catch {
-        return { content: `URL 无效：${url}`, summary: 'URL 无效', isError: true }
-      }
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-        return {
-          content: `仅支持 http/https（收到 ${parsed.protocol}）`,
-          summary: '协议不支持',
-          isError: true
-        }
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS)
-      try {
-        const res = await httpFetch(url, {
-          signal: controller.signal,
-          redirect: 'follow',
-          headers: {
-            'user-agent': `Deva/${app.getVersion()} (+https://github.com/sqfcyily/deva)`,
-            accept: 'text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8'
-          }
-        })
-        const ct = (res.headers.get('content-type') || '').toLowerCase()
-        const buf = await readCapped(res, WEB_FETCH_MAX_BYTES)
-        if (!res.ok)
-          return {
-            content: `HTTP ${res.status} ${res.statusText}`.trim(),
-            summary: `HTTP ${res.status}`,
-            isError: true
-          }
-        const textual =
-          ct.includes('html') ||
-          ct.includes('json') ||
-          ct.includes('xml') ||
-          ct.includes('text') ||
-          ct.includes('javascript') ||
-          ct === ''
-        if (!textual && looksBinary(buf))
-          return {
-            content: `（非文本内容：${ct || '未知类型'}，未加载）`,
-            summary: '非文本',
-            isError: true
-          }
-        const raw = buf.toString('utf8')
-        const isHtml = ct.includes('html') || /^\s*(?:<!doctype html|<html)/i.test(raw)
-        let title: string | null = null
-        let text: string
-        if (isHtml) {
-          const r = htmlToText(raw)
-          title = r.title
-          text = r.text
-        } else {
-          text = raw
-        }
-        const header = [
-          `URL: ${res.url || url}`,
-          title ? `标题: ${title}` : null,
-          `类型: ${ct || '未知'}`
-        ]
-          .filter(Boolean)
-          .join('\n')
-        const body = text.trim() || '（无可读文本内容）'
-        // 正文过长：全文存文件，模型拿开头结尾预览与路径（同 run_command）；页面头信息恒在前。
-        return {
-          content: `${header}\n\n${spillLongOutput(body, WEB_TEXT_MAX, ctx.sessionId, 'web')}`,
-          summary: title ? title.slice(0, 40) : `${body.length} 字符`
-        }
-      } catch (e) {
-        const err = e as Error
-        if (err?.name === 'AbortError')
-          return {
-            content: `请求超时（>${WEB_FETCH_TIMEOUT_MS / 1000}s）`,
-            summary: '超时',
-            isError: true
-          }
-        return { content: `获取失败：${describeNetError(e)}`, summary: errorSummary(e), isError: true }
-      } finally {
-        clearTimeout(timer)
-      }
-    }
-
-    if (name === 'write_file') {
-      const abs = resolvePath(ctx.workspaceRoot, a.path)
-      const content = typeof a.content === 'string' ? a.content : ''
-      // 父目录不存在时先自动创建，免得模型还得先 run_command mkdir。
-      await fs.mkdir(dirname(abs), { recursive: true })
-      if (a.append === true) {
-        // 追加段按已有文件的主导换行写入，免得 CRLF 文件尾部混进 LF 行。
-        const prev = await fs.readFile(abs, 'utf8').catch(() => '')
-        const body = dominantEol(prev) === '\r\n' ? normEol(content).replace(/\n/g, '\r\n') : content
-        await fs.appendFile(abs, body, 'utf8')
-        return { content: `已追加 ${Buffer.byteLength(body, 'utf8')} 字节`, summary: '已追加' }
-      }
-      // 原文件带 UTF-8 BOM 而新内容没有时补回（对标 CC Write）：丢了 BOM，Windows PowerShell 5.1
-      // 等会按 ANSI 读文件，中文变乱码。
-      const out =
-        content !== '' && !content.startsWith('\uFEFF') && (await hasUtf8Bom(abs)) ? '\uFEFF' + content : content
-      await fs.writeFile(abs, out, 'utf8')
-      return { content: `已写入 ${Buffer.byteLength(out, 'utf8')} 字节`, summary: '已写入' }
-    }
-
-    if (name === 'edit_file') {
-      const abs = resolvePath(ctx.workspaceRoot, a.path)
-      const oldStr = typeof a.old_string === 'string' ? a.old_string : ''
-      const newStr = typeof a.new_string === 'string' ? a.new_string : ''
-      if (!oldStr)
-        return { content: 'old_string 不能为空；新建文件请用 write_file', summary: '参数无效', isError: true }
-      if (oldStr === newStr)
-        return { content: 'old_string 与 new_string 相同，无需编辑', summary: '无变化', isError: true }
-      let buf: Buffer
-      try {
-        buf = await fs.readFile(abs)
-      } catch {
-        return { content: `文件不存在或无法读取：${String(a.path)}`, summary: '不存在', isError: true }
-      }
-      if (looksBinary(buf))
-        return { content: '（疑似二进制文件，拒绝编辑）', summary: '二进制', isError: true }
-      const text = buf.toString('utf8')
-      // 非重叠出现次数统计：唯一性是精确编辑的安全前提。
-      const countOcc = (hay: string, needle: string): number => {
-        let c = 0
-        for (let idx = hay.indexOf(needle); idx !== -1; idx = hay.indexOf(needle, idx + needle.length))
-          c++
-        return c
-      }
-      // 两级匹配：
-      // ① 精确匹配（逐字节）——命中即原样 split/join 替换，文件其余字节（含 CRLF）分毫不动。
-      // ② 精确落空时，退回「换行规范化」匹配：把文件与 old/new 的 \r\n、孤立 \r 统一为 \n 再比对。
-      //    这修复了「用户/模型从 read_file 的干净显示复制 old_string，在 CRLF 文件上必然匹配失败」的问题
-      //    （read_file 现返回不含 \r 的行内容，old_string 天然无 \r，而磁盘文件是 \r\n）。
-      // new_string 一律按文件主导换行写入：单行 old_string 在 CRLF 文件上也能精确命中，
-      // 不转换的话模型写的多行 new_string 会以 LF 插入，与其余 CRLF 行混在一起。
-      const eol = dominantEol(text)
-      let count = countOcc(text, oldStr)
-      let workText = text
-      let workOld = oldStr
-      let workNew = normEol(newStr).replace(/\n/g, eol)
-      let normalized = false
-      if (count === 0) {
-        const tN = normEol(text)
-        const oN = normEol(oldStr)
-        const cN = countOcc(tN, oN)
-        if (cN > 0) {
-          normalized = true
-          count = cN
-          workText = tN
-          workOld = oN
-          workNew = normEol(newStr)
-        }
-      }
-      if (count === 0)
-        return {
-          content: '未找到 old_string（需与文件内容逐字符一致，含缩进/换行）',
-          summary: '未找到',
-          isError: true
-        }
-      const replaceAll = a.replace_all === true
-      if (count > 1 && !replaceAll)
-        return {
-          content: `old_string 匹配到 ${count} 处，不唯一。请多带上下文使其唯一，或传 replace_all。`,
-          summary: '不唯一',
-          isError: true
-        }
-      // split/join 逐字面量替换：绕开 String.replace 对 $ 的特殊解释。
-      let result = workText.split(workOld).join(workNew)
-      // 规范化匹配后需还原文件的主导换行风格：CRLF 主导则把 \n 复原为 \r\n（保「CRLF 文件换行保留」）。
-      // 纯 LF / 纯 CRLF 文件均可无损往返；仅极少见的混合换行文件会被统一（此路径本就是精确匹配失败的兜底）。
-      if (normalized && eol === '\r\n') result = result.replace(/\n/g, '\r\n')
-      // old/new 只差换行符时，按文件风格写入后与原文相同——如实报无变化，不谎称已替换。
-      if (result === text)
-        return {
-          content: 'old_string 与 new_string 仅换行符不同；换行符跟随文件原有风格，文件无变化',
-          summary: '无变化',
-          isError: true
-        }
-      await fs.writeFile(abs, result, 'utf8')
-      const n = replaceAll ? count : 1
-      const note = normalized ? '（已按换行规范匹配）' : ''
-      return { content: `已替换 ${n} 处${note}`, summary: replaceAll ? `已替换 ${n} 处` : '已编辑' }
-    }
-
-    if (name === 'run_command') {
-      const command = typeof a.command === 'string' ? a.command.trim() : ''
-      if (!command)
-        return { content: '缺少有效的 command 参数', summary: '参数无效', isError: true }
-      // cwd：挂载了工作区 → 项目根；未挂载（对话优先外壳的「全机通用助手」）→ 回落用户主目录，
-      // 与终端面板 safeCwd 同一口径，不再因「未打开项目」整个不可用。
-      // cwd 只是相对路径基准，不是安全边界——命令执行不设任何限制。
-      let cwd = ctx.workspaceRoot
-      // 目录不存在（项目被移走/改名）同样回落主目录，避免 spawn 直接失败。
-      if (!cwd || !existsSync(cwd)) cwd = homedir()
-      const timeoutMs = Math.min(
-        Math.max(toInt(a.timeout) ?? EXEC_TIMEOUT_DEFAULT, 1000),
-        EXEC_TIMEOUT_MAX
-      )
-      const r = await execCapture(command, cwd, timeoutMs, ctx.signal)
-      // 输出过长：全文存文件，模型只拿开头和结尾（报错与汇总多在结尾）。恒显状态行追加在后，不会被省略。
-      const body = spillLongOutput(r.out, EXEC_OUTPUT_MAX, ctx.sessionId, 'command')
-      let status: string
-      let summary: string
-      if (r.spawnError) {
-        status = `（无法执行：${r.spawnError}）`
-        summary = '无法执行'
-      } else if (r.capped) {
-        status = `（输出超过 ${EXEC_CAPTURE_BYTES / 1024 / 1024}MB，已停止命令）`
-        summary = '输出过多'
-      } else if (r.aborted) {
-        status = '（已中止）'
-        summary = '已中止'
-      } else if (r.timedOut) {
-        status = `（超时 >${timeoutMs}ms，已强制结束）`
-        summary = '超时'
-      } else {
-        status = `（退出码：${r.code}）`
-        summary = `退出码 ${r.code}`
-      }
-      if (r.lingering) status += '（有子进程未能确认结束，可能仍在后台运行）'
-      const isError = Boolean(r.spawnError) || r.capped || r.aborted || r.timedOut || r.code !== 0
-      // 未挂载工作区时命令在用户主目录执行，失败多半只是「不在项目里」（典型：git 报 not a git
-      // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。命令文本里的相对路径无法
-      // 可靠判定（故 needsWorkspaceMount 不拦 run_command），改用这种「失败才提示」的事后自愈。
-      const cwdHint =
-        isError && !ctx.workspaceRoot
-          ? `\n（提示：当前未挂载工作区，命令在用户主目录 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或请用户挂载该项目为工作区。）`
-          : ''
-      const content = (body ? body + '\n' : '') + status + cwdHint
-      return { content, summary, isError }
-    }
-
-    if (name === 'create_skill') {
-      const skillName = typeof a.name === 'string' ? a.name.trim() : ''
-      const instructions = typeof a.instructions === 'string' ? a.instructions.trim() : ''
-      if (!skillName)
-        return { content: '缺少技能 name（技能显示名，/技能名 据此触发）', summary: '参数无效', isError: true }
-      if (!instructions)
-        return { content: '缺少 instructions（技能正文，即完整操作步骤）', summary: '参数无效', isError: true }
-      const allowedTools = Array.isArray(a.allowedTools)
-        ? a.allowedTools.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
-        : []
-      // 直调主进程 upsertSkill（渲染层写不进 ~/.deva；本工具已过权限闸）——自动启用。
-      const rec = upsertSkill({
-        name: skillName,
-        description: typeof a.description === 'string' ? a.description : '',
-        trigger: typeof a.trigger === 'string' ? a.trigger : '',
-        allowedTools,
-        instructions,
-        enabled: true
-      })
-      return {
-        content: `已创建并启用技能「${rec.name}」(id: ${rec.id})，用户可用 /${rec.name} 触发。技能文件夹：${join(skillsDir(), rec.id)}（之后要补充脚本、参考文档等资源，直接写进这里）。`,
-        summary: '已创建技能'
-      }
-    }
-
-    if (name === 'memory_read') {
-      const globals = listMemories(GLOBAL_SCOPE)
-      const out = ['【全局记忆】', ...(globals.length ? globals.map(formatMemoryLine) : ['（当前尚无全局记忆）'])]
-      let total = globals.length
-      if (ctx.workspaceRoot) {
-        const projects = listMemories({ kind: 'project', root: ctx.workspaceRoot })
-        total += projects.length
-        out.push(
-          '',
-          `【项目私有记忆】（${ctx.workspaceRoot}）`,
-          ...(projects.length ? projects.map(formatMemoryLine) : ['（当前项目尚无私有记忆）'])
-        )
-      } else {
-        out.push('', '（未挂载工作区，无项目私有记忆）')
-      }
-      return { content: out.join('\n'), summary: `${total} 条` }
-    }
-
-    if (name === 'memory_write') {
-      const content = typeof a.content === 'string' ? a.content : ''
-      const id = typeof a.id === 'string' && a.id.trim() ? a.id.trim() : undefined
-      // 显式给了 scope 就按它；省略时新增默认全局，带 id 更新则按 id 前缀定位（同 memory_delete），
-      // 免得模型更新 p_ 条目时漏写 scope 被默认成 global 而误报不符。
-      const explicit = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
-      const kind = explicit ?? (id ? scopeKindOfId(id) : ctx.globalMemoryReadonly ? 'project' : 'global')
-      if (kind === 'global' && ctx.globalMemoryReadonly)
-        return {
-          content:
-            '你是项目成员，全局记忆（用户本人的通用偏好）对你只读，由主角色来记；你只能写当前文件夹的项目私有记忆（scope="project"）。',
-          summary: '未写入',
-          isError: true
-        }
-      if (kind === 'project' && !ctx.workspaceRoot)
-        return {
-          content: id
-            ? `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`
-            : '当前未挂载工作区，无法写入项目私有记忆：请改用 scope="global"（若确属用户本人的通用偏好），或请用户先挂载项目。',
-          summary: '未写入',
-          isError: true
-        }
-      if (id && scopeKindOfId(id) !== kind)
-        return {
-          content: `id ${id} 属于${scopeKindOfId(id) === 'project' ? '项目私有记忆（scope="project"）' : '全局记忆（scope="global"）'}，与所给 scope 不符：更新时可省略 scope，按 id 自动定位；如要换作用域，请删除原条目后在新作用域新增。`,
-          summary: '参数无效',
-          isError: true
-        }
-      const scope: MemoryScope =
-        kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
-      // 直调主进程 memory 服务（去重 + 总量预算在服务内校验）。
-      const r = writeMemory(content, id, scope)
-      if (!r.ok) return { content: r.error, summary: '未写入', isError: true }
-      // 本结果即告知：挂上记录，记忆清单折叠时视这条为已告知，不再随后重复附带。
-      return {
-        content: `${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}`,
-        summary: r.created ? '已记住' : id ? '已更新' : '已存在',
-        listing: memoryWrittenRecord(r.entry)
-      }
-    }
-
-    if (name === 'memory_delete') {
-      const id = typeof a.id === 'string' ? a.id.trim() : ''
-      if (!id) return { content: '缺少要删除的记忆 id', summary: '参数无效', isError: true }
-      const kind = scopeKindOfId(id)
-      if (kind === 'global' && ctx.globalMemoryReadonly)
-        return {
-          content: `${id} 是全局记忆，对项目成员只读，不能删除；需要删除请告诉用户由主角色处理。`,
-          summary: '未删除',
-          isError: true
-        }
-      if (kind === 'project' && !ctx.workspaceRoot)
-        return { content: `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`, summary: '未找到', isError: true }
-      const scope: MemoryScope =
-        kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
-      const removed = deleteMemory(id, scope)
-      if (!removed)
-        return { content: `不存在 id 为 ${id} 的记忆（可先用 memory_read 查看）`, summary: '未找到', isError: true }
-      return {
-        content: `已删除记忆：${formatMemoryLine(removed)}`,
-        summary: '已删除',
-        listing: memoryDeletedRecord(removed.id)
-      }
-    }
-
-    if (name === 'propose_agent') {
-      // 惰性工具：**不写任何东西**。草稿参数经 tool_call 事件的 args 到渲染层铸成名片，
-      // 用户点「接受」后才走渲染层 personas:upsert 真正建角色（零提权）。
-      const proposedName = typeof a.name === 'string' ? a.name.trim() : ''
-      if (!proposedName)
-        return { content: '缺少角色 name（角色显示名）', summary: '参数无效', isError: true }
-      return {
-        content: '已生成角色名片，等待用户在名片中查看并确认；请勿重复调用，也不要声称角色已创建。',
-        summary: '已生成角色名片'
-      }
-    }
-
-    if (name === 'create_task') {
-      // 惰性工具：**不写任何东西**。草稿参数经 tool_call 事件的 args 到渲染层铸成确认名片，
-      // 用户核对日程与授权、点「创建」后才走渲染层 chat:resolve-autotask 真正建任务（创建=授权时刻）。
-      const title = typeof a.title === 'string' ? a.title.trim() : ''
-      if (!title)
-        return { content: '缺少任务 title（任务标题）', summary: '参数无效', isError: true }
-      return {
-        content:
-          '已生成定时任务确认名片，等待用户核对日程与授权后点「创建」；请勿重复调用，也不要声称任务已创建。' +
-          '提醒用户：任务触发时会自动执行、期间不再确认，一切授权须在此名片里议定。',
-        summary: '已生成定时任务名片'
-      }
-    }
-
-    if (name === 'create_mcp') {
-      const serverName = typeof a.name === 'string' ? a.name.trim() : ''
-      if (!serverName)
-        return { content: '缺少 MCP 服务 name（显示名）', summary: '参数无效', isError: true }
-      const transport: 'stdio' | 'sse' | 'http' =
-        a.transport === 'sse' || a.transport === 'http' ? a.transport : 'stdio'
-
-      // 明文 map（env / headers）：仅保留字符串键值，密钥不走这里。
-      const plainMap = (v: unknown): Record<string, string> => {
-        const out: Record<string, string> = {}
-        if (v && typeof v === 'object' && !Array.isArray(v)) {
-          for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-            const key = k.trim()
-            if (key && typeof val === 'string') out[key] = val
-          }
-        }
-        return out
-      }
-      // 密钥字段名清单：模型只给「名字」，真实值由用户后填。
-      const secretNames = (v: unknown): string[] =>
-        Array.isArray(v)
-          ? Array.from(
-              new Set(
-                v
-                  .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-                  .map((s) => s.trim())
-              )
-            )
-          : []
-      // 合成 env / headers：明文键值 + 密钥字段名 → { secretRef } 占位（占位本身非敏感）。
-      const buildMap = (plainKey: string, secretKey: string): Record<string, McpValue> => {
-        const map: Record<string, McpValue> = { ...plainMap(a[plainKey]) }
-        for (const nm of secretNames(a[secretKey])) map[nm] = { secretRef: nm }
-        return map
-      }
-
-      const input: Parameters<typeof upsertServer>[0] = {
-        name: serverName,
-        description: typeof a.description === 'string' ? a.description : '',
-        transport,
-        enabled: true
-      }
-      let secretFields: string[] = []
-      if (transport === 'stdio') {
-        const command = typeof a.command === 'string' ? a.command.trim() : ''
-        if (!command)
-          return { content: 'stdio 传输缺少 command（启动命令，如 npx）', summary: '参数无效', isError: true }
-        input.command = command
-        input.args = Array.isArray(a.args)
-          ? a.args.filter((x): x is string => typeof x === 'string')
-          : []
-        input.env = buildMap('env', 'secretEnv')
-        secretFields = secretNames(a.secretEnv)
-      } else {
-        const url = typeof a.url === 'string' ? a.url.trim() : ''
-        if (!url)
-          return { content: `${transport} 传输缺少 url（服务地址）`, summary: '参数无效', isError: true }
-        input.url = url
-        input.headers = buildMap('headers', 'secretHeaders')
-        secretFields = secretNames(a.secretHeaders)
-      }
-
-      // 直调主进程 upsertServer（渲染层写不进 ~/.deva；本工具已过权限闸）——自动启用；
-      // 写入层的变更通知随即触发 mcp.ts 对账，后台连接（缺密钥则停在「待填密钥」）。
-      const rec = upsertServer(input)
-      const tail = secretFields.length
-        ? `\n⚠️ 以下字段为密钥占位、尚无真实值：${secretFields.join('、')}。请提示用户前往「扩展」页为该服务填写这些密钥（加密存储），填好后会自动连接。`
-        : '正在后台连接；连上后其工具从用户下一条消息起可用（本轮内不可用），连接结果可在「扩展」页查看。'
-      return {
-        content:
-          `已创建并启用 MCP 服务「${rec.name}」(id: ${rec.id}，传输 ${rec.transport})。${tail}`,
-        summary: '已创建 MCP 服务'
-      }
-    }
-
-    return { content: `未知工具：${name}`, summary: '未知工具', isError: true }
+    return await run(a, ctx)
   } catch (e) {
     const msg = (e as Error)?.message ?? String(e)
     return { content: `工具执行失败：${msg}`, summary: errorSummary(e), isError: true }

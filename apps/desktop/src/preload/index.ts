@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { EffortLevel } from '../shared/effort'
 import type { UpdateState } from '../shared/update'
 import type { DeliverableInfo } from '../shared/deliverables'
+import type { AgentDraft, AutotaskDraft } from '../shared/drafts'
 import type { BrowserLiveFrame, BrowserUiState } from '../shared/browser'
 
 /** 目录项（单层）。 */
@@ -215,20 +216,8 @@ export interface MemberTask {
   note: string
 }
 
-/** 角色名片草稿（与 services/chat.ts 的 AgentDraft 对齐）。 */
-export interface AgentDraft {
-  name: string
-  desc: string
-  model: string
-  prompt: string
-}
-
-/** 定时任务确认名片草稿（与 services/chat.ts 的 AutotaskDraft 对齐）。 */
-export interface AutotaskDraft {
-  title: string
-  prompt: string
-  schedule: { kind: 'once' | 'recurring'; at: string; cron: string; tz: string }
-}
+/** 名片草稿（角色 / 定时任务）：主进程与渲染层共用 shared/drafts.ts。 */
+export type { AgentDraft, AutotaskDraft }
 
 /** 重建历史用的展示块 / 消息（与 services/chat.ts 的 DisplayMessage 对齐）。 */
 export type DisplayBlock =

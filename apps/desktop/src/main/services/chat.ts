@@ -81,6 +81,14 @@ import {
   type MemberRef,
   type MemberRunStatus
 } from './members'
+import { normalizeAgentDraft, normalizeAutotaskDraft, type AgentDraft, type AutotaskDraft } from '../../shared/drafts'
+import {
+  MEMBER_EXCLUDED,
+  MEMBER_FOLDER_ONLY,
+  PARALLEL_READ_TOOLS,
+  SUBAGENT_EXCLUDED,
+  UNATTENDED_EXCLUDED
+} from './tool-catalog'
 import { NEW_MEMBER_TOKENS } from '../../shared/mention'
 import { slashTokens } from '../../shared/slash'
 import { withoutQuotes } from '../../shared/quote'
@@ -341,38 +349,6 @@ interface ChatSetArchivedRequest {
 /** 用户自定的对话标题上限（列表里单行省略显示，再长也看不全）。 */
 const TITLE_MAX = 100
 
-/** 角色名片草稿：propose_agent 原始参数归一化后的形状（编辑器/名片消费）。 */
-export interface AgentDraft {
-  name: string
-  desc: string
-  model: string
-  prompt: string
-}
-
-/** 归一化 propose_agent 的原始参数为角色草稿：description→desc、补空 model。
- * 头像不由 LLM 提议（无从得知部件词表）：名片按 name 确定性渲染，用户接受后可在编辑器定制。 */
-function normalizeAgentDraft(input: unknown): AgentDraft {
-  const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
-  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-  return {
-    name: str(a.name).trim(),
-    desc: str(a.description).trim(),
-    model: '',
-    prompt: str(a.prompt)
-  }
-}
-
-/**
- * 定时任务确认名片草稿：create_task 原始参数归一化后的形状（名片/编辑器消费）。
- * schedule 扁平化为恒有 at/cron/tz 字符串（不适用者为空串），便于编辑器双向绑定；tz 空 = 创建时按本地时区补。
- * 授权信封（personaId/modelRef）不由模型提议——由用户在名片里议定，此草稿只承载模型的建议部分。
- */
-export interface AutotaskDraft {
-  title: string
-  prompt: string
-  schedule: { kind: 'once' | 'recurring'; at: string; cron: string; tz: string }
-}
-
 /**
  * chat:resolve-autotask 的返回：create 成功带已建任务 id；dismiss 成功；失败带稳定错误码（渲染层本地化）。
  * 错误码含 createTask 的全部码 + 编排层的 no-session / no-input。
@@ -391,27 +367,6 @@ export type ResolveAutotaskResult =
         | 'no-session'
         | 'no-input'
     }
-
-/** 归一化 create_task 的原始参数为定时任务草稿。日程校验/时区补全留待创建时（createTask + 渲染层）。 */
-function normalizeAutotaskDraft(input: unknown): AutotaskDraft {
-  const a = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
-  const str = (v: unknown): string => (typeof v === 'string' ? v : '')
-  const sched = (a.schedule && typeof a.schedule === 'object' ? a.schedule : {}) as Record<
-    string,
-    unknown
-  >
-  const schedKind = sched.kind === 'once' ? 'once' : 'recurring'
-  return {
-    title: str(a.title).trim(),
-    prompt: str(a.prompt),
-    schedule: {
-      kind: schedKind,
-      at: str(sched.at).trim(),
-      cron: str(sched.cron).trim(),
-      tz: str(sched.tz).trim()
-    }
-  }
-}
 
 /** 重建历史用的展示消息（主进程从 provider Message[] 归约，去掉 base64 负载）。 */
 type DisplayBlock =
@@ -2181,43 +2136,7 @@ function buildSendToSubagentTool(): ToolSpec {
   }
 }
 
-/**
- * 子智能体禁用的工具：交互类（ask_user）、再派发/续聊（run_subagent / send_to_subagent）、创建持久实体类
- * （create_* / propose_agent）、记忆写删（看不到与用户的对话，无从判断用户偏好）、skill、
- * todo_write（待办清单是主对话给用户看的进度，子智能体的步骤收在 Task 卡里）。
- * 普通子智能体在工具表里就看不到它们（buildSubagentTools）；fork 沿用主对话的完整工具表以共享
- * 提示缓存，靠工具循环里 depth>0 的兜底拦截。
- */
-const SUBAGENT_EXCLUDED = new Set([
-  'ask_user',
-  'skill',
-  'run_subagent',
-  'send_to_subagent',
-  'create_skill',
-  'propose_agent',
-  'create_mcp',
-  'create_task',
-  'memory_write',
-  'memory_delete',
-  'todo_write',
-  // 交付物由主智能体在收尾时呈给用户；子智能体的产出经结论交回主智能体。
-  'present_files',
-  // 项目成员由主智能体管理（fork 沿用主对话工具表，靠这里拦下）。
-  'create_member',
-  'member_send',
-  'member_stop',
-  'member_status'
-])
-
-/** 可在同一步内并发执行的内置只读工具：无副作用、彼此无先后依赖（见工具循环的 readRuns）。 */
-const PARALLEL_READ_TOOLS = new Set([
-  'read_file',
-  'list_dir',
-  'glob',
-  'grep',
-  'web_fetch',
-  'memory_read'
-])
+// 子智能体 / 定时任务 / 成员会话不给哪些工具、哪些只读工具可并发：都登记在 tool-catalog.ts 的目录表里。
 
 /**
  * 子智能体本轮可用工具集：内置工具（排除 ask_user / skill / run_subagent 等交互与创建类）为基。
@@ -2236,33 +2155,6 @@ function buildSubagentTools(def: SubagentDef, personaId: string): ToolSpec[] {
   // 有按需加载的工具（如通用子智能体的 browser）才带 tool_search：只读的 Explore / Plan 等用不上。
   return fitToolSearch([...picked, buildToolSearchTool(), ...mcp])
 }
-
-/**
- * 定时任务（无人值守）从普通对话工具表里剔除的工具，其余与普通对话完全相同（含子智能体、待办清单、技能、MCP）：
- * - ask_user / exit_plan：要等用户回答或批准，无人在场会一直挂着（调度器串行，一个挂住挡住后面所有任务）；
- * - create_skill / propose_agent / create_mcp / create_task：要用户在名片上确认，不得在自动执行中创建持久实体；
- * - memory_write / memory_delete：无人看管时不得改写用户记忆（免得被任务抓取的外部内容悄悄污染）；memory_read 保留。
- * 每个调用仍经 sealedDecision 兜底（同一份禁用清单）。
- */
-const UNATTENDED_EXCLUDED = new Set([
-  'ask_user',
-  'exit_plan',
-  'create_skill',
-  'propose_agent',
-  'create_mcp',
-  'create_task',
-  'memory_write',
-  'memory_delete'
-])
-
-/**
- * 成员会话（见 members.ts）剔除的工具：创建技能 / 角色 / MCP / 定时任务都归主对话；交付物由主智能体呈给用户，
- * 成员的产出经结论交回。提问（ask_user）与计划审阅（exit_plan）保留：成员直接问用户，卡片在主对话里以通知行出现。
- * 写记忆（memory_write / memory_delete）另按 MEMBER_MEMORY_TOOLS 处理：有文件夹时保留，只能写项目私有记忆。
- */
-const MEMBER_EXCLUDED = new Set(['create_skill', 'propose_agent', 'create_mcp', 'create_task', 'present_files'])
-/** 成员没有文件夹（自己的、跟随的主对话的都没有）时剔除：只剩全局记忆，而全局记忆对成员只读。 */
-const MEMBER_MEMORY_TOOLS = new Set(['memory_write', 'memory_delete'])
 
 /**
  * 主对话工具表里的成员工具：派任务 / 查状态换成按需加载的版本（见 members.ts DEFERRED_MEMBER_TOOLS）。
@@ -2540,6 +2432,20 @@ interface MemberToolResult {
   isError: boolean
   /** 结果本身已告知了名单变化（create_member）：记为已告知，免得紧接着再附一遍名单。 */
   listing?: ReturnType<typeof memberAddedRecord>
+}
+
+/** 工具循环里一步中的一次调用（参数残缺的另带 truncated / cause，见 tool_call_truncated）。 */
+type StepToolCall = { id: string; name: string; args: unknown; truncated?: number; cause?: BrokenCallCause }
+
+/** 在闸门前就地处理的工具调用的结果（见 runAgentLoop 的 loopTools / deliver）。 */
+interface LoopToolOutcome {
+  /** 回灌给模型的 tool_result 正文。 */
+  content: string
+  isError: boolean
+  /** 随结果告知模型的清单记录（按需加载工具的用法、成员名单等，见 listing.ts）。 */
+  listing?: Extract<ContentPart, { type: 'tool_result' }>['listing']
+  /** 界面上这一步的摘要；name 缺省为本次调用的工具名。不给 = 不发 tool_result 事件。 */
+  shown?: { summary: string; isError: boolean; name?: string }
 }
 
 export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
@@ -4418,13 +4324,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
       let assistantText = ''
       // truncated = 参数残缺时已写出的字符数、cause = 残缺原因：这种调用只记录、不执行（见下方工具循环）。
-      let toolCalls: {
-        id: string
-        name: string
-        args: unknown
-        truncated?: number
-        cause?: BrokenCallCause
-      }[] = []
+      let toolCalls: StepToolCall[] = []
       let stopReason: StopReason = 'end_turn'
       // 本步被中止 / 出错打断（而非干净结束）：仍落地已收到的部分，见下方提交段。
       let interrupted: 'aborted' | 'error' | 'degenerate' | null = null
@@ -4897,115 +4797,66 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
       // 逐个执行工具（过权限闸门），结果回灌为一条 user 消息
       const resultParts: ContentPart[] = []
-      for (const tc of toolCalls) {
-        // 中止：跳出而非 return——已跑完的工具结果（含刚被中止的那条命令的输出）要随历史落盘，
-        // 余下未执行的由循环后的 fillUnrun 补占位。直接 return 会把 resultParts 整个丢掉。
-        if (controller.signal.aborted) break
-
-        // 参数残缺的调用：不过闸门、不执行，回灌失败结果让模型分段重来。
-        if (tc.truncated !== undefined) {
-          const cause = tc.cause ?? 'max_tokens'
-          const label = BROKEN_CALL_LABEL[cause]
-          args.onToolSummary?.(tc.id, label)
+      /**
+       * 记下一次在闸门前就地处理的调用结果：回灌给模型的内容进 resultParts；给了 shown 就同时把摘要记进边车、
+       * 发 tool_result 事件，界面据此定格这一步（不给 = 结果由别的事件呈现：问答卡、计划卡、Task 卡、待办清单）。
+       */
+      const deliver = (tc: { id: string; name: string }, r: LoopToolOutcome): void => {
+        if (r.shown) {
+          args.onToolSummary?.(tc.id, r.shown.summary)
           emit(turnId, sessionId, {
             type: 'tool_result',
             id: tc.id,
-            name: tc.name,
-            summary: label,
-            isError: true,
+            name: r.shown.name ?? tc.name,
+            summary: r.shown.summary,
+            isError: r.shown.isError,
             ...(evMeta ?? {})
           })
-          resultParts.push({
-            type: 'tool_result',
-            toolUseId: tc.id,
-            content: truncatedCallResult(tc.name, tc.truncated, cause, truncatedStreak),
-            isError: true
-          })
-          continue
         }
+        resultParts.push({
+          type: 'tool_result',
+          toolUseId: tc.id,
+          content: r.content,
+          isError: r.isError,
+          ...(r.listing ? { listing: r.listing } : {})
+        })
+      }
 
-        // 子智能体禁用工具兜底：普通子智能体的工具表里本就没有它们，fork 沿用主对话的完整工具表
-        //（为共享提示缓存），只能在这里拦下。
-        if (depth > 0 && SUBAGENT_EXCLUDED.has(tc.name)) {
-          const label = '子智能体不可用'
-          emit(turnId, sessionId, {
-            type: 'tool_result',
-            id: tc.id,
-            name: tc.name,
-            summary: label,
-            isError: true,
-            ...(evMeta ?? {})
-          })
-          resultParts.push({
-            type: 'tool_result',
-            toolUseId: tc.id,
-            content: `子智能体不能使用「${tc.name}」，请直接完成分配的任务。`,
-            isError: true
-          })
-          continue
-        }
+      // 成员工具（create_member / member_send / member_stop / read_main / report_to_main 与定时任务的交接工具）：
+      // 只在工具表里有它时受理，不过权限闸门（只改会话属性、起后台回合、读主对话正文）。
+      const memberCall = async (tc: StepToolCall): Promise<LoopToolOutcome> => {
+        const r: MemberToolResult =
+          args.memberTool && offeredTools.has(tc.name)
+            ? await args.memberTool(tc).catch((e: unknown) => ({
+                content: `执行失败：${(e as Error)?.message ?? String(e)}`,
+                summary: '执行失败',
+                isError: true
+              }))
+            : { content: `「${tc.name}」在当前对话中不可用，不要再调用。`, summary: '工具不可用', isError: true }
+        return { content: r.content, isError: r.isError, listing: r.listing, shown: { summary: r.summary, isError: r.isError } }
+      }
 
-        // tool_search：给出按需加载工具的完整用法（见 tool-search.ts）。只读，不过权限闸门。
-        if (tc.name === TOOL_SEARCH) {
+      /**
+       * 在闸门前就地处理的工具：名字 → 处理函数。它们不过权限闸门，也不授予任何能力——此后每个真实工具调用
+       * 仍照常过同一道闸门。返回 null = 本场景不受理，照常落到闸门（如定时任务里的 ask_user，由密封判定拒绝）。
+       */
+      const loopTools: Record<string, (tc: StepToolCall) => Promise<LoopToolOutcome | null>> = {
+        // tool_search：给出按需加载工具的完整用法（见 tool-search.ts）。只读。
+        [TOOL_SEARCH]: async (tc) => {
           const r = runToolSearch(tc.args, offeredTools)
-          args.onToolSummary?.(tc.id, r.summary)
-          emit(turnId, sessionId, {
-            type: 'tool_result',
-            id: tc.id,
-            name: tc.name,
-            summary: r.summary,
-            isError: r.isError,
-            ...(evMeta ?? {})
-          })
-          resultParts.push({
-            type: 'tool_result',
-            toolUseId: tc.id,
-            content: r.content,
-            isError: r.isError,
-            ...(r.listing ? { listing: r.listing } : {})
-          })
-          continue
-        }
+          return { content: r.content, isError: r.isError, listing: r.listing, shown: { summary: r.summary, isError: r.isError } }
+        },
 
-        // 没查用法就调用按需加载工具：不执行，附上完整用法请模型照着重调。界面上这一步是「查看用法」（见上方发
-        // tool_call 处），不算失败；给模型的结果仍标为出错——这次调用确实没有执行。
-        if (usageGated(tc.name)) {
-          const r = usageGateResult(tc.name, usageGiven.has(tc.name))
-          usageGiven.add(tc.name)
-          args.onToolSummary?.(tc.id, USAGE_SUMMARY)
-          emit(turnId, sessionId, {
-            type: 'tool_result',
-            id: tc.id,
-            name: TOOL_SEARCH,
-            summary: USAGE_SUMMARY,
-            isError: false,
-            ...(evMeta ?? {})
-          })
-          resultParts.push({
-            type: 'tool_result',
-            toolUseId: tc.id,
-            content: r.content,
-            isError: true,
-            ...(r.listing ? { listing: r.listing } : {})
-          })
-          continue
-        }
-
-        // exit_plan 特判：模型提交计划、暂停循环等用户批准。不过权限闸门、**不授予任何能力**——
-        // 批准仅让循环继续（工具集本就完整），此后每个真实工具调用仍照常过同一道权限闸门。
-        if (tc.name === 'exit_plan') {
-          if (depth > 0 || !interactive) {
+        // exit_plan：模型提交计划、暂停循环等用户批准。批准仅让循环继续（工具集本就完整）。
+        exit_plan: async (tc) => {
+          if (depth > 0 || !interactive)
             // 子智能体 / 密封无头执行不参与计划审阅（无用户在场可批准；此为幻觉调用兜底）：指导性 no-op。
-            resultParts.push({
-              type: 'tool_result',
-              toolUseId: tc.id,
+            return {
               content: interactive
                 ? '子智能体无需 exit_plan；请直接完成分配的任务。'
                 : '定时任务在自动执行中，无需也无法进行计划审阅；请直接完成本次任务。',
               isError: true
-            })
-            continue
-          }
+            }
           const pa = (tc.args ?? {}) as { plan?: unknown }
           const plan = typeof pa.plan === 'string' ? pa.plan : ''
           const verdict = await reviewPlan(turnId, sessionId, plan)
@@ -5013,62 +4864,43 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           const feedback = verdict?.feedback
           // 决定存入 plans 边车（按 toolUseId），供重开还原计划卡；null=取消。仅主轮回调。
           args.onPlanDecided?.(tc.id, decision, feedback)
-          if (decision === 'approve') {
-            resultParts.push({
-              type: 'tool_result',
-              toolUseId: tc.id,
+          if (decision === 'approve')
+            return {
               content:
                 '用户已批准计划。现在请按已批准的计划开始执行（写入/执行无需再征求授权）；计划含多个步骤时，先用 todo_write 列出待办清单再逐项推进。',
               isError: false
-            })
-          } else if (decision === 'keep') {
-            // 卡上直接写了回复 → 随结果回灌，循环不停、模型当轮回应（改计划重提 / 先答疑）；
-            // 没写（远程通道只有按钮）→ 等用户下一条消息。
-            resultParts.push({
-              type: 'tool_result',
-              toolUseId: tc.id,
+            }
+          // 卡上直接写了回复 → 随结果回灌，循环不停、模型当轮回应（改计划重提 / 先答疑）；
+          // 没写（远程通道只有按钮）→ 等用户下一条消息。
+          if (decision === 'keep')
+            return {
               content: feedback
                 ? `用户暂不批准，对计划的回复如下：\n\n${feedback}\n\n请据此回应（暂不执行）：若是修改意见，调整计划后重新调用 exit_plan 提交；若是提问或想讨论，先直接回答，需要时再重新提交。回复中若有需要澄清的地方，先用 ask_user 问清。`
                 : '用户希望继续完善计划（暂不执行）。请依据用户接下来的反馈调整计划；在收到新反馈前不要重复调用 exit_plan。',
               isError: false
-            })
-          } else if (decision === 'ignore') {
-            resultParts.push({
-              type: 'tool_result',
-              toolUseId: tc.id,
-              content:
-                '用户忽略了这份计划：不要执行，也不要重新提交。请用一句话确认后结束本轮，等待用户的新指示。',
+            }
+          if (decision === 'ignore')
+            return {
+              content: '用户忽略了这份计划：不要执行，也不要重新提交。请用一句话确认后结束本轮，等待用户的新指示。',
               isError: false
-            })
-          } else {
-            resultParts.push({
-              type: 'tool_result',
-              toolUseId: tc.id,
-              content: '用户取消了本次计划审阅。',
-              isError: true
-            })
-          }
-          continue
-        }
+            }
+          return { content: '用户取消了本次计划审阅。', isError: true }
+        },
 
-        // todo_write 特判：只写会话边车（待办清单）、推送进度，不过权限闸门、无任何副作用。
-        if (tc.name === 'todo_write') {
-          const r = args.onTodoWrite
+        // todo_write：只写会话边车（待办清单）、推送进度，无任何副作用。
+        todo_write: async (tc) =>
+          args.onTodoWrite
             ? args.onTodoWrite(tc.id, tc.args)
-            : { content: '当前环境不提供待办清单；请直接完成任务。', isError: true }
-          resultParts.push({ type: 'tool_result', toolUseId: tc.id, content: r.content, isError: r.isError })
-          continue
-        }
+            : { content: '当前环境不提供待办清单；请直接完成任务。', isError: true },
 
-        // ask_user 特判：不过权限闸门，暂停循环等用户抉择，答复回灌为 tool_result（子轮禁用）。
-        if (allowAskUser && tc.name === 'ask_user') {
+        // ask_user：暂停循环等用户抉择，答复回灌为 tool_result（子轮与定时任务不受理）。
+        ask_user: async (tc) => {
+          if (!allowAskUser) return null
           const questions = parseAskQuestions(tc.args)
           const answers = await askUser(turnId, sessionId, questions)
           // 答案存入 asks 边车（按 toolUseId），供重开还原问答卡；null=取消。仅主轮回调。
           args.onAskAnswered?.(tc.id, answers)
-          resultParts.push({
-            type: 'tool_result',
-            toolUseId: tc.id,
+          return {
             content:
               answers === null
                 ? '用户取消了本次询问。'
@@ -5081,13 +4913,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
                     })
                     .join('\n'),
             isError: false
-          })
-          continue
-        }
+          }
+        },
 
-        // skill 特判：加载已启用技能的完整正文，作为 tool_result 回灌（不过权限闸门——技能内容是数据，
-        // 其后每一步的真实工具调用仍照常过闸；allowed-tools 仅作建议文本，绝不自动提权）。
-        if (tc.name === 'skill') {
+        // skill：加载已启用技能的完整正文，作为 tool_result 回灌（技能内容是数据，其后每一步的真实工具调用仍照常
+        // 过闸；allowed-tools 仅作建议文本，绝不自动提权）。
+        skill: async (tc) => {
           const a = (tc.args ?? {}) as { name?: unknown }
           const wanted = typeof a.name === 'string' ? a.name.trim() : ''
           const found = wanted ? loadSkillInstructionsByName(wanted, personaId, hasTool) : null
@@ -5102,53 +4933,59 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             : `未找到名为「${wanted}」的可用技能。当前可用技能：${
                 enabledSkillSummaries(personaId, hasTool).map((s) => s.name).join('、') || '（无）'
               }。`
-          const skillSummary = found ? `已加载技能「${found.name}」` : '未找到该技能'
-          args.onToolSummary?.(tc.id, skillSummary)
-          emit(turnId, sessionId, {
-            type: 'tool_result',
-            id: tc.id,
-            name: tc.name,
-            summary: skillSummary,
-            isError: !found,
-            ...(evMeta ?? {})
-          })
-          resultParts.push({
-            type: 'tool_result',
-            toolUseId: tc.id,
-            content,
-            isError: !found,
-            ...(usages ? { listing: usages.listing } : {})
+          const summary = found ? `已加载技能「${found.name}」` : '未找到该技能'
+          return { content, isError: !found, listing: usages?.listing, shown: { summary, isError: !found } }
+        }
+      }
+      for (const n of [...MAIN_MEMBER_TOOLS, ...MEMBER_SIDE_TOOLS, HANDOFF_TOOL]) loopTools[n] = memberCall
+
+      for (const tc of toolCalls) {
+        // 中止：跳出而非 return——已跑完的工具结果（含刚被中止的那条命令的输出）要随历史落盘，
+        // 余下未执行的由循环后的 fillUnrun 补占位。直接 return 会把 resultParts 整个丢掉。
+        if (controller.signal.aborted) break
+
+        // 参数残缺的调用：不过闸门、不执行，回灌失败结果让模型分段重来。
+        if (tc.truncated !== undefined) {
+          const cause = tc.cause ?? 'max_tokens'
+          const label = BROKEN_CALL_LABEL[cause]
+          deliver(tc, {
+            content: truncatedCallResult(tc.name, tc.truncated, cause, truncatedStreak),
+            isError: true,
+            shown: { summary: label, isError: true }
           })
           continue
         }
 
-        // 成员工具（create_member / member_send / member_stop / read_main / report_to_main）：只在工具表里有它时受理，
-        // 不过权限闸门（只改会话属性、起后台回合、读主对话正文）。
-        if (MAIN_MEMBER_TOOLS.has(tc.name) || MEMBER_SIDE_TOOLS.has(tc.name) || tc.name === HANDOFF_TOOL) {
-          const r: MemberToolResult =
-            args.memberTool && offeredTools.has(tc.name)
-              ? await args.memberTool(tc).catch((e: unknown) => ({
-                  content: `执行失败：${(e as Error)?.message ?? String(e)}`,
-                  summary: '执行失败',
-                  isError: true
-                }))
-              : { content: `「${tc.name}」在当前对话中不可用，不要再调用。`, summary: '工具不可用', isError: true }
-          args.onToolSummary?.(tc.id, r.summary)
-          emit(turnId, sessionId, {
-            type: 'tool_result',
-            id: tc.id,
-            name: tc.name,
-            summary: r.summary,
-            isError: r.isError,
-            ...(evMeta ?? {})
+        // 子智能体禁用工具兜底：普通子智能体的工具表里本就没有它们，fork 沿用主对话的完整工具表
+        //（为共享提示缓存），只能在这里拦下。
+        if (depth > 0 && SUBAGENT_EXCLUDED.has(tc.name)) {
+          deliver(tc, {
+            content: `子智能体不能使用「${tc.name}」，请直接完成分配的任务。`,
+            isError: true,
+            shown: { summary: '子智能体不可用', isError: true }
           })
-          resultParts.push({
-            type: 'tool_result',
-            toolUseId: tc.id,
+          continue
+        }
+
+        // 没查用法就调用按需加载工具：不执行，附上完整用法请模型照着重调。界面上这一步是「查看用法」（见上方发
+        // tool_call 处），不算失败；给模型的结果仍标为出错——这次调用确实没有执行。
+        if (usageGated(tc.name)) {
+          const r = usageGateResult(tc.name, usageGiven.has(tc.name))
+          usageGiven.add(tc.name)
+          deliver(tc, {
             content: r.content,
-            isError: r.isError,
-            ...(r.listing ? { listing: r.listing } : {})
+            isError: true,
+            listing: r.listing,
+            shown: { summary: USAGE_SUMMARY, isError: false, name: TOOL_SEARCH }
           })
+          continue
+        }
+
+        // 闸门前就地处理的工具（见 loopTools）。只认自有属性：模型调用 toString 之类的名字不能落到原型链上。
+        const loopTool = Object.prototype.hasOwnProperty.call(loopTools, tc.name) ? loopTools[tc.name] : undefined
+        const handled = loopTool ? await loopTool(tc) : null
+        if (handled) {
+          deliver(tc, handled)
           continue
         }
 
@@ -5642,7 +5479,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const tools = fitToolSearch(
         isMember
           ? turnTools.filter(
-              (t) => !MEMBER_EXCLUDED.has(t.name) && (effectiveRoot !== null || !MEMBER_MEMORY_TOOLS.has(t.name))
+              (t) => !MEMBER_EXCLUDED.has(t.name) && (effectiveRoot !== null || !MEMBER_FOLDER_ONLY.has(t.name))
             )
           : unattended
             ? turnTools.filter((t) => !UNATTENDED_EXCLUDED.has(t.name))

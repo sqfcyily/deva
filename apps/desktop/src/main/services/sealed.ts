@@ -1,3 +1,4 @@
+import { UNATTENDED_EXCLUDED } from './tool-catalog'
 import { isMcpTool, toolCategory } from './tools'
 
 /**
@@ -16,27 +17,15 @@ export interface SealedVerdict {
 }
 
 /**
- * 密封执行永不放行的交互/创建类工具（无人在场无从交互/审阅，或不得创建持久实体）。
- * ask_user 在循环内受 allowAskUser 门关闭后会落到闸门，须在此显式拒绝；
- * propose_agent、create_* 与记忆写删已从定时任务的工具表剔除（chat.ts UNATTENDED_EXCLUDED），列此为纵深防御；
- * exit_plan 由循环内「闸门前特判」拦截（!interactive → 指导性 no-op），亦列此兜底。
+ * 密封执行永不放行的交互/创建类工具（无人在场无从交互/审阅，或不得创建持久实体）：定时任务工具表剔除的
+ * 那一份（tool-catalog.ts 里 unattended: false 的）再加上派发子智能体。
+ * ask_user 在循环内受 allowAskUser 门关闭后会落到闸门，须在此显式拒绝；其余已从定时任务的工具表剔除，
+ * 列此为纵深防御；exit_plan 由循环内「闸门前特判」拦截（!interactive → 指导性 no-op），亦列此兜底。
  * run_subagent / send_to_subagent：定时任务允许（只能前台），由循环在闸门前派发，到不了这里；子智能体自己
  * 不能再派生，万一调用落到闸门，按此拒绝。
- * 注意：`skill`（技能加载，headless-安全）、`todo_write` 已放开，不在此集。
+ * 注意：`skill`（技能加载，headless-安全）、`todo_write` 已放开，不在此集；memory_read 属 read 照常放行。
  */
-const SEALED_FORBIDDEN = new Set([
-  'ask_user',
-  'run_subagent',
-  'send_to_subagent',
-  'create_skill',
-  'propose_agent',
-  'create_mcp',
-  'create_task',
-  'exit_plan',
-  // 记忆写/删：无人值守不得改写用户记忆（已从密封工具表剔除，此处纵深防御）；memory_read 属 read 照常放行。
-  'memory_write',
-  'memory_delete'
-])
+const SEALED_FORBIDDEN = new Set([...UNATTENDED_EXCLUDED, 'run_subagent', 'send_to_subagent'])
 
 /**
  * 判定密封模式下一次工具调用是否放行：除交互/创建类与未知工具外，一律放行。
