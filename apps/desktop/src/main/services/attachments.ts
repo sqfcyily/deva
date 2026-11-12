@@ -146,6 +146,39 @@ function pasteName(raw: string, mime: string): string {
   return `粘贴-${ts}${ext}`
 }
 
+/**
+ * 外部字节 → 附件（桌面粘贴 IPC 与通用设备上传端点共用的管道）：文件名 + 字节进来，
+ * 净化命名、按类型/体积判定并登记白名单、落盘到粘贴目录，返回可交给 send 的路径。
+ * 「渲染层/设备端只交内容、从不交路径，不能伪造任意路径读盘」的不变式不变。
+ * data=null（超大文件没读字节）仅桌面粘贴可用——设备端上传恒带字节。
+ */
+export async function acceptExternalAttachment(
+  file: { name: string; mime: string; size: number; data: Uint8Array | null }
+): Promise<PickedAttachment> {
+  const key = file.data
+    ? createHash('sha256').update(file.data).digest('hex')
+    : `big:${file.name}:${file.size}`
+  const hit = pasted.get(key)
+  if (hit) return hit
+  const name = pasteName(file.name, file.mime || '')
+  // 每份内容独占一个子目录：不同内容的同名文件（如两张 image.png）互不覆盖，名字仍保持原样展示。
+  const abs = join(PASTE_DIR, randomUUID(), name)
+  // 读不进消息的也落盘，把临时位置交给模型；太大没读字节的没有位置可给。
+  const pre = inspect(abs, file.data ? file.data.byteLength : file.size, !!file.data)
+  // 先登记再落盘：同一批里的重复项（并发调用）也拿到同一条。
+  pasted.set(key, pre)
+  if (!file.data || !pre.supported) return pre
+  try {
+    await fs.mkdir(dirname(abs), { recursive: true })
+    await fs.writeFile(abs, file.data)
+  } catch (err) {
+    pasted.delete(key)
+    allowed.delete(abs)
+    throw err
+  }
+  return pre
+}
+
 export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): void {
   void fs.rm(PASTE_DIR, { recursive: true, force: true }).catch(() => {})
 
@@ -153,33 +186,8 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
   // 只交体积（data=null），由此处统一给出「过大」判定，免得几百 MB 过一遍 IPC。
   ipcMain.handle(
     'fs:paste-attachment',
-    async (
-      _e,
-      file: { name: string; mime: string; size: number; data: Uint8Array | null }
-    ): Promise<PickedAttachment> => {
-      const key = file.data
-        ? createHash('sha256').update(file.data).digest('hex')
-        : `big:${file.name}:${file.size}`
-      const hit = pasted.get(key)
-      if (hit) return hit
-      const name = pasteName(file.name, file.mime || '')
-      // 每份内容独占一个子目录：不同内容的同名文件（如两张 image.png）互不覆盖，名字仍保持原样展示。
-      const abs = join(PASTE_DIR, randomUUID(), name)
-      // 读不进消息的也落盘，把临时位置交给模型；太大没读字节的没有位置可给。
-      const pre = inspect(abs, file.data ? file.data.byteLength : file.size, !!file.data)
-      // 先登记再落盘：同一批里的重复项（并发调用）也拿到同一条。
-      pasted.set(key, pre)
-      if (!file.data || !pre.supported) return pre
-      try {
-        await fs.mkdir(dirname(abs), { recursive: true })
-        await fs.writeFile(abs, file.data)
-      } catch (err) {
-        pasted.delete(key)
-        allowed.delete(abs)
-        throw err
-      }
-      return pre
-    }
+    (_e, file: { name: string; mime: string; size: number; data: Uint8Array | null }): Promise<PickedAttachment> =>
+      acceptExternalAttachment(file)
   )
 
   // 拖入 / 粘贴的条目：按下标逐个回答。文件夹登记并返回位置；带真实路径的文件按选择框同样的规则判定

@@ -906,6 +906,21 @@ export type BotScanEvent =
   | { scanId: string; status: 'denied' | 'expired' | 'cancelled' }
   | { scanId: string; status: 'error'; error: string }
 
+/** 安卓客户端入站通道（channel-server），与 services/channel-server/index.ts 的 GeneralServerView 对齐。 */
+export interface GeneralDevice {
+  id: string
+  name: string
+  pairedAt: number
+}
+export interface GeneralServerView {
+  enabled: boolean
+  host: string
+  port: number
+  state: 'off' | 'connecting' | 'connected' | 'error'
+  error?: string
+  devices: (GeneralDevice & { online: boolean; lastSeenAt: number })[]
+}
+
 export interface ChatEventPayload {
   turnId: string
   sessionId: string
@@ -1493,6 +1508,43 @@ const api = {
       ipcRenderer.on('remote:scan', listener)
       return () => ipcRenderer.removeListener('remote:scan', listener)
     }
+  },
+  /** 通用设备入站通道（局域网 HTTP + SSE，设计协议不限平台）。token 只写不读（secrets.json 加密，键 general:<deviceId>:token）。 */
+  general: {
+    getState: (): Promise<GeneralServerView> => ipcRenderer.invoke('general:get-state'),
+    /** 生成一次性配对码（5 分钟有效）与二维码（内容 deva://pair?host=…&port=…&code=…）。 */
+    pairCode: (): Promise<
+      | {
+          ok: true
+          code: string
+          expiresAt: number
+          qr: string
+          host: string
+          hosts: string[]
+          port: number
+          localOnly: boolean
+        }
+      | { ok: false; error: string }
+    > => ipcRenderer.invoke('general:pair-code'),
+    /** 通道启停开关（设计 §3.1）：关掉即停止监听、不占端口。 */
+    setEnabled: (enabled: boolean): Promise<{ ok: true }> => ipcRenderer.invoke('general:set-enabled', enabled),
+    /** 设备改名：净化 + 全局唯一（NFKC 不分大小写）。 */
+    renameDevice: (id: string, name: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('general:rename-device', id, name),
+    /** 单设备启停（审查 F1/F8）：false 即该设备请求一律 401。 */
+    setDeviceEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('general:set-device-enabled', id, enabled),
+    /** 通道状态推送（启停/配对/设备增删时触发）。返回退订函数。 */
+    onChanged: (cb: (state: GeneralServerView) => void): (() => void) => {
+      const listener = (_e: unknown, s: GeneralServerView): void => cb(s)
+      ipcRenderer.on('general:changed', listener)
+      return () => ipcRenderer.removeListener('general:changed', listener)
+    },
+    pairCancel: (): Promise<{ ok: true }> => ipcRenderer.invoke('general:pair-cancel'),
+    /** 吊销已配对设备（删配置与密钥，此后其请求一律 401）。 */
+    removeDevice: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('general:remove-device', id),
+    /** 仅本机开关（设计 §3.1）：host 只认 '127.0.0.1' / '0.0.0.0'，改完立即重启监听。 */
+    setHost: (host: '127.0.0.1' | '0.0.0.0'): Promise<{ ok: true }> => ipcRenderer.invoke('general:set-host', host)
   }
 }
 

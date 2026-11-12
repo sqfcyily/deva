@@ -1173,7 +1173,7 @@ function isQuestionOptional(question: string, explicit: unknown): boolean {
  * 若缺失/为空但存在顶层 `question`（旧式或跑偏调用），防御性收编成单元素；
  * 仍为空则兜底为一条通用问题——绝不向渲染层抛空卡。
  */
-function parseAskQuestions(args: unknown): AskQuestion[] {
+export function parseAskQuestions(args: unknown): AskQuestion[] {
   const a = (args ?? {}) as { questions?: unknown; question?: unknown; options?: unknown }
   const out: AskQuestion[] = []
   if (Array.isArray(a.questions)) {
@@ -1619,6 +1619,31 @@ const mountDeclined = new Set<string>()
  * 渲染层打开会话时也据此接上进行中的回合（chat:attach-session）。
  */
 const busySessions = new Map<string, string>()
+
+const sessionPurgeListeners = new Set<(sessionId: string) => void>()
+/** 会话被彻底删除时回调（channel-server 据此回收该会话的事件缓冲）。返回退订函数。 */
+export function onSessionPurge(cb: (sessionId: string) => void): () => void {
+  sessionPurgeListeners.add(cb)
+  return () => sessionPurgeListeners.delete(cb)
+}
+
+/**
+ * 通用设备通道的会话重命名/删除委托：registerChatIpc 装载后由闭包内实现回填（与 chat:rename-session /
+ * chat:delete-session 完全同一实现——桌面与通道不复制规则）。装载前调用返回 null / no-op。
+ */
+let sessionRenamer: ((sessionId: string, title: string) => { title: string } | null) | null = null
+let sessionDeleter: ((sessionId: string) => void) | null = null
+
+export function renameSessionTitle(sessionId: string, title: string): { title: string } | null {
+  return sessionRenamer?.(sessionId, title) ?? null
+}
+
+/** 删除会话；委托未装载（通道先于 chat IPC 就绪）返回 false。 */
+export function deleteSessionFully(sessionId: string): boolean {
+  if (!sessionDeleter) return false
+  sessionDeleter(sessionId)
+  return true
+}
 /** 正在跑回合的会话 → 这一轮开始的时刻（member_status 据此报「已用多久」）。 */
 const busySince = new Map<string, number>()
 
@@ -3870,9 +3895,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   function askUser(
     turnId: string,
     sessionId: string,
-    questions: AskQuestion[]
+    questions: AskQuestion[],
+    /** 卡键 = 交互工具的 toolUseId（与 asks 边车、历史回填卡同源）；上游缺 id 时兜底现造。 */
+    toolUseId?: string
   ): Promise<string[] | null> {
-    const key = genId('ask')
+    const key = toolUseId || genId('ask')
     emit(turnId, sessionId, { type: 'ask_user', key, questions })
     notifyPending(turnId, sessionId, { kind: 'ask', questions: questions.map((q) => q.question) })
     return timedWait(turnId, new Promise((resolve) => pendingAsk.set(key, { resolve, turnId, sessionId })))
@@ -3885,9 +3912,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   function reviewPlan(
     turnId: string,
     sessionId: string,
-    plan: string
+    plan: string,
+    /** 卡键 = 交互工具的 toolUseId（与 plans 边车、历史回填卡同源）；上游缺 id 时兜底现造。 */
+    toolUseId?: string
   ): Promise<PlanVerdict | null> {
-    const key = genId('plan')
+    const key = toolUseId || genId('plan')
     emit(turnId, sessionId, { type: 'plan_review', key, plan })
     notifyPending(turnId, sessionId, { kind: 'plan' })
     return timedWait(turnId, new Promise((resolve) => pendingPlan.set(key, { resolve, turnId, sessionId })))
@@ -4996,7 +5025,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           }
           const pa = (tc.args ?? {}) as { plan?: unknown }
           const plan = typeof pa.plan === 'string' ? pa.plan : ''
-          const verdict = await reviewPlan(turnId, sessionId, plan)
+          const verdict = await reviewPlan(turnId, sessionId, plan, tc.id)
           const decision = verdict?.decision ?? null
           const feedback = verdict?.feedback
           // 决定存入 plans 边车（按 toolUseId），供重开还原计划卡；null=取消。仅主轮回调。
@@ -5051,7 +5080,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // ask_user 特判：不过权限闸门，暂停循环等用户抉择，答复回灌为 tool_result（子轮禁用）。
         if (allowAskUser && tc.name === 'ask_user') {
           const questions = parseAskQuestions(tc.args)
-          const answers = await askUser(turnId, sessionId, questions)
+          const answers = await askUser(turnId, sessionId, questions, tc.id)
           // 答案存入 asks 边车（按 toolUseId），供重开还原问答卡；null=取消。仅主轮回调。
           args.onAskAnswered?.(tc.id, answers)
           resultParts.push({
@@ -6204,21 +6233,22 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // 取首条用户消息（展示用原文，不含随消息附带的提醒）。会话对象全局缓存为同一份，回合进行中改名也不会被
   // 这一轮后续落盘冲掉；自动派生只在标题为空时写，不会覆盖用户起的名字。不改 updatedAt（改名不算新活动，
   // 列表顺序不变）。尚未建档的惰性会话查不到 → null。
-  ipcMain.handle(
-    'chat:rename-session',
-    (_e, payload: ChatRenameSessionRequest): { title: string } | null => {
-      const session = getSession(payload.sessionId)
-      if (!session) return null
-      let title = String(payload.title ?? '').replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX)
-      if (!title) {
-        const first = displayOf(session).find((m) => m.role === 'user' && !m.notify)
-        if (first?.role === 'user')
-          title = deriveTitle(first.text) || deriveTitle(first.attachments.map((a) => a.name).join(' '))
-      }
-      session.title = title
-      saveProject(payload.sessionId)
-      return { title }
+  const renameImpl = (sessionId: string, title: string): { title: string } | null => {
+    const session = getSession(sessionId)
+    if (!session) return null
+    let t = String(title ?? '').replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX)
+    if (!t) {
+      const first = displayOf(session).find((m) => m.role === 'user' && !m.notify)
+      if (first?.role === 'user')
+        t = deriveTitle(first.text) || deriveTitle(first.attachments.map((a) => a.name).join(' '))
     }
+    session.title = t
+    saveProject(sessionId)
+    return { title: t }
+  }
+  sessionRenamer = renameImpl
+  ipcMain.handle('chat:rename-session', (_e, payload: ChatRenameSessionRequest): { title: string } | null =>
+    renameImpl(payload.sessionId, payload.title)
   )
 
   // 归档 / 取消归档：只改这一个标记并落盘，不动 updatedAt（列表顺序不变）。尚未建档的惰性会话回 ok:false。
@@ -6404,22 +6434,25 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     memberDispatches.delete(sessionId)
     pendingHandoffs.delete(sessionId)
     for (const [g, rec] of memberGroupDone) if (rec.mainId === sessionId) memberGroupDone.delete(g)
+    // 会话删除广播：入站通道（channel-server/sse）据此回收该会话的事件环形缓冲（审查 P1-4）
+    for (const cb of sessionPurgeListeners) try { cb(sessionId) } catch { /* 监听器自吞错误 */ }
   }
   // 删绑定任务时连任务对话一起删（tasks.ts deleteTask）：正在跑的一轮由 purgeSession 中止。
   setTaskSessionPurger(purgeSession)
 
   // 删除某会话（含会话级授权）。id 全局唯一 → 按 id 删。主对话连同它的成员会话一并删除；在它里面运行的定时任务
   // 改为独立运行（任务与任务对话保留，任务对话回到左侧列表）。
-  ipcMain.handle(
-    'chat:delete-session',
-    (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
-      const members = getSession(sessionId)?.members ?? []
-      purgeSession(sessionId)
-      for (const m of members) purgeSession(m.sessionId)
-      releaseTasksOwnedBy(sessionId)
-      return { ok: true }
-    }
-  )
+  const deleteImpl = (sessionId: string): void => {
+    const members = getSession(sessionId)?.members ?? []
+    purgeSession(sessionId)
+    for (const m of members) purgeSession(m.sessionId)
+    releaseTasksOwnedBy(sessionId)
+  }
+  sessionDeleter = deleteImpl
+  ipcMain.handle('chat:delete-session', (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
+    deleteImpl(sessionId)
+    return { ok: true }
+  })
 
   // 移除成员（成员卡片的「移除成员」）：不再派任务给它，正在进行的任务中止；成员会话保留（可从名单里恢复）。
   // 主智能体经下一次随消息下发的名单更新得知。

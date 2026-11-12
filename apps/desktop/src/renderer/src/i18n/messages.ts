@@ -764,6 +764,32 @@ const zhCN: MessageTree = {
     deleteConfirm: {
       feishu: '删除后机器人将断开连接，手机上无法再使用。飞书开放平台上的应用不会被删除，可自行在开放平台删除。',
       telegram: '删除后机器人将断开连接，手机上无法再使用。Telegram 上的机器人不会被删除，可在 @BotFather 里用 /deletebot 删除。'
+    },
+    general: {
+      title: '通用设备',
+      hint: '在手机 / 平板等设备上用配套 App 直连这台电脑的 Deva：同一后端、同一会话。配对后可在设备上看会话、发消息、作答交互卡、收交付文件。',
+      pair: '生成配对码',
+      pairHint: '在安卓 App「设置 → 添加服务器」里填下面的地址与 6 位配对码。',
+      pairExpires: '{s} 后过期',
+      pairRegen: '重新生成',
+      pairCancel: '作废',
+      addMenu: '通用设备（生成配对码）',
+      devices: '已配对设备',
+      devicesEmpty: '还没有已配对的设备，点上方「生成配对码」添加。',
+      revoke: '吊销',
+      revokeConfirm: '吊销「{name}」？该设备保存的凭据将一并清除，之后它的请求一律被拒绝。',
+      listen: '监听 {host}:{port}',
+      stateLabel: { off: '未启用', connecting: '启动中', connected: '监听中', error: '失败' },
+      enable: '启用通道',
+      enableHint: '关掉即停止监听、不占端口;手机端连接会断开',
+      online: '在线',
+      lastSeen: '最近活动 {t}',
+      hostMode: '监听范围',
+      hostModeHint: '仅本机 = 只有这台电脑能连；局域网 = 同网段的手机可连（切换后立即重启监听）',
+      lan: '局域网',
+      localOnly: '仅本机',
+      plain:
+        '安全提示：安卓通道为局域网 HTTP 明文传输，仅建议在可信网络（家庭 / 自己的路由器）下使用；配对后的设备可以让 Deva 在这台电脑上读写文件、运行命令，权限与你在电脑上使用时一样。'
     }
   },
   settings: {
@@ -2216,6 +2242,32 @@ const en: MessageTree = {
         'The bot will be disconnected and stop working on your phone. The app on the Feishu Open Platform is not deleted; you can remove it there yourself.',
       telegram:
         'The bot will be disconnected and stop working on your phone. The bot itself is not deleted from Telegram; use /deletebot with @BotFather to remove it.'
+    },
+    general: {
+      title: 'General devices',
+      hint: 'Connect a device running the Deva companion app directly to this computer: same backend, same chats. After pairing you can browse chats, send messages, answer cards and receive delivered files on it.',
+      pair: 'Generate pairing code',
+      pairHint: 'Enter this address and the 6-digit code in the Android app under Settings → Add server.',
+      pairExpires: 'Expires in {s}',
+      pairRegen: 'Regenerate',
+      pairCancel: 'Discard',
+      addMenu: 'General device (generate pairing code)',
+      devices: 'Paired devices',
+      devicesEmpty: 'No paired devices yet. Tap "Generate pairing code" above to add one.',
+      revoke: 'Revoke',
+      revokeConfirm: 'Revoke "{name}"? Its stored credentials will be removed and all further requests from it will be rejected.',
+      listen: 'Listening on {host}:{port}',
+      stateLabel: { off: 'Off', connecting: 'Starting', connected: 'Listening', error: 'Failed' },
+      enable: 'Enable channel',
+      enableHint: 'Turning off stops the listener and frees the port; paired phones will disconnect',
+      online: 'Online',
+      lastSeen: 'Last active {t}',
+      hostMode: 'Listen scope',
+      hostModeHint: 'Local only = only this computer can connect; LAN = any device on the same network (the listener restarts immediately on switch)',
+      lan: 'LAN',
+      localOnly: 'Local only',
+      plain:
+        'Security note: the Android channel uses plaintext HTTP on the LAN — use it only on trusted networks (home / your own router). A paired device can make Deva read and write files and run commands on this computer, with the same permissions you have here.'
     }
   },
   settings: {

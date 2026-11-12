@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, ExternalLink, KeyRound, Loader2, Plus, QrCode, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { Bot, ExternalLink, KeyRound, Loader2, Plus, QrCode, RefreshCw, Search, Smartphone, Trash2, X } from 'lucide-react'
 import QRCode from 'qrcode'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
@@ -15,6 +15,7 @@ type BotView = RemoteState['bots'][number]
 type Platform = BotView['platform']
 type Scope = BotView['scope']
 type ScopeKind = Exclude<Scope['mode'], 'all'>
+type GeneralView = Awaited<ReturnType<typeof window.deva.general.getState>>
 
 /** 与主进程 hub 同口径：没绑定角色的旧对话算默认角色。 */
 const DEFAULT_PERSONA_ID = 'general'
@@ -36,6 +37,20 @@ export function BotsPane(): React.JSX.Element {
   const [viewId, setViewId] = useState<string | null>(null)
   const [adding, setAdding] = useState<Platform | null>(null)
   const [query, setQuery] = useState('')
+  const [general, setGeneral] = useState<GeneralView | null>(null)
+  // 「+」菜单选通用设备时的自动出码信号
+  const [generalPairTick, setGeneralPairTick] = useState(0)
+
+  // 通用设备通道状态（channel-server）：general:changed 推送为主，30s 轮询兜底
+  useEffect(() => {
+    void window.deva.general.getState().then(setGeneral)
+    const off = window.deva.general.onChanged(setGeneral)
+    const id = window.setInterval(() => void window.deva.general.getState().then(setGeneral), 30_000)
+    return () => {
+      off()
+      window.clearInterval(id)
+    }
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -53,7 +68,8 @@ export function BotsPane(): React.JSX.Element {
 
   // 默认选第一个；选中的被删除后同理回落。
   useEffect(() => {
-    if (viewId && bots.some((b) => b.id === viewId)) return
+    // 'general' 是通用设备通道详情的保留 viewId,不属于 bots 列表
+    if (viewId && (viewId === 'general' || bots.some((b) => b.id === viewId))) return
     setViewId(bots[0]?.id ?? null)
   }, [bots, viewId])
 
@@ -89,9 +105,32 @@ export function BotsPane(): React.JSX.Element {
               </button>
             )}
           </div>
-          <BotAddMenu onPick={setAdding} />
+          <BotAddMenu onPick={setAdding} onPickGeneral={() => {
+            setViewId('general')
+            setGeneralPairTick((n) => n + 1)
+          }} />
         </div>
         <div className="cf-list">
+          <button
+            className={`cf-trow bots-row${viewId === 'general' ? ' is-active' : ''}`}
+            onClick={() => setViewId('general')}
+          >
+            <span className="bots-logo">
+              <Smartphone size={18} />
+            </span>
+            <div className="cf-trow__main">
+              <div className="cf-trow__title">{t('bots.general.title')}</div>
+              <div className="bots-row__meta">
+                <span className={`bots-dot bots-dot--${general?.state ?? 'off'}`} />
+                {t(`bots.general.stateLabel.${general?.state ?? 'off'}`)}
+                {general && (
+                  <span className="bots-tag">
+                    {general.devices.filter((d) => d.online).length}/{general.devices.length}
+                  </span>
+                )}
+              </div>
+            </div>
+          </button>
           {!loaded ? null : bots.length === 0 ? (
             <div className="cf-empty">{t('bots.listEmpty')}</div>
           ) : shown.length === 0 ? (
@@ -120,7 +159,13 @@ export function BotsPane(): React.JSX.Element {
 
       <main className="cf-conv">
         <div className="cf-dragbar" aria-hidden="true" />
-        {view ? (
+        {viewId === 'general' ? (
+          <div className="cf-profile">
+            <div className="bots-detail">
+              <GeneralDetail pairRequest={generalPairTick} />
+            </div>
+          </div>
+        ) : view ? (
           <div className="cf-profile">
             <div className="bots-detail">
               <BotDetail key={view.id} bot={view} />
@@ -151,7 +196,13 @@ export function BotsPane(): React.JSX.Element {
 }
 
 /** 「添加机器人」：悬停展开支持的平台（交互同角色 / 任务的 AddMenu），点击即开始添加。 */
-function BotAddMenu({ onPick }: { onPick: (p: Platform) => void }): React.JSX.Element {
+function BotAddMenu({
+  onPick,
+  onPickGeneral
+}: {
+  onPick: (p: Platform) => void
+  onPickGeneral: () => void
+}): React.JSX.Element {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const closeTimer = useRef<number | null>(null)
@@ -189,6 +240,18 @@ function BotAddMenu({ onPick }: { onPick: (p: Platform) => void }): React.JSX.El
       </button>
       {open && (
         <div className="cf-addmenu__pop" role="menu">
+          <button
+            className="cf-addmenu__item bots-addmenu__item"
+            role="menuitem"
+            onClick={() => {
+              cancelClose()
+              setOpen(false)
+              onPickGeneral()
+            }}
+          >
+            <Smartphone size={14} />
+            {t('bots.general.addMenu')}
+          </button>
           {PLATFORMS.map((p) => (
             <button
               key={p.id}
@@ -808,5 +871,228 @@ function ScopePicker({
         </div>
       </div>
     </div>
+  )
+}
+
+
+/**
+ * 安卓入站通道详情（设计 §3.2/§3.5 的桌面面）：状态 + 一次性配对码（二维码）+ 已配对设备。
+ * 状态每 5s 轮询（配对码生成/作废/吊销后立即刷新）；通道启停挂在主进程生命周期，此处只读。
+ */
+function GeneralDetail({ pairRequest }: { pairRequest: number }): React.JSX.Element {
+  const { t } = useI18n()
+  const dialog = useDialog()
+  const toast = useToast()
+  // pairRequest 只消费一次:+ 菜单触发的自动出码不能在每次重挂载时都顶掉旧码
+  const handledPairRequest = useRef(-1)
+  // 配对码活着时的引用:离开详情(unmount)即作废——看不到的码不该继续有效(与 IM BotDetail 同口径)
+  const livePair = useRef(false)
+  const [st, setSt] = useState<GeneralView | null>(null)
+  const [pair, setPair] = useState<
+    Extract<Awaited<ReturnType<typeof window.deva.general.pairCode>>, { ok: true }> | null
+  >(null)
+  const [, setTick] = useState(0)
+
+  const reload = useCallback((): void => {
+    void window.deva.general.getState().then(setSt)
+  }, [])
+
+  // general:changed 推送到达时 reload(getChannelServerState 全量刷新)
+  useEffect(() => {
+    reload()
+    return window.deva.general.onChanged(() => reload())
+  }, [reload])
+
+  // 配对码倒计时；过期自动收起
+  useEffect(() => {
+    if (!pair) return
+    const id = window.setInterval(() => setTick((n) => n + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [pair])
+  useEffect(() => {
+    livePair.current = pair !== null
+  }, [pair])
+  // 离开详情:未过期的配对码立即作废——看不到的码不该继续有效(与 IM BotDetail 同口径)
+  useEffect(
+    () => () => {
+      if (livePair.current) void window.deva.general.pairCancel()
+    },
+    []
+  )
+  // 「+」菜单选通用设备:导航到此详情并自动出码(每个 tick 只消费一次)
+  useEffect(() => {
+    if (pairRequest > 0 && handledPairRequest.current !== pairRequest) {
+      handledPairRequest.current = pairRequest
+      makeCode()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairRequest])
+  const left = pair ? Math.max(0, Math.ceil((pair.expiresAt - Date.now()) / 1000)) : 0
+  useEffect(() => {
+    if (pair && left <= 0) {
+      livePair.current = false
+      setPair(null)
+    }
+  }, [pair, left])
+
+  const makeCode = (): void => {
+    void window.deva.general.pairCode().then((r) => {
+      if (r.ok) {
+        setPair(r)
+        livePair.current = true
+      } else {
+        setPair(null)
+        livePair.current = false
+        toast.show({ variant: 'error', message: r.error || t('bots.failed') })
+      }
+    })
+  }
+
+  const revoke = async (id: string, name: string): Promise<void> => {
+    const ok = await dialog.confirm({
+      title: t('bots.general.revoke'),
+      message: t('bots.general.revokeConfirm').replace('{name}', name || id),
+      confirmText: t('bots.general.revoke'),
+      variant: 'danger'
+    })
+    if (!ok) return
+    await window.deva.general.removeDevice(id)
+    reload()
+  }
+
+  const state = st?.state ?? 'off'
+
+  return (
+    <>
+      <div className="bots-detail__head">
+        <span className="bots-logo">
+          <Smartphone size={22} />
+        </span>
+        <div className="bots-detail__title">
+          <span className="bots-detail__name">{t('bots.general.title')}</span>
+          <span className={`bots-detail__state is-${state}`}>
+            <span className={`bots-dot bots-dot--${state}`} />
+            {t(`bots.state.${state}`)}
+            {st && (
+              <>
+                <span className="bots-detail__sep">·</span>
+                {t('bots.general.listen').replace('{host}', st.host).replace('{port}', String(st.port))}
+                <span className="bots-detail__sep">·</span>
+                {st.devices.length}
+              </>
+            )}
+          </span>
+        </div>
+      </div>
+      {st?.state === 'error' && st.error && <div className="mcp-error">{st.error}</div>}
+
+      <div className="bots-card">
+        <div className="bots-card__row">
+          <div className="bots-card__label">
+            {t('bots.general.enable')}
+            <span className="bots-card__hint">{t('bots.general.enableHint')}</span>
+          </div>
+          <button
+            className={`cf-switch${(st?.enabled ?? true) ? ' is-on' : ''}`}
+            aria-pressed={st?.enabled ?? true}
+            title={t('bots.general.enable')}
+            onClick={() => {
+              const next = !(st?.enabled ?? true)
+              void window.deva.general.setEnabled(next)
+              setSt((s0) => (s0 ? { ...s0, enabled: next, state: next ? 'connecting' : 'off' } : s0))
+            }}
+          >
+            <span className="cf-switch__dot" />
+          </button>
+        </div>
+        <p className="bots-card__hint">{t('bots.general.hint')}</p>
+        <div className="bots-card__row">
+          <div className="bots-card__label">
+            {t('bots.general.pair')}
+            <span className="bots-card__hint">{t('bots.general.pairHint')}</span>
+          </div>
+          <button className="bots-btn" onClick={makeCode}>
+            {t('bots.general.pair')}
+          </button>
+        </div>
+        {pair && (
+          <div className="bots-pair">
+            <img src={pair.qr} alt="QR" width={140} height={140} />
+            <code className="bots-pair__code">{pair.code}</code>
+            <div className="bots-pair__meta">
+              <span className="bots-card__hint">
+                {(pair.hosts ?? [pair.host]).map((h) => `${h}:${pair.port}`).join(' / ')}
+              </span>
+              <span className="bots-card__hint">{t('bots.general.pairExpires').replace('{s}', fmtLeft(left))}</span>
+              <button className="ext-linkbtn" onClick={makeCode}>
+                {t('bots.general.pairRegen')}
+              </button>
+              <button
+                className="ext-linkbtn"
+                onClick={() => {
+                  livePair.current = false
+                  setPair(null)
+                  void window.deva.general.pairCancel()
+                }}
+              >
+                {t('bots.general.pairCancel')}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bots-card">
+        <div className="bots-card__row">
+          <div className="bots-card__label">
+            {t('bots.general.hostMode')}
+            <span className="bots-card__hint">{t('bots.general.hostModeHint')}</span>
+          </div>
+          <div className="cf-seg">
+            {(['0.0.0.0', '127.0.0.1'] as const).map((h) => (
+              <button
+                key={h}
+                className={`cf-seg__opt${st?.host === h ? ' is-on' : ''}`}
+                onClick={() => {
+                  void window.deva.general.setHost(h)
+                  // 立即反馈：重启监听约一两秒，5s 轮询会把真实状态带回来
+                  setSt((s0) => (s0 ? { ...s0, host: h, state: s0.state === 'connected' ? 'connecting' : s0.state } : s0))
+                }}
+              >
+                {t(h === '0.0.0.0' ? 'bots.general.lan' : 'bots.general.localOnly')}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="bots-card">
+        <div className="bots-card__label">
+          {t('bots.general.devices')}
+          {st && <span className="bots-tag">{st.devices.length}</span>}
+        </div>
+        {!st || st.devices.length === 0 ? (
+          <p className="bots-card__empty">{t('bots.general.devicesEmpty')}</p>
+        ) : (
+          st.devices.map((d) => (
+            <div key={d.id} className="bots-user">
+              <span className="bots-user__id">{d.name || d.id}</span>
+              {d.online && <span className="bots-tag">{t('bots.general.online')}</span>}
+              <span className="bots-user__at">{new Date(d.pairedAt).toLocaleString()}</span>
+              {d.lastSeenAt > 0 && (
+                <span className="bots-user__at">
+                  {t('bots.general.lastSeen').replace('{t}', new Date(d.lastSeenAt).toLocaleString())}
+                </span>
+              )}
+              <button className="ext-linkbtn" onClick={() => void revoke(d.id, d.name)}>
+                {t('bots.general.revoke')}
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <p className="bots-warn">{t('bots.general.plain')}</p>
+    </>
   )
 }
