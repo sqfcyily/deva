@@ -1,6 +1,7 @@
 import { app, ipcMain } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { join } from 'path'
+import { writeFileAtomic } from './atomic-write'
 
 /**
  * 应用配置存储（主进程）。
@@ -49,7 +50,8 @@ function ensureLoaded(): void {
 
 function persist(): void {
   try {
-    writeFileSync(configPath(), JSON.stringify(config, null, 2), 'utf8')
+    // 原子写：写到一半崩溃不会留下半截 JSON——那样下次启动解析失败即回落空配置，服务商与模型全丢。
+    writeFileAtomic(configPath(), JSON.stringify(config, null, 2))
   } catch {
     /* 持久化失败静默：不影响本次会话的内存态 */
   }

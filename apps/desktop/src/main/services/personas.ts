@@ -1,12 +1,13 @@
 import { ipcMain } from 'electron'
 import { createHash, randomBytes } from 'crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import {
   clearAvatarImage as clearAvatarImageFile,
   readAvatarImage as readAvatarImageFile,
   writeAvatarImage as writeAvatarImageFile
 } from './avatar-image'
+import { writeFileAtomic } from './atomic-write'
 import { getConfig, getDevaHome, setConfig } from './config'
 import { pruneRoles } from './ext-roles'
 import { setSkillEnabled } from './skills'
@@ -272,7 +273,7 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
 
   try {
     mkdirSync(personasDir(), { recursive: true })
-    writeFileSync(personaFile(id), md, 'utf8')
+    writeFileAtomic(personaFile(id), md)
   } catch {
     /* 写失败：返回内存态记录，UI 仍可用（下次可重试） */
   }
@@ -476,7 +477,7 @@ function refreshDefaultPrompt(
     : (LEGACY_PROMPT_HASHES[def.id] ?? []).includes(curHash)
   if (!untouched) return false
   try {
-    writeFileSync(personaFile(def.id), composePersonaMd({ ...cur, prompt: def.prompt }), 'utf8')
+    writeFileAtomic(personaFile(def.id), composePersonaMd({ ...cur, prompt: def.prompt }))
     return true
   } catch {
     return false // 写失败：不记基线，下次启动再试

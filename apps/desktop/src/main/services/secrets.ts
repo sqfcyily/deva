@@ -1,6 +1,7 @@
 import { app, ipcMain, safeStorage } from 'electron'
 import { promises as fs } from 'fs'
 import { join } from 'path'
+import { writeFileAtomic } from './atomic-write'
 import { getDevaHome } from './config'
 
 /**
@@ -48,7 +49,9 @@ async function ensureLoaded(): Promise<void> {
 }
 
 async function persist(): Promise<void> {
-  await fs.writeFile(filePath, JSON.stringify(store, null, 2), 'utf8')
+  // 原子写（同步）：写到一半崩溃不会留下半截 JSON——那样下次载入解析失败即视为空库，全部密钥丢失。
+  // 同步写还免得两次并发的 persist 同时写同一个临时文件。
+  writeFileAtomic(filePath, JSON.stringify(store, null, 2))
 }
 
 /**

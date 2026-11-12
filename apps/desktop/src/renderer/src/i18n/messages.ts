@@ -1327,6 +1327,7 @@ const zhCN: MessageTree = {
     quote: '引用',
     quoteRemove: '取消引用',
     deleteTurnsConfirm: '删除后所选轮次的消息将从对话与模型上下文中一并永久移除，无法恢复。',
+    deleteTurnsBusy: '对话正在进行中，请等它结束后再删除。',
     deletePersonaConfirm: '删除后该角色不可恢复，此操作无法撤销。',
     deletePersonaConfirmWithChats:
       '删除后该角色不可恢复，与其关联的 {count} 个对话也将一并永久删除，此操作无法撤销。',
@@ -2773,6 +2774,7 @@ const en: MessageTree = {
     quoteRemove: 'Remove quote',
     deleteTurnsConfirm:
       'The selected turns will be permanently removed from both the conversation and the model context. This cannot be undone.',
+    deleteTurnsBusy: 'This chat is busy right now. Delete the turns when it finishes.',
     deletePersonaConfirm:
       'This persona will be permanently removed and cannot be restored. This cannot be undone.',
     deletePersonaConfirmWithChats:
