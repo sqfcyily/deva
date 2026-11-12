@@ -557,7 +557,8 @@ const zhCN: MessageTree = {
       autoContext: '上下文超限，正在压缩后重试',
       autoOutputLimit: '输出上限不被模型接受，已降档重试',
       autoEffort: '当前模型不支持所选思考等级，已按默认重发',
-      autoRepetition: '模型输出陷入重复，已丢弃并重试'
+      autoRepetition: '模型输出陷入重复，已丢弃并重试',
+      autoOutputFit: '服务商预留的输出超出上下文窗口，已调小输出上限重发'
     },
     ask: {
       title: '请你决定',
@@ -2004,7 +2005,8 @@ const en: MessageTree = {
       autoContext: 'Context too long, compacting and retrying',
       autoOutputLimit: 'Output budget rejected by the model, retrying with a smaller one',
       autoEffort: 'This model does not support the selected thinking level; resent with the default',
-      autoRepetition: 'Model output started repeating; discarded and retrying'
+      autoRepetition: 'Model output started repeating; discarded and retrying',
+      autoOutputFit: 'The provider’s output reservation exceeded the context window; resent with a smaller output limit'
     },
     ask: {
       title: 'Your call',

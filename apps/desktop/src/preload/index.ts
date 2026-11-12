@@ -810,7 +810,7 @@ export type ChatStreamEvent =
   /** 引擎自愈中（截断续写 / 空回合追问 / 上下文压缩重试 / 输出预算降档），显示为状态横幅。 */
   | {
       type: 'auto_retry'
-      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition'
+      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition' | 'output_fit'
       attempt: number
       max: number
       /** context：报错里解析出的真实窗口；output_limit：用户所设输出上限被拒后降到的值。 */

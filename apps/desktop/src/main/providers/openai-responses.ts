@@ -2,6 +2,7 @@ import { describeNetError, httpFetch } from '../http'
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
+  inbandError,
   parseToolArgs,
   settleBrokenCalls,
   toolImagesNote,
@@ -261,14 +262,11 @@ export async function* streamResponses(
         else if (reason === 'content_filter') stopReason = 'refusal'
       } else if (type === 'response.failed') {
         takeUsage(evt)
-        const err = (evt.response as { error?: { message?: string } })?.error
+        const err = (evt.response as { error?: { message?: string; code?: string } })?.error
+        const message = err?.message ?? (isEn() ? 'Generation failed' : '生成失败')
         yield {
           type: 'error',
-          error: {
-            kind: 'server',
-            retryable: false,
-            message: err?.message ?? (isEn() ? 'Generation failed' : '生成失败')
-          }
+          error: inbandError(`${message} ${err?.code ?? ''}`, { kind: 'server', retryable: false, message })
         }
         yield { type: 'done', stopReason: 'error' }
         return
@@ -277,7 +275,7 @@ export async function* streamResponses(
           typeof evt.message === 'string'
             ? evt.message
             : ((evt.error as { message?: string })?.message ?? (isEn() ? 'Stream error' : '流式错误'))
-        yield { type: 'error', error: { kind: 'server', retryable: false, message } }
+        yield { type: 'error', error: inbandError(message, { kind: 'server', retryable: false, message }) }
         yield { type: 'done', stopReason: 'error' }
         return
       }

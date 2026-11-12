@@ -362,7 +362,9 @@ export function StatusIndicator({
                 ? t('chat.work.autoEffort')
                 : reason === 'repetition'
                   ? t('chat.work.autoRepetition')
-                  : t('chat.work.reconnecting')
+                  : reason === 'output_fit'
+                    ? t('chat.work.autoOutputFit')
+                    : t('chat.work.reconnecting')
     return (
       <div className="chat__status is-reconnecting" role="status" aria-live="polite">
         <Loader2 size={14} className="spin" />

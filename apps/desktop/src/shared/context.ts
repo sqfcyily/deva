@@ -207,6 +207,41 @@ export function parseContextLimit(body: string): number | undefined {
   return undefined
 }
 
+/** 「输入 + 输出预留超出窗口」报错里的三个数（token）。 */
+export interface ContextOverflow {
+  /** 输入。OpenAI 兼容的报错常写「at least N」：服务端数到超窗就停，实际可能更多。 */
+  input: number
+  /** 输出预留（请求里的 max_tokens；没传时为服务商的默认值）。 */
+  output: number
+  /** 窗口。 */
+  limit: number
+}
+
+/**
+ * 从「输入 + 输出预留超出窗口」的报错里解析三个数；认不出返回 undefined。这类超限常常不是输入装不下，
+ * 而是输出预留太大：没传 max_tokens 时不少服务商按模型的最大输出预留（DeepSeek V4 为 384K，1M 窗口里
+ * 输入过 65.5 万即被拒，issue #43）。
+ */
+export function parseContextOverflow(body: string): ContextOverflow | undefined {
+  const pick = (input: string, output: string, limit: string): ContextOverflow | undefined => {
+    const o = { input: Number(input), output: Number(output), limit: Number(limit) }
+    return validLimit(o.limit, CONTEXT_WINDOW_RANGE) && o.input > 0 && o.output > 0 ? o : undefined
+  }
+  // OpenAI 兼容（DeepSeek / vLLM 新版）：maximum context length is L tokens. However, you requested
+  // O output tokens and your prompt contains at least I input tokens
+  const modern =
+    /maximum context length is\s*(\d+)[\s\S]*?requested\s*(\d+)\s*output tokens[\s\S]*?prompt contains\s*(?:at least\s*)?(\d+)\s*input tokens/i
+  let m = modern.exec(body)
+  if (m) return pick(m[3], m[2], m[1])
+  // OpenAI 旧版 / vLLM 旧版：… you requested T tokens (I in the messages, O in the completion)
+  m = /maximum context length is\s*(\d+)[\s\S]*?\((\d+) in the messages,\s*(\d+) in the completion\)/i.exec(body)
+  if (m) return pick(m[2], m[3], m[1])
+  // Anthropic：input length and `max_tokens` exceed context limit: I + O > L
+  m = /exceeds? (?:the )?context limit:\s*(\d+)\s*\+\s*(\d+)\s*>\s*(\d+)/i.exec(body)
+  if (m) return pick(m[1], m[2], m[3])
+  return undefined
+}
+
 /** 拉丁文字等按约 3.5 字符 ≈ 1 token 估算。 */
 const CHARS_PER_TOKEN = 3.5
 

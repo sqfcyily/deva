@@ -109,7 +109,7 @@ export type StopReason =
 // 思考等级的档位定义与模型能力表在主进程 / 渲染层共用模块里（见 shared/effort.ts）。
 export { isEffortLevel, type EffortLevel } from '../../shared/effort'
 import type { EffortRequest } from '../../shared/effort'
-import { parseContextLimit } from '../../shared/context'
+import { parseContextLimit, parseContextOverflow, type ContextOverflow } from '../../shared/context'
 import { isEn } from '../locale'
 
 export interface GenerateRequest {
@@ -165,6 +165,8 @@ export interface NormalizedError {
   retryAfterMs?: number
   /** 上下文超限报错里写明的真实窗口（token，见 shared/context.ts 的 parseContextLimit）；认不出则缺省。 */
   limit?: number
+  /** 「输入 + 输出预留超出窗口」报错里的三个数（见 parseContextOverflow）；引擎据此判断是不是输出预留太大。 */
+  overflow?: ContextOverflow
 }
 
 /** 统一流式事件——Agent 引擎只消费这套。 */
@@ -251,6 +253,22 @@ function bodyHint(body: string): string {
   return s ? `${isEn() ? ': ' : '：'}${s}` : ''
 }
 
+/** 带内错误里认作上下文超限的明确句式（不用 httpError 那条按 token / length 字眼的宽匹配）。 */
+const INBAND_CONTEXT = /context[ _-]?(length|window)|prompt is too long|too many (input )?tokens|exceeds? (the )?(maximum )?context/i
+
+/**
+ * 带内错误（HTTP 200 之后在流里报的错：网关常把上游的 400 包成这样，如「Streaming response failed: [400]
+ * This model's maximum context length is …」，issue #43）：正文认得出上下文超限 / 输出上限被拒的，与 HTTP 400
+ * 同样归类，引擎的自愈（调小输出预算、压缩后重发）才用得上；其余照旧按 fallback（多为服务端错误）。
+ */
+export function inbandError(text: string, fallback: NormalizedError): NormalizedError {
+  const contextual =
+    INBAND_CONTEXT.test(text) ||
+    parseContextLimit(text) !== undefined ||
+    parseContextOverflow(text) !== undefined
+  return contextual ? httpError(400, text) : fallback
+}
+
 /** 解析 retry-after 头（秒数或 HTTP 日期）→ 毫秒；无效返回 undefined。 */
 function parseRetryAfter(v: string | null | undefined): number | undefined {
   if (!v) return undefined
@@ -296,7 +314,8 @@ export function httpError(
       message: en
         ? `The requested output limit exceeds what this model allows (${status})${bodyHint(body)}`
         : `请求的输出上限超出该模型允许范围（${status}）${bodyHint(body)}`,
-      limit: parseContextLimit(body)
+      limit: parseContextLimit(body),
+      overflow: parseContextOverflow(body)
     }
   if (status === 401 || status === 403)
     return {
@@ -331,7 +350,8 @@ export function httpError(
       message: en
         ? 'The conversation is longer than this model’s context window. Start a new chat, or switch to a model with a larger context window and try again.'
         : '对话长度已超出该模型的上下文上限，无法继续。请新建对话，或换用上下文更大的模型后重试。',
-      limit: parseContextLimit(body)
+      limit: parseContextLimit(body),
+      overflow: parseContextOverflow(body)
     }
   if (status >= 500)
     return {

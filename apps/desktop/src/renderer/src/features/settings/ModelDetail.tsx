@@ -18,7 +18,7 @@ import {
  * 两项上限留「自动」即走内置表 / 引擎默认（shared/context.ts），主进程每次请求现查，改了即对下一次请求生效。
  */
 
-const CONTEXT_PRESETS = [128_000, 200_000, 256_000, 400_000, 1_000_000]
+const CONTEXT_PRESETS = [128_000, 200_000, 256_000, 400_000, 512_000, 1_000_000]
 const OUTPUT_PRESETS = [8_192, 16_384, 32_000, 64_000, 128_000]
 
 interface Props {

@@ -14,7 +14,12 @@ import {
   type ToolSpec
 } from '../providers/types'
 import { clampEffort, effortRequest, type EffortRequest } from '../../shared/effort'
-import { OUTPUT_BUDGET_SAFE, autoOutputBudget } from '../../shared/context'
+import {
+  OUTPUT_BUDGET_SAFE,
+  OUTPUT_BUDGET_WIDE,
+  autoOutputBudget,
+  type ContextOverflow
+} from '../../shared/context'
 import { REPEAT_STOP, REPEAT_WARN, TASK_MAX_STEPS } from '../../shared/limits'
 import {
   executeTool,
@@ -206,7 +211,9 @@ import {
   needsCompaction,
   needsCompactionMidTurn,
   NOTIFY_MARKER,
+  learnedOutputBudget,
   rememberContextLimit,
+  rememberOutputBudget,
   type CompactModelConfig,
   type CompactStatus
 } from './compaction'
@@ -1348,7 +1355,10 @@ export type ChatStreamEvent =
 const MAX_RECONNECT = 6
 const RECONNECT_MAX_DELAY_MS = 30_000
 
-/** repetition：回复陷入逐字复读，丢弃本步重试（上下文长时先压缩，见 runAgentLoop 自愈⑤）。 */
+/**
+ * repetition：回复陷入逐字复读，丢弃本步重试（上下文长时先压缩，见 runAgentLoop 自愈⑤）；
+ * output_fit：服务商默认的输出预留让输入 + 预留超窗，改为显式发送输出预算重发（自愈⑥）。
+ */
 export type AutoRetryReason =
   | 'truncated'
   | 'empty'
@@ -1356,6 +1366,7 @@ export type AutoRetryReason =
   | 'output_limit'
   | 'effort'
   | 'repetition'
+  | 'output_fit'
 
 /**
  * 每步输出预算（max_tokens）：用户在模型详情页填的值 > 自动（shared/context.ts 的 autoOutputBudget：
@@ -1367,7 +1378,8 @@ const outputBudgetRejected = new Set<string>()
 function wantedOutputBudget(model: ChatModelConfig): number | undefined {
   return (
     modelOverrides(model.providerId, model.model).maxOutput ??
-    autoOutputBudget(model.adapter, model.model)
+    autoOutputBudget(model.adapter, model.model) ??
+    learnedOutputBudget(model)
   )
 }
 function outputBudgetKey(model: ChatModelConfig, budget: number | undefined): string {
@@ -4433,7 +4445,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         let fatal = false
         // 不可重试错误先扣下、不立即画红框：其中几类引擎能自愈（输出预算降档、上下文压缩后重发），
         // 流结束后再定夺；自愈不了才上报。
-        let fatalErr: { kind: string; message: string; limit?: number } | null = null
+        let fatalErr: {
+          kind: string
+          message: string
+          limit?: number
+          overflow?: ContextOverflow
+        } | null = null
         // 每次（含重发）现算：本步刚因不认思考等级被拒时，重发即不再带该参数。
         const stepEffort = sentEffort(model, effort)
         // 同理现算：本步刚因输出预算被拒时，重发即降回保守值。
@@ -4579,7 +4596,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
               retryAfterMs = ev.error.retryAfterMs
             } else {
               fatal = true
-              fatalErr = { kind: ev.error.kind, message: ev.error.message, limit: ev.error.limit }
+              fatalErr = {
+                kind: ev.error.kind,
+                message: ev.error.message,
+                limit: ev.error.limit,
+                overflow: ev.error.overflow
+              }
             }
           } else if (ev.type === 'done') {
             stopReason = ev.stopReason
@@ -4647,12 +4669,35 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           // 报错里写着真实窗口（中转把上游窗口开小、或用户填大了）→ 记住，此后压缩按它来。
           const limitLearned =
             fatalErr.limit !== undefined && rememberContextLimit(model, fatalErr.limit)
+          // 自愈⑥：输入 + 输出预留超窗，而本步没传 max_tokens——预留是服务商的默认值，常是模型的最大输出
+          // （DeepSeek V4 为 384K，1M 窗口里输入过 65.5 万即被拒，issue #43）。记住改为显式发送 OUTPUT_BUDGET_WIDE
+          // （不超过服务商的默认值），压缩线随之按它扣输出；输入装得下就直接重发，不为此压缩。报错里的输入常写
+          // 「至少 N」，重发仍超窗时本步已带了预算、不会再进这里，交给下面的压缩自愈。
+          const overflow = fatalErr.overflow
+          let overflowCompact = false
+          if (overflow && stepBudget === undefined) {
+            const budget = Math.min(OUTPUT_BUDGET_WIDE, overflow.output)
+            rememberOutputBudget(model, budget)
+            console.warn(
+              `[chat] 输出预留超窗（${overflow.input} + ${overflow.output} > ${overflow.limit}），改为显式发送 ${budget}`
+            )
+            if (overflow.input + budget <= overflow.limit) {
+              if (!isSub) {
+                emit(turnId, sessionId, { type: 'auto_retry', reason: 'output_fit', attempt: 1, max: 1 })
+                emit(turnId, sessionId, { type: 'stream_reset' })
+              }
+              attempt--
+              continue reconnect
+            }
+            overflowCompact = true // 输入本身已贴着窗口：降档无益，直接压缩
+          }
           // 自愈①：输出预算超出该模型允许范围 → 记住并降回保守值，重发本步（不计入重连次数）。
           // 本步已是保守值（或更小）时降档无益，直接交给下面的压缩自愈。
           const wanted = wantedOutputBudget(model)
           const budgetKey = outputBudgetKey(model, wanted)
           if (
             fatalErr.kind === 'output_limit' &&
+            !overflowCompact &&
             (stepBudget === undefined || stepBudget > OUTPUT_BUDGET_SAFE) &&
             !outputBudgetRejected.has(budgetKey)
           ) {

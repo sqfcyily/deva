@@ -2,6 +2,7 @@ import { describeNetError, httpFetch } from '../http'
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
+  inbandError,
   parseToolArgs,
   settleBrokenCalls,
   type AdapterConfig,
@@ -264,14 +265,12 @@ export async function* streamAnthropic(
         takeUsage(evt.usage as AnthropicUsage | undefined)
         if (delta?.stop_reason) stopReason = mapStopReason(delta.stop_reason)
       } else if (type === 'error') {
-        const err = evt.error as { message?: string }
+        const err = evt.error as { message?: string; type?: string }
+        const message = err?.message ?? (isEn() ? 'Stream error' : '流式错误')
+        // 上下文超限等按正文归类（见 inbandError），其余（overloaded 等）照旧按可重试的服务端错误。
         yield {
           type: 'error',
-          error: {
-            kind: 'server',
-            retryable: true,
-            message: err?.message ?? (isEn() ? 'Stream error' : '流式错误')
-          }
+          error: inbandError(`${message} ${err?.type ?? ''}`, { kind: 'server', retryable: true, message })
         }
         yield { type: 'done', stopReason: 'error' }
         return

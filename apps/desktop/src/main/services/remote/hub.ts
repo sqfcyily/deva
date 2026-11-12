@@ -393,7 +393,8 @@ const RETRY_TEXT: Record<string, string> = {
   context: '上下文超限，压缩后重试',
   output_limit: '输出预算超限，降档重试',
   effort: '模型不支持所选思考等级，按默认重试',
-  repetition: '回复陷入重复，正在重试'
+  repetition: '回复陷入重复，正在重试',
+  output_fit: '输出预留超出上下文窗口，已调小输出上限重发'
 }
 
 /** 把一个流事件并入回合视图。返回是否有可见变化。 */

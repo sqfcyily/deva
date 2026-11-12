@@ -398,7 +398,7 @@ type StreamEvent =
   | { type: 'reconnecting'; attempt: number; max: number }
   | {
       type: 'auto_retry'
-      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition'
+      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition' | 'output_fit'
       attempt: number
       max: number
       /** context：报错里解析出的真实窗口；output_limit：用户所设上限被拒后降到的值（见主进程 chat.ts）。 */
@@ -655,7 +655,15 @@ const NO_PROGRESS: MemberProgressGroup[] = []
 export interface RecoveryStatus {
   attempt: number
   max: number
-  reason?: 'reconnect' | 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition'
+  reason?:
+    | 'reconnect'
+    | 'truncated'
+    | 'empty'
+    | 'context'
+    | 'output_limit'
+    | 'effort'
+    | 'repetition'
+    | 'output_fit'
 }
 
 const IDLE_STATUS: StreamStatus = { elapsedSec: 0, reconnecting: null, compacting: false }

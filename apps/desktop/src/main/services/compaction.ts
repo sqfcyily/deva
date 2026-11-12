@@ -128,6 +128,22 @@ export function rememberContextLimit(model: LimitModelRef, limit: number): boole
   return limit < before
 }
 
+/**
+ * 进程内记住的输出预算（键同 learnedWindows）：本不传 max_tokens 的模型（OpenAI Chat 协议的「自动」），服务商按
+ * 模型最大输出预留、输入 + 预留超窗被拒时改为显式发送的预算（见 chat.ts 自愈⑥）。每步请求按它发，压缩线也按它
+ * 扣输出——否则压缩线只扣 OUTPUT_RESERVE_UNKNOWN，输入涨到服务商的预留线之后每次请求都被拒（issue #43）。不落盘。
+ */
+const learnedOutputs = new Map<string, number>()
+
+export function rememberOutputBudget(model: LimitModelRef, budget: number): void {
+  learnedOutputs.set(`${model.providerId}:${model.model}`, budget)
+}
+
+/** 进程内记住的输出预算（见 learnedOutputs）；没有则 undefined。 */
+export function learnedOutputBudget(model: LimitModelRef): number | undefined {
+  return learnedOutputs.get(`${model.providerId}:${model.model}`)
+}
+
 /** 某模型生效的上下文窗口：用户填写 > 自动（ID 自带 > 内置表 > 全局默认），再与进程内记住的真实上限取小。 */
 export function contextWindowFor(
   model: LimitModelRef,
@@ -156,6 +172,7 @@ function triggerTokens(model: LimitModelRef, cfg: CompactionCfg): number {
   const output =
     modelOverrides(model.providerId, model.model).maxOutput ??
     autoOutputBudget(model.adapter, model.model) ??
+    learnedOutputBudget(model) ??
     OUTPUT_RESERVE_UNKNOWN
   const byWindow = window - Math.min(output, window / 2) - Math.min(COMPACT_BUFFER, window * 0.1)
   return cfg.triggerRatio !== undefined ? Math.min(window * cfg.triggerRatio, byWindow) : byWindow

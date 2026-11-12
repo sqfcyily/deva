@@ -2,6 +2,7 @@ import { describeNetError, httpFetch } from '../http'
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
+  inbandError,
   parseToolArgs,
   settleBrokenCalls,
   toolImagesNote,
@@ -263,7 +264,9 @@ export async function* streamOpenAI(
           inband.code ??
           inband.type ??
           (isEn() ? 'The server returned an unspecified error' : '服务端返回了未说明的错误')
-        yield { type: 'error', error: { kind: 'server', retryable: false, message } }
+        // 按正文归类（上下文超限等，见 inbandError）：错误码也并进去，个别网关只在 code 里写 context_length_exceeded。
+        const error = inbandError(`${message} ${inband.code ?? ''}`, { kind: 'server', retryable: false, message })
+        yield { type: 'error', error }
         yield { type: 'done', stopReason: 'error' }
         return
       }
