@@ -163,10 +163,14 @@ async function fireOnce(id: string, manual: boolean, missed: number): Promise<vo
   const finishedAt = Date.now()
   // 被中止（停止键 / 删除任务对话 / 退出应用）：单独记「已中止」——没做完，但也不是失败，不计入连续失败。
   const aborted = res.stopReason === 'aborted'
-  // 达到步数上限、原地打转被停下也记失败：任务没做完（原因由 runScheduledTurn 写进 errorMessage）；
+  // 达到步数上限、原地打转、输出陷入复读被停下也记失败：任务没做完（原因由 runScheduledTurn 写进 errorMessage）；
   // 连续失败照常退避、自动暂停。
   const ok =
-    !aborted && res.stopReason !== 'error' && res.stopReason !== 'step_limit' && res.stopReason !== 'repeated'
+    !aborted &&
+    res.stopReason !== 'error' &&
+    res.stopReason !== 'step_limit' &&
+    res.stopReason !== 'repeated' &&
+    res.stopReason !== 'degenerate'
   const run: TaskRun = {
     firedAt,
     finishedAt,

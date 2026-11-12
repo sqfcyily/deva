@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronUp, Loader2, Square } from 'lucide-react'
+import { Bot, ChevronUp, Loader2, Square } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useChat, type ChatBlock } from '../../store/chat'
 import { ToolText, subagentTitle } from './blocks'
@@ -17,7 +17,53 @@ function currentChild(task: SubagentBlock): { step?: SubagentBlock['children'][n
 }
 
 /**
- * 后台任务胶囊（输入框正上方，与待办清单胶囊同一排）：本对话里仍在后台运行的子智能体（run_in_background）。
+ * 等主智能体汇总的后台子智能体进度（同成员的 MemberProgressNotice，外观同 .cf-mprogress）：同一轮派出的后台子智能体
+ * 是一组，主进程等最后一个结束才唤醒主智能体一次、一并汇总。组里已有完成、还有在跑的时，对话末尾居中一行
+ * 「「检索鉴权逻辑」已完成」/「2 个子智能体已完成」；全部结束即消失，主智能体随之汇总。悬停看每个的状态。
+ * 一轮只有一条助手消息，按消息分组即按派发的那一轮分组。只算顺利完成的：出错 / 被停止的结局写在各自的 Task 卡上。
+ * 不进对话记录。
+ */
+export function SubagentProgressNotice({ ownerName }: { ownerName: string }): React.JSX.Element | null {
+  const { t } = useI18n()
+  const { messages } = useChat()
+  const groups = useMemo(() => {
+    const out: SubagentBlock[][] = []
+    for (const m of messages) {
+      const cards = m.blocks.filter((b): b is SubagentBlock => b.kind === 'subagent' && !!b.background)
+      if (cards.some((b) => b.status === 'running') && cards.some((b) => b.status === 'ok')) out.push(cards)
+    }
+    return out
+  }, [messages])
+  if (groups.length === 0) return null
+  return (
+    <>
+      {groups.map((cards) => {
+        const done = cards.filter((b) => b.status === 'ok')
+        const running = cards.filter((b) => b.status === 'running')
+        const text =
+          done.length === 1
+            ? t('chat.bg.doneOne').replace('{name}', subagentTitle(done[0], t))
+            : t('chat.bg.doneMany').replace('{n}', String(done.length))
+        const title = [
+          ...done.map((b) => `${subagentTitle(b, t)}　${t('chat.bg.doneStatus')}`),
+          ...running.map((b) => `${subagentTitle(b, t)}　${t('chat.bg.working')}`),
+          t('chat.bg.doneHint').replace('{owner}', ownerName)
+        ].join('\n')
+        return (
+          <div key={cards[0].id} className="cf-mprogress">
+            <div className="cf-mprogress__pill is-noface" title={title}>
+              <Bot size={13} className="cf-mprogress__icon" />
+              <span className="cf-mprogress__text">{text}</span>
+            </div>
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
+/**
+ * 后台任务胶囊（输入框正上方，与待办清单胶囊同一排）：本对话里仍在后台运行的子智能体（默认即后台运行）。
  * 它们不是本轮在等的事、常比回合活得长，放在对话流里要么随当前步骤上下移动、要么得翻回原消息才能停止，
  * 故固定在这里：一个时直接显示标题与停止键；多个时显示个数，点开向上展开——每个任务固定两行：标题 + 停止键，
  * 下面一行它当前的步骤（同时执行多个工具时只写一个，后缀「等 N 项」），面板右上角「全部停止」。

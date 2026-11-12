@@ -237,7 +237,7 @@ export type DisplayBlock =
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error' | 'running'; summary?: string }
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
+      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated' | 'degenerate'
     }
   /**
    * 压缩提示，摘要正文（已去掉写给模型的开头）默认折叠。steps 有值 = 一轮进行中压缩，是执行步骤里的节点；
@@ -810,7 +810,7 @@ export type ChatStreamEvent =
   /** 引擎自愈中（截断续写 / 空回合追问 / 上下文压缩重试 / 输出预算降档），显示为状态横幅。 */
   | {
       type: 'auto_retry'
-      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort'
+      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition'
       attempt: number
       max: number
       /** context：报错里解析出的真实窗口；output_limit：用户所设输出上限被拒后降到的值。 */

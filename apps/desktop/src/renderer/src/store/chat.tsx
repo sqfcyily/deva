@@ -151,7 +151,7 @@ export type ChatBlock =
       task?: string
       /** 续聊卡：send_to_subagent 给已派出的子智能体发的消息（标题前加「继续」）。 */
       continued?: boolean
-      /** 后台运行（run_in_background）：派发它的那轮不等它，卡片独自运行到结束，运行中可单独停止。 */
+      /** 后台运行（默认；主进程在展示参数里标 background）：派发它的那轮不等它，卡片独自运行到结束，运行中可单独停止。 */
       background?: boolean
       status: ToolStatus
       /** 结论摘要（壳结果 summary，如「子智能体「X」已完成」）。 */
@@ -225,7 +225,7 @@ export type ChatBlock =
    */
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
+      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated' | 'degenerate'
     }
   /**
    * 压缩提示（只来自主进程重建），摘要正文默认折叠、点开才显示。steps 有值 = 一轮进行中压缩，是执行步骤里的
@@ -328,7 +328,7 @@ type DisplayBlock =
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error' | 'running'; summary?: string }
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
+      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated' | 'degenerate'
     }
   | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
   | { kind: 'error'; message: string }
@@ -398,7 +398,7 @@ type StreamEvent =
   | { type: 'reconnecting'; attempt: number; max: number }
   | {
       type: 'auto_retry'
-      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort'
+      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition'
       attempt: number
       max: number
       /** context：报错里解析出的真实窗口；output_limit：用户所设上限被拒后降到的值（见主进程 chat.ts）。 */
@@ -655,7 +655,7 @@ const NO_PROGRESS: MemberProgressGroup[] = []
 export interface RecoveryStatus {
   attempt: number
   max: number
-  reason?: 'reconnect' | 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort'
+  reason?: 'reconnect' | 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition'
 }
 
 const IDLE_STATUS: StreamStatus = { elapsedSec: 0, reconnecting: null, compacting: false }
@@ -760,6 +760,7 @@ function isSubagentCall(name: string): boolean {
 /**
  * 调用参数 → 子智能体 Task 卡（实时与历史回填共用）。续聊卡的任务正文取 message 并标 continued；
  * 它的 agent / description 由主进程从子智能体记录补进参数（见 chat.ts 的 withSubagentMeta）。
+ * 是否后台运行同样由主进程补进参数（background，见 chat.ts 的 subagentDisplayArgs）：模型的原参数看不出来。
  */
 function subagentBlock(
   id: string,
@@ -773,7 +774,7 @@ function subagentBlock(
     prompt?: unknown
     message?: unknown
     description?: unknown
-    run_in_background?: unknown
+    background?: unknown
   }
   const continued = name === 'send_to_subagent'
   const task = continued ? a.message : a.prompt
@@ -784,7 +785,7 @@ function subagentBlock(
     desc: typeof a.description === 'string' ? a.description.trim() || undefined : undefined,
     task: typeof task === 'string' ? task : undefined,
     ...(continued ? { continued: true } : {}),
-    ...(a.run_in_background === true ? { background: true } : {}),
+    ...(a.background === true ? { background: true } : {}),
     status,
     summary,
     children: []
@@ -1003,6 +1004,7 @@ function hasVisibleAnswer(blocks: ChatBlock[]): boolean {
  * - aborted（用户主动停止）：标一条「已中止」——中止前的半截内容会随历史保留，得看得出是被打断的；
  * - step_limit（定时任务达到步数上限）：标一条「已达到步数上限」——任务可能没做完；
  * - repeated（同一工具同参数同结果连续出现到上限，被停下）：标一条说明；
+ * - degenerate（回复陷入逐字复读，重试后仍如此，被停下）：标一条说明；
  * - error（已另有红色错误块）不重复提示。
  * 与主进程 recordTurnNotice / runScheduledTurn 同一套规则，故重开对话后所见一致。
  * 无需补提示时返回原数组引用（updateLastAssistant 据引用相等短路，不触发无谓重渲染）。
@@ -1011,6 +1013,7 @@ function appendTerminalNotice(blocks: ChatBlock[], stopReason: string): ChatBloc
   if (stopReason === 'aborted') return [...blocks, { kind: 'notice', code: 'aborted' }]
   if (stopReason === 'step_limit') return [...blocks, { kind: 'notice', code: 'step_limit' }]
   if (stopReason === 'repeated') return [...blocks, { kind: 'notice', code: 'repeated' }]
+  if (stopReason === 'degenerate') return [...blocks, { kind: 'notice', code: 'degenerate' }]
   if (stopReason === 'max_tokens') return [...blocks, { kind: 'notice', code: 'truncated' }]
   if (stopReason === 'refusal')
     return hasVisibleAnswer(blocks) ? blocks : [...blocks, { kind: 'notice', code: 'refused' }]

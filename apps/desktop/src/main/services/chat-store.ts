@@ -141,7 +141,8 @@ export interface StoredSession {
    */
   delivered?: Record<string, string[]>
   /**
-   * 后台子智能体（run_in_background）的状态边车，按开出它的 run_subagent / send_to_subagent 调用 id 记录。
+   * 后台子智能体的状态边车，按开出它的 run_subagent / send_to_subagent 调用 id 记录（只有后台派出的才有，
+   * 重开时也据此判断 Task 卡是否后台运行——调用参数看不出来：默认后台，定时任务与成员会话一律前台）。
    * 历史里那条调用的 tool_result 只是「已在后台启动」，真正的结局在回合之外才揭晓，故 Task 卡的终态记在这里：
    * running=派出时写入（进程退出后仍是 running 即视为被中断），ok / error=结束时改写。按轮删除时随 tool_use 修剪。
    */
@@ -213,7 +214,7 @@ export interface StoredNotice {
   /** kind='error' 时的错误文案。 */
   message?: string
   /** kind='notice' 时的提示码（aborted=用户中止了本轮，其前内容为中止前已产出的部分）。 */
-  code?: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
+  code?: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated' | 'degenerate'
 }
 
 /** 会话元信息（左侧列表用，不含正文）。 */

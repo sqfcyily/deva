@@ -104,7 +104,7 @@ import {
 } from '../features/chat/TaskPickers'
 import { taskErrorKey } from '../features/chat/TaskConfirmCard'
 import { TodoCapsule } from '../features/chat/Todos'
-import { BackgroundCapsule } from '../features/chat/BackgroundTasks'
+import { BackgroundCapsule, SubagentProgressNotice } from '../features/chat/BackgroundTasks'
 import { BrowserCapsule } from '../features/browser/BrowserCapsule'
 import { useDockOrder } from '../features/chat/dockOrder'
 import { useBrowserState } from '../features/browser/shared'
@@ -5718,6 +5718,8 @@ function Conversation({
                 {isTail && !memberView && (
                   <MemberProgressNotice ownerName={owner?.name ?? 'Deva'} faceOf={memberPersonaOf} />
                 )}
+                {/* 等主智能体汇总的后台子智能体（同上，不进对话记录，全部结束时消失）。 */}
+                {isTail && !memberView && <SubagentProgressNotice ownerName={owner?.name ?? 'Deva'} />}
                 {/* 成员在等你处理（不进对话记录，处理完消失）。按会话重挂载，展开与回执不串到别的对话。 */}
                 {isTail && !memberView && (
                   <MemberAsks

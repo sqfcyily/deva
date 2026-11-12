@@ -392,7 +392,8 @@ const RETRY_TEXT: Record<string, string> = {
   empty: '上一步没有输出，正在追问',
   context: '上下文超限，压缩后重试',
   output_limit: '输出预算超限，降档重试',
-  effort: '模型不支持所选思考等级，按默认重试'
+  effort: '模型不支持所选思考等级，按默认重试',
+  repetition: '回复陷入重复，正在重试'
 }
 
 /** 把一个流事件并入回合视图。返回是否有可见变化。 */
@@ -522,7 +523,12 @@ function flushPost(t: TurnTrack, post: Post, adapter: RemoteAdapter): void {
 
 function finishTurn(t: TurnTrack, stopReason: string): void {
   t.finished = true
-  t.status = stopReason === 'aborted' ? 'aborted' : stopReason === 'error' ? 'error' : 'done'
+  t.status =
+    stopReason === 'aborted'
+      ? 'aborted'
+      : stopReason === 'error' || stopReason === 'degenerate'
+        ? 'error'
+        : 'done'
   t.statusText =
     stopReason === 'max_tokens'
       ? '回复达到长度上限被截断'
@@ -532,7 +538,9 @@ function finishTurn(t: TurnTrack, stopReason: string): void {
           ? '达到单次运行的步数上限，任务可能未完成'
           : stopReason === 'repeated'
             ? '相同的工具调用连续多次没有进展，已停止'
-            : undefined
+            : stopReason === 'degenerate'
+              ? '模型输出陷入逐字重复，重试后仍如此，已停止'
+              : undefined
   if (t.status === 'done' && !hasVisible(t) && t.eager) t.blocks.push({ kind: 'notice', text: '本轮没有产生回复。' })
   if (sessionTurn.get(t.sessionId) === t.turnId) sessionTurn.delete(t.sessionId)
   // 回合结束仍未决的交互卡：主进程已按取消解开，卡片收成「已结束」。

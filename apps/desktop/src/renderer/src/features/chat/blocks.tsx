@@ -360,7 +360,9 @@ export function StatusIndicator({
               ? t('chat.work.autoOutputLimit')
               : reason === 'effort'
                 ? t('chat.work.autoEffort')
-                : t('chat.work.reconnecting')
+                : reason === 'repetition'
+                  ? t('chat.work.autoRepetition')
+                  : t('chat.work.reconnecting')
     return (
       <div className="chat__status is-reconnecting" role="status" aria-live="polite">
         <Loader2 size={14} className="spin" />
@@ -649,7 +651,8 @@ export function BlockView({
       restored: 'chat.notice.restored',
       aborted: 'chat.notice.aborted',
       step_limit: 'chat.notice.stepLimit',
-      repeated: 'chat.notice.repeated'
+      repeated: 'chat.notice.repeated',
+      degenerate: 'chat.notice.degenerate'
     }
     // 文案里的 {n}：阈值与主进程判定共用 shared/limits.ts。
     const n = block.code === 'repeated' ? REPEAT_STOP : TASK_MAX_STEPS

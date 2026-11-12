@@ -225,11 +225,31 @@ export function needsCompactionMidTurn(
   cfg: CompactionCfg = compactionConfig()
 ): boolean {
   if (!cfg.enabled) return false
-  const used =
-    lastInput > 0
-      ? lastInput + estimateTokens(messages.slice(lastInputAt))
-      : estimateTokens(modelMessages(messages))
-  return used >= triggerTokens(model, cfg)
+  return usedTokensMidTurn(messages, lastInput, lastInputAt) >= triggerTokens(model, cfg)
+}
+
+/** 一轮进行中的上下文用量：最近一次真实读数 + 其后新增消息的估算；没有读数时估算模型视图。 */
+function usedTokensMidTurn(messages: Message[], lastInput: number, lastInputAt: number): number {
+  return lastInput > 0
+    ? lastInput + estimateTokens(messages.slice(lastInputAt))
+    : estimateTokens(modelMessages(messages))
+}
+
+/**
+ * 模型输出复读后，先压缩再重试是否值得：用量至少是压缩后保留量的两倍（压完至少减半）。长上下文是模型退化的
+ * 常见诱因，压短了再试才有意义；上下文本就不长时复读多是采样偶发，压缩只会白丢细节，直接重试即可。
+ * 参数同 needsCompactionMidTurn。
+ */
+export function compactionWorthRetry(
+  messages: Message[],
+  model: LimitModelRef,
+  lastInput: number,
+  lastInputAt: number,
+  cfg: CompactionCfg = compactionConfig()
+): boolean {
+  if (!cfg.enabled) return false
+  const keep = keepTokensFor(contextWindowFor(model, cfg))
+  return usedTokensMidTurn(messages, lastInput, lastInputAt) >= 2 * keep
 }
 
 // ── 边界选取 ──────────────────────────────────────────────────────────────────
@@ -545,6 +565,11 @@ const KEEP_RATIO = 0.3
 const KEEP_TOKENS_MIN = 2000
 const KEEP_TOKENS_MAX = 40_000
 
+/** 压缩后保留尾部的目标 token 数（见上）。 */
+function keepTokensFor(window: number): number {
+  return Math.min(KEEP_TOKENS_MAX, Math.max(KEEP_TOKENS_MIN, Math.round(window * KEEP_RATIO)))
+}
+
 /**
  * 压缩一个会话：在模型视图上选边界 → 转录待压段 → 一次性摘要 → 把摘要插进对话记录的边界处并落盘。
  * 不删除任何消息：被压的部分照常显示，只是此后不再发给模型（见 modelMessages）。
@@ -568,10 +593,7 @@ export async function compactSession(args: {
   const cfg = compactionConfig()
   const locale = String(getConfig().locale ?? 'zh-CN')
   const window = contextWindowFor(model, cfg)
-  const keepTokens = Math.min(
-    KEEP_TOKENS_MAX,
-    Math.max(KEEP_TOKENS_MIN, Math.round(window * KEEP_RATIO))
-  )
+  const keepTokens = keepTokensFor(window)
   const msgs = session.messages
   // 边界、转录、把关都在模型视图上算（上一份摘要及其后的原文）；之前的部分已在上一份摘要里。
   const { view, toRecord } = modelView(msgs)

@@ -1890,6 +1890,10 @@ body.cf-resizing-y * {
 .cf-mprogress__pill .cf-avstack {
   --ring: var(--bg-inset);
 }
+/* 后台子智能体的汇总进度没有头像，用子智能体节点的同款图标（见 SubagentProgressNotice） */
+.cf-mprogress__icon {
+  flex: none;
+}
 .cf-mprogress__text {
   min-width: 0;
   overflow: hidden;

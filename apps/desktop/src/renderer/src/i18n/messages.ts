@@ -256,7 +256,9 @@ const zhCN: MessageTree = {
       restored: '已将代码回滚到较早的检查点，对话保留；下一条消息会告知模型这些文件已恢复。',
       aborted: '已停止本轮回复，以上为停止前已产出的内容。',
       stepLimit: '本次运行已达到步数上限（{n} 步），已停止调用工具并给出总结，任务可能未完成。',
-      repeated: '同一工具以相同参数连续调用 {n} 次且结果没有变化，已停止调用工具并给出总结。'
+      repeated: '同一工具以相同参数连续调用 {n} 次且结果没有变化，已停止调用工具并给出总结。',
+      degenerate:
+        '模型输出陷入逐字重复，重试后仍如此，已停止本轮回复并截掉重复部分。上下文过长常会导致这种情况，可压缩上下文或换个模型再试。'
     },
     noModel: '尚未选择模型，请先在「设置 › 模型」添加并启用模型，再从输入框上方的模型选择器中选择。',
     noKey: '该模型尚未配置 API 密钥，请在「设置 › 模型」中填写。',
@@ -323,7 +325,7 @@ const zhCN: MessageTree = {
       fallback: 'General',
       fork: '分身',
       stepUnit: '步',
-      // run_in_background：派发它的那轮不等它，结束后自动通知主智能体。
+      // 后台运行（默认）：派发它的那轮不等它，结束后自动通知主智能体。
       background: '后台',
       stop: '停止',
       stopHint: '停止这个后台子智能体（它停止前的输出会随下一条消息交给主智能体）',
@@ -341,7 +343,12 @@ const zhCN: MessageTree = {
       // 面板里还没有内部步骤（刚派出，或重新载入后步骤已不在）时，任务下面那一行的文字。
       working: '进行中',
       // 同时执行好几个工具时，当前步骤那行只写一个，后缀总数。
-      more: '等 {n} 项'
+      more: '等 {n} 项',
+      // 等汇总的进度（对话末尾居中，见 SubagentProgressNotice）：同一轮派出的几个后台子智能体已有完成、还有在跑的。
+      doneOne: '「{name}」已完成',
+      doneMany: '{n} 个子智能体已完成',
+      doneStatus: '已完成',
+      doneHint: '都完成后由 {owner} 汇总'
     },
     // 时间轴上每步一行：「动词 + 对象」。done=已完成，doing=执行中（扫光），base=失败时接「失败：原因」。
     flow: {
@@ -549,7 +556,8 @@ const zhCN: MessageTree = {
       autoEmpty: '上一步没有输出，正在自动重试',
       autoContext: '上下文超限，正在压缩后重试',
       autoOutputLimit: '输出上限不被模型接受，已降档重试',
-      autoEffort: '当前模型不支持所选思考等级，已按默认重发'
+      autoEffort: '当前模型不支持所选思考等级，已按默认重发',
+      autoRepetition: '模型输出陷入重复，已丢弃并重试'
     },
     ask: {
       title: '请你决定',
@@ -1710,7 +1718,9 @@ const en: MessageTree = {
       stepLimit:
         'This run reached the step limit ({n} steps). Tool calls stopped and a summary was given; the task may be unfinished.',
       repeated:
-        'The same tool was called {n} times in a row with identical arguments and results, so tool calls stopped and a summary was given.'
+        'The same tool was called {n} times in a row with identical arguments and results, so tool calls stopped and a summary was given.',
+      degenerate:
+        'The model kept repeating the same text verbatim, even after a retry, so the reply was stopped and the repeated part removed. Long context often causes this; try compacting or switching models.'
     },
     noModel:
       'No model selected — add and enable a model under Settings › Models, then pick it from the model selector above the input box.',
@@ -1785,7 +1795,11 @@ const en: MessageTree = {
       stopAll: 'Stop all',
       stopAllHint: 'Stop all background subagents (their output so far goes to the main agent with your next message)',
       working: 'Working',
-      more: '· {n} in parallel'
+      more: '· {n} in parallel',
+      doneOne: '{name} finished',
+      doneMany: '{n} subagents finished',
+      doneStatus: 'Finished',
+      doneHint: '{owner} will summarize once all are done'
     },
     flow: {
       done: {
@@ -1989,7 +2003,8 @@ const en: MessageTree = {
       autoEmpty: 'Previous step produced nothing, retrying automatically',
       autoContext: 'Context too long, compacting and retrying',
       autoOutputLimit: 'Output budget rejected by the model, retrying with a smaller one',
-      autoEffort: 'This model does not support the selected thinking level; resent with the default'
+      autoEffort: 'This model does not support the selected thinking level; resent with the default',
+      autoRepetition: 'Model output started repeating; discarded and retrying'
     },
     ask: {
       title: 'Your call',
