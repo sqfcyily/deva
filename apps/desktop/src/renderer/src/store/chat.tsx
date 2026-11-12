@@ -532,9 +532,10 @@ interface ChatContextValue {
    * 按「轮」删除当前会话的部分对话（同步删除模型上下文）。turnIndices 为 0 基轮下标集合
    * （轮 = 一条真实用户消息起，直到下一条用户消息前的全部气泡；压缩摘要等前言不计入轮）。
    * 删除后以主进程重建的历史就地替换该会话消息，保证展示与落盘一致、重启不变。
-   * 空集、或该会话正流式生成时为无操作（避免改写正被 Agent 循环原地改写的 messages）。
+   * 空集为无操作；该会话正在进行 / 压缩 / 回滚时不删（避免改写正被 Agent 循环原地改写的 messages）。
+   * 返回是否已删。
    */
-  deleteTurns: (turnIndices: number[]) => Promise<void>
+  deleteTurns: (turnIndices: number[]) => Promise<boolean>
   /**
    * 检查点回滚当前会话：回到第 turn 轮开始之前（mode 见 RewindMode，force = 勾选覆盖的冲突文件）。
    * 成功后以主进程重建的历史就地替换消息。该会话正流式生成时直接回 busy，不发请求。
@@ -1900,7 +1901,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         return false
       }
       const sendFailed = (msg: string): false => {
-        toast.show({ variant: 'error', title: t('chat.error'), message: msg, duration: 8000 })
+        // 主进程 handler 抛的错经 IPC 传回时带着「Error invoking remote method 'chat:xxx': Error: 」前缀，去掉只留原因。
+        const reason = msg.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '')
+        toast.show({ variant: 'error', title: t('chat.error'), message: reason, duration: 8000 })
         return false
       }
 
@@ -2211,19 +2214,22 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     // 按「轮」删除当前会话的部分对话（同步删上下文）。主进程重写 messages 并重建展示气泡，此处就地替换。
-    // 流式中不删（该会话正被 Agent 循环原地改写 messages）；删的必是当前会话（选择态只在当前对话内）。
-    const deleteTurns = async (turnIndices: number[]): Promise<void> => {
-      if (turnIndices.length === 0) return
+    // 流式中不删（该会话正被 Agent 循环原地改写 messages）；主进程另有同样的检查（挡住主进程自己起的轮），
+    // 被拒时回 null。删的必是当前会话（选择态只在当前对话内）。返回是否已删。
+    const deleteTurns = async (turnIndices: number[]): Promise<boolean> => {
+      if (turnIndices.length === 0) return false
       const id = sessionIdRef.current
-      if (runtimesRef.current.get(id)?.turnId) return
+      if (runtimesRef.current.get(id)?.streaming) return false
       const path = projectPathRef.current
       const dms = await window.deva.chat.deleteTurns(id, path, turnIndices)
-      if (sessionIdRef.current !== id) return
-      patchRuntime(id, (r) => ({ ...r, messages: displayToMessages(dms as DisplayMessage[]) }))
+      if (!dms) return false
+      if (sessionIdRef.current !== id) return true
+      patchRuntime(id, (r) => ({ ...r, messages: displayToMessages(dms) }))
       // updatedAt 变了 → 刷新左侧列表使排序即时更新（标题不重算，保持稳定）。
       const list = await window.deva.chat.listSessions(path)
-      if (projectPathRef.current !== path) return
+      if (projectPathRef.current !== path) return true
       setSessions(list)
+      return true
     }
 
     // 检查点回滚 / 撤销：与 deleteTurns 同形——主进程改写历史并重建展示气泡，此处就地替换并刷新列表排序。

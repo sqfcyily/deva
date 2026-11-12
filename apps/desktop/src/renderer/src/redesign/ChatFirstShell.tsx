@@ -848,7 +848,11 @@ export function ChatFirstShell(): React.JSX.Element {
       confirmText: t('cf.delete')
     })
     if (!ok) return false
-    await deleteTurns(indices)
+    // 对话正在进行 / 压缩 / 回滚时不删（含主进程自己起的轮，如定时任务、手机端消息）：保留选择，等结束后再删。
+    if (!(await deleteTurns(indices))) {
+      toast.show({ variant: 'warning', message: t('cf.deleteTurnsBusy') })
+      return false
+    }
     return true
   }
   const deletePersona = (id: string, name: string): void => {

@@ -2577,6 +2577,18 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
   /** 正在手动压缩（/compact）的会话：期间不为后台任务通知起轮，免得与压缩同时改写 messages。 */
   const compacting = new Set<string>()
+  /** 正在执行回滚 / 撤销的会话：防同一会话的两次回滚交错，期间也不起轮。 */
+  const rewinding = new Set<string>()
+
+  /**
+   * 会话的历史正被改写：回合进行中、手动压缩中、回滚 / 撤销中。三者互斥，删轮也须等它们结束——
+   * 回合一直往起轮时拿到的那个 messages 数组里追加，删轮 / 回滚会把 s.messages 换成新数组，交错的话
+   * 落盘的是新数组，这一轮的输出就丢了。渲染层发起前也会检查，但挡不住主进程自己起的轮（定时任务、
+   * 手机端消息、后台子智能体结束后的唤醒、成员交差），故以主进程这里为准。
+   */
+  function historyLocked(sessionId: string): boolean {
+    return busySessions.has(sessionId) || compacting.has(sessionId) || rewinding.has(sessionId)
+  }
 
   /** 手机端发起、仍在进行的回合：回复与交互卡都推到手机，桌面不再弹系统通知。 */
   const remoteTurns = new Set<string>()
@@ -2635,7 +2647,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     commitHandoffs(sessionId)
     const queue = pendingNotices.get(sessionId)
     if (!queue?.some((n) => n.wake)) return
-    if (busySessions.has(sessionId) || compacting.has(sessionId) || rewinding.has(sessionId)) return
+    if (historyLocked(sessionId)) return
     pendingNotices.delete(sessionId)
     const session = getSession(sessionId)
     if (!session) return
@@ -2779,7 +2791,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   function commitMemberReports(mainId: string): void {
     const queue = pendingMemberReports.get(mainId)
     if (!queue?.length) return
-    if (busySessions.has(mainId) || compacting.has(mainId) || rewinding.has(mainId)) return
+    if (historyLocked(mainId)) return
     pendingMemberReports.delete(mainId)
     const main = getSession(mainId)
     if (!main) return
@@ -2850,7 +2862,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (shuttingDown) return
     const queue = pendingHandoffs.get(mainId)
     if (!queue?.length) return
-    if (busySessions.has(mainId) || compacting.has(mainId) || rewinding.has(mainId)) return
+    if (historyLocked(mainId)) return
     pendingHandoffs.delete(mainId)
     const main = getSession(mainId)
     if (!main) return
@@ -5437,99 +5449,30 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const scheduled = trigger === 'schedule'
     const controller = new AbortController()
     const startedAt = Date.now()
-    activeTurns.set(turnId, controller)
-    busySessions.set(sessionId, turnId)
-    busySince.set(sessionId, startedAt)
-    insertableTurns.add(turnId)
-    if (fromRemote) remoteTurns.add(turnId)
+    // 登记为忙之前只取收尾（catch / finally）也要用的几项，它们都不会抛错：ensureSession 读盘失败自行容错，
+    // resolveModelRef 解析不了即回落。其余准备（角色、工具表、项目说明、压缩……）一律放在登记之后的 try 里——
+    // 登记后在 try 外抛错，finally 不执行，这个对话会一直停在「正在进行中」，渲染层也收不到 done。
     const session = ensureSession(sessionId)
     // 成员会话（见 members.ts）：身份、职责与文件夹取主对话名单里的那一项。成员可以直接问用户、提交计划（卡片在主对话里
     // 以通知行出现），结论在本轮结束时交回主对话（见 reportMemberTurn）。
     const isMember = !!session.parentId
-    const parentSession = session.parentId ? getSession(session.parentId) : undefined
-    const memberRef = parentSession?.members?.find((m) => m.sessionId === sessionId)
-    const mainRoot = parentSession?.focusRoot ?? null
     // 主角色用 member_send 转给定时任务的问题（见 askTask）：任务在自己的对话里回答，本轮结束时交回主对话
     // （见 reportTaskAsk）。用户在任务对话里插话、接着起的那一轮仍算在内（看登记，不看 trigger）。
     const taskAsk = !isMember && !scheduled ? taskAsks.get(sessionId) : undefined
-    const askOwner = taskAsk ? getSession(taskAsk.mainId) : undefined
     // 无人值守：定时任务，以及它回答转来的问题（用户不在任务对话里）。不弹提问 / 计划 / 挂载卡，不提醒回复完成。
     // 成员会话不提醒回复完成（结论交回主对话）。
     const unattended = scheduled || !!taskAsk
-    // 绑定了主对话的定时任务（见 handoff.ts）：本轮提供交接工具，系统提示词说明结果交给谁。主对话已删则按独立任务跑。
-    const boundTask = scheduled ? findTaskBySession(sessionId) : null
-    const ownerSession = boundTask?.ownerSessionId ? getSession(boundTask.ownerSessionId) : undefined
-    const handoffOwner = ownerSession ? personaName(ownerSession) : null
-    // 聚焦工作区：本对话若挂载文件夹，用它作有效根（受信/在工作区内判定、终端 cwd、系统提示词聚焦、
-    // 权限模式键均据此）；未挂载 → 回落 workspaceRoot（对话优先外壳恒 null，即全机通用助手）。
-    const effectiveRoot = session.focusRoot ?? workspaceRoot
-    // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
-    // canPromptUser：手机端发起的对话与定时任务，用户不在电脑前，不能弹窗请他在网页上亲自操作（browser 的 handoff）。
-    // 成员会话可以请（同成员提问）：不弹浏览器窗口，主对话输入框上方出一行「前端 需要你登录 · 去处理」，用户没在看
-    // Deva 时弹系统通知（点开主对话）。
-    const ctx: ToolContext = {
-      workspaceRoot: effectiveRoot,
-      signal: controller.signal,
-      sessionId,
-      canPromptUser: !taskAsk && (trigger === 'desktop' || trigger === 'member'),
-      // 成员会话：全局记忆只读（用户本人的通用偏好由主角色记），项目私有记忆可写。
-      ...(isMember
-        ? {
-            globalMemoryReadonly: true,
-            memberHandoff: {
-              name: memberRef?.name ?? notifyTitle(sessionId),
-              notify: (reason: string) => notifyPending(turnId, sessionId, { kind: 'browser', reason })
-            }
-          }
-        : {})
-    }
-
     // 本轮实际模型（对话优先外壳·快照固定/只改当前对话）：以**本对话**存的 model 为准（新建时快照角色偏好、
     // 聊天中切换即更新），经 resolveModelRef 解析——空/非法/模型已被删除都回落 config（chat:send 带上的全局
     // 默认）。故：同角色的多个对话可各用不同模型，改角色偏好模型不影响已建对话，删模型自动回归默认。
-    // 提前解析，以便压缩按本轮实际模型的上下文窗口判定/摘要。
-    // 注：persona 仍需取出用于系统提示词单身份注入，但**不再**参与模型选择（快照已固定于会话）。
-    // 本轮的角色：决定注入哪条角色设定、能用哪些技能 / MCP（未绑定、或绑定的角色已不存在 = 默认角色）。
-    const rolePersonaId = resolvePersonaId(session.personaId)
-    ctx.personaId = rolePersonaId
-    const persona = getPersona(rolePersonaId)
+    // 提前解析，以便压缩按本轮实际模型的上下文窗口判定/摘要。角色不参与模型选择（快照已固定于会话）。
     const turnModel = resolveModelRef(session.model, config)
 
-    // 提示缓存已过期：先把较早的大块工具结果换成占位（原文存文件，不调模型）。缓存反正要重建，此时改写历史
-    // 不多花钱；缓存还热时不动（见 tool-results.ts）。清掉的往往足以让下面的摘要压缩不必发生。
-    try {
-      const cleared = clearStaleToolResults(session, turnModel, modelStart(session.messages))
-      if (cleared)
-        console.info(`[context] 缓存已过期，清理了 ${cleared.cleared} 个较早的工具结果（约 ${cleared.tokens} token）`)
-    } catch (e) {
-      /* 清理失败（极少）：历史可能只改了一部分，均为合法内容，本轮照常 */
-      console.warn('[context] 清理旧工具结果异常：', (e as Error)?.message ?? e)
-    }
-
-    // 自动压缩：接近上下文窗口时，先把较早历史摘要替换，再进入本轮（一轮进行中另有逐步检查，见 compact）。
-    // 失败 / 无需压缩都发事件供渲染层弱提示，且绝不阻断本轮（宁可这一轮不压也要照常回答）。
-    if (!controller.signal.aborted && needsCompaction(session, turnModel)) {
-      try {
-        const r = await compactWithStatus(turnId, sessionId, { session, model: turnModel, signal: controller.signal })
-        // 失败原因落主进程日志：渲染层虽已展示，但后台回合（定时任务）无人盯着，日志是唯一痕迹。
-        if (r.status === 'failed') console.warn('[compaction] 自动压缩失败：', r.message)
-        if (r.status !== 'none')
-          emit(turnId, sessionId, {
-            type: 'compacted',
-            scope: 'auto',
-            status: r.status,
-            message: r.message
-          })
-      } catch (e) {
-        /* 压缩自身抛错（极少）：忽略，历史未动，本轮照常 */
-        console.warn('[compaction] 自动压缩异常：', (e as Error)?.message ?? e)
-      }
-    }
-
     // 完整对话记录：本轮的消息都追加在它末尾；发给模型的部分由 runAgentLoop 每步用 modelMessages 截取。
-    // 压缩只往里插入摘要，轮中压缩后 history 依然是同一个数组。
+    // 压缩只往里插入摘要，轮前 / 轮中压缩后 history 依然是同一个数组，所以可以在压缩之前就取。
     const history = session.messages
-    // 本轮起点：用于判定本轮是否产出可见回复。轮中压缩会在本轮中间插入摘要，届时重新定位（见 compact）。
+    // 本轮起点：用于判定本轮是否产出可见回复。轮前压缩后重取（见下方 try）；轮中压缩会在本轮中间插入摘要，
+    // 届时重新定位（见 compact）。
     let turnStart = history.length
     // 本轮真实输入 token（用于压缩触发判定）：runAgentLoop 每收到一次 usage 即回调，取最后一次。
     let lastInput = 0
@@ -5589,54 +5532,131 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       return ms
     }
 
-    // 本轮 persona 快照（仅主智能体）：只注入本对话角色**这一条**身份提示词——未绑定的旧对话、或绑定的角色
-    // 已不存在，都用默认角色（与对话列表显示一致），不叠加其它角色。子智能体一律不注入（有自己的系统提示词，避免串味）。
-    const personas = persona && persona.prompt.trim() ? [{ name: persona.name, prompt: persona.prompt }] : []
-    // run_subagent 恒提供：内置子智能体（通用 / Explore / Plan）枚举进工具描述，无需任何用户配置。
-    const subagentTool = buildSubagentTool()
-    // 每轮定格：内置工具 + exit_plan（计划先行）+ skill（描述固定，技能清单随消息下发）+
-    // run_subagent / send_to_subagent + 当前已连接、对本角色开放的 MCP 工具。exit_plan 仅主轮提供（子智能体的 buildSubagentTools 不含它）。
-    // 内置工具不按角色收窄：所有角色均可按需调用（每个调用仍照常过同一道权限闸门，零提权）；按角色收窄的只有技能与 MCP。
-    const turnTools: ToolSpec[] = [
-      ...toolSpecs,
-      buildPlanTool(),
-      buildTodoTool(),
-      buildSkillTool(),
-      // 查看按需加载工具（browser、create_* 等，见 tool-search.ts）的完整用法；这几个工具在各类对话里至少剩 browser。
-      buildToolSearchTool(),
-      subagentTool,
-      buildSendToSubagentTool(),
-      // 项目成员：主对话的交互轮提供 create_member / member_send / member_stop，成员会话提供 read_main / report_to_main；
-      // 定时任务都不给。
-      ...(isMember
-        ? [readMainTool(), reportToMainTool()]
-        : unattended
-          ? handoffOwner
-            ? [handoffTool(handoffOwner)]
-            : []
-          : mainTurnMemberTools()),
-      ...getMcpToolSpecs(rolePersonaId)
-    ]
-    // tool_search 的可选工具名按筛选后的工具表收窄（成员会话没有 create_* 等）。
-    const tools = fitToolSearch(
-      isMember
-        ? turnTools.filter(
-            (t) => !MEMBER_EXCLUDED.has(t.name) && (effectiveRoot !== null || !MEMBER_MEMORY_TOOLS.has(t.name))
-          )
-        : unattended
-          ? turnTools.filter((t) => !UNATTENDED_EXCLUDED.has(t.name))
-          : turnTools
-    )
-    // 项目说明在轮开头快照进 system：本轮中途改 AGENTS.md 不改 system（提示缓存前缀稳定），下一轮生效。
-    // 成员负责子文件夹时，项目根目录（主对话工作目录）的 AGENTS.md 也一并读入，近者在后。
-    const projectDoc = [
-      ...(isMember && mainRoot && !sameRoot(mainRoot, effectiveRoot)
-        ? projectDocPromptSection(loadProjectDoc(mainRoot))
-        : []),
-      ...projectDocPromptSection(loadProjectDoc(effectiveRoot))
-    ]
+    activeTurns.set(turnId, controller)
+    busySessions.set(sessionId, turnId)
+    busySince.set(sessionId, startedAt)
+    insertableTurns.add(turnId)
+    if (fromRemote) remoteTurns.add(turnId)
 
     try {
+      const parentSession = session.parentId ? getSession(session.parentId) : undefined
+      const memberRef = parentSession?.members?.find((m) => m.sessionId === sessionId)
+      const mainRoot = parentSession?.focusRoot ?? null
+      const askOwner = taskAsk ? getSession(taskAsk.mainId) : undefined
+      // 绑定了主对话的定时任务（见 handoff.ts）：本轮提供交接工具，系统提示词说明结果交给谁。主对话已删则按独立任务跑。
+      const boundTask = scheduled ? findTaskBySession(sessionId) : null
+      const ownerSession = boundTask?.ownerSessionId ? getSession(boundTask.ownerSessionId) : undefined
+      const handoffOwner = ownerSession ? personaName(ownerSession) : null
+      // 聚焦工作区：本对话若挂载文件夹，用它作有效根（受信/在工作区内判定、终端 cwd、系统提示词聚焦、
+      // 权限模式键均据此）；未挂载 → 回落 workspaceRoot（对话优先外壳恒 null，即全机通用助手）。
+      const effectiveRoot = session.focusRoot ?? workspaceRoot
+      // signal 随 chat:abort 触发 → run_command 中止并杀掉子进程树。
+      // canPromptUser：手机端发起的对话与定时任务，用户不在电脑前，不能弹窗请他在网页上亲自操作（browser 的 handoff）。
+      // 成员会话可以请（同成员提问）：不弹浏览器窗口，主对话输入框上方出一行「前端 需要你登录 · 去处理」，用户没在看
+      // Deva 时弹系统通知（点开主对话）。
+      const ctx: ToolContext = {
+        workspaceRoot: effectiveRoot,
+        signal: controller.signal,
+        sessionId,
+        canPromptUser: !taskAsk && (trigger === 'desktop' || trigger === 'member'),
+        // 成员会话：全局记忆只读（用户本人的通用偏好由主角色记），项目私有记忆可写。
+        ...(isMember
+          ? {
+              globalMemoryReadonly: true,
+              memberHandoff: {
+                name: memberRef?.name ?? notifyTitle(sessionId),
+                notify: (reason: string) => notifyPending(turnId, sessionId, { kind: 'browser', reason })
+              }
+            }
+          : {})
+      }
+
+      // 本轮的角色：决定注入哪条角色设定、能用哪些技能 / MCP（未绑定、或绑定的角色已不存在 = 默认角色）。
+      // persona 只用于系统提示词单身份注入，不参与模型选择。
+      const rolePersonaId = resolvePersonaId(session.personaId)
+      ctx.personaId = rolePersonaId
+      const persona = getPersona(rolePersonaId)
+
+      // 提示缓存已过期：先把较早的大块工具结果换成占位（原文存文件，不调模型）。缓存反正要重建，此时改写历史
+      // 不多花钱；缓存还热时不动（见 tool-results.ts）。清掉的往往足以让下面的摘要压缩不必发生。
+      try {
+        const cleared = clearStaleToolResults(session, turnModel, modelStart(session.messages))
+        if (cleared)
+          console.info(`[context] 缓存已过期，清理了 ${cleared.cleared} 个较早的工具结果（约 ${cleared.tokens} token）`)
+      } catch (e) {
+        /* 清理失败（极少）：历史可能只改了一部分，均为合法内容，本轮照常 */
+        console.warn('[context] 清理旧工具结果异常：', (e as Error)?.message ?? e)
+      }
+
+      // 自动压缩：接近上下文窗口时，先把较早历史摘要替换，再进入本轮（一轮进行中另有逐步检查，见 compact）。
+      // 失败 / 无需压缩都发事件供渲染层弱提示，且绝不阻断本轮（宁可这一轮不压也要照常回答）。
+      if (!controller.signal.aborted && needsCompaction(session, turnModel)) {
+        try {
+          const r = await compactWithStatus(turnId, sessionId, { session, model: turnModel, signal: controller.signal })
+          // 失败原因落主进程日志：渲染层虽已展示，但后台回合（定时任务）无人盯着，日志是唯一痕迹。
+          if (r.status === 'failed') console.warn('[compaction] 自动压缩失败：', r.message)
+          if (r.status !== 'none')
+            emit(turnId, sessionId, {
+              type: 'compacted',
+              scope: 'auto',
+              status: r.status,
+              message: r.message
+            })
+        } catch (e) {
+          /* 压缩自身抛错（极少）：忽略，历史未动，本轮照常 */
+          console.warn('[compaction] 自动压缩异常：', (e as Error)?.message ?? e)
+        }
+      }
+      // 轮前压缩把摘要插在本轮请求之前：轮起点随之后移。
+      turnStart = history.length
+
+      // 本轮 persona 快照（仅主智能体）：只注入本对话角色**这一条**身份提示词——未绑定的旧对话、或绑定的角色
+      // 已不存在，都用默认角色（与对话列表显示一致），不叠加其它角色。子智能体一律不注入（有自己的系统提示词，避免串味）。
+      const personas = persona && persona.prompt.trim() ? [{ name: persona.name, prompt: persona.prompt }] : []
+      // run_subagent 恒提供：内置子智能体（通用 / Explore / Plan）枚举进工具描述，无需任何用户配置。
+      const subagentTool = buildSubagentTool()
+      // 每轮定格：内置工具 + exit_plan（计划先行）+ skill（描述固定，技能清单随消息下发）+
+      // run_subagent / send_to_subagent + 当前已连接、对本角色开放的 MCP 工具。exit_plan 仅主轮提供（子智能体的 buildSubagentTools 不含它）。
+      // 内置工具不按角色收窄：所有角色均可按需调用（每个调用仍照常过同一道权限闸门，零提权）；按角色收窄的只有技能与 MCP。
+      const turnTools: ToolSpec[] = [
+        ...toolSpecs,
+        buildPlanTool(),
+        buildTodoTool(),
+        buildSkillTool(),
+        // 查看按需加载工具（browser、create_* 等，见 tool-search.ts）的完整用法；这几个工具在各类对话里至少剩 browser。
+        buildToolSearchTool(),
+        subagentTool,
+        buildSendToSubagentTool(),
+        // 项目成员：主对话的交互轮提供 create_member / member_send / member_stop，成员会话提供 read_main / report_to_main；
+        // 定时任务都不给。
+        ...(isMember
+          ? [readMainTool(), reportToMainTool()]
+          : unattended
+            ? handoffOwner
+              ? [handoffTool(handoffOwner)]
+              : []
+            : mainTurnMemberTools()),
+        ...getMcpToolSpecs(rolePersonaId)
+      ]
+      // tool_search 的可选工具名按筛选后的工具表收窄（成员会话没有 create_* 等）。
+      const tools = fitToolSearch(
+        isMember
+          ? turnTools.filter(
+              (t) => !MEMBER_EXCLUDED.has(t.name) && (effectiveRoot !== null || !MEMBER_MEMORY_TOOLS.has(t.name))
+            )
+          : unattended
+            ? turnTools.filter((t) => !UNATTENDED_EXCLUDED.has(t.name))
+            : turnTools
+      )
+      // 项目说明在轮开头快照进 system：本轮中途改 AGENTS.md 不改 system（提示缓存前缀稳定），下一轮生效。
+      // 成员负责子文件夹时，项目根目录（主对话工作目录）的 AGENTS.md 也一并读入，近者在后。
+      const projectDoc = [
+        ...(isMember && mainRoot && !sameRoot(mainRoot, effectiveRoot)
+          ? projectDocPromptSection(loadProjectDoc(mainRoot))
+          : []),
+        ...projectDocPromptSection(loadProjectDoc(effectiveRoot))
+      ]
+
       // 主轮 = depth 0：可问询（定时任务除外）、可派生子智能体、由本封装发终态 done（嵌套调用不发 done）。
       const { stopReason, errorMessage, text } = await runAgentLoop({
         turnId,
@@ -5868,8 +5888,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const { auth, sessionId } = task
     const fail = (message: string): ScheduledTurnResult => ({ stopReason: 'error', text: '', errorMessage: message })
 
-    // 须先于 ensureSession：首次运行时它会往索引里登记一条空对话，就此返回的话这条空记录会随别的对话
-    // 保存写进 _index.json，列表多出一条点开空白的「新对话」。
+    // 先于 ensureSession 检查：首次运行时就此返回的话，不必在内存里留一条空对话。
     const turnModel = resolveModelRefOrNull(auth.modelRef) ?? resolveDefaultModel()
     if (!turnModel)
       return fail(
@@ -5877,7 +5896,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           ? 'No default model is available, so the scheduled task could not run. Choose a default model in Settings.'
           : '未配置可用的默认模型，无法执行定时任务（请在设置中选定默认模型）。'
       )
-    if (busySessions.has(sessionId))
+    if (historyLocked(sessionId))
       return fail(
         isEn()
           ? 'The task’s chat was busy with another reply, so this run was skipped.'
@@ -5966,7 +5985,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     trigger: TurnTrigger
   ): Promise<{ turnId: string; done: Promise<TurnOutcome> }> {
     const busyError = (): Error => new Error('这个对话正在进行中（可能由手机端或定时任务发起），请等它结束后再发。')
-    if (busySessions.has(payload.sessionId)) throw busyError()
+    if (historyLocked(payload.sessionId)) throw busyError()
     const {
       sessionId,
       text,
@@ -6039,7 +6058,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       }
     }
     // 读附件期间另一端可能抢先起了一轮：落历史前再确认一次。
-    if (busySessions.has(sessionId)) throw busyError()
+    if (historyLocked(sessionId)) throw busyError()
     const question = effectiveText.trim() || (parts.length ? '请理解并处理上述附件。' : '')
     const questionText = notes.length ? `${question}\n（${notes.join('；')}）` : question
     // 「仅恢复代码」后的首条消息：把回滚说明作为**第一个**独立 text 块带给模型（展示层只取最后一个
@@ -6102,6 +6121,13 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     'chat:compact',
     async (_e, payload: ChatCompactRequest): Promise<{ turnId: string }> => {
       const { sessionId, model } = payload
+      // 历史正被改写（见 historyLocked）：不压，请求直接失败，渲染层撤掉占位并提示原因。
+      if (historyLocked(sessionId))
+        throw new Error(
+          isEn()
+            ? 'This chat is busy right now. Try compacting again when it finishes.'
+            : '这个对话正在进行中，请等它结束后再压缩。'
+        )
       const turnId = genId('turn')
       const controller = new AbortController()
       activeTurns.set(turnId, controller)
@@ -6481,39 +6507,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     }
   )
 
-  // 重置会话历史与会话级授权（清空该会话正文但保留会话条目）。id 全局唯一 → 按 id。
-  ipcMain.handle(
-    'chat:reset',
-    (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
-      cancelBackground(sessionId)
-      const s = getSession(sessionId)
-      if (s) {
-        s.messages = []
-        // 终态提示边车随正文一并清空——否则重置后残留的红框/提示会锚在空历史上。
-        s.notices = []
-        s.background = {}
-        // 检查点整套作废（记录 / 磁盘基准 / 待带给模型的回滚说明 / 撤销快照 / blob 目录）。
-        s.checkpoints = {}
-        s.lastKnown = {}
-        s.baselines = {}
-        s.restoreNote = undefined
-        s.updatedAt = Date.now()
-        saveProject(sessionId)
-      }
-      pendingUndo.delete(sessionId)
-      // 会话忙时不删目录（进行中的写入正往里放 blob）；无引用的 blob 由该回合末的 GC 回收。
-      // 子智能体记录同理：忙时可能有子智能体正在跑、结束时会把记录写回。
-      if (!busySessions.has(sessionId)) {
-        removeSessionCheckpoints(sessionId)
-        removeSessionSubagents(sessionId)
-      }
-      return { ok: true }
-    }
-  )
-
   // 按「轮」删除对话（同步删上下文）。id 全局唯一 → 按 id。turnIndices 为 0 基轮下标集合。
   // 返回删除后重建的展示气泡，供渲染层就地替换——保证展示与落盘一致、重启不变。
-  // 前置约束：渲染层仅在**非流式**时发起（避免改写正被 Agent 循环原地改写的 messages）。
+  // 历史正被改写（见 historyLocked）时不删，回 null，渲染层提示稍后再删。
   ipcMain.handle(
     'chat:delete-turns',
     (
@@ -6521,9 +6517,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       sessionId: string,
       _workspaceRoot: string | null,
       turnIndices: number[]
-    ): DisplayMessage[] => {
+    ): DisplayMessage[] | null => {
       const s = getSession(sessionId)
       if (!s) return []
+      if (historyLocked(sessionId)) return null
       deleteTurns(s, Array.isArray(turnIndices) ? turnIndices : [])
       // 撤销上次回滚会把刚删掉的轮复活，快照就此失效；被删轮的 blob 随之可回收。
       pendingUndo.delete(sessionId)
@@ -6558,9 +6555,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // ───────── 检查点回滚（对标 Claude Code /rewind）─────────
   // 只由用户在回滚面板里触发、不经工具闸门，故自守两条：路径只来自记录、链接跳过
   // （见 checkpoints.planRewind）。每次执行都在主进程重算计划，不信任渲染层回传的预览。
-
-  /** 正在执行回滚 / 撤销的会话：防同一会话的两次回滚交错。 */
-  const rewinding = new Set<string>()
 
   // 回滚面板列表屏：每轮自身的改动量（文件数 / +N −M / 是否跑过命令）+ 能否撤销上次回滚。
   ipcMain.handle(
@@ -6605,7 +6599,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     > => {
       const s = getSession(req.sessionId)
       if (!s) return { ok: false, error: 'no-session' }
-      if (busySessions.has(s.id) || rewinding.has(s.id)) return { ok: false, error: 'busy' }
+      if (historyLocked(s.id)) return { ok: false, error: 'busy' }
       const turns = turnToolIds(s.messages)
       const k = req.turn
       if (!Number.isInteger(k) || k < 0 || k >= turns.length) return { ok: false, error: 'bad-turn' }
@@ -6693,7 +6687,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const s = getSession(sessionId)
       const undo = pendingUndo.get(sessionId)
       if (!s || !undo) return { ok: false, error: 'no-undo' }
-      if (busySessions.has(sessionId) || rewinding.has(sessionId)) return { ok: false, error: 'busy' }
+      if (historyLocked(sessionId)) return { ok: false, error: 'busy' }
       rewinding.add(sessionId)
       try {
         pendingUndo.delete(sessionId)

@@ -5,11 +5,11 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync
 } from 'fs'
 import { join } from 'path'
+import { writeFileAtomic } from './atomic-write'
 import { getDevaHome } from './config'
 import { hydrateMessages, mediaReplacer } from './media-store'
 import { modelFirst } from './model-view'
@@ -329,29 +329,6 @@ function ensureIndex(): Map<string, ChatSessionMeta> {
   return map
 }
 
-/**
- * 原子写：先写同目录 `<file>.tmp` 再 rename 覆盖。进程在写到一半时被杀（强退 / 断电 / 崩溃）
- * 最多丢掉这一次的新内容，**绝不会把旧文件截成半截 JSON**——否则 loadSessionFile 解析失败即
- * 当作「对话不存在」，整条对话凭空消失。
- * 仅当 rename 失败（Windows 上目标文件被杀毒 / 索引服务短暂占用时可能 EPERM）才回退为直接覆盖写
- * （与旧行为一致）并清掉残留 tmp；tmp 本身写不进（磁盘满等）则原样抛出——此时再去直写只会把
- * 旧文件也截断。`.json.tmp` 不以 `.json` 结尾，扫描重建索引时天然被排除。
- */
-export function writeFileAtomic(file: string, data: string): void {
-  const tmp = `${file}.tmp`
-  writeFileSync(tmp, data, 'utf8')
-  try {
-    renameSync(tmp, file)
-  } catch {
-    writeFileSync(file, data, 'utf8')
-    try {
-      rmSync(tmp, { force: true })
-    } catch {
-      /* 清理失败无害：下次写入会覆盖 */
-    }
-  }
-}
-
 function persistIndex(): void {
   if (!indexCache) return
   try {
@@ -509,7 +486,9 @@ export function getSession(id: string): StoredSession | undefined {
 }
 
 /**
- * 取会话；不存在则新建（仅入内存缓存 + 索引，尚未落盘，待 save）。对话无分桶概念，故无归属参数。
+ * 取会话；不存在则新建（仅入内存缓存，尚未落盘，待 save）。对话无分桶概念，故无归属参数。
+ * 新建的不登记进索引，save 时才登记：索引每次都整份落盘，提前登记的话，这条还没落盘的对话会随别的对话
+ * 保存写进 _index.json，重启后列表多出一条点开空白的对话。
  * `opts.personaId`/`opts.focusRoot`：首发绑定——新建时写入；已存在会话仅当当前为 undefined 才补 persona
  * （**绝不覆盖**已绑定值），focusRoot 可由 mountFocus 后续更新（显式提供即应用，含 null 卸载）。
  * `opts.model`：本对话模型引用（快照固定）——新建时写入角色偏好快照；已存在会话显式提供即应用（聊天中
@@ -535,7 +514,6 @@ export function ensureSession(
       effort: opts?.effort
     }
     sessionCache.set(id, s)
-    ensureIndex().set(id, metaOf(s))
   } else {
     // personaId：一次性绑定，绝不覆盖已绑定值。
     if (s.personaId === undefined && opts?.personaId !== undefined) s.personaId = opts.personaId

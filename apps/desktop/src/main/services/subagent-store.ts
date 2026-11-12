@@ -2,7 +2,7 @@ import { createHash } from 'crypto'
 import { existsSync, mkdirSync, promises as fsp, readFileSync, rmSync, type Dirent } from 'fs'
 import { join } from 'path'
 import { getDevaHome } from './config'
-import { writeFileAtomic } from './chat-store'
+import { writeFileAtomic } from './atomic-write'
 import { hydrateMessages, mediaReplacer } from './media-store'
 import type { Message, ToolSpec } from '../providers/types'
 

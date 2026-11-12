@@ -1126,8 +1126,6 @@ const api = {
     /** 停止一个后台运行的子智能体（toolUseId = 其 Task 卡 id）；已结束 / 不存在回 ok:false。 */
     stopSubagent: (sessionId: string, toolUseId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:stop-subagent', sessionId, toolUseId),
-    reset: (sessionId: string, workspaceRoot: string | null): Promise<{ ok: true }> =>
-      ipcRenderer.invoke('chat:reset', sessionId, workspaceRoot),
     /** 某项目下的会话清单（按 updatedAt 倒序） */
     listSessions: (workspaceRoot: string | null): Promise<ChatSessionMeta[]> =>
       ipcRenderer.invoke('chat:list-sessions', workspaceRoot),
@@ -1151,13 +1149,14 @@ const api = {
       ipcRenderer.invoke('chat:remove-member', sessionId, memberSessionId),
     /**
      * 按「轮」删除对话（同步删上下文）：turnIndices 为 0 基轮下标集合，
-     * 返回删除后重建的展示气泡（供渲染层就地替换，保证展示与落盘一致、重启不变）。
+     * 返回删除后重建的展示气泡（供渲染层就地替换，保证展示与落盘一致、重启不变）；
+     * 对话正在进行 / 压缩 / 回滚时不删，回 null。
      */
     deleteTurns: (
       sessionId: string,
       workspaceRoot: string | null,
       turnIndices: number[]
-    ): Promise<DisplayMessage[]> =>
+    ): Promise<DisplayMessage[] | null> =>
       ipcRenderer.invoke('chat:delete-turns', sessionId, workspaceRoot, turnIndices),
     /** 待办清单：某会话的当前状态（切到该会话时拉取，此后的变化走 todos 事件）。 */
     todos: (sessionId: string): Promise<TodoState> => ipcRenderer.invoke('chat:todos', sessionId),
