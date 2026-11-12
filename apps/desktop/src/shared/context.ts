@@ -3,7 +3,7 @@
  * 纯函数模块，不依赖 Node / DOM。
  *
  * 用户可在模型详情页为单个模型填写窗口 / 输出上限（存 config.json 的 ModelDef），留空即走这里的「自动」：
- *  - 窗口：模型 ID 自带（如 -128k / -1m）> 内置表 > 全局默认；
+ *  - 窗口：模型 ID 自带（如 -128k / -1m）> 内置表 > 全局默认；非 Claude 模型的自动值封顶 AUTO_WINDOW_CAP；
  *  - 输出：沿用引擎一直以来的默认（Claude 系给宽裕值，其余交给适配器 / 服务商默认）。
  * 内置表数据参照 models.dev 的模型目录（2026-11 核对），同一模型在不同服务商处上限不同时取官方端点的值。
  */
@@ -18,8 +18,8 @@ export const DEFAULT_CONTEXT_WINDOW = 128_000
  * 模型 → 上下文窗口（token）。规则按顺序匹配（小写模型 ID，不锚定首尾——中转常加前缀 `anthropic/`、
  * 后缀 `-20251001`），首条命中即用。拿不准的宁可报小：报小只是压缩来得早，报大则请求会被拒
  * （引擎会从报错里解析真实上限自愈，但白费一次请求）。
- * 2026 年起各家新一代模型多已 1M，按版本号划界：旧版维持原值，划界版本及以后给 1M——表里报小会让
- * 长对话过早、过频地压缩。
+ * 2026 年起各家新一代模型多已 1M，按版本号划界：旧版维持原值，划界版本及以后给 1M。
+ * 表里记官方上限；取「自动」窗口时非 Claude 模型另行封顶（见 AUTO_WINDOW_CAP），改上限只动那一个数。
  */
 const WINDOW_RULES: { match: RegExp; window: number }[] = [
   // ── Anthropic：4.6 起与 5 系 1M 已 GA（无需 beta 头）；Sonnet 4 / 4.5 的 1M beta 已退役，超 200K 即报错。
@@ -104,19 +104,33 @@ export function builtinContextWindow(modelId: string): number | undefined {
   return WINDOW_RULES.find((r) => r.match.test(id))?.window
 }
 
-/** 「自动」窗口：ID 自带（如 -128k / -1m）> 内置表 > fallback。 */
+/**
+ * 非 Claude 模型「自动」窗口的上限。窗口只决定何时压缩（及压缩后保留多少），而标称窗口不等于模型真正
+ * 好用的长度：不少标称 1M 的模型几十万 token 时就明显退化（DeepSeek V4 Flash 曾在长任务里复读
+ * `<|end|>` 不止）。各家默认也不把上下文用满——Codex 对自家 GPT 默认 272K、Cursor 默认 200K~300K
+ * （1M 须用户手动开）、Claude Code 对认不出的模型按 200K。Claude 系不封顶（同 Claude Code）。
+ * 只封自动值：用户在模型详情页填的窗口、config.json 的全局默认窗口都照原值生效。
+ */
+export const AUTO_WINDOW_CAP = 256_000
+
+function capAutoWindow(modelId: string, window: number): number {
+  return /claude/i.test(modelId) ? window : Math.min(window, AUTO_WINDOW_CAP)
+}
+
+/** 「自动」窗口：ID 自带（如 -128k / -1m）> 内置表 > fallback；前两者对非 Claude 模型封顶 AUTO_WINDOW_CAP。 */
 export function autoContextWindow(modelId: string, fallback = DEFAULT_CONTEXT_WINDOW): number {
   const km = /(\d+)k\b/i.exec(modelId)
   if (km) {
     const n = Number(km[1])
-    if (n >= 4 && n <= 4000) return n * 1000
+    if (n >= 4 && n <= 4000) return capAutoWindow(modelId, n * 1000)
   }
   const mm = /(\d+)m\b/i.exec(modelId)
   if (mm) {
     const n = Number(mm[1])
-    if (n >= 1 && n <= 10) return n * 1_000_000
+    if (n >= 1 && n <= 10) return capAutoWindow(modelId, n * 1_000_000)
   }
-  return builtinContextWindow(modelId) ?? fallback
+  const builtin = builtinContextWindow(modelId)
+  return builtin !== undefined ? capAutoWindow(modelId, builtin) : fallback
 }
 
 /** Claude 系的每步输出预算：带思考的新模型给小了会被思维链吃光，一字未出就撞限。 */

@@ -5,6 +5,7 @@ import { save as saveProject, type StoredSession } from './chat-store'
 import { todoSnapshotText } from './todos'
 import { modelOverrides } from './model-resolve'
 import { stubLongInforms } from './handoff'
+import { findRepetition } from './repetition'
 import {
   DEFAULT_CONTEXT_WINDOW,
   autoContextWindow,
@@ -565,13 +566,16 @@ function moveCheckpoints(session: StoredSession, removed: Message[], tail: Messa
   if (moved.length) cps[anchor] = [...moved, ...(cps[anchor] ?? [])]
 }
 
-// 保留尾部目标 ≈ 窗口的 30%（压缩后仍有充足近期上下文）。
+// 保留尾部目标 ≈ 窗口的 30%，但不超过 KEEP_TOKENS_MAX：按比例算，大窗口压完仍留几十万 token
+// （1M 窗口留 30 万），上下文降不下来，到下次压缩前能涨的空间反而小。封顶参照 Codex（最近用户消息
+// 2 万 / 服务端压缩 6.4 万）与 OpenCode（1.5 万）；Deva 保留的尾部含工具结果，取 4 万。
 const KEEP_RATIO = 0.3
 const KEEP_TOKENS_MIN = 2000
+const KEEP_TOKENS_MAX = 40_000
 
 /**
  * 压缩一个会话：选边界 → 转录待压段 → 一次性摘要 → 用 [摘要消息, ...尾部] 替换 messages 并落盘。
- * 成功 'compacted'；无可压 'none'；摘要失败 'failed'（历史保持不变）。
+ * 成功 'compacted'；无可压 'none'；摘要失败或未过把关（复读 / 压完不变短）'failed'（历史保持不变）。
  * **就地改写** session.messages（不重新赋值）：轮中压缩时 Agent 循环正拿着这个数组往里追加。
  */
 export async function compactSession(args: {
@@ -591,7 +595,10 @@ export async function compactSession(args: {
   const cfg = compactionConfig()
   const locale = String(getConfig().locale ?? 'zh-CN')
   const window = contextWindowFor(model, cfg)
-  const keepTokens = Math.max(KEEP_TOKENS_MIN, Math.round(window * KEEP_RATIO))
+  const keepTokens = Math.min(
+    KEEP_TOKENS_MAX,
+    Math.max(KEEP_TOKENS_MIN, Math.round(window * KEEP_RATIO))
+  )
   const msgs = session.messages
 
   let boundary = pickBoundary(msgs, keepTokens)
@@ -626,6 +633,15 @@ export async function compactSession(args: {
   if (!summary) return { status: 'failed', message: '模型没有返回摘要正文' }
 
   const zh = locale !== 'en'
+  // 摘要把关①：模型退化时摘要也会复读（反复吐同一个标记 / 同一段话），采信就会用垃圾顶替真实历史，
+  // 此后每一轮都被它带偏。宁可这次不压。
+  if (findRepetition(summary))
+    return {
+      status: 'failed',
+      message: zh
+        ? '摘要里有大段重复内容，模型输出可能异常'
+        : 'The summary contains long repeated text; the model output may be degenerate'
+    }
   const header =
     keepHead >= 0
       ? zh
@@ -643,6 +659,15 @@ export async function compactSession(args: {
   // 轮内切：本轮请求原样留在最前（附件一并保留），摘要紧随其后。两条 user 连着，发送前由
   // normalizeMessages 合并；摘要不算轮起点，故本轮在轮下标上仍是同一轮。
   const head = keepHead >= 0 ? [msgs[keepHead]] : []
+
+  // 摘要把关②：压完反而不比原来短（被压的段本就不大、摘要却写得长），白白丢掉原文细节，放弃这次结果。
+  if (estimateTokens([...head, summaryMsg, ...tail]) >= estimateTokens(msgs))
+    return {
+      status: 'failed',
+      message: zh
+        ? '摘要不比被压缩的内容短'
+        : 'The summary is not shorter than the content it replaces'
+    }
 
   if (keepHead >= 0) moveCheckpoints(session, msgs.slice(keepHead + 1, boundary), tail)
 
