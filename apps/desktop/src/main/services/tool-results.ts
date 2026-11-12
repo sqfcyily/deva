@@ -176,12 +176,15 @@ export interface ClearOutcome {
 
 /**
  * 缓存已过期时清理较早的工具结果（就地改写 session.messages，不落盘——调用方随本轮一起保存）。
+ * 只看模型仍看得到的部分：from = 对话记录里仍发给模型的起点（compaction.ts 的 modelStart），
+ * 更早的已不发给模型，清了也省不下什么。
  * 返回 null = 没动（缓存可能还热、没有足够可清的内容）。
  * 只换 tool_result 的内容，不增删消息、不动成败标记：轮下标、工具卡状态、检查点（按 toolUseId）都不受影响。
  */
 export function clearStaleToolResults(
   session: StoredSession,
   model: { adapter: string; model: string },
+  from = 0,
   now = Date.now()
 ): ClearOutcome | null {
   const last = session.lastRequestAt ?? session.updatedAt
@@ -196,7 +199,7 @@ export function clearStaleToolResults(
   // 按出现顺序收集可清理的结果；最近 KEEP_RECENT 个（含已清理过的）保留原样。
   const slots: { mi: number; pi: number; part: ResultPart }[] = []
   msgs.forEach((m, mi) => {
-    if (m.role !== 'user' || typeof m.content === 'string') return
+    if (mi < from || m.role !== 'user' || typeof m.content === 'string') return
     m.content.forEach((p, pi) => {
       if (p.type === 'tool_result' && clearable(names.get(p.toolUseId))) slots.push({ mi, pi, part: p })
     })

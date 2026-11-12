@@ -178,7 +178,6 @@ import {
   enforceCap,
   gcBlobs,
   planRewind,
-  pruneCheckpoints,
   publicPreview,
   removeSessionCheckpoints,
   summarizeTurns,
@@ -194,13 +193,14 @@ import {
 import {
   AUTO_MARKER,
   compactSession,
-  displaySummary,
   insertBody,
   insertText,
   isAutoNudge,
   isCompactionSummary,
   isTaskNotification,
   lastTurnStart,
+  modelMessages,
+  modelStart,
   needsCompaction,
   needsCompactionMidTurn,
   NOTIFY_MARKER,
@@ -416,8 +416,6 @@ type DisplayBlock =
       kind: 'notice'
       code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
-  /** 较早历史已压缩（由 messages 里的摘要标记还原）：一行提示，摘要正文默认折叠。 */
-  | { kind: 'compaction'; summary: string }
   /** 请求失败红框：由 StoredNotice 边车还原（原样展示错误文案）。 */
   | { kind: 'error'; message: string }
   /** 角色名片：propose_agent 的提议。status 终态（accepted/rejected）由 StoredSession.proposals 边车持久化。 */
@@ -710,17 +708,9 @@ function toDisplayMessages(
 
     // user
 
-    // 压缩摘要（带标记的 user 消息）：Codex 式重开——只呈现「已压缩」提示 + 折叠的摘要正文，
-    // 不重建被压缩掉的早期气泡（与真正发给模型的内容一致）。渲染为一条 assistant 展示消息，
-    // 且置 lastAssistant=null（它无工具块、其后紧跟真实用户轮，不会被 tool_result 回填）。
-    if (isCompactionSummary(m) && typeof m.content === 'string') {
-      out.push({
-        role: 'assistant',
-        blocks: [{ kind: 'compaction', summary: displaySummary(m.content) }]
-      })
-      lastAssistant = null
-      return
-    }
+    // 压缩摘要（带标记的 user 消息）：写给模型的上下文，界面上不显示——压缩是模型那边的事，被压的消息
+    // 照常显示。也不断开合并链：一轮进行中压缩时摘要插在这一轮中间，其后的步骤仍并入同一个气泡。
+    if (isCompactionSummary(m)) return
 
     // 引擎注入的自愈引导（截断续写 / 空回合追问）：不是用户说的话，不成气泡，也不断开合并链——
     // 其后的助手续写并入同一个气泡，看起来就是一次连贯的回复。
@@ -850,7 +840,7 @@ function turnRanges(messages: Message[]): { start: number; end: number }[] {
 /**
  * 按「轮」删除对话（同步删除模型上下文）。turnIndices 为 0 基轮下标集合（越界者忽略）。
  * 就地重写 s.messages，并同步：① 重锚/丢弃 notices 边车；② 清理按 toolUseId 记录的边车
- * （proposals/asks/summaries）——只保留仍存活的 tool_use。
+ * （proposals/asks/summaries）——只保留仍存活的 tool_use。压缩摘要保留（全部轮都删时才一并清空）。
  * **边界安全**：整轮删除天然不切断 tool_use↔tool_result（一轮的工具调用与其结果同处该轮区间内），
  * 故删除后剩余序列不会出现「有 tool_use 无 tool_result」或反之的悬挂对。
  */
@@ -860,8 +850,11 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
   if (del.size === 0) return
 
   const old = s.messages
+  // 压缩摘要不随轮删除：它概括的是此前全部内容（两轮之间的摘要落在上一轮的区间末尾，轮内的在本轮中间），
+  // 删掉会让模型退回去看更早、更长的原文。删轮只删原文，摘要不动。
   const toDelete = new Set<number>()
-  for (const k of del) for (let i = ranges[k].start; i < ranges[k].end; i++) toDelete.add(i)
+  for (const k of del)
+    for (let i = ranges[k].start; i < ranges[k].end; i++) if (!isCompactionSummary(old[i])) toDelete.add(i)
 
   // 删空全部轮：连同前言（压缩摘要等预备区，不属任何轮）一并清空——否则残留孤立前言。
   // 仅「全部轮均被删」才清前言；否则前言随其后仍存活的首轮保留。
@@ -3888,7 +3881,10 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           system: fork ? system : buildSubagentSystem(def, ctx.workspaceRoot),
           tools: fork ? tools : buildSubagentTools(def, personaId),
           // 普通子智能体只带本次任务描述，不继承父对话（避免上下文串味与预算膨胀）。
-          messages: fork ? buildForkHistory(history, tc.id, prompt) : [{ role: 'user', content: prompt }],
+          // fork 继承的是父对话里模型看到的那部分（压缩过就从摘要起），不是完整记录。
+          messages: fork
+            ? buildForkHistory(modelMessages(history), tc.id, prompt)
+            : [{ role: 'user', content: prompt }],
           createdAt: now,
           updatedAt: now
         }
@@ -4297,20 +4293,26 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // 技能或记忆有变化（含轮内刚装的技能、别的对话或面板改的记忆、轮中挂载带来的项目记忆）、或压缩 / 删轮
         // 抹掉了先前的告知 → 把差异附在本次请求才首发的末条消息上。每次（含重发）现算：已告知过即无事，故幂等；
         // 压缩自愈后的重发也能补上被摘要掉的清单。
+        // 「已告知」按模型看到的部分判断（压缩过就从摘要起）；清单仍附到完整记录的末条（两者末条是同一条）。
         if (listsSkills)
-          attachListing(history, (h) => skillListingPart(h, enabledSkillSummaries(personaId, hasTool)))
+          attachListing(history, (h) =>
+            skillListingPart(modelMessages(h), enabledSkillSummaries(personaId, hasTool))
+          )
         if (listsMemory)
-          attachListing(history, (h) => memoryListingPart(h, ctx.workspaceRoot))
+          attachListing(history, (h) => memoryListingPart(modelMessages(h), ctx.workspaceRoot))
         // 项目成员名单：主对话的主轮，名单有增减或更新时附上（同技能清单）。有成员（含本对话的定时任务）时
         // 派任务 / 查状态才用得上：这两个按需加载的工具，用法还不在上下文里就随名单一并附上，免得调用时被拦。
         const listMembers = args.listMembers
         if (listMembers)
           attachListing(history, (h) => {
+            const seen = modelMessages(h)
             const members = listMembers()
             const guided = Object.keys(DEFERRED_MEMBER_TOOLS).filter((n) => offeredTools.has(n))
-            return [memberListingPart(h, members), members.length ? usageListingPart(h, guided) : null]
+            return [memberListingPart(seen, members), members.length ? usageListingPart(seen, guided) : null]
           })
-        pendingUsage = unknownUsages(history, offeredTools)
+        // 本次请求实际发出的消息：清单附完之后再取，末条才带着清单。
+        const sent = modelMessages(history)
+        pendingUsage = unknownUsages(sent, offeredTools)
 
         for await (const ev of streamChat(
           { adapter: model.adapter, providerId: model.providerId, baseURL: model.baseURL },
@@ -4322,7 +4324,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
             sessionId,
             // 旧回合的工具图片换成文字说明、本回合超预算的较早图片也裁掉；定时任务只是告知的长内容只留标题
             // （见 handoff.ts stubLongInforms）。只影响本次请求，历史不动。
-            messages: trimHistoryImages(stubLongInforms(history)),
+            messages: trimHistoryImages(stubLongInforms(sent)),
             tools,
             signal: controller.signal,
             maxTokens: stepBudget,
@@ -5123,12 +5125,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   }
 
   /**
-   * 轮中压缩钩子（AgentLoopArgs.compact）：主轮与定时任务共用。compactSession 就地改写
-   * session.messages，循环手里的 history 仍有效。
+   * 轮中压缩钩子（AgentLoopArgs.compact）：主轮与定时任务共用。compactSession 只往
+   * session.messages 里插入一条摘要（不删消息），循环手里的 history 仍是同一个数组。
    *  · 无可压（none）静默返回——判定便宜，下一步照常再查；
    *  · 失败：发事件供渲染层弱提示 + 记日志，且本轮不再尝试（每步都重试摘要会反复白付费用、拖慢每一步）；
    *  · 中止：什么都不发，交给循环自己收尾。
-   * 成功后清理被摘要掉的检查点，并回调 onCompacted 供调用方复位本轮的用量读数 / 轮起点。
+   * 成功后回调 onCompacted 供调用方复位本轮的用量读数 / 轮起点。
    */
   function midTurnCompactor(
     turnId: string,
@@ -5157,8 +5159,6 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           return false
         }
         emit(turnId, sessionId, { type: 'compacted', scope: 'auto', status: r.status })
-        // 被摘要掉的轮已不可选，其检查点记录随之清理（轮内切时本轮的记录已迁到尾部，不受影响）。
-        pruneCheckpoints(session)
         onCompacted()
         return true
       } catch (e) {
@@ -5247,7 +5247,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     // 提示缓存已过期：先把较早的大块工具结果换成占位（原文存文件，不调模型）。缓存反正要重建，此时改写历史
     // 不多花钱；缓存还热时不动（见 tool-results.ts）。清掉的往往足以让下面的摘要压缩不必发生。
     try {
-      const cleared = clearStaleToolResults(session, turnModel)
+      const cleared = clearStaleToolResults(session, turnModel, modelStart(session.messages))
       if (cleared)
         console.info(`[context] 缓存已过期，清理了 ${cleared.cleared} 个较早的工具结果（约 ${cleared.tokens} token）`)
     } catch (e) {
@@ -5273,13 +5273,12 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         /* 压缩自身抛错（极少）：忽略，历史未动，本轮照常 */
         console.warn('[compaction] 自动压缩异常：', (e as Error)?.message ?? e)
       }
-      // 被摘要掉的轮已不可选，其检查点记录随之清理（blob 由本轮末的 GC 回收）。
-      pruneCheckpoints(session)
     }
 
-    // compactSession 就地改写 messages，轮中压缩后 history 依然是同一个数组。
+    // 完整对话记录：本轮的消息都追加在它末尾；发给模型的部分由 runAgentLoop 每步用 modelMessages 截取。
+    // 压缩只往里插入摘要，轮中压缩后 history 依然是同一个数组。
     const history = session.messages
-    // 本轮起点：用于判定本轮是否产出可见回复。轮中压缩会重排历史，届时重新定位（见 compact）。
+    // 本轮起点：用于判定本轮是否产出可见回复。轮中压缩会在本轮中间插入摘要，届时重新定位（见 compact）。
     let turnStart = history.length
     // 本轮真实输入 token（用于压缩触发判定）：runAgentLoop 每收到一次 usage 即回调，取最后一次。
     let lastInput = 0
@@ -5499,8 +5498,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         takeInserts: () => takeInserts(sessionId),
         // 逐步落盘：长回合中途崩溃 / 强退，已完成的步骤仍在磁盘上。
         onStep: () => saveProject(sessionId),
-        // 轮中压缩：旧读数作废（别让 finally 把压缩前的大数存成下轮触发依据）；本轮请求在历史里的位置变了，
-        // 轮起点改为它之后（被并入摘要的步骤无论如何都带工具调用，不影响「是否产出可见回复」的判定）。
+        // 轮中压缩：旧读数作废（别让 finally 把压缩前的大数存成下轮触发依据）；轮起点重新定位到本轮请求之后
+        // （摘要插在本轮中间，不是轮起点；被并入摘要的步骤都带工具调用，不影响「是否产出可见回复」的判定）。
         compact: midTurnCompactor(turnId, sessionId, session, turnModel, controller, () => {
           lastInput = 0
           turnStart = lastTurnStart(history) + 1
@@ -5769,7 +5768,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
       const usable = [...new Set(activated.flatMap((x) => x.loaded.allowedTools))].filter(
         (n) => !session.parentId || !MEMBER_EXCLUDED.has(n)
       )
-      slashUsages = skillToolUsages(usable, unknownUsages(history, new Set(usable)))
+      slashUsages = skillToolUsages(usable, unknownUsages(modelMessages(history), new Set(usable)))
     }
 
     // 构建本条用户消息：附件内容块在前，提问正文（最后一个 text 块）在后
@@ -5865,11 +5864,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           message = r.message
           if (status === 'failed') console.warn('[compaction] 手动压缩失败：', message)
           if (status === 'compacted') {
-            // 被摘要替换掉的轮不再可回滚：丢其检查点记录；撤销快照也随历史改写失效。
-            pruneCheckpoints(session)
+            // 压缩不删消息，被压的轮照样能回滚（检查点保留）；撤销快照是改写前的整份历史，随之作废。
             pendingUndo.delete(sessionId)
             saveProject(sessionId)
-            collectBlobs(session)
           }
         }
         emit(turnId, sessionId, { type: 'compacted', scope: 'manual', status, message })

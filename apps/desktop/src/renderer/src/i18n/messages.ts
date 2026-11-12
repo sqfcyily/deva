@@ -241,9 +241,7 @@ const zhCN: MessageTree = {
       truncated: '回复多次撞上输出长度上限或工具参数不完整，自动续写仍未完成，已停下。可发送「继续」，或让我把内容拆小、分段写入文件。',
       empty: '本轮模型没有返回任何内容。可换种说法重试或换个模型；若这轮对话已经很长，也可以新建对话或先压缩上下文。',
       refused: '模型拒绝了本次请求（或被服务商的内容策略拦截），本轮没有返回内容。换种说法或换个模型再试。',
-      compacted: '较早的对话已压缩为摘要',
-      compactedShow: '查看摘要',
-      compactedHide: '收起',
+      compactDone: '已压缩上下文。',
       compactNone: '当前对话较短，无需压缩。',
       compactFailed: '压缩失败，历史保持不变。',
       contextLimitLearned:
@@ -1054,7 +1052,7 @@ const zhCN: MessageTree = {
     // 输入框「/ 指令」联想（技能项的说明取自各自 SKILL.md，不在此处）
     slash: {
       title: '指令',
-      compact: '压缩当前对话上下文，较早内容折叠为摘要',
+      compact: '压缩发给模型的上下文，对话记录不变',
       rewind: '回到之前的检查点，撤回代码和 / 或对话',
       hint: '↑↓ 选择 · Enter 采用 · Esc 关闭',
       mentionTitle: '请成员协助'
@@ -1687,9 +1685,7 @@ const en: MessageTree = {
         'The model returned nothing this turn. Try rephrasing or another model; if this chat has grown long, start a new one or compact the context first.',
       refused:
         'The model declined this request (or the provider blocked it by content policy), so nothing came back. Try rephrasing, or switch models.',
-      compacted: 'Earlier conversation compacted into a summary',
-      compactedShow: 'Show summary',
-      compactedHide: 'Hide',
+      compactDone: 'Context compacted.',
       compactNone: 'This conversation is still short — nothing to compact.',
       compactFailed: 'Compaction failed; history is unchanged.',
       contextLimitLearned:
@@ -2498,7 +2494,7 @@ const en: MessageTree = {
     },
     slash: {
       title: 'Commands',
-      compact: 'Compact this conversation — fold earlier turns into a summary',
+      compact: 'Compact the context sent to the model; the conversation stays as is',
       rewind: 'Go back to an earlier checkpoint — undo code and/or conversation',
       hint: '↑↓ navigate · Enter accept · Esc dismiss',
       mentionTitle: 'Bring in a member'

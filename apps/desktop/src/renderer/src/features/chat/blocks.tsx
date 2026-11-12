@@ -32,7 +32,6 @@ import {
   FolderOpen,
   ListChecks,
   Package,
-  Archive,
   Puzzle,
   MousePointerClick,
   Keyboard,
@@ -558,36 +557,6 @@ function TimelineThinking({
   )
 }
 
-/**
- * 「已压缩」提示：较早的对话已收成摘要。一行居中提示，摘要正文默认折叠、点开才看——它是写给模型的上下文，
- * 不该以角色的口吻整段摊在对话里。
- */
-export function CompactionNotice({ summary }: { summary: string }): React.JSX.Element {
-  const { t } = useI18n()
-  const [open, setOpen] = useState(false)
-  return (
-    <div className={open ? 'msg__compaction is-open' : 'msg__compaction'}>
-      <button
-        type="button"
-        className="msg__compaction-head"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <Archive size={13} />
-        <span>{t('chat.notice.compacted')}</span>
-        <span className="msg__compaction-toggle">
-          {open ? t('chat.notice.compactedHide') : t('chat.notice.compactedShow')}
-        </span>
-        <ChevronRight size={13} className="msg__compaction-caret" />
-      </button>
-      {open && (
-        <div className="msg__compaction-body">
-          <Markdown text={summary} muted />
-        </div>
-      )}
-    </div>
-  )
-}
 
 export function BlockView({
   block,
@@ -667,8 +636,6 @@ export function BlockView({
 
   // 步骤边界标记：只服务于重连时丢残缺尾部的判定，不渲染。
   if (block.kind === 'step') return null
-
-  if (block.kind === 'compaction') return <CompactionNotice summary={block.summary} />
 
   // notice：回合终止说明（中止 / 截断 / 空回合等），一行灰字配黄色图标，区别于红色错误
   if (block.kind === 'notice') {
@@ -1900,7 +1867,6 @@ function isPinned(b: ChatBlock): boolean {
     case 'autotaskcard':
     case 'error':
     case 'notice':
-    case 'compaction':
       return true
     case 'ask':
       return b.answers === undefined

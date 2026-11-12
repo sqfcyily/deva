@@ -171,7 +171,6 @@ import { useTheme } from '../theme/ThemeContext'
 import { readChatFontSize, saveChatFontSize, type ChatFontSize } from '../theme/chatFontSize'
 import {
   BlockView,
-  CompactionNotice,
   DeliveryCards,
   LiveThinkingWindow,
   ProcessFold,
@@ -6308,15 +6307,6 @@ function ConvMessage({
           <Bot size={13} />
           <span>{text || t('chat.subagent.notify')}</span>
         </div>
-      </div>
-    )
-  }
-  // 压缩摘要（较早的对话已收成它）：一行居中提示 + 折叠的摘要，不画头像与角色名——那不是角色说的话。
-  const only = msg.blocks.length === 1 ? msg.blocks[0] : undefined
-  if (msg.role === 'assistant' && only?.kind === 'compaction') {
-    return (
-      <div className="cf-msg is-compaction" data-turn={dataTurn}>
-        <CompactionNotice summary={only.summary} />
       </div>
     )
   }

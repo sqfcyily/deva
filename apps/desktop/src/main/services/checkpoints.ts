@@ -272,19 +272,7 @@ export function createRecorder(s: StoredSession): Recorder {
 }
 
 // ───────────────────────── 保留与清理 ─────────────────────────
-
-/** 只保留仍在 messages 里的 tool_use 的记录（压缩重写历史后调用；按轮删除走 chat.ts 的同款 prune）。 */
-export function pruneCheckpoints(s: StoredSession): void {
-  if (!s.checkpoints) return
-  const live = new Set<string>()
-  for (const m of s.messages) {
-    if (typeof m.content === 'string') continue
-    for (const p of m.content) if (p.type === 'tool_use') live.add(p.id)
-  }
-  const out: Record<string, CheckpointRec[]> = {}
-  for (const [id, recs] of Object.entries(s.checkpoints)) if (live.has(id)) out[id] = recs
-  s.checkpoints = out
-}
+// 压缩不删消息，被压的轮照样能回滚，故不随压缩清理记录；按轮删除时由 chat.ts 的 deleteTurns 一并清理。
 
 /**
  * 保留上限：有备份的轮超过 MAX_TURNS 时，释放最老那些轮的 blob（pre 删除、标 released，元信息保留）。

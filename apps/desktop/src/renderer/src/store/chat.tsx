@@ -227,8 +227,6 @@ export type ChatBlock =
       kind: 'notice'
       code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
-  /** 较早历史已压缩为摘要（只来自主进程重建）：一行提示，摘要正文默认折叠、点开才显示。 */
-  | { kind: 'compaction'; summary: string }
   /**
    * 回合进行中插入、已交给模型的消息：执行步骤里的一个节点，排在它送达时的两步之间（不计入步数）。
    * 送达前的消息不在这里，显示在输入框上方的胶囊里（见 pendingInserts）。
@@ -327,7 +325,6 @@ type DisplayBlock =
       kind: 'notice'
       code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
-  | { kind: 'compaction'; summary: string }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   | {
@@ -681,7 +678,6 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
     const blocks: ChatBlock[] = dm.blocks.map((b) => {
       if (b.kind === 'text') return { kind: 'text', text: b.text }
       if (b.kind === 'notice') return { kind: 'notice', code: b.code }
-      if (b.kind === 'compaction') return { kind: 'compaction', summary: b.summary }
       // 历史回填：请求失败红框（原样复原错误文案）。
       if (b.kind === 'error') return { kind: 'error', message: b.message }
       // 历史回填：角色名片按持久化终态复原（pending/accepted/rejected）。
@@ -1437,7 +1433,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   useEffect(() => {
     // 本回合内压缩成功过的会话（done 时消费）。
     const compactedSids = new Set<string>()
-    // 本回合 /compact 无需压缩或压缩失败的会话（done 时消费：结果已走 toast，撤掉为它预留的空助手位）。
+    // 本回合 /compact 已有结果的会话（成功 / 无需压缩 / 失败；done 时消费：结果已走 toast，撤掉为它预留的空助手位）。
     const compactDropSids = new Set<string>()
     // 从主进程重载某会话并整份替换其 runtime 消息（后台回合完成 / 本轮压缩过后的权威回填）。
     const reloadIntoRuntime = (sid: string): void => {
@@ -1559,9 +1555,16 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         return
       }
 
-      // 本回合压缩成功（自动或 /compact）：主进程历史已改写为「摘要 + 近期轮」，本层气泡却仍是全量，
-      // 两边的轮下标因此错开被压掉的轮数，回滚 / 删轮会落到错的轮上。先记下，done 时以主进程为准重载。
-      if (ev.type === 'compacted' && ev.status === 'compacted') compactedSids.add(sid)
+      // 本回合压缩成功（自动或 /compact）：主进程在对话记录里插了一条摘要（不显示，消息一条没删），轮下标不变，
+      // 但图片附件按消息下标定位的 ref 在插入点之后整体后移一位。先记下，done 时以主进程为准重载。
+      // 自动压缩不提示（那是模型那边的事）；手动 /compact 是用户自己发起的，弹 toast 知会，并撤掉预留的空助手位。
+      if (ev.type === 'compacted' && ev.status === 'compacted') {
+        compactedSids.add(sid)
+        if (ev.scope === 'manual' && localStreaming) {
+          compactDropSids.add(sid)
+          toast.show({ message: tRef.current('chat.notice.compactDone') })
+        }
+      }
 
       // 无可压（只有手动会发 none）/ 压缩失败（自动或手动）：弹 toast 知会，不进对话流——这两条
       // 主进程都不落盘，做成气泡重启即消失，前后不一致；且历史都没动，不值得占一轮对话位。
@@ -1592,7 +1595,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
           return next
         })
         // 不在查看的会话完成了一轮（本层发起后切走的 / 定时任务等后台回合）→ 记未读。
-        // compactDrop（/compact 无可压或失败）没有新内容，不算。
+        // compactDrop（/compact）没有新内容，不算。
         if (sessionIdRef.current !== sid && !compactDrop)
           setUnread((prev) => (prev.has(sid) ? prev : new Set(prev).add(sid)))
         if (localStreaming) {
@@ -1603,7 +1606,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
             turnId: null,
             reconnecting: null,
             compacting: false,
-            // /compact 无需压缩 / 失败：撤掉预留的空助手位（结果已 toast，不补空回合提示）。否则先收敛仍未决的
+            // /compact：撤掉预留的空助手位（结果已 toast，不补空回合提示）。否则先收敛仍未决的
             // 交互卡（用户中断时最常见），再据终止原因补「中断说明」：截断/空回合给出可见提示，正常回合原样短路。
             messages: compactDrop
               ? dropEmptyAssistantTail(r.messages)
@@ -1614,7 +1617,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
                   ev.durationMs
                 )
           }))
-          // 与重开同形：早期气泡当场收成一个摘要气泡。主进程在发 done 后同步补记终态提示并落盘，
+          // 压缩过：以主进程为准重载（刷新图片 ref）。主进程在发 done 后同步补记终态提示并落盘，
           // 早于本层 loadSession 请求到达，故重载拿到的已含本轮 notices。
           // 别处发起、本层中途接上的一轮：接入前已流出的部分不在气泡里，同样以主进程为准重载。
           if (compacted || external) reloadIntoRuntime(sid)
@@ -1878,8 +1881,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       }
 
       // 手动 /compact：不加用户气泡（该指令不该留在历史里），只挂一个助手提示位，
-      // 直接请主进程压缩历史；压缩成功经 compacted 事件回到该助手气泡，
-      // none / failed 则改弹 toast 并撤掉这个助手位。
+      // 直接请主进程压缩历史；结果（成功 / 无需压缩 / 失败）经 compacted 事件弹 toast，并撤掉这个助手位。
       if (body.toLowerCase() === '/compact' && atts.length === 0) {
         if (!model) return noModel()
         patchRuntime(sid, (r) => ({

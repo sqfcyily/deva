@@ -15,13 +15,14 @@ import {
 
 /**
  * 上下文压缩（主进程）。
- * 当历史接近模型上下文窗口时，把较早的消息「摘要替换」成一条带标记的摘要消息，
- * 只保留近期消息逐字，从而把上下文降回安全区，让长对话可持续（对齐 Codex / Claude Code）。
+ * 当发给模型的内容接近上下文窗口时，把较早的部分写成一份摘要，此后模型只看「摘要 + 近期原文」，
+ * 从而把上下文降回安全区，让长对话可持续（对齐 Codex / Claude Code）。
  *
  * 设计要点：
+ * - **对话记录不删任何消息**：压缩只在边界插入一条带标记的摘要消息，界面照常显示完整记录（摘要不显示，
+ *   压缩是模型那边的事，同工具调用细节一样用户不必关心）。发给模型的内容由 modelMessages 从记录里截取。
  * - 触发优先用上一轮真实 usage.input（持久化在会话上，最准，天然覆盖图片/工具）；无则回退字符估算。
  * - 边界吸附到真实用户轮，绝不切开 assistant(tool_use)↔user(tool_result)，且必留本轮问题。
- * - 摘要是真实持久化的 user 消息（带标记前缀）：上下文唯一真源、随重开存活、作为续聊引子发给模型。
  * - 摘要失败绝不改动历史（宁可不压，也不破坏真源）。
  */
 
@@ -186,7 +187,7 @@ export function estimateTokens(messages: Message[]): number {
   return Math.round(t)
 }
 
-/** 是否需要压缩：优先真实 usage.input，回退字符估算，与压缩线（见 triggerTokens）比较。 */
+/** 是否需要压缩：优先真实 usage.input，回退字符估算（只算模型看到的部分），与压缩线（见 triggerTokens）比较。 */
 export function needsCompaction(
   session: StoredSession,
   model: LimitModelRef,
@@ -196,15 +197,15 @@ export function needsCompaction(
   const used =
     session.lastInputTokens && session.lastInputTokens > 0
       ? session.lastInputTokens
-      : estimateTokens(session.messages)
+      : estimateTokens(modelMessages(session.messages))
   return used >= triggerTokens(model, cfg)
 }
 
 /**
  * 一轮进行中（Agent 循环两步之间）是否已接近窗口：用量 = 最近一次请求的真实总输入 + 其后新增消息
  * （助手输出 / 工具结果）的估算。只看上一步读数会低估——工具结果常常很大（读了一个大文件），
- * 它们不在那次读数里、却要随下一步整个发出去。拿不到真实用量时回退全历史估算。
- * lastInputAt = 那次请求发出时的历史长度。
+ * 它们不在那次读数里、却要随下一步整个发出去。拿不到真实用量时回退模型视图的估算。
+ * messages 是完整对话记录，lastInputAt = 那次请求发出时记录的长度（之后只会在末尾追加）。
  */
 export function needsCompactionMidTurn(
   messages: Message[],
@@ -215,7 +216,9 @@ export function needsCompactionMidTurn(
 ): boolean {
   if (!cfg.enabled) return false
   const used =
-    lastInput > 0 ? lastInput + estimateTokens(messages.slice(lastInputAt)) : estimateTokens(messages)
+    lastInput > 0
+      ? lastInput + estimateTokens(messages.slice(lastInputAt))
+      : estimateTokens(modelMessages(messages))
   return used >= triggerTokens(model, cfg)
 }
 
@@ -246,6 +249,51 @@ function hasToolUse(m: Message): boolean {
 export function lastTurnStart(messages: Message[]): number {
   for (let i = messages.length - 1; i >= 0; i--) if (isGenuineUserTurn(messages[i])) return i
   return -1
+}
+
+// ── 模型看到的内容 ────────────────────────────────────────────────────────────
+/**
+ * 对话记录里模型实际看到的部分：从最后一条压缩摘要起（start），一轮进行中压缩的还要在前面带上那一轮的
+ * 请求原文（head，否则 -1）。没压缩过时 start = 0。
+ * 由消息结构判断、不需额外字段：两轮之间压缩，摘要紧挨着保留部分的第一条真实用户消息；一轮进行中压缩，
+ * 摘要插在这一轮中间，后面紧跟的是助手消息，这一轮的请求在摘要之前。旧版压缩直接删掉了早期消息
+ * （摘要在最前，或轮内时紧跟在本轮请求之后），按同一规则得到的仍是原来发给模型的那些。
+ */
+function modelRange(messages: Message[]): { head: number; start: number } {
+  let s = -1
+  for (let i = messages.length - 1; i >= 0; i--)
+    if (isCompactionSummary(messages[i])) {
+      s = i
+      break
+    }
+  if (s < 0) return { head: -1, start: 0 }
+  const next = messages[s + 1]
+  if (!next || isGenuineUserTurn(next)) return { head: -1, start: s }
+  return { head: lastTurnStart(messages.slice(0, s)), start: s }
+}
+
+/** 对话记录里从哪条起仍会发给模型（一轮进行中压缩时，那一轮的请求原文在它之前另行带上）。 */
+export function modelStart(messages: Message[]): number {
+  return modelRange(messages).start
+}
+
+/**
+ * 发给模型的消息（见 modelRange）。没压缩过时原样返回同一个数组；否则是新数组，但消息对象与记录共享
+ * ——要改写某条消息须改记录本身（如 attachListing 换掉末条），这里的视图下次重算即可。
+ */
+export function modelMessages(messages: Message[]): Message[] {
+  const { head, start } = modelRange(messages)
+  if (head < 0 && start === 0) return messages
+  const tail = messages.slice(start)
+  return head >= 0 ? [messages[head], ...tail] : tail
+}
+
+/** 模型视图 + 视图下标到记录下标的换算（压缩在视图上选边界，再把摘要插回记录）。 */
+function modelView(messages: Message[]): { view: Message[]; toRecord: (i: number) => number } {
+  const { head, start } = modelRange(messages)
+  const view = modelMessages(messages)
+  const offset = head >= 0 ? 1 : 0
+  return { view, toRecord: (i) => (i < offset ? head : start + i - offset) }
 }
 
 const MIN_COMPACT_MESSAGES = 4
@@ -536,36 +584,6 @@ async function summarize(
   }
 }
 
-/**
- * 轮内切时迁移检查点记录：被并入摘要的那几步，其 tool_use 已从历史里消失，而回滚按「这一轮起的全部
- * tool_use id」查记录——不迁走，事后回滚这一轮就会漏掉这几步改过的文件（恢复到一个中间状态）。
- * 挪到尾部第一个 tool_use 名下（同一轮），回滚按 seq 取最早记录，归到哪个 id 下不影响结果。
- */
-function moveCheckpoints(session: StoredSession, removed: Message[], tail: Message[]): void {
-  const cps = session.checkpoints
-  if (!cps) return
-  let anchor = ''
-  for (const m of tail) {
-    if (typeof m.content === 'string') continue
-    const p = m.content.find((x) => x.type === 'tool_use')
-    if (p && p.type === 'tool_use') {
-      anchor = p.id
-      break
-    }
-  }
-  if (!anchor) return
-  const moved: NonNullable<StoredSession['checkpoints']>[string] = []
-  for (const m of removed) {
-    if (typeof m.content === 'string') continue
-    for (const p of m.content)
-      if (p.type === 'tool_use' && cps[p.id]) {
-        moved.push(...cps[p.id])
-        delete cps[p.id]
-      }
-  }
-  if (moved.length) cps[anchor] = [...moved, ...(cps[anchor] ?? [])]
-}
-
 // 保留尾部目标 ≈ 窗口的 30%，但不超过 KEEP_TOKENS_MAX：按比例算，大窗口压完仍留几十万 token
 // （1M 窗口留 30 万），上下文降不下来，到下次压缩前能涨的空间反而小。封顶参照 Codex（最近用户消息
 // 2 万 / 服务端压缩 6.4 万）与 OpenCode（1.5 万）；Deva 保留的尾部含工具结果，取 4 万。
@@ -574,7 +592,8 @@ const KEEP_TOKENS_MIN = 2000
 const KEEP_TOKENS_MAX = 40_000
 
 /**
- * 压缩一个会话：选边界 → 转录待压段 → 一次性摘要 → 用 [摘要消息, ...尾部] 替换 messages 并落盘。
+ * 压缩一个会话：在模型视图上选边界 → 转录待压段 → 一次性摘要 → 把摘要插进对话记录的边界处并落盘。
+ * 不删除任何消息：被压的部分照常显示，只是此后不再发给模型（见 modelMessages）。
  * 成功 'compacted'；无可压 'none'；摘要失败或未过把关（复读 / 压完不变短）'failed'（历史保持不变）。
  * **就地改写** session.messages（不重新赋值）：轮中压缩时 Agent 循环正拿着这个数组往里追加。
  */
@@ -584,8 +603,8 @@ export async function compactSession(args: {
   signal: AbortSignal
   /**
    * 一轮进行中调用（Agent 循环两步之间）。先照常只压此前的轮；本轮自身已大到装不下时，
-   * 改为在本轮内部切：保留本轮用户请求原文 + 近期步骤，其间已完成的步骤并入摘要，
-   * 布局为 [本轮请求, 摘要, ...近期步骤]。
+   * 改为在本轮内部切：摘要插在本轮中间，模型此后看到 [本轮请求, 摘要, ...近期步骤]，
+   * 其间已完成的步骤并入摘要。
    */
   midTurn?: boolean
   /** 选定了可压的段、即将请求摘要时调用（无可压时不调）：调用方据此显示「正在压缩」。 */
@@ -600,13 +619,15 @@ export async function compactSession(args: {
     Math.max(KEEP_TOKENS_MIN, Math.round(window * KEEP_RATIO))
   )
   const msgs = session.messages
+  // 边界、转录、把关都在模型视图上算（上一份摘要及其后的原文）；之前的部分已在上一份摘要里。
+  const { view, toRecord } = modelView(msgs)
 
-  let boundary = pickBoundary(msgs, keepTokens)
-  // 轮内切时原样保留的本轮用户请求下标（-1 = 普通压缩，不保留）
+  let boundary = pickBoundary(view, keepTokens)
+  // 轮内切时原样保留的本轮用户请求（视图下标；-1 = 普通压缩，不保留）
   let keepHead = -1
   if (boundary < 0 && args.midTurn) {
-    const start = lastTurnStart(msgs)
-    const cut = start < 0 ? -1 : pickInTurnCut(msgs, start, keepTokens)
+    const start = lastTurnStart(view)
+    const cut = start < 0 ? -1 : pickInTurnCut(view, start, keepTokens)
     if (cut > 0) {
       boundary = cut
       keepHead = start
@@ -614,8 +635,8 @@ export async function compactSession(args: {
   }
   if (boundary < 0) return { status: 'none' }
 
-  const toSummarize = msgs.slice(0, boundary)
-  const tail = msgs.slice(boundary)
+  const toSummarize = view.slice(0, boundary)
+  const tail = view.slice(boundary)
   // 定时任务只是告知的长内容：摘要里同样只留标题（同发给模型时，见 handoff.ts stubLongInforms）。
   const transcript = buildTranscript(stubLongInforms(toSummarize), locale, transcriptBudget(window))
 
@@ -656,12 +677,12 @@ export async function compactSession(args: {
     role: 'user',
     content: `${COMPACT_MARKER}\n${header}\n\n${summary}${todo ? `\n\n${todo}` : ''}`
   }
-  // 轮内切：本轮请求原样留在最前（附件一并保留），摘要紧随其后。两条 user 连着，发送前由
-  // normalizeMessages 合并；摘要不算轮起点，故本轮在轮下标上仍是同一轮。
-  const head = keepHead >= 0 ? [msgs[keepHead]] : []
+  // 轮内切：模型此后看到 [本轮请求, 摘要, ...近期步骤]（请求在记录里留在原位，由 modelMessages 带上）。
+  // 两条 user 连着，发送前由 normalizeMessages 合并；摘要不算轮起点，故本轮在轮下标上仍是同一轮。
+  const head = keepHead >= 0 ? [view[keepHead]] : []
 
   // 摘要把关②：压完反而不比原来短（被压的段本就不大、摘要却写得长），白白丢掉原文细节，放弃这次结果。
-  if (estimateTokens([...head, summaryMsg, ...tail]) >= estimateTokens(msgs))
+  if (estimateTokens([...head, summaryMsg, ...tail]) >= estimateTokens(view))
     return {
       status: 'failed',
       message: zh
@@ -669,37 +690,21 @@ export async function compactSession(args: {
         : 'The summary is not shorter than the content it replaces'
     }
 
-  if (keepHead >= 0) moveCheckpoints(session, msgs.slice(keepHead + 1, boundary), tail)
-
-  msgs.splice(0, msgs.length, ...head, summaryMsg, ...tail)
-  // 终态提示边车随历史重排：锚在被压缩区（after <= boundary）的一并丢弃（其上下文已成摘要，
-  // 不重建早期气泡）；锚在保留段的按新布局平移——尾部前面现在是 [head..., 摘要]，故 after -= boundary - offset。
-  const offset = head.length + 1
+  // 插在保留部分的第一条消息前；记录里的消息一条不删，检查点、子智能体、各边车都不受影响。
+  const at = toRecord(boundary)
+  msgs.splice(at, 0, summaryMsg)
+  // 终态提示边车：after = 提示前方的消息条数，插入点之后的整体后移一位（恰在插入点的仍排在摘要前）。
   if (session.notices?.length)
-    session.notices = session.notices
-      .filter((nt) => nt.after > boundary)
-      .map((nt) => ({ ...nt, after: nt.after - boundary + offset }))
-  session.lastInputTokens = undefined // 历史已缩短，旧计数失效
+    session.notices = session.notices.map((nt) => (nt.after > at ? { ...nt, after: nt.after + 1 } : nt))
+  session.lastInputTokens = undefined // 发给模型的内容已缩短，旧计数失效
   session.updatedAt = Date.now()
   saveProject(session.id)
   return { status: 'compacted' }
 }
 
-/** 该消息是否为压缩摘要（重开时据此特殊渲染）。 */
+/** 该消息是否为压缩摘要（发给模型时据此截取，界面上不显示）。 */
 export function isCompactionSummary(m: Message): boolean {
   return m.role === 'user' && typeof m.content === 'string' && m.content.startsWith(COMPACT_MARKER)
-}
-
-/**
- * 界面展示用的摘要正文：去掉标记前缀与开头写给模型的那段说明（「以下是此前对话的摘要……请在此基础上继续」），
- * 只留摘要本身（及其后附的待办快照）。
- */
-export function displaySummary(content: string): string {
-  const body = content.startsWith(COMPACT_MARKER)
-    ? content.slice(COMPACT_MARKER.length).replace(/^\n+/, '')
-    : content
-  const cut = body.indexOf('\n\n')
-  return cut >= 0 ? body.slice(cut + 2) : body
 }
 
 /** 该消息是否为引擎注入的自愈引导（见 AUTO_MARKER）。 */
