@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -11,6 +12,7 @@ import {
 import { join } from 'path'
 import { getDevaHome } from './config'
 import { hydrateMessages, mediaReplacer } from './media-store'
+import { modelFirst } from './model-view'
 import { removeToolResults } from './tool-results'
 import type { EffortLevel, Message } from '../providers/types'
 import type { CheckpointRec } from './checkpoints'
@@ -39,7 +41,14 @@ export interface StoredSession {
   title: string
   createdAt: number
   updatedAt: number
+  /** 完整对话记录（内存里始终完整；落盘时按压缩边界拆分，见 compacted）。 */
   messages: Message[]
+  /**
+   * 对话文件按压缩边界拆分存盘：模型已看不到的前 count 条消息存在同目录的 file 里（JSON Lines，一行一条，
+   * 只追加；前面的消息变了才换新文件整份重写），主文件的 messages 只存其后的部分——对话再长，每步也只重写
+   * 这一小段。缺省 = 没拆分。见 save / loadSessionFile。
+   */
+  compacted?: { count: number; file: string }
   /**
    * 上一轮真实输入 token 数（来自 provider 的 usage.input）。
    * 上下文压缩的**首选触发依据**（最准，天然覆盖图片/工具场景）；缺失时压缩逻辑回退字符估算。
@@ -351,14 +360,109 @@ function persistIndex(): void {
   }
 }
 
-/** 载入单条对话（缓存优先；不存在 / 解析失败 → undefined）。 */
+// ── 拆分存盘（见 StoredSession.compacted）─────────────────────────────────────
+// 已写进拆分文件的那段消息（对象引用）：保存时逐个比对，前缀原样还在就只追加新的，否则换新文件重写。
+const persistedPrefix = new WeakMap<StoredSession, Message[]>()
+
+/** 拆分文件名：`<id>.compacted-<时间>.jsonl`。不以 .json 结尾，扫描重建索引时天然被排除。 */
+function compactedPrefix(id: string): string {
+  return `${safeId(id)}.compacted-`
+}
+
+function toLines(messages: Message[]): string {
+  // 同主文件：图片 / PDF 外置为 blob 引用（媒体清扫也扫 .jsonl，见 media-store.ts）。
+  return messages.map((m) => `${JSON.stringify(m, mediaReplacer)}\n`).join('')
+}
+
+/** 读拆分文件的前 count 行（之后多出的是追加后没来得及更新主文件的，忽略）；缺失 / 损坏 / 不足 → null。 */
+function readCompacted(c: { count: number; file: string }): Message[] | null {
+  try {
+    const lines = readFileSync(join(chatsDir(), c.file), 'utf8').split('\n')
+    const out: Message[] = []
+    for (const line of lines) {
+      if (out.length >= c.count) break
+      if (line) out.push(JSON.parse(line) as Message)
+    }
+    return out.length === c.count ? out : null
+  } catch {
+    return null
+  }
+}
+
+/** 删掉该对话除 keep 以外的拆分文件（换文件后的旧文件、崩溃留下的半截新文件）。 */
+function removeCompactedFiles(id: string, keep?: string): void {
+  const prefix = compactedPrefix(id)
+  try {
+    for (const name of readdirSync(chatsDir()))
+      if (name.startsWith(prefix) && name !== keep) rmSync(join(chatsDir(), name), { force: true })
+  } catch {
+    /* 清理失败无害：下次载入再清 */
+  }
+}
+
+/**
+ * 让拆分文件恰好存着 messages 里模型已看不到的那段（见 model-view.ts 的 modelFirst），并更新 s.compacted。
+ * 返回写完主文件后要删的旧拆分文件名。顺序保证崩溃安全：拆分文件先写、主文件后写——追加后崩溃，主文件
+ * 记的条数还是旧的，多出的行载入时忽略；换新文件后崩溃，主文件仍指向旧文件。
+ */
+function syncCompacted(s: StoredSession): string | null {
+  const cut = modelFirst(s.messages)
+  const prev = s.compacted
+  if (cut === 0) {
+    // 没压缩过 / 回滚、删轮回到了第一次压缩之前：不拆分，旧文件在主文件写好后删。
+    persistedPrefix.delete(s)
+    delete s.compacted
+    return prev?.file ?? null
+  }
+  const saved = persistedPrefix.get(s) ?? []
+  let intact = !!prev && saved.length === prev.count && saved.length <= cut
+  for (let i = 0; intact && i < saved.length; i++) if (s.messages[i] !== saved[i]) intact = false
+  if (intact && prev) {
+    if (cut > prev.count) appendFileSync(join(chatsDir(), prev.file), toLines(s.messages.slice(prev.count, cut)))
+    s.compacted = { count: cut, file: prev.file }
+    persistedPrefix.set(s, s.messages.slice(0, cut))
+    return null
+  }
+  // 首次拆分，或前面的消息变了（删轮 / 回滚 / 修补改到了这一段）：换新文件整份写。文件名带随机后缀，
+  // 同一毫秒里连着换两次也不会与旧文件同名（同名的话，写完主文件后删旧文件就删掉了新写的）。
+  let file: string
+  do file = `${compactedPrefix(s.id)}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}.jsonl`
+  while (file === prev?.file)
+  writeFileSync(join(chatsDir(), file), toLines(s.messages.slice(0, cut)), 'utf8')
+  s.compacted = { count: cut, file }
+  persistedPrefix.set(s, s.messages.slice(0, cut))
+  return prev?.file ?? null
+}
+
+/** 载入单条对话（缓存优先；不存在 / 解析失败 → undefined）。拆分存盘的对话在内存里拼回完整记录。 */
 function loadSessionFile(id: string): StoredSession | undefined {
   const cached = sessionCache.get(id)
   if (cached) return cached
   try {
     const s = JSON.parse(readFileSync(fileForId(id), 'utf8')) as StoredSession
     if (s && typeof s.id === 'string') {
-      if (Array.isArray(s.messages)) hydrateMessages(s.messages)
+      // 读不出较早记录时不清理拆分文件：可能只是暂时被占用，留着下次还能读回来。
+      let tidy = true
+      if (Array.isArray(s.messages)) {
+        if (s.compacted) {
+          const older = readCompacted(s.compacted)
+          if (older) {
+            s.messages = [...older, ...s.messages]
+            persistedPrefix.set(s, older)
+          } else {
+            // 拆分文件缺失 / 损坏：只剩主文件里的部分（模型看到的内容完整，丢的是更早的显示记录）。
+            // 提示锚点按完整记录记的，整体前移；下次保存重新判断要不要拆分。
+            const n = s.compacted.count
+            console.warn(`[chat-store] 对话 ${id} 的较早记录读取失败（${s.compacted.file}），只载入其后的部分`)
+            if (s.notices) s.notices = s.notices.filter((nt) => nt.after >= n).map((nt) => ({ ...nt, after: nt.after - n }))
+            delete s.compacted
+            tidy = false
+          }
+        }
+        hydrateMessages(s.messages)
+      }
+      // 主文件不引用的拆分文件（换文件后没删掉的旧文件、写到一半崩溃的新文件）顺手清掉。
+      if (tidy) removeCompactedFiles(id, s.compacted?.file)
       sessionCache.set(id, s)
       return s
     }
@@ -370,18 +474,23 @@ function loadSessionFile(id: string): StoredSession | undefined {
 
 /**
  * 保存单条对话：写该对话文件 + 刷新其索引条目并落盘。
- * 只重写这一条 + 轻量索引，与其它对话无关（这是一对话一文件的核心收益）。
+ * 只重写这一条 + 轻量索引，与其它对话无关（这是一对话一文件的核心收益）；压缩过的对话只重写模型还看得到的
+ * 那部分，更早的追加进拆分文件（见 syncCompacted）。
  */
 export function save(id: string): void {
   const s = sessionCache.get(id)
   if (!s) return
+  let stale: string | null
   try {
+    stale = syncCompacted(s)
+    const live = s.compacted ? s.messages.slice(s.compacted.count) : s.messages
     // 图片 / PDF 的 base64 外置为 blob 引用（见 media-store.ts），对话文件只留哈希。
-    writeFileAtomic(fileForId(id), JSON.stringify(s, mediaReplacer, 2))
+    writeFileAtomic(fileForId(id), JSON.stringify({ ...s, messages: live }, mediaReplacer, 2))
   } catch {
     /* 单条对话落盘失败静默，不影响内存态 */
     return
   }
+  if (stale) removeCompactedFiles(id, s.compacted?.file)
   ensureIndex().set(id, metaOf(s))
   persistIndex()
 }
@@ -485,7 +594,7 @@ export function setSessionArchived(id: string, archived: boolean): boolean {
   return true
 }
 
-/** 删除某对话：清缓存 + 索引 + 磁盘文件（含它存下的超长工具结果）。 */
+/** 删除某对话：清缓存 + 索引 + 磁盘文件（含拆分存盘的较早记录、它存下的超长工具结果）。 */
 export function deleteSession(id: string): void {
   sessionCache.delete(id)
   if (ensureIndex().delete(id)) persistIndex()
@@ -494,6 +603,7 @@ export function deleteSession(id: string): void {
   } catch {
     /* 删除失败静默 */
   }
+  removeCompactedFiles(id)
   removeToolResults(safeId(id))
 }
 

@@ -1837,6 +1837,10 @@ body.cf-resizing-y * {
   grid-template-columns: minmax(0, 1fr);
   justify-items: center;
 }
+/* 两轮之间的压缩提示：不占头像列，分隔线与展开的摘要占满整行（见 .msg__compaction） */
+.cf-msg.is-compaction {
+  grid-template-columns: minmax(0, 1fr);
+}
 .cf-notify {
   display: inline-flex;
   align-items: center;

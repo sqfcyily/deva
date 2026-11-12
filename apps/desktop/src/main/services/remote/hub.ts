@@ -458,7 +458,10 @@ function reduce(t: TurnTrack, ev: ChatStreamEvent): boolean {
       b.push({ kind: 'notice', text: `已完成待办清单${name}（${ev.items.length} 项）。` })
       return true
     }
-    // 压缩（compacted）不推：那是模型那边的事，对话记录不变（同桌面端不显示）。
+    case 'compacted':
+      if (ev.status !== 'compacted') return false
+      b.push({ kind: 'notice', text: '较早的对话已压缩为摘要。' })
+      return true
     default:
       return false
   }

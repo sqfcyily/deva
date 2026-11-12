@@ -7,6 +7,14 @@ import { modelOverrides } from './model-resolve'
 import { stubLongInforms } from './handoff'
 import { findRepetition } from './repetition'
 import {
+  COMPACT_MARKER,
+  isAutoNudge,
+  isGenuineUserTurn,
+  lastTurnStart,
+  modelMessages,
+  modelRange
+} from './model-view'
+import {
   DEFAULT_CONTEXT_WINDOW,
   autoContextWindow,
   autoOutputBudget,
@@ -33,14 +41,16 @@ export interface CompactModelConfig {
   model: string
 }
 
-/** 摘要消息的标记前缀：极不可能被用户键入；重开时据此识别摘要消息并特殊渲染。 */
-export const COMPACT_MARKER = '⟦deva:compaction⟧'
-
-/**
- * 引擎自愈引导消息的标记前缀（输出被截断后续写、空回合追问等）。这类 user 消息由主进程注入，
- * 不是用户说的话：不算一轮起点、不渲染成用户气泡、不进压缩转录。
- */
-export const AUTO_MARKER = '⟦deva:auto⟧'
+// 标记、真实用户轮与「模型看到的部分」在叶子模块 model-view.ts（chat-store 存盘拆分也要用），这里转出。
+export {
+  AUTO_MARKER,
+  COMPACT_MARKER,
+  isAutoNudge,
+  isCompactionSummary,
+  lastTurnStart,
+  modelMessages,
+  modelStart
+} from './model-view'
 
 /**
  * 后台任务通知消息的标记前缀：后台子智能体结束、主智能体空闲时，主进程以它开头注入一条 user 消息并自动
@@ -223,19 +233,6 @@ export function needsCompactionMidTurn(
 }
 
 // ── 边界选取 ──────────────────────────────────────────────────────────────────
-function hasToolResult(m: Message): boolean {
-  return typeof m.content !== 'string' && m.content.some((p) => p.type === 'tool_result')
-}
-
-/**
- * 真实用户轮：role=user 且不含 tool_result（工具结果回灌消息不算），也不是压缩摘要——
- * 轮中压缩会把摘要放在本轮用户请求之后，摘要若算作轮起点，下次压缩就会把它当成「本轮请求」保留、
- * 而把真正的请求原文压掉。
- */
-function isGenuineUserTurn(m: Message): boolean {
-  return m.role === 'user' && !hasToolResult(m) && !isCompactionSummary(m) && !isAutoNudge(m)
-}
-
 /** 助手消息是否带工具调用（一轮进行中，除最后一步外的每条助手消息都带）。 */
 function hasToolUse(m: Message): boolean {
   return (
@@ -243,49 +240,6 @@ function hasToolUse(m: Message): boolean {
     typeof m.content !== 'string' &&
     m.content.some((p) => p.type === 'tool_use')
   )
-}
-
-/** 最后一轮（一轮进行中即当前这轮）的起点：最后一条真实用户消息的下标，没有则 -1。 */
-export function lastTurnStart(messages: Message[]): number {
-  for (let i = messages.length - 1; i >= 0; i--) if (isGenuineUserTurn(messages[i])) return i
-  return -1
-}
-
-// ── 模型看到的内容 ────────────────────────────────────────────────────────────
-/**
- * 对话记录里模型实际看到的部分：从最后一条压缩摘要起（start），一轮进行中压缩的还要在前面带上那一轮的
- * 请求原文（head，否则 -1）。没压缩过时 start = 0。
- * 由消息结构判断、不需额外字段：两轮之间压缩，摘要紧挨着保留部分的第一条真实用户消息；一轮进行中压缩，
- * 摘要插在这一轮中间，后面紧跟的是助手消息，这一轮的请求在摘要之前。旧版压缩直接删掉了早期消息
- * （摘要在最前，或轮内时紧跟在本轮请求之后），按同一规则得到的仍是原来发给模型的那些。
- */
-function modelRange(messages: Message[]): { head: number; start: number } {
-  let s = -1
-  for (let i = messages.length - 1; i >= 0; i--)
-    if (isCompactionSummary(messages[i])) {
-      s = i
-      break
-    }
-  if (s < 0) return { head: -1, start: 0 }
-  const next = messages[s + 1]
-  if (!next || isGenuineUserTurn(next)) return { head: -1, start: s }
-  return { head: lastTurnStart(messages.slice(0, s)), start: s }
-}
-
-/** 对话记录里从哪条起仍会发给模型（一轮进行中压缩时，那一轮的请求原文在它之前另行带上）。 */
-export function modelStart(messages: Message[]): number {
-  return modelRange(messages).start
-}
-
-/**
- * 发给模型的消息（见 modelRange）。没压缩过时原样返回同一个数组；否则是新数组，但消息对象与记录共享
- * ——要改写某条消息须改记录本身（如 attachListing 换掉末条），这里的视图下次重算即可。
- */
-export function modelMessages(messages: Message[]): Message[] {
-  const { head, start } = modelRange(messages)
-  if (head < 0 && start === 0) return messages
-  const tail = messages.slice(start)
-  return head >= 0 ? [messages[head], ...tail] : tail
 }
 
 /** 模型视图 + 视图下标到记录下标的换算（压缩在视图上选边界，再把摘要插回记录）。 */
@@ -702,14 +656,16 @@ export async function compactSession(args: {
   return { status: 'compacted' }
 }
 
-/** 该消息是否为压缩摘要（发给模型时据此截取，界面上不显示）。 */
-export function isCompactionSummary(m: Message): boolean {
-  return m.role === 'user' && typeof m.content === 'string' && m.content.startsWith(COMPACT_MARKER)
-}
-
-/** 该消息是否为引擎注入的自愈引导（见 AUTO_MARKER）。 */
-export function isAutoNudge(m: Message): boolean {
-  return m.role === 'user' && typeof m.content === 'string' && m.content.startsWith(AUTO_MARKER)
+/**
+ * 界面展示用的摘要正文：去掉标记前缀与开头写给模型的那段说明（「以下是此前对话的摘要……请在此基础上继续」），
+ * 只留摘要本身（及其后附的待办快照）。
+ */
+export function displaySummary(content: string): string {
+  const body = content.startsWith(COMPACT_MARKER)
+    ? content.slice(COMPACT_MARKER.length).replace(/^\n+/, '')
+    : content
+  const cut = body.indexOf('\n\n')
+  return cut >= 0 ? body.slice(cut + 2) : body
 }
 
 /** 该消息是否为后台任务通知（见 NOTIFY_MARKER）。 */

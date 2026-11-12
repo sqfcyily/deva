@@ -32,6 +32,7 @@ import {
   FolderOpen,
   ListChecks,
   Package,
+  Archive,
   Puzzle,
   MousePointerClick,
   Keyboard,
@@ -636,6 +637,8 @@ export function BlockView({
 
   // 步骤边界标记：只服务于重连时丢残缺尾部的判定，不渲染。
   if (block.kind === 'step') return null
+
+  if (block.kind === 'compaction') return <CompactionNotice summary={block.summary} first={block.first} />
 
   // notice：回合终止说明（中止 / 截断 / 空回合等），一行灰字配黄色图标，区别于红色错误
   if (block.kind === 'notice') {
@@ -1713,6 +1716,84 @@ function TimelineMount({ block }: { block: Extract<ChatBlock, { kind: 'mount' }>
 }
 
 /**
+ * 两轮之间的压缩提示：分隔线中间一行「以上对话已压缩为摘要 · 查看摘要」，被压的消息照常显示在它上面。
+ * 摘要正文默认折叠、点开才看——它是写给模型的上下文，不该以角色的口吻整段摊在对话里。
+ * first = 前面没有任何消息（旧版压缩删掉了原文）：改写「较早的对话已压缩为摘要」，也不画分隔线。
+ */
+export function CompactionNotice({ summary, first = false }: { summary: string; first?: boolean }): React.JSX.Element {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  return (
+    <div className={`msg__compaction${open ? ' is-open' : ''}${first ? ' is-first' : ''}`}>
+      <div className="msg__compaction-line">
+        <button
+          type="button"
+          className="msg__compaction-head"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <Archive size={13} />
+          <span>{t(first ? 'chat.notice.compactedFirst' : 'chat.notice.compacted')}</span>
+          <span className="msg__compaction-toggle">
+            {open ? t('chat.notice.compactedHide') : t('chat.notice.compactedShow')}
+          </span>
+          <ChevronRight size={13} className="msg__compaction-caret" />
+        </button>
+      </div>
+      {open && (
+        <div className="msg__compaction-body">
+          <Markdown text={summary} muted />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 一轮进行中的压缩：执行步骤里的一个节点「此前 N 步已压缩为摘要 · 查看摘要」，只有文字、不加底色，
+ * 点开在节点下展开摘要。不计入步数。steps = 0（旧版压缩删掉了已完成的步骤）时写「此前的步骤已压缩为摘要」。
+ */
+function TimelineCompaction({ summary, steps }: { summary: string; steps: number }): React.JSX.Element {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const [lineRef, markToggle] = useAnchorOnClose<HTMLButtonElement>(open)
+  const label =
+    steps > 0 ? t('chat.notice.compactedSteps').replace('{n}', String(steps)) : t('chat.notice.compactedStepsNone')
+  return (
+    <li className={`tl__item tl__item--compaction${open ? ' is-open' : ''}`}>
+      <span className="tl__node">
+        <Archive size={14} />
+      </span>
+      <div className="tl__main">
+        <button
+          ref={lineRef}
+          type="button"
+          className="tl__line"
+          aria-expanded={open}
+          onClick={() => {
+            markToggle()
+            setOpen((v) => !v)
+          }}
+        >
+          <span className="tl__text">
+            <span>{label}</span>
+            <span className="tl__compaction-toggle">
+              {open ? t('chat.notice.compactedHide') : t('chat.notice.compactedShow')}
+            </span>
+          </span>
+          <ChevronRight size={12} className="tl__caret" />
+        </button>
+        {open && (
+          <div className="tl__body tl__think">
+            <Markdown text={summary} muted />
+          </div>
+        )}
+      </div>
+    </li>
+  )
+}
+
+/**
  * 时间轴上回合进行中插入的消息：节点是用户自己的小头像，正文用用户气泡的底色，与工具步骤区分开，一眼看出是「我说的」。
  * 正文完整显示（可换行），不像工具步骤那样截成一行。
  */
@@ -1772,6 +1853,8 @@ export function Timeline({
         if (b.kind === 'mount') return <TimelineMount key={b.key} block={b} />
         if (b.kind === 'todolist') return <TimelineTodo key={b.id} block={b} />
         if (b.kind === 'insert') return <TimelineInsert key={`i${index}`} text={b.text} />
+        if (b.kind === 'compaction')
+          return <TimelineCompaction key={`c${index}`} summary={b.summary} steps={b.steps ?? 0} />
         return null
       })}
       {capped && (
@@ -1810,6 +1893,9 @@ function isTimelineStep(b: ChatBlock): boolean {
     case 'todolist':
     case 'insert':
       return true
+    // 一轮进行中的压缩是执行步骤里的节点；两轮之间的自成一条，不进时间轴。
+    case 'compaction':
+      return b.steps !== undefined
     case 'ask':
       return b.answers !== undefined
     case 'plan':
@@ -1868,6 +1954,8 @@ function isPinned(b: ChatBlock): boolean {
     case 'error':
     case 'notice':
       return true
+    case 'compaction':
+      return b.steps === undefined
     case 'ask':
       return b.answers === undefined
     case 'plan':

@@ -228,6 +228,11 @@ export type ChatBlock =
       code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
   /**
+   * 压缩提示（只来自主进程重建），摘要正文默认折叠、点开才显示。steps 有值 = 一轮进行中压缩，是执行步骤里的
+   * 一个节点（「此前 N 步已压缩为摘要」，不计入步数）；否则是两轮之间自成一条的分隔提示（first = 前面没有消息）。
+   */
+  | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
+  /**
    * 回合进行中插入、已交给模型的消息：执行步骤里的一个节点，排在它送达时的两步之间（不计入步数）。
    * 送达前的消息不在这里，显示在输入框上方的胶囊里（见 pendingInserts）。
    */
@@ -325,6 +330,7 @@ type DisplayBlock =
       kind: 'notice'
       code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
+  | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   | {
@@ -678,6 +684,13 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
     const blocks: ChatBlock[] = dm.blocks.map((b) => {
       if (b.kind === 'text') return { kind: 'text', text: b.text }
       if (b.kind === 'notice') return { kind: 'notice', code: b.code }
+      if (b.kind === 'compaction')
+        return {
+          kind: 'compaction',
+          summary: b.summary,
+          ...(b.steps !== undefined ? { steps: b.steps } : {}),
+          ...(b.first ? { first: true } : {})
+        }
       // 历史回填：请求失败红框（原样复原错误文案）。
       if (b.kind === 'error') return { kind: 'error', message: b.message }
       // 历史回填：角色名片按持久化终态复原（pending/accepted/rejected）。
@@ -1555,9 +1568,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         return
       }
 
-      // 本回合压缩成功（自动或 /compact）：主进程在对话记录里插了一条摘要（不显示，消息一条没删），轮下标不变，
-      // 但图片附件按消息下标定位的 ref 在插入点之后整体后移一位。先记下，done 时以主进程为准重载。
-      // 自动压缩不提示（那是模型那边的事）；手动 /compact 是用户自己发起的，弹 toast 知会，并撤掉预留的空助手位。
+      // 本回合压缩成功（自动或 /compact）：主进程在对话记录里插了一条摘要（消息一条没删），轮下标不变，但压缩
+      // 提示要画出来，图片附件按消息下标定位的 ref 也在插入点之后整体后移一位。先记下，done 时以主进程为准重载。
+      // 手动 /compact 另弹 toast：边界在保留部分之前，常在可视区以上，看不到提示；并撤掉预留的空助手位。
       if (ev.type === 'compacted' && ev.status === 'compacted') {
         compactedSids.add(sid)
         if (ev.scope === 'manual' && localStreaming) {
@@ -1617,7 +1630,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
                   ev.durationMs
                 )
           }))
-          // 压缩过：以主进程为准重载（刷新图片 ref）。主进程在发 done 后同步补记终态提示并落盘，
+          // 压缩过：以主进程为准重载（画出压缩提示、刷新图片 ref）。主进程在发 done 后同步补记终态提示并落盘，
           // 早于本层 loadSession 请求到达，故重载拿到的已含本轮 notices。
           // 别处发起、本层中途接上的一轮：接入前已流出的部分不在气泡里，同样以主进程为准重载。
           if (compacted || external) reloadIntoRuntime(sid)

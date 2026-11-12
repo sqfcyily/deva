@@ -239,6 +239,11 @@ export type DisplayBlock =
       kind: 'notice'
       code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
+  /**
+   * 压缩提示，摘要正文（已去掉写给模型的开头）默认折叠。steps 有值 = 一轮进行中压缩，是执行步骤里的节点；
+   * 否则是两轮之间的分隔提示（first = 前面没有消息）。
+   */
+  | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   /**

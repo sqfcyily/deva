@@ -170,7 +170,8 @@ export async function sweepMedia(): Promise<void> {
       const p = join(dir, d.name)
       if (d.isDirectory()) {
         if (!(await scan(p))) return false
-      } else if (d.name.endsWith('.json')) {
+      } else if (d.name.endsWith('.json') || d.name.endsWith('.jsonl')) {
+        // .jsonl = 对话拆分存盘的较早记录（见 chat-store.ts），里面同样引用 blob。
         try {
           const text = await fsp.readFile(p, 'utf8')
           for (const m of text.matchAll(refRe)) referenced.add(m[1])

@@ -193,6 +193,7 @@ import {
 import {
   AUTO_MARKER,
   compactSession,
+  displaySummary,
   insertBody,
   insertText,
   isAutoNudge,
@@ -416,6 +417,12 @@ type DisplayBlock =
       kind: 'notice'
       code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
     }
+  /**
+   * 压缩提示（由 messages 里的摘要标记还原），摘要正文默认折叠。两轮之间压缩：自成一条，分隔线 +「以上对话
+   * 已压缩为摘要」（first = 前面没有任何消息，旧版压缩删掉了原文，改写「较早的对话已压缩为摘要」）。
+   * 一轮进行中压缩：steps 有值，是这一轮执行步骤里的一个节点（「此前 N 步已压缩为摘要」）。
+   */
+  | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
   /** 请求失败红框：由 StoredNotice 边车还原（原样展示错误文案）。 */
   | { kind: 'error'; message: string }
   /** 角色名片：propose_agent 的提议。status 终态（accepted/rejected）由 StoredSession.proposals 边车持久化。 */
@@ -614,7 +621,8 @@ function toDisplayMessages(
   }
 
   // 处理单条消息（早退用 return 代替原 for...of 的 continue，以便每条处理完统一 flush 提示）。
-  const processOne = (m: Message): void => {
+  // next = 下一条消息（压缩摘要据此分辨两轮之间 / 一轮进行中）。
+  const processOne = (m: Message, next: Message | undefined): void => {
     if (m.role === 'assistant') {
       const parts: ContentPart[] =
         typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content
@@ -708,9 +716,33 @@ function toDisplayMessages(
 
     // user
 
-    // 压缩摘要（带标记的 user 消息）：写给模型的上下文，界面上不显示——压缩是模型那边的事，被压的消息
-    // 照常显示。也不断开合并链：一轮进行中压缩时摘要插在这一轮中间，其后的步骤仍并入同一个气泡。
-    if (isCompactionSummary(m)) return
+    // 压缩摘要（带标记的 user 消息）：被压的消息照常显示，这里只在边界画一条提示（摘要正文默认折叠）。
+    if (isCompactionSummary(m) && typeof m.content === 'string') {
+      const summary = displaySummary(m.content)
+      // 一轮进行中压缩（其后紧跟助手消息）：画成这一轮执行步骤里的一个节点，不断开合并链——其后的步骤仍并入
+      // 同一个气泡。步数同折叠条的算法（工具调用 / 提问 / 计划各一步）。旧版压缩把本轮请求挪到了摘要前、
+      // 删掉了已完成的步骤，这时还没有气泡，节点开一个新气泡、步数为 0。
+      if (next?.role === 'assistant') {
+        const steps = lastAssistant
+          ? lastAssistant.blocks.filter((b) => b.kind === 'tool' || b.kind === 'ask' || b.kind === 'plan').length
+          : 0
+        const block: DisplayBlock = { kind: 'compaction', summary, steps }
+        if (lastAssistant) lastAssistant.blocks.push(block)
+        else {
+          const msg: Extract<DisplayMessage, { role: 'assistant' }> = { role: 'assistant', blocks: [block] }
+          out.push(msg)
+          lastAssistant = msg
+        }
+        return
+      }
+      // 两轮之间：自成一条（不画头像与角色名），其后紧跟真实用户轮。
+      out.push({
+        role: 'assistant',
+        blocks: [{ kind: 'compaction', summary, ...(out.length === 0 ? { first: true } : {}) }]
+      })
+      lastAssistant = null
+      return
+    }
 
     // 引擎注入的自愈引导（截断续写 / 空回合追问）：不是用户说的话，不成气泡，也不断开合并链——
     // 其后的助手续写并入同一个气泡，看起来就是一次连贯的回复。
@@ -803,7 +835,7 @@ function toDisplayMessages(
   flushNotices(0)
   for (let i = 0; i < messages.length; i++) {
     curIndex = indexBase + i
-    processOne(messages[i])
+    processOne(messages[i], messages[i + 1])
     flushNotices(i + 1)
   }
   return out
