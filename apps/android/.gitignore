@@ -1,0 +1,8 @@
+# Android / Gradle 本地产物（local.properties 含本机 SDK 路径，不入库）
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+captures/
+.kotlin/
