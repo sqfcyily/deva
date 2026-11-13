@@ -1,7 +1,7 @@
 /**
  * 对话流里的单条消息：用户正文（引用、@提及）与助手回复。
  */
-import { createContext, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, memo, useContext, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Bot } from 'lucide-react'
 import { AttachmentList } from './attachments'
 import type { Persona } from '../mock/extensions'
@@ -269,7 +269,11 @@ export function MemberInlineFace({ persona }: { persona: Persona }): React.JSX.E
 }
 
 /** 单条消息：IM 头像外壳 + 复用 features/chat/blocks 的 BlockView（安全渲染器不重写）。 */
-export function ConvMessage({
+/**
+ * 单条消息。包 memo：流式输出时只有末条在变，前面的消息 props 不变就不重渲染
+ * （msg 未变的消息对象引用不变，见 store/chat.tsx updateLastAssistant）。
+ */
+export const ConvMessage = memo(function ConvMessage({
   msg,
   report,
   owner,
@@ -571,4 +575,4 @@ export function ConvMessage({
       </div>
     </div>
   )
-}
+})

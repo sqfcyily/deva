@@ -5,7 +5,7 @@ import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
 import { PersonaFace, parseAvatarSpec } from '../components/humation'
-import { useChat, type SessionMeta } from '../store/chat'
+import { type SessionMeta, useChatState } from '../store/chat'
 import { useExtensions } from '../store/extensions'
 import feishuLogo from '../assets/platforms/feishu.svg'
 import telegramLogo from '../assets/platforms/telegram.svg'
@@ -621,7 +621,7 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
 function ScopeCard({ bot }: { bot: BotView }): React.JSX.Element {
   const { t } = useI18n()
   const { personas } = useExtensions()
-  const { sessions: railSessions } = useChat()
+  const { sessions: railSessions } = useChatState()
   const [sessions, setSessions] = useState<SessionMeta[]>(railSessions)
   const [picking, setPicking] = useState<ScopeKind | null>(null)
   const scope = bot.scope

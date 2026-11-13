@@ -14,7 +14,8 @@ import {
   type PendingCard,
   type SendAttachment,
   type SessionLiveState,
-  type StreamStatus
+  type StreamStatus,
+  useChatStream
 } from '../store/chat'
 import { hasUsableModel, useModels } from '../store/models'
 import { NEW_MEMBER_TOKENS } from '../../../shared/mention'
@@ -31,7 +32,7 @@ import {
   TaskNamesContext
 } from '../features/chat/blocks'
 import { RewindModal } from './RewindModal'
-import { fill } from './shell-common'
+import { fill, useStableCallback } from './shell-common'
 import { ContextMenu } from './ContextMenu'
 import { type MemberEntry, MemberBar, type MemberWait, MemberAsks } from './MemberBar'
 import { TaskBar, TaskLogHead, MemberLogHead } from './TaskBar'
@@ -658,6 +659,10 @@ export function Conversation({
     if (!isTail) resetToTail()
     return onSend(text, attachments)
   }
+  // 传给 memo 的输入框：引用恒定，调用时仍是最新的实现。
+  const stableSend = useStableCallback(handleSend)
+  const stableJump = useStableCallback(jumpToLatest)
+  const stableRewind = useStableCallback((): boolean => openRewind())
 
   // 底部工作状态行。本轮已有「工作过程」折叠条时，常规的「正在做什么 + 计时」已在折叠条里，只剩等待作答 /
   // 重连 / 压缩这些特殊状态；它们放进这条消息的末尾，紧跟步骤与卡片——放在消息列表下面的话，进行中消息底部
@@ -980,11 +985,11 @@ export function Conversation({
           streaming={streaming}
           focusRoot={focusRoot}
           onMount={onMount}
-          onSend={handleSend}
+          onSend={stableSend}
           onStop={onStop}
           showJump={!atBottom && messages.length > 0}
-          onJump={jumpToLatest}
-          onRewind={() => openRewind()}
+          onJump={stableJump}
+          onRewind={stableRewind}
           prefill={prefill}
           onPrefillConsumed={onPrefillConsumed}
         />
@@ -1010,6 +1015,16 @@ export function Conversation({
       </TaskNamesContext.Provider>
     </MemberFaceContext.Provider>
   )
+}
+
+/**
+ * 当前对话的对话流：自己订阅流式数据（消息 / 流式状态），外壳因此不必随流式输出每帧重渲染。
+ */
+export function LiveConversation(
+  props: Omit<Parameters<typeof Conversation>[0], 'messages' | 'streaming' | 'streamStatus'>
+): React.JSX.Element {
+  const { messages, streaming, streamStatus } = useChatStream()
+  return <Conversation {...props} messages={messages} streaming={streaming} streamStatus={streamStatus} />
 }
 
 /** 一条轮次索引项：turn 与 turnOf/groupTurns 同源的 0 基轮下标；text 已归一空白并限长。 */

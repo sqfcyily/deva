@@ -3,7 +3,7 @@ import { CalendarClock, ChevronDown, Check } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useModels } from '../../store/models'
 import { useExtensions } from '../../store/extensions'
-import { useChat, type SessionMeta } from '../../store/chat'
+import { type SessionMeta, useChatState } from '../../store/chat'
 import { Select } from '../../components/Select'
 
 /**
@@ -172,7 +172,7 @@ export function TaskRunModeSelect({
   onChange: (sessionId: string | null) => void
 }): React.JSX.Element {
   const { t } = useI18n()
-  const { sessions } = useChat()
+  const { sessions } = useChatState()
   const { personas } = useExtensions()
 
   const chats = useMemo(() => {

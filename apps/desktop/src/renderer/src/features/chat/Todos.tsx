@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronUp, Circle, CircleDot } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
-import { useChat } from '../../store/chat'
+import { useChatState, useChatActions } from '../../store/chat'
 import type { TodoItem } from '../../../../preload'
 import { useDockOrder } from './dockOrder'
 
@@ -70,7 +70,8 @@ function ProgressRing({ value }: { value: number }): React.JSX.Element {
  */
 export function TodoCapsule(): React.JSX.Element | null {
   const { t } = useI18n()
-  const { todos, currentSessionId, streaming, cancelTodoList } = useChat()
+  const { todos, currentSessionId, streaming } = useChatState()
+  const { cancelTodoList } = useChatActions()
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const active = todos.active

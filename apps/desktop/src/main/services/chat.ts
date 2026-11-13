@@ -241,9 +241,8 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
 }
 
 /**
- * 定时任务密封执行器（模块级桥接）。runScheduledTurn 是 registerChatIpc 内的闭包（捕获 emit /
- * activeTurns / runAgentLoop 等），而 scheduler.ts 在别处 import——用此模块级引用桥接：
- * registerChatIpc 一运行即挂上，scheduler 经 runScheduledTask 跨模块直调。未就绪即抛错，
+ * 定时任务密封执行器（模块级桥接）：scheduler 经 runScheduledTask 跨模块直调。registerChatIpc 运行时
+ * 才挂上 chat-turns.ts 的 runScheduledTurn——此前事件订阅与窗口尚未就绪，调用即抛错，
  * 由 scheduler 捕获记一次错误运行（绝不崩）。
  */
 let scheduledRunner: ((task: TaskRecord) => Promise<ScheduledTurnResult>) | null = null

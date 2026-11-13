@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Bot, ChevronUp, Loader2, Square } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
-import { useChat, type ChatBlock } from '../../store/chat'
+import { type ChatBlock, useChatState, useChatStream, useChatActions } from '../../store/chat'
 import { ToolText, subagentTitle } from './blocks'
 import { useDockOrder } from './dockOrder'
 
@@ -25,7 +25,7 @@ function currentChild(task: SubagentBlock): { step?: SubagentBlock['children'][n
  */
 export function SubagentProgressNotice({ ownerName }: { ownerName: string }): React.JSX.Element | null {
   const { t } = useI18n()
-  const { messages } = useChat()
+  const { messages } = useChatStream()
   const groups = useMemo(() => {
     const out: SubagentBlock[][] = []
     for (const m of messages) {
@@ -72,7 +72,9 @@ export function SubagentProgressNotice({ ownerName }: { ownerName: string }): Re
  */
 export function BackgroundCapsule(): React.JSX.Element | null {
   const { t } = useI18n()
-  const { messages, currentSessionId, stopSubagent } = useChat()
+  const { currentSessionId } = useChatState()
+  const { messages } = useChatStream()
+  const { stopSubagent } = useChatActions()
   const [open, setOpen] = useState(false)
   // 已点停止、等主进程收尾事件把它定格的那一小段：按钮置灰，免得连点。
   const [stopping, setStopping] = useState<Set<string>>(() => new Set())

@@ -4,7 +4,12 @@ import { BotsPane } from './BotsPane'
 import './redesign.css'
 import type { Persona } from '../mock/extensions'
 import type { MemberMeta, TaskRecord } from '../../../preload'
-import { useChat, type ChatBlock, type SessionMeta } from '../store/chat'
+import {
+  type ChatBlock,
+  type SessionMeta,
+  useChatState,
+  useChatActions
+} from '../store/chat'
 import { useExtensions } from '../store/extensions'
 import { useTasks } from '../store/tasks'
 import { useI18n } from '../i18n/i18n'
@@ -25,7 +30,7 @@ import { clipName, IS_MAC, DEFAULT_PERSONA_ID, fill } from './shell-common'
 import { type MemberEntry, memberPersona } from './MemberBar'
 import { type RailTab, IconRail, Rail, QuickStart, RosterEmpty } from './Rail'
 import { TasksPane, TaskFormModal } from './TasksPane'
-import { Conversation } from './Conversation'
+import { LiveConversation } from './Conversation'
 import { type SlashCommand, type ComposerPrefill, restoreToComposer } from './Composer'
 import { type EditorState, ProfileView, PersonaEditor } from './ProfileView'
 import { type SettingsInit, Settings } from './SettingsPane'
@@ -34,7 +39,7 @@ import { type SettingsInit, Settings } from './SettingsPane'
  * 「对话优先」外壳（已接真实 store）。
  *
  * 形态（借鉴 IM 应用的单人对话）：
- *  - 左栏两个 tab：消息（对话列表，来自 useChat().sessions）/ 角色（花名册，来自 useExtensions().personas）
+ *  - 左栏两个 tab：消息（对话列表，来自 useChatState().sessions）/ 角色（花名册，来自 useExtensions().personas）
  *  - 一对话一身份：中列是「我 ↔ 某一个角色」的单人对话，头顶显示当值角色（persona 单选、首发绑定后不可改）
  *  - 角色可查看资料、可反复发起对话；「添加/编辑角色」走 PersonaEditor（round-trip upsertPersona）
  *  - 工作区可选：头部一个 chip，挂了文件夹就「聚焦中」（focusRoot），没挂就是全机通用助手
@@ -67,10 +72,12 @@ export function ChatFirstShell(): React.JSX.Element {
   const {
     sessions: storedSessions,
     currentSessionId,
-    messages,
-    streaming,
-    streamStatus,
     sessionStates,
+    currentBinding,
+    draftSession,
+    pendingCards
+  } = useChatState()
+  const {
     send,
     stop,
     newSession,
@@ -80,16 +87,13 @@ export function ChatFirstShell(): React.JSX.Element {
     setArchived,
     deleteSessions,
     deleteTurns,
-    currentBinding,
-    draftSession,
     mountFocus,
     respondAsk,
     respondPlan,
     respondMount,
-    pendingCards,
     removeMember,
     onInsertsReturned
-  } = useChat()
+  } = useChatActions()
   const { personas, remove, reorderPersonas } = useExtensions()
   const { tasks, setStatus: setTaskStatus, runNow: runTaskNow, update: updateTask, remove: removeTask } = useTasks()
   const { t, locale } = useI18n()
@@ -695,13 +699,10 @@ export function ChatFirstShell(): React.JSX.Element {
             ) : noThreads ? (
               <QuickStart personas={personas} onStart={startWith} />
             ) : (
-              <Conversation
+              <LiveConversation
                 // 成员记录里助手消息是成员说的：头像与名字用成员的身份。
                 owner={memberOf ? memberPersona(memberOf.member, personas, defaultPersona) : owner}
                 currentSessionId={currentSessionId}
-                messages={messages}
-                streaming={streaming}
-                streamStatus={streamStatus}
                 focusRoot={currentBinding.focusRoot}
                 onOpenProfile={openProfile}
                 onSend={send}

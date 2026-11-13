@@ -1,7 +1,7 @@
 /**
  * 对话优先外壳各部分共用的小件：路径与时间辅助、头像与头像组、折叠过渡、悬停菜单、分段选择器、开关。
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Persona } from '../mock/extensions'
 import { useI18n } from '../i18n/i18n'
 import {
@@ -321,4 +321,14 @@ export function Avatar({
       {marks}
     </div>
   )
+}
+
+/**
+ * 引用恒定、调用时转给最新一次渲染的那个函数：传给 memo 组件的回调用它包一层，
+ * 父组件重渲染时不会因回调换了引用而带着子组件一起重渲染，也不会调到旧状态。
+ */
+export function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn)
+  ref.current = fn
+  return useCallback((...args: A) => ref.current(...args), [])
 }
