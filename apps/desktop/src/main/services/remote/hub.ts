@@ -20,6 +20,7 @@ import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from
 import { previewSchedule } from '../tasks'
 import type { TaskCreateInput } from '../tasks-types'
 import { paginate } from './paginate'
+import { chatStyle, deliverReply, followTurn, hideTyping, resumeTyping, type ChatReplyPost } from './chat-reply'
 import { seededShape } from '../../../shared/avatar-shape'
 import { getChannelConfig, updateChannelConfig } from './store'
 import type {
@@ -44,6 +45,7 @@ import type {
  *
  *  出站：订阅 chat-bus，把每一轮的流事件聚合成「回合视图」（正文 / 状态；工具只化作「正在…」提示），按平台限频
  *        节流、超长分页，推给**绑定了该对话**的 IM 私聊；问答 / 计划审阅 / 挂载请求另发交互卡。
+ *        回复方式为「仅最终结果」的机器人不发回合卡片，改为聊天式回复（见 chat-reply.ts）。
  *        没有任何私聊跟随的对话若停下来等决定，交互卡推到已配对用户的私聊（人走开了也能拍板）。
  *  入站：鉴权（只认已配对用户）→ 指令（/new /list /stop …）或普通消息 → chatRuntime.send；
  *        卡片按钮 / 表单 → chatRuntime.answerAsk / decidePlan / answerMount。
@@ -308,14 +310,15 @@ function personaName(sessionId: string): string {
 
 // ───────── 出站：回合视图 ─────────
 
-/** 一轮在某个私聊里的投递状态：每页一条平台消息，逐页记句柄与上次渲染签名（未变不重发）。 */
-interface Post {
-  chat: ChatAddress
+/**
+ * 一轮在某个私聊里的投递状态。流式卡片：每页一条平台消息，逐页记句柄与上次渲染签名（未变不重发）；
+ * 聊天式回复的几项见 ChatReplyPost。
+ */
+interface Post extends ChatReplyPost {
   handles: (MessageHandle | undefined)[]
   rendered: string[]
   timer?: ReturnType<typeof setTimeout>
   lastFlush: number
-  chain: Promise<void>
 }
 
 interface TurnTrack {
@@ -359,10 +362,45 @@ function ensureTrack(turnId: string, sessionId: string, eager: boolean): TurnTra
   return t
 }
 
-function addPost(t: TurnTrack, chat: ChatAddress): void {
+function addPost(t: TurnTrack, chat: ChatAddress): Post {
   const k = chatKey(chat)
-  if (t.posts.has(k)) return
-  t.posts.set(k, { chat, handles: [], rendered: [], lastFlush: 0, chain: Promise.resolve() })
+  let post = t.posts.get(k)
+  if (!post) {
+    post = {
+      chat,
+      handles: [],
+      rendered: [],
+      lastFlush: 0,
+      chain: Promise.resolve(),
+      anchors: [],
+      typing: false,
+      asked: false,
+      replied: false
+    }
+    t.posts.set(k, post)
+  }
+  return post
+}
+
+/** 手机端在进行中的回合里说了话（插入 / 作答 / 停止）：聊天式回复的私聊记为参与者，挂上「正在输入」。 */
+function joinTurn(chat: ChatAddress, sessionId: string, anchor?: MessageHandle, typing = true): void {
+  const turnId = sessionTurn.get(sessionId)
+  const t = turnId ? turns.get(turnId) : undefined
+  const adapter = liveAdapter(chat.channel)
+  if (!t || t.finished || !adapter || !chatStyle(chat.channel)) return
+  const post = addPost(t, chat)
+  if (typing) followTurn(adapter, post, anchor)
+  else post.asked = true
+}
+
+/** 聊天式回复的私聊：停下来等你决定时收起「正在输入」，作答后再挂上。 */
+function setTurnTyping(t: TurnTrack, on: boolean): void {
+  for (const post of t.posts.values()) {
+    const adapter = liveAdapter(post.chat.channel)
+    if (!adapter || !chatStyle(post.chat.channel)) continue
+    if (on) resumeTyping(adapter, post)
+    else hideTyping(adapter, post)
+  }
 }
 
 /** 工具调用在 IM 上只化作一句「正在…」状态提示（不展示参数与结果）。 */
@@ -478,8 +516,8 @@ function scheduleFlush(t: TurnTrack, immediate = false): void {
   for (const post of t.posts.values()) {
     const adapter = liveAdapter(post.chat.channel)
     if (!adapter) continue
-    // 「仅最终结果」：中途的内容变化不推，只推开场卡、等待决定与终态（这几处都走 immediate）。
-    if (!immediate && getChannelConfig(post.chat.channel).replyMode === 'final') continue
+    // 「仅最终结果」：不发回合卡片，回合结束时发聊天式回复（见 finishTurn）。
+    if (chatStyle(post.chat.channel)) continue
     if (post.timer) {
       if (!immediate) continue
       clearTimeout(post.timer)
@@ -552,6 +590,13 @@ function finishTurn(t: TurnTrack, stopReason: string): void {
       renderPrompt(p)
       prompts.delete(key)
     }
+  for (const post of t.posts.values()) {
+    const adapter = liveAdapter(post.chat.channel)
+    if (!adapter) continue
+    // 回合中途改了回复方式的：「正在输入」照样收起。
+    if (chatStyle(post.chat.channel)) deliverReply(adapter, post, t)
+    else hideTyping(adapter, post)
+  }
   scheduleFlush(t, true)
   // 终态那次投递还在排队（posts 的 chain / timer 持有 t），稍后再释放跟踪表项即可。
   setTimeout(() => turns.delete(t.turnId), 60_000)
@@ -721,6 +766,7 @@ function applyResolution(ev: Extract<ChatStreamEvent, { type: 'interaction_resol
     t.status = 'running'
     t.statusText = undefined
     scheduleFlush(t)
+    setTurnTyping(t, true)
   }
 }
 
@@ -789,6 +835,7 @@ function onBusEvent({ turnId, sessionId, event }: ChatEventPayload): void {
             }
     )
     scheduleFlush(t, true)
+    setTurnTyping(t, false)
     return
   }
   if (reduce(t, event)) scheduleFlush(t)
@@ -798,7 +845,9 @@ function onBusEvent({ turnId, sessionId, event }: ChatEventPayload): void {
 function replied(sessionId: string, chat: ChatAddress): boolean {
   let last: TurnTrack | undefined
   for (const t of turns.values()) if (t.sessionId === sessionId) last = t
-  return !!last && last.finished && hasVisible(last) && last.posts.has(chatKey(chat))
+  const post = last?.posts.get(chatKey(chat))
+  if (!last || !last.finished || !post) return false
+  return chatStyle(chat.channel) ? post.replied : hasVisible(last)
 }
 
 function onNotice(n: AppNotice): void {
@@ -914,7 +963,7 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
     trail.closed = true
   }
   // 其余斜杠开头的（/技能名 …）原样交给对话，与桌面输入框行为一致。
-  await sendToSession(msg.chat, text)
+  await sendToSession(msg.chat, text, msg.ref)
 }
 
 async function runCommand(chat: ChatAddress, name: string, arg: string, trail: Trail): Promise<boolean> {
@@ -998,6 +1047,8 @@ async function runCommand(chat: ChatAddress, name: string, arg: string, trail: T
         await say({ text: '当前没有进行中的回复。' })
         return true
       }
+      // 聊天式回复：停止的回执（「已停止。」）随回合结束发到这里。
+      joinTurn(chat, sid, undefined, false)
       rt.abort(turnId)
       return true
     }
@@ -1113,7 +1164,8 @@ function lastAssistantText(sid: string): string {
   return ''
 }
 
-async function sendToSession(chat: ChatAddress, text: string): Promise<void> {
+/** anchor = 这条手机消息的平台 id（聊天式回复把「正在输入」挂在上面）。 */
+async function sendToSession(chat: ChatAddress, text: string, anchor?: MessageHandle): Promise<void> {
   const rt = getChatRuntime()
   if (!rt) return notice(chat, { tone: 'error', text: 'Deva 还没准备好，请稍后再试。' })
   let sid = boundSession(chat)
@@ -1128,8 +1180,8 @@ async function sendToSession(chat: ChatAddress, text: string): Promise<void> {
   for (const p of prompts.values()) {
     if (p.sessionId !== sid || p.view.state !== 'open' || isCard(p.view)) continue
     if (p.view.kind === 'ask' && p.view.questions.length === 1) {
-      if (!rt.answerAsk({ key: p.view.key, answers: [text] }))
-        await notice(chat, { tone: 'warning', text: '这个问题已经结束了。' })
+      if (rt.answerAsk({ key: p.view.key, answers: [text] })) joinTurn(chat, sid, anchor)
+      else await notice(chat, { tone: 'warning', text: '这个问题已经结束了。' })
       return
     }
     return notice(chat, {
@@ -1153,6 +1205,8 @@ async function sendToSession(chat: ChatAddress, text: string): Promise<void> {
   // 对话正在进行：与桌面一样插入当前这一轮，当前步骤结束后交给模型（刚好结束了就照常发送）。
   if (rt.isBusy(sid)) {
     const r = rt.insert({ sessionId: sid, text, model })
+    // 聊天式回复不回「已插入」：这条消息同样挂上「正在输入」，本轮结束时的回复一并回答。
+    if (r.ok && chatStyle(chat.channel)) return joinTurn(chat, sid, anchor)
     if (r.ok) return notice(chat, { tone: 'info', text: '已插入进行中的任务，当前步骤结束后送达。' })
     if (r.reason === 'busy')
       return notice(chat, { tone: 'warning', text: '上一轮还在进行中。发送 /stop 可以停止它。' })
@@ -1169,7 +1223,16 @@ async function sendToSession(chat: ChatAddress, text: string): Promise<void> {
       effort: session?.effort ?? resolveDefaultEffort()
     })
     const t = ensureTrack(turnId, sid, true)
-    addPost(t, chat)
+    const post = addPost(t, chat)
+    const adapter = liveAdapter(chat.channel)
+    if (adapter && chatStyle(chat.channel)) {
+      if (!t.finished) followTurn(adapter, post, anchor)
+      // 一开跑就结束了（如立即出错）：结束时还不知道是手机发起的，这里补发回执。
+      else if (!post.replied) {
+        post.asked = true
+        deliverReply(adapter, post, t)
+      }
+    }
     scheduleFlush(t, true)
   } catch (e) {
     await notice(chat, { tone: 'error', text: errText(e) })
