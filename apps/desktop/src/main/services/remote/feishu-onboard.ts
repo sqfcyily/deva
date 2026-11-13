@@ -17,8 +17,10 @@ const APP_PRESET = {
 /**
  * 在平台默认模板之上追加的配置：显式声明 Deva 依赖的消息事件与卡片回调，
  * 免得默认模板哪天不再包含它们（只能追加，平台未开放时整段被忽略、走默认流程）。
+ * 表情回应权限：聊天式回复在用户消息上挂「敲键盘」表情代替「正在输入」。
  */
 const APP_ADDONS = {
+  scopes: { tenant: ['im:message.reactions:write_only'] },
   events: { items: { tenant: ['im.message.receive_v1'] } },
   callbacks: { items: ['card.action.trigger'] }
 }

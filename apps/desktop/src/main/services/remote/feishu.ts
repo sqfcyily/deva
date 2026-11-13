@@ -8,6 +8,7 @@ import type {
   NoticeView,
   PromptView,
   RemoteAdapter,
+  ReplyView,
   TurnPage
 } from './types'
 
@@ -40,6 +41,8 @@ interface RawCardEvent {
 
 /** 超过这个时长的消息不再执行：断线重连后平台补投的旧指令，可能早已不合时宜。 */
 const STALE_MS = 5 * 60_000
+/** 「正在输入」的替代：挂在用户消息上的表情回应（飞书表情「敲键盘」）。 */
+const TYPING_EMOJI = 'Typing'
 
 export class FeishuAdapter implements RemoteAdapter {
   readonly platform = 'feishu' as const
@@ -51,6 +54,10 @@ export class FeishuAdapter implements RemoteAdapter {
   private client: lark.Client
   private ws: lark.WSClient | null = null
   private seen: string[] = []
+  /** 用户消息 id → 挂在上面的「正在输入」表情回应 id（创建请求还没返回时是它的 Promise）。 */
+  private reactions = new Map<string, Promise<string | undefined>>()
+  /** 表情回应失败（多半是应用没开「发送、删除消息表情回复」权限）只提示一次。 */
+  private reactionWarned = false
 
   constructor(
     readonly id: ChannelId,
@@ -126,7 +133,8 @@ export class FeishuAdapter implements RemoteAdapter {
       chat: { channel: this.id, chatId: m.chat_id },
       user: { id: openId },
       text: text ?? '',
-      kind: text === null ? 'unsupported' : 'text'
+      kind: text === null ? 'unsupported' : 'text',
+      ref: m.message_id
     })
   }
 
@@ -181,6 +189,66 @@ export class FeishuAdapter implements RemoteAdapter {
 
   sendNotice(chat: ChatAddress, view: NoticeView): Promise<MessageHandle | undefined> {
     return this.upsert(chat, noticeCard(view))
+  }
+
+  /** 聊天式回复发富文本（post）消息：显示成普通聊天气泡；md 标签不被接受时退回无标题卡片。 */
+  async sendReply(chat: ChatAddress, view: ReplyView): Promise<MessageHandle | undefined> {
+    const text = view.note ? `${view.text}\n\n*${view.note}*` : view.text
+    try {
+      const r = await this.client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chat.chatId,
+          msg_type: 'post',
+          content: JSON.stringify({ zh_cn: { content: [[{ tag: 'md', text }]] } })
+        }
+      })
+      if (r.code !== 0) throw new Error(`${r.code} ${r.msg ?? ''}`)
+      return r.data?.message_id
+    } catch (e) {
+      console.warn('[remote] 飞书富文本回复失败，改发卡片：', apiError(e))
+      return this.upsert(chat, card([md(view.note ? `${view.text}\n\n${grey(view.note)}` : view.text)]))
+    }
+  }
+
+  async startTyping(_chat: ChatAddress, anchors: MessageHandle[]): Promise<void> {
+    for (const id of anchors) {
+      if (this.reactions.has(id)) continue
+      this.reactions.set(
+        id,
+        this.client.im.v1.messageReaction
+          .create({ path: { message_id: id }, data: { reaction_type: { emoji_type: TYPING_EMOJI } } })
+          .then((r) => {
+            if (r.code !== 0) throw new Error(`${r.code} ${r.msg ?? ''}`)
+            return r.data?.reaction_id
+          })
+          .catch((e) => {
+            this.warnReaction(e)
+            return undefined
+          })
+      )
+    }
+  }
+
+  async stopTyping(_chat: ChatAddress, anchors: MessageHandle[]): Promise<void> {
+    await Promise.all(
+      anchors.map(async (id) => {
+        const pending = this.reactions.get(id)
+        if (!pending) return
+        this.reactions.delete(id)
+        const reactionId = await pending
+        if (!reactionId) return
+        await this.client.im.v1.messageReaction
+          .delete({ path: { message_id: id, reaction_id: reactionId } })
+          .catch((e) => this.warnReaction(e))
+      })
+    )
+  }
+
+  private warnReaction(e: unknown): void {
+    if (this.reactionWarned) return
+    this.reactionWarned = true
+    console.warn('[remote] 飞书表情回应失败（应用可能缺少 im:message.reactions:write_only 权限）：', apiError(e))
   }
 
   /** 撤回机器人自己发的消息（飞书不允许机器人删用户的消息，所以入站消息不带 messageId）。 */
@@ -316,12 +384,12 @@ function clip(s: string, n: number): string {
 const code = (s: string): string => (s ? ` \`${s.replace(/`/g, "'")}\`` : '')
 
 const STATUS: Record<TurnPage['status'], { text: string; template: Template }> = {
-  running: { text: '⏳ 进行中…', template: 'blue' },
-  waiting: { text: '⏸ 等待你的决定（见下方卡片）', template: 'orange' },
-  retrying: { text: '🔄 正在重试…', template: 'yellow' },
-  done: { text: '✅ 完成', template: 'green' },
-  aborted: { text: '⏹ 已停止', template: 'grey' },
-  error: { text: '❌ 出错了', template: 'red' }
+  running: { text: '进行中…', template: 'blue' },
+  waiting: { text: '等待你的决定（见下方卡片）', template: 'orange' },
+  retrying: { text: '正在重试…', template: 'yellow' },
+  done: { text: '完成', template: 'green' },
+  aborted: { text: '已停止', template: 'grey' },
+  error: { text: '出错了', template: 'red' }
 }
 
 function turnCard(p: TurnPage): Card {
@@ -330,7 +398,7 @@ function turnCard(p: TurnPage): Card {
     if (b.kind === 'text') {
       if (b.text.trim()) els.push(md(b.text))
     } else if (b.kind === 'notice') els.push(md(grey(b.text)))
-    else els.push(md(`<font color='red'>⚠ ${b.text.slice(0, 600)}</font>`))
+    else els.push(md(`<font color='red'>${b.text.slice(0, 600)}</font>`))
   }
 
   const st = STATUS[p.status]
@@ -340,7 +408,7 @@ function turnCard(p: TurnPage): Card {
   const final = p.status === 'done' || p.status === 'aborted' || p.status === 'error'
   if (!els.length && final) els.push(md(grey('（没有内容）')))
   // 还没有正文时只留状态行（「进行中」或正在做什么），不另写「正在思考」。
-  const live = p.statusText && !final ? `${p.status === 'running' ? '⏳ ' : ''}${p.statusText}` : st.text
+  const live = p.statusText && !final ? p.statusText : st.text
   const status = [live, final ? `用时 ${p.elapsedSec}s` : '', final ? p.statusText : ''].filter(Boolean).join(' · ')
   if (els.length) els.push({ tag: 'hr' })
   els.push(md(grey(status)))

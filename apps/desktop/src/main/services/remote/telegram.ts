@@ -8,6 +8,7 @@ import type {
   NoticeView,
   PromptView,
   RemoteAdapter,
+  ReplyView,
   TurnPage
 } from './types'
 
@@ -31,6 +32,10 @@ export interface TelegramOptions {
 const STALE_MS = 5 * 60_000
 /** 单条消息上限 4096 字符（按解析后的文本计；HTML 标签不计，这里按含标签保守估计）。 */
 const MAX_TEXT = 4096
+/** 输入状态最多显示 5 秒（机器人发出消息时提前消失），工作中按这个间隔续上。 */
+const TYPING_EVERY_MS = 4000
+/** 输入状态的兜底时限：hub 漏了收起时不至于一直显示。 */
+const TYPING_MAX_MS = 2 * 60 * 60_000
 
 // ───────── Bot API ─────────
 
@@ -179,6 +184,8 @@ export class TelegramAdapter implements RemoteAdapter {
   private pending = new Map<string, Pending>()
   private seq = 0
   private drafts = new Map<string, AskDraft>()
+  /** 正在显示输入状态的私聊：续期定时器 + 还没返回的那次请求（收起时等它落地，免得回复之后又冒出来）。 */
+  private typing = new Map<string, { timer: ReturnType<typeof setInterval>; inflight: Promise<unknown> }>()
 
   constructor(
     readonly id: ChannelId,
@@ -205,6 +212,8 @@ export class TelegramAdapter implements RemoteAdapter {
   async stop(): Promise<void> {
     this.ac?.abort()
     this.ac = null
+    for (const t of this.typing.values()) clearInterval(t.timer)
+    this.typing.clear()
   }
 
   private async poll(host: AdapterHost, signal: AbortSignal): Promise<void> {
@@ -263,7 +272,8 @@ export class TelegramAdapter implements RemoteAdapter {
       text: text ?? '',
       kind: text === null ? 'unsupported' : 'text',
       // 私聊里机器人可以删用户发的消息（48 小时内）。
-      messageId: String(m.message_id)
+      messageId: String(m.message_id),
+      ref: String(m.message_id)
     })
   }
 
@@ -403,6 +413,33 @@ export class TelegramAdapter implements RemoteAdapter {
     return this.upsert(chat, noticeRendered(view, (v) => this.act(v)))
   }
 
+  sendReply(chat: ChatAddress, view: ReplyView): Promise<MessageHandle | undefined> {
+    const note = view.note ? `\n\n${i(esc(view.note))}` : ''
+    return this.upsert(chat, { html: `${mdToHtml(view.text)}${note}` })
+  }
+
+  /** 输入状态挂在整个私聊上，用不到 anchors。 */
+  async startTyping(chat: ChatAddress): Promise<void> {
+    if (this.typing.has(chat.chatId)) return
+    const startedAt = Date.now()
+    const tick = (): void => {
+      const cur = this.typing.get(chat.chatId)
+      if (!cur) return
+      if (Date.now() - startedAt > TYPING_MAX_MS) return void this.stopTyping(chat)
+      cur.inflight = this.call('sendChatAction', { chat_id: chat.chatId, action: 'typing' }).catch(() => undefined)
+    }
+    this.typing.set(chat.chatId, { timer: setInterval(tick, TYPING_EVERY_MS), inflight: Promise.resolve() })
+    tick()
+  }
+
+  async stopTyping(chat: ChatAddress): Promise<void> {
+    const cur = this.typing.get(chat.chatId)
+    if (!cur) return
+    this.typing.delete(chat.chatId)
+    clearInterval(cur.timer)
+    await cur.inflight
+  }
+
   async deleteMessage(chat: ChatAddress, handle: MessageHandle): Promise<void> {
     await this.call('deleteMessage', { chat_id: chat.chatId, message_id: Number(handle) })
   }
@@ -519,17 +556,17 @@ function clip(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}\n\n…（内容较长，完整内容请在电脑端查看）` : s
 }
 
-function head(title: string, subtitle?: string, icon?: string): string {
-  return `${icon ? `${icon} ` : ''}${b(esc(title))}${subtitle ? ` · ${i(esc(subtitle))}` : ''}`
+function head(title: string, subtitle?: string): string {
+  return `${b(esc(title))}${subtitle ? ` · ${i(esc(subtitle))}` : ''}`
 }
 
 const STATUS: Record<TurnPage['status'], string> = {
-  running: '⏳ 进行中…',
-  waiting: '⏸ 等待你的决定（见下方消息）',
-  retrying: '🔄 正在重试…',
-  done: '✅ 完成',
-  aborted: '⏹ 已停止',
-  error: '❌ 出错了'
+  running: '进行中…',
+  waiting: '等待你的决定（见下方消息）',
+  retrying: '正在重试…',
+  done: '完成',
+  aborted: '已停止',
+  error: '出错了'
 }
 
 function turnRendered(p: TurnPage, act: (v: ActionValue) => string): Rendered {
@@ -538,7 +575,7 @@ function turnRendered(p: TurnPage, act: (v: ActionValue) => string): Rendered {
     if (blk.kind === 'text') {
       if (blk.text.trim()) parts.push(mdToHtml(blk.text))
     } else if (blk.kind === 'notice') parts.push(i(esc(blk.text)))
-    else parts.push(`⚠ ${esc(blk.text.slice(0, 600))}`)
+    else parts.push(`${b('出错：')}${esc(blk.text.slice(0, 600))}`)
   }
 
   const subtitle = p.index > 0 ? `${p.sessionTitle}（续 ${p.index + 1}）` : p.sessionTitle
@@ -549,7 +586,7 @@ function turnRendered(p: TurnPage, act: (v: ActionValue) => string): Rendered {
   if (!parts.length && final) parts.push(i('（没有内容）'))
   // 还没有正文时只留状态行（「进行中」或正在做什么），不另写「正在思考」。
   const status = [
-    p.statusText && !final ? `${p.status === 'running' ? '⏳ ' : ''}${p.statusText}` : STATUS[p.status],
+    p.statusText && !final ? p.statusText : STATUS[p.status],
     final ? `用时 ${p.elapsedSec}s` : '',
     final ? p.statusText : ''
   ]
@@ -557,7 +594,7 @@ function turnRendered(p: TurnPage, act: (v: ActionValue) => string): Rendered {
     .join(' · ')
   return {
     html: [title, ...parts, i(esc(status))].join('\n\n'),
-    keyboard: final ? undefined : [[{ text: '⏹ 停止', callback_data: act({ k: 'stop', turn: p.turnId }) }]]
+    keyboard: final ? undefined : [[{ text: '停止', callback_data: act({ k: 'stop', turn: p.turnId }) }]]
   }
 }
 
@@ -578,7 +615,7 @@ function askRendered(d: AskDraft, enc: (p: Pending) => string): Rendered {
       const a = v.answers?.[n]
       return `${b(`${n + 1}. ${esc(q.question)}`)}\n${a ? esc(a) : i('未作答')}`
     })
-    return { html: [head(v.state === 'answered' ? '已回答' : '问题已结束', v.sessionTitle, v.state === 'answered' ? '✅' : '⏹'), ...lines].join('\n\n') }
+    return { html: [head(v.state === 'answered' ? '已回答' : '问题已结束', v.sessionTitle), ...lines].join('\n\n') }
   }
   const multiQ = v.questions.length > 1
   const instant = !multiQ && v.questions[0] && !v.questions[0].multi
@@ -601,7 +638,7 @@ function askRendered(d: AskDraft, enc: (p: Pending) => string): Rendered {
   })
   if (!instant) keyboard.push([{ text: '提交', callback_data: enc({ t: 'submit', key: v.key }) }])
   const hint = multiQ ? [] : [i('也可以直接回复一条文字消息作为答案。')]
-  return { html: [head('需要你的回答', v.sessionTitle, '❓'), ...sections, ...hint].join('\n\n'), keyboard }
+  return { html: [head('需要你的回答', v.sessionTitle), ...sections, ...hint].join('\n\n'), keyboard }
 }
 
 function promptRendered(v: Exclude<PromptView, { kind: 'ask' }>, act: (v: ActionValue) => string): Rendered {
@@ -614,21 +651,21 @@ function promptRendered(v: Exclude<PromptView, { kind: 'ask' }>, act: (v: Action
     if (v.state !== 'open') {
       const t =
         v.state === 'approve'
-          ? head('计划已批准', v.sessionTitle, '✅')
+          ? head('计划已批准', v.sessionTitle)
           : v.state === 'keep'
-            ? head('继续完善计划', v.sessionTitle, '✏️')
+            ? head('继续完善计划', v.sessionTitle)
             : v.state === 'ignore'
-              ? head('计划已忽略', v.sessionTitle, '🚫')
-              : head('计划审阅已结束', v.sessionTitle, '⏹')
+              ? head('计划已忽略', v.sessionTitle)
+              : head('计划审阅已结束', v.sessionTitle)
       return { html: `${t}\n\n${fold(esc(clip(v.plan, 2500)))}` }
     }
     return {
-      html: `${head('请审阅计划', v.sessionTitle, '📋')}\n\n${mdToHtml(clip(v.plan, 3000))}`,
+      html: `${head('请审阅计划', v.sessionTitle)}\n\n${mdToHtml(clip(v.plan, 3000))}`,
       keyboard: [
         [
-          btn('✏️ 继续完善', { k: 'plan', key: v.key, d: 'keep' }),
-          btn('🚫 忽略', { k: 'plan', key: v.key, d: 'ignore' }),
-          btn('✅ 批准并执行', { k: 'plan', key: v.key, d: 'approve' })
+          btn('继续完善', { k: 'plan', key: v.key, d: 'keep' }),
+          btn('忽略', { k: 'plan', key: v.key, d: 'ignore' }),
+          btn('批准并执行', { k: 'plan', key: v.key, d: 'approve' })
         ]
       ]
     }
@@ -637,7 +674,7 @@ function promptRendered(v: Exclude<PromptView, { kind: 'ask' }>, act: (v: Action
   if (v.kind === 'autotask') {
     const when = v.schedule
       ? `${esc(v.schedule)}${v.nextRunAt ? i(`（下次：${new Date(v.nextRunAt).toLocaleString('zh-CN', { hour12: false })}）`) : ''}`
-      : `⚠ ${esc(v.error ?? '日程无效')}`
+      : esc(v.error ?? '日程无效')
     const info = [
       b(esc(v.title)),
       `${i('日程')}　${when}`,
@@ -646,10 +683,10 @@ function promptRendered(v: Exclude<PromptView, { kind: 'ask' }>, act: (v: Action
     ].join('\n')
     if (v.state !== 'open')
       return {
-        html: `${head(v.state === 'created' ? '定时任务已创建' : '已忽略这个定时任务', v.sessionTitle, v.state === 'created' ? '✅' : '⏹')}\n\n${info}`
+        html: `${head(v.state === 'created' ? '定时任务已创建' : '已忽略这个定时任务', v.sessionTitle)}\n\n${info}`
       }
     return {
-      html: `${head('确认定时任务', v.sessionTitle, '⏰')}\n\n${info}\n\n${i('创建后到点自动运行，运行时不会再询问你。需要改日程、身份或模型，请在电脑端的名片上编辑。')}`,
+      html: `${head('确认定时任务', v.sessionTitle)}\n\n${info}\n\n${i('创建后到点自动运行，运行时不会再询问你。需要改日程、身份或模型，请在电脑端的名片上编辑。')}`,
       keyboard: [
         [
           btn('创建任务', { k: 'autotask', sid: v.sessionId, tool: v.key, a: 'create' }),
@@ -669,10 +706,10 @@ function promptRendered(v: Exclude<PromptView, { kind: 'ask' }>, act: (v: Action
       .join('\n')
     if (v.state !== 'open')
       return {
-        html: `${head(v.state === 'accepted' ? '角色已添加' : '已拒绝这个角色', v.sessionTitle, v.state === 'accepted' ? '✅' : '⏹')}\n\n${info}`
+        html: `${head(v.state === 'accepted' ? '角色已添加' : '已拒绝这个角色', v.sessionTitle)}\n\n${info}`
       }
     return {
-      html: `${head('新角色名片', v.sessionTitle, '🧑')}\n\n${info}\n\n${i('头像会自动生成，之后可以在电脑端修改。')}`,
+      html: `${head('新角色名片', v.sessionTitle)}\n\n${info}\n\n${i('头像会自动生成，之后可以在电脑端修改。')}`,
       keyboard: [
         [
           btn('添加角色', { k: 'agent', sid: v.sessionId, tool: v.key, a: 'accept' }),
@@ -684,29 +721,22 @@ function promptRendered(v: Exclude<PromptView, { kind: 'ask' }>, act: (v: Action
 
   if (v.state !== 'open')
     return {
-      html: `${head('工作区挂载', v.sessionTitle, v.state === 'mounted' ? '✅' : '⏹')}\n\n${
+      html: `${head('工作区挂载', v.sessionTitle)}\n\n${
         v.state === 'mounted' ? `已挂载：${code(v.root ?? '')}` : i(v.state === 'skipped' ? '已跳过挂载。' : '请求已结束。')
       }`
     }
   return {
     html:
-      `${head('需要挂载工作区', v.sessionTitle, '📁')}\n\n` +
+      `${head('需要挂载工作区', v.sessionTitle)}\n\n` +
       `这一步（${b(esc(v.tool))}${code(v.path)}）需要一个工作区目录，但当前对话还没有挂载文件夹。\n\n` +
       i('挂载文件夹需要在电脑端选择；也可以先跳过，让它改用绝对路径。'),
     keyboard: [[btn('暂不挂载', { k: 'mount', key: v.key })]]
   }
 }
 
-const TONE: Record<NonNullable<NoticeView['tone']>, string> = {
-  info: 'ℹ️',
-  success: '✅',
-  warning: '⚠️',
-  error: '❌'
-}
-
 function noticeRendered(v: NoticeView, act: (v: ActionValue) => string): Rendered {
   const body = mdToHtml(clip(v.text, 3000))
-  const html = v.title ? `${TONE[v.tone ?? 'info']} ${b(esc(v.title))}\n\n${body}` : body
+  const html = v.title ? `${b(esc(v.title))}\n\n${body}` : body
   const list = (v.buttons ?? []).map((x) => ({ text: x.label, callback_data: act(x.value) }))
   if (!list.length) return { html }
   // 竖排：每个按钮独占一行（列表选择）；横排：一行放下（少量快捷动作）。

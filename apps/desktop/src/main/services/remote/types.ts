@@ -37,6 +37,8 @@ export interface InboundMessage {
   kind: 'text' | 'unsupported'
   /** 这条消息本身的句柄（指令消息用完后由 hub 删掉）；平台不允许机器人删用户消息时留空。 */
   messageId?: MessageHandle
+  /** 这条消息的平台 id（「正在输入」提示挂在它上面，见 startTyping）；与 messageId 不同，不表示能删。 */
+  ref?: MessageHandle
 }
 
 /**
@@ -149,6 +151,12 @@ export type PromptView =
       state: 'open' | 'accepted' | 'rejected'
     }
 
+/** 聊天式回复（回复方式 =「仅最终结果」）的一条消息：Markdown 正文，note 为末尾一行补充说明（被截断等）。 */
+export interface ReplyView {
+  text: string
+  note?: string
+}
+
 /** 一条通知（指令回执 / 定时任务完成 …）。buttons 为可选的快捷动作。 */
 export interface NoticeView {
   title?: string
@@ -184,6 +192,15 @@ export interface RemoteAdapter {
   renderTurn(chat: ChatAddress, page: TurnPage, handle?: MessageHandle): Promise<MessageHandle | undefined>
   renderPrompt(chat: ChatAddress, view: PromptView, handle?: MessageHandle): Promise<MessageHandle | undefined>
   sendNotice(chat: ChatAddress, view: NoticeView): Promise<MessageHandle | undefined>
+  /** 发一条聊天式回复（普通消息，不是卡片；超长由 hub 先分好段，一段一条）。 */
+  sendReply(chat: ChatAddress, view: ReplyView): Promise<MessageHandle | undefined>
+  /**
+   * 显示「正在输入」：Telegram 用输入状态（持续刷新到 stopTyping）；飞书没有输入状态接口，改在 anchors
+   * （这一轮要回应的用户消息）上挂表情回应。可重复调用：已经挂上的不重复挂。
+   */
+  startTyping(chat: ChatAddress, anchors: MessageHandle[]): Promise<void>
+  /** 收起 startTyping 的提示。失败不抛错。 */
+  stopTyping(chat: ChatAddress, anchors: MessageHandle[]): Promise<void>
   /** 删除一条消息（指令与回执用完即删）。失败抛错，由 hub 忽略。 */
   deleteMessage(chat: ChatAddress, handle: MessageHandle): Promise<void>
   /** 按用户 id 主动发起私聊（扫码创建后机器人先打招呼），返回该私聊的 chatId。 */
