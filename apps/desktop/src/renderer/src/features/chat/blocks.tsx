@@ -58,6 +58,7 @@ import {
   CircleStop,
   MessagesSquare,
   Forward,
+  MessageSquareReply,
   UsersRound,
   BookOpen,
   type LucideIcon
@@ -113,7 +114,8 @@ const TOOL_META: Record<string, { key: string; icon: LucideIcon }> = {
   member_stop: { key: 'memberStop', icon: CircleStop },
   member_status: { key: 'memberStatus', icon: UsersRound },
   read_main: { key: 'readMain', icon: MessagesSquare },
-  report_to_main: { key: 'reportToMain', icon: Forward }
+  report_to_main: { key: 'reportToMain', icon: Forward },
+  reply_task: { key: 'replyTask', icon: MessageSquareReply }
 }
 
 /** browser 工具的各个动作：每个动作有自己的动词与图标（打开网页、查看页面、点击……）。 */
@@ -269,6 +271,11 @@ function flowObject(
   if (name === 'report_to_main') {
     const reason = (args as { reason?: unknown } | null)?.reason
     return typeof reason === 'string' && reason.trim() ? { text: reason.trim(), full: reason.trim() } : null
+  }
+  // 先交回一项任务的结论：对象写任务标题。
+  if (name === 'reply_task') {
+    const task = (args as { task?: unknown } | null)?.task
+    return typeof task === 'string' && task.trim() ? { text: task.trim(), full: task.trim() } : null
   }
   if (args && typeof args === 'object') {
     const o = args as { command?: unknown; path?: unknown; pattern?: unknown; url?: unknown }
@@ -1414,7 +1421,8 @@ const QUIET_TOOLS = new Set([
   'member_stop',
   'member_status',
   'read_main',
-  'report_to_main'
+  'report_to_main',
+  'reply_task'
 ])
 
 /** 子智能体被用户亲手停下的结局摘要（后台「已停止」/ 前台「已中止」）：不当作出错展示。 */

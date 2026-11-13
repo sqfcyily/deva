@@ -23,7 +23,7 @@ import {
 } from './tools'
 import { loadSkillInstructionsByName } from './skills'
 import { buildToolSearchTool, fitToolSearch, skillToolUsages, unknownUsages } from './tool-search'
-import { readMainTool, reportToMainTool, rootLabel } from './members'
+import { readMainTool, replyTaskTool, reportToMainTool, rootLabel } from './members'
 import { MEMBER_EXCLUDED, MEMBER_FOLDER_ONLY, UNATTENDED_EXCLUDED } from './tool-catalog'
 import { slashTokens } from '../../shared/slash'
 import { memoryPromptSection } from './memory'
@@ -110,6 +110,8 @@ import { pendingNotices, takeNotices, wakeForNotices } from './background-tasks'
 import { pendingHandoffs, deliverResult, finishInform, taskAsks, reportTaskAsk } from './chat-task-handoff'
 import {
   memberDispatches,
+  markDispatchesDelivered,
+  deliveredDispatchIds,
   memberToMain,
   pendingMemberReports,
   commitMemberReports,
@@ -136,6 +138,8 @@ interface PendingInsert {
   model: ChatModelConfig
   /** 从手机端插入的（改作下一轮发出时，全是手机端的才按手机端发起处理）。 */
   fromRemote: boolean
+  /** 主智能体派给成员、插进它当前工作的任务：member_send 的调用 id（取走时据此记为已送达，见 markDispatchesDelivered）。 */
+  dispatchId?: string
 }
 
 const pendingInserts = new Map<string, PendingInsert[]>()
@@ -195,14 +199,17 @@ function emitInserts(sessionId: string): void {
   emit('', sessionId, { type: 'inserts', pending: (pendingInserts.get(sessionId) ?? []).map((e) => e.text) })
 }
 
-/** 回合进行中插入一条消息（桌面 chat:insert 与手机端共用）。见 ChatInsertRequest / pendingInserts。 */
-export function insertMessage(req: ChatInsertRequest, fromRemote = false): ChatInsertResult {
+/**
+ * 回合进行中插入一条消息（桌面 chat:insert 与手机端共用）。见 ChatInsertRequest / pendingInserts。
+ * dispatchId：主智能体派给成员的任务插进成员当前的工作（见 chat-members.ts sendToMember）。
+ */
+export function insertMessage(req: ChatInsertRequest, fromRemote = false, dispatchId?: string): ChatInsertResult {
   const text = req.text.trim()
   if (!text) return { ok: false, reason: 'empty' }
   const turnId = busySessions.get(req.sessionId)
   if (!turnId) return { ok: false, reason: 'idle' }
   if (!insertableTurns.has(turnId)) return { ok: false, reason: 'busy' }
-  const entry: PendingInsert = { text, model: req.model, fromRemote }
+  const entry: PendingInsert = { text, model: req.model, fromRemote, ...(dispatchId ? { dispatchId } : {}) }
   const queue = pendingInserts.get(req.sessionId)
   if (queue) queue.push(entry)
   else pendingInserts.set(req.sessionId, [entry])
@@ -216,6 +223,8 @@ export function takeInserts(sessionId: string): string | null {
   if (!queue?.length) return null
   pendingInserts.delete(sessionId)
   emitInserts(sessionId)
+  const dispatched = queue.flatMap((e) => (e.dispatchId ? [e.dispatchId] : []))
+  if (dispatched.length) markDispatchesDelivered(sessionId, dispatched)
   return queue.map((e) => e.text).join('\n\n')
 }
 
@@ -503,10 +512,10 @@ export async function runTurn(
       buildToolSearchTool(),
       subagentTool,
       buildSendToSubagentTool(),
-      // 项目成员：主对话的交互轮提供 create_member / member_send / member_stop，成员会话提供 read_main / report_to_main；
-      // 定时任务都不给。
+      // 项目成员：主对话的交互轮提供 create_member / member_send / member_stop，成员会话提供 read_main / report_to_main /
+      // reply_task；定时任务都不给。
       ...(isMember
-        ? [readMainTool(), reportToMainTool()]
+        ? [readMainTool(), reportToMainTool(), replyTaskTool()]
         : unattended
           ? handoffOwner
             ? [handoffTool(handoffOwner)]
@@ -590,7 +599,7 @@ export async function runTurn(
       interactive: !unattended,
       allowAskUser: !unattended,
       allowSubagents: true,
-      // 项目成员：主对话的交互轮附成员名单、受理成员工具；成员会话受理 read_main / report_to_main。
+      // 项目成员：主对话的交互轮附成员名单、受理成员工具；成员会话受理 read_main / report_to_main / reply_task。
       listMembers: !unattended && !isMember ? () => memberListing(sessionId) : undefined,
       memberTool: isMember
         ? (tc) => memberSideTool(sessionId, tc)
@@ -703,7 +712,7 @@ export async function runTurn(
     // 出错照常提醒。
     const awaitsFollowUp =
       endReason !== 'error' &&
-      ([...memberDispatches.values()].some((d) => d.group === turnId) ||
+      ([...memberDispatches.values()].some((list) => list.some((d) => d.group === turnId)) ||
         [...backgroundSubagents.values()].some(
           (b) => b.sessionId === sessionId && !b.silent && !b.stoppedByUser
         ) ||
@@ -727,6 +736,9 @@ export async function runTurn(
         text: replyText,
         error: endReason === 'error' ? (replyError ?? '') : undefined
       })
+    // 成员会话：本轮已送达的派发（须在 flushInserts 取走插入之前看：来不及送达的派来的任务，改作下一轮发出，
+    // 留给下一轮的最终回复交差）。
+    const memberDelivered = isMember ? deliveredDispatchIds(sessionId) : null
     // 来不及送达的插入消息：正常结束就接着发出，停止 / 出错则退回输入框。
     const continued = flushInserts(sessionId, endReason)
     // 本轮进行中交差的成员：现在把那几行记进主对话（排在本轮回复之后）。
@@ -734,11 +746,13 @@ export async function runTurn(
     // 本轮最后一步之后才结束的后台子智能体：它们的通知还在队列里，现在为它们起一轮（插入消息已起了一轮的，
     // 通知随那条消息一并带上）。用户刚按了停止就不起——通知留着，随下一条消息带给模型。
     if (endReason !== 'aborted' && !continued) wakeForNotices(sessionId)
-    // 成员会话：结论交回主对话（插入的消息接着起了一轮的，等那一轮结束再交；会话被删的不交）。
+    // 成员会话：结论交回主对话（会话被删的不交）。插入的消息接着起了一轮的：本轮已送达的派发由本轮的最终回复交差，
+    // 其余的（含用户直接说的话）等那一轮结束再交。
     if (isMember && !continued) {
       if (abortCauses.get(turnId) !== 'deleted') reportMemberTurn(session, endReason, replyText, replyError, turnModel)
       else memberToMain.delete(sessionId)
-    }
+    } else if (isMember && memberDelivered?.size)
+      reportMemberTurn(session, endReason, replyText, replyError, turnModel, memberDelivered)
     // 定时任务回答完转来的问题：回答交回主对话（任务对话被删的不交）。
     if (taskAsk && !continued) {
       if (abortCauses.get(turnId) !== 'deleted') reportTaskAsk(session, endReason, replyText, replyError)

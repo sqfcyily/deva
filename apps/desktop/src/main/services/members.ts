@@ -63,17 +63,30 @@ export interface MemberRef {
   /** 最近一次结论（截断）、结局与当时的任务标题。 */
   last?: { text: string; at: number; status: MemberRunStatus; task?: string }
   /**
-   * 主智能体派来、还没做完的任务（派出时记下，正常完成才清；被停止、出错或 Deva 重启中断的都留着）：用户之后
-   * 在成员会话里接着说话（如「继续」），那一轮就算接着做这项任务，结束时照常交回主对话。落盘，重启后仍在。
-   * toolUseId = 主对话里 member_send 的调用 id；group = 派出它的主轮 id（要汇总的几项按它合并唤醒）。
+   * 主智能体派来、还没交差的任务，按派出先后（派出时记下，交差才去掉；被停止、出错或 Deva 重启中断的都留着）：
+   * 用户之后在成员会话里接着说话（如「继续」），那一轮就算接着做这几项，结束时照常交回主对话。落盘，重启后仍在。
+   * 成员空闲时派来的新任务取代没做完的旧任务；正忙时插进来的追加在后面，各自交差（见 chat-members.ts）。
    * 主智能体 member_stop 叫停、成员被移除时清掉（那是不要了，不是没做完）。
    */
-  openTask?: { toolUseId: string; reportToMe: boolean; group: string }
+  openTasks?: OpenTask[]
+  /** 旧版只记一项（2026-11-13 前）：读取时当作只有这一项的 openTasks（见 chat-members.ts openTasksOf）。 */
+  openTask?: OpenTask
   /**
    * 用户在成员会话里亲自改过模型 / 思考等级：此后以成员会话为准，派任务时不再按主对话同步覆盖。
    */
   modelSet?: boolean
   effortSet?: boolean
+}
+
+/**
+ * 一项派来、还没交差的任务。toolUseId = 主对话里 member_send 的调用 id；group = 派出它的主轮 id（要汇总的几项
+ * 按它合并唤醒）；task = 任务标题（交差时的标题，旧记录没有）。
+ */
+export interface OpenTask {
+  toolUseId: string
+  reportToMe: boolean
+  group: string
+  task?: string
 }
 
 export type { MemberRunStatus } from '../../shared/chat-protocol'
@@ -184,12 +197,27 @@ function formatRound(r: Round, owner: string): string {
   return lines.join('\n')
 }
 
-/** 成员会话里最近一次正常收尾的回复（有正文、没有工具调用；没有则空串）：member_status 据此给出结论全文。 */
+/**
+ * 成员会话里最近一次交差的结论全文（没有则空串）：正常收尾的回复（有正文、没有工具调用），或轮中用 reply_task
+ * 先交回的结论，取较晚的那次。member_status 据此给出结论全文。
+ */
 export function lastReplyText(memberMessages: Message[]): string {
   for (let i = memberMessages.length - 1; i >= 0; i--) {
     const m = memberMessages[i]
     if (m.role !== 'assistant') continue
-    if (typeof m.content !== 'string' && m.content.some((p) => p.type === 'tool_use')) continue
+    if (typeof m.content !== 'string' && m.content.some((p) => p.type === 'tool_use')) {
+      // 受理了的 reply_task（结果没报错；被拒的不算交差）。
+      const next = memberMessages[i + 1]
+      const results = next && typeof next.content !== 'string' ? next.content : []
+      for (let j = m.content.length - 1; j >= 0; j--) {
+        const p = m.content[j]
+        if (p.type !== 'tool_use' || p.name !== 'reply_task') continue
+        const ok = results.some((r) => r.type === 'tool_result' && r.toolUseId === p.id && !r.isError)
+        const c = (p.input as { conclusion?: unknown } | null)?.conclusion
+        if (ok && typeof c === 'string' && c.trim()) return c.trim()
+      }
+      continue
+    }
     const t = assistantText(m).trim()
     if (t) return t
   }
@@ -265,18 +293,30 @@ export function readMainRound(messages: Message[], owner: string, round: number,
 const QUOTE_HEAD = '【用户原话】'
 const NOTE_HEAD = '【任务说明】'
 const CONTEXT_HEAD = '【主对话最近几轮】（供参考；更早的内容可用 read_main 查看）'
+/** 插进成员当前工作的任务附带的说明（只给模型看，成员工作记录里不显示）。 */
+const INSERT_HEAD = '【插入说明】'
+const INSERT_NOTE =
+  `${INSERT_HEAD}这项任务是在你做别的任务时插进来的。它与手上的任务无关、能单独先做完时，做完先用 reply_task 交回它的结论，` +
+  '再接着做原来的任务；它是对当前任务的补充说明或修改意见时，合在一起做，最后在最终回复里一并交代。'
 /** 任务说明段的标题（旧版叫「X的附注」）。 */
 const NOTE_RE = /^【(?:.+的附注|任务说明)】$/
 const TITLE_RE = /^【(.+)派来的任务】(.*)$/
 
 /**
  * 派给成员的任务消息正文（成员会话里的一条 user 消息）：标题 + 主智能体写的任务说明（+ 首次派发时主对话最近几轮）。
- * 不附用户原话：任务由主智能体理解后派发，说明里写完整。
+ * 不附用户原话：任务由主智能体理解后派发，说明里写完整。inserted = 成员正忙、这条插进它当前的工作：末尾附插入说明。
  */
-export function buildTaskMessage(p: { owner: string; task: string; note: string; context: string }): string {
+export function buildTaskMessage(p: {
+  owner: string
+  task: string
+  note: string
+  context: string
+  inserted?: boolean
+}): string {
   const lines = [`${MEMBER_TASK_MARKER}【${p.owner}派来的任务】${p.task}`]
   if (p.note) lines.push('', NOTE_HEAD, p.note)
   if (p.context) lines.push('', CONTEXT_HEAD, p.context)
+  if (p.inserted) lines.push('', INSERT_NOTE)
   return lines.join('\n')
 }
 
@@ -298,7 +338,7 @@ export function parseTaskMessage(text: string): ParsedTask | null {
   for (const line of lines.slice(1)) {
     if (line.startsWith(QUOTE_HEAD)) section = 'quote'
     else if (NOTE_RE.test(line)) section = 'note'
-    else if (line === CONTEXT_HEAD) section = 'context'
+    else if (line === CONTEXT_HEAD || line.startsWith(INSERT_HEAD)) section = 'context'
     else if (section === 'quote' || section === 'note') buf[section].push(line)
   }
   out.quote = buf.quote.join('\n').trim()
@@ -311,7 +351,7 @@ export function parseTaskMessage(text: string): ParsedTask | null {
 /** 主对话（主智能体）的成员工具名。 */
 export const MAIN_MEMBER_TOOLS = new Set(['create_member', 'member_send', 'member_stop', 'member_status'])
 /** 成员会话的成员工具名。 */
-export const MEMBER_SIDE_TOOLS = new Set(['read_main', 'report_to_main'])
+export const MEMBER_SIDE_TOOLS = new Set(['read_main', 'report_to_main', 'reply_task'])
 
 /**
  * 按需加载的成员工具（见 tool-search.ts）：没有成员的对话用不上，工具表里只留这句话与参数骨架；有成员时用法随
@@ -445,6 +485,37 @@ export function reportToMainTool(): ToolSpec {
         }
       },
       required: ['reason']
+    }
+  }
+}
+
+/**
+ * 成员会话的 reply_task 工具：不等本轮结束，先交回其中一项派来的任务的结论（成员正忙时插进来、与手上的任务无关的
+ * 那项）。交差方式与本轮结束时相同：以成员的身份回复用户，派任务时要了 report_to_me 的交给主智能体处理（见
+ * chat-members.ts replyTask）。补充说明一类的插入不用它，合进最终回复一并交代。
+ */
+export function replyTaskTool(): ToolSpec {
+  return {
+    name: 'reply_task',
+    description:
+      '先交回一项派来的任务的结论，不等本轮结束。只在手上同时有几项派来的任务（工作中又插进来新任务）、其中一项与其余的无关且已经做完时使用：' +
+      '结论马上交回（按派发的要求，以你的身份回复用户或交给主 Agent），你接着做其余的任务。' +
+      '插进来的是对当前任务的补充说明、修改意见或与它相关的事时不要用它，合在一起做，最后在最终回复里一并交代。' +
+      '只剩一项任务时不要用它，直接写最终回复。每项任务只交一次：交过的，最终回复里不要再重复它的结论。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: {
+          type: 'string',
+          description: '要交回的任务标题：任务消息开头「【…派来的任务】」后面的标题，原样填写。'
+        },
+        conclusion: {
+          type: 'string',
+          description:
+            '这项任务的结论，按最终回复的要求写（直接写结果，写明做了什么、验证情况、遗留问题），会原样交给用户或主 Agent——他们看不到你的工具调用和结果。'
+        }
+      },
+      required: ['task', 'conclusion']
     }
   }
 }
