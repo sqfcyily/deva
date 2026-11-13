@@ -229,7 +229,7 @@ interface AgentLoopArgs {
    */
   listMembers?: () => MemberListingItem[]
   /**
-   * 成员相关工具的执行（主对话：create_member / member_send / member_stop；成员会话：read_main / report_to_main）。
+   * 成员相关工具的执行（主对话：create_member / member_send / member_stop；成员会话：read_main / report_to_main / reply_task）。
    * 不过权限闸门——它们只改会话属性、起后台回合或读主对话正文。未传则按不可用处理。
    */
   memberTool?: (tc: { id: string; name: string; args: unknown }) => Promise<MemberToolResult>
@@ -1091,7 +1091,7 @@ function buildLoopTools(
   const { turnId, sessionId, personaId, depth, interactive, allowAskUser } = run.args
   const args = run.args
   const { offeredTools, hasTool } = run
-  // 成员工具（create_member / member_send / member_stop / read_main / report_to_main 与定时任务的交接工具）：
+  // 成员工具（create_member / member_send / member_stop / read_main / report_to_main / reply_task 与定时任务的交接工具）：
   // 只在工具表里有它时受理，不过权限闸门（只改会话属性、起后台回合、读主对话正文）。
   const memberCall = async (tc: StepToolCall): Promise<LoopToolOutcome> => {
     const r: MemberToolResult =

@@ -12,6 +12,7 @@ import { memberAddedRecord, type MemberListingItem } from './listing'
 import {
   MAX_MEMBERS,
   MEMBER_NOTICE_TAG,
+  MEMBER_TASK_MARKER,
   NO_FOLDER,
   activeMembers,
   buildTaskMessage,
@@ -25,7 +26,8 @@ import {
   rootLabel,
   type MemberProgressGroup,
   type MemberRef,
-  type MemberRunStatus
+  type MemberRunStatus,
+  type OpenTask
 } from './members'
 import { NEW_MEMBER_TOKENS } from '../../shared/mention'
 import { withoutQuotes } from '../../shared/quote'
@@ -72,15 +74,57 @@ export interface MemberToolResult {
 // ── 项目成员（见 members.ts） ──────────────────────────────────────────────
 
 /**
- * 成员会话 id → 最近一次派任务的调用（member_send 的 tool_use id 与当时主轮的模型）：成员本轮结束时据此给主对话
- * 排通知（toolUseId 供按轮删除时撤回，模型供主智能体空闲时自动起轮）。
+ * 一次派任务（member_send）：toolUseId 供按轮删除时撤回通知，model（当时主轮的模型）供主智能体空闲时自动起轮。
  * reportToMe = 派任务时要求完成后唤醒主智能体；group = 派出它的主轮 id：同一轮派出、都要唤醒的几项，等最后一个
- * 交差才唤醒一次（见 reportMemberTurn）。
+ * 交差才唤醒一次（见 deliverConclusion）。task = 任务标题（交差标题用）。
+ * delivered = 任务消息已到成员手里：空闲时派来的起轮即到；插进来的要等某一步送达，还在插入队列里的不算本轮交差。
  */
-export const memberDispatches = new Map<
-  string,
-  { toolUseId: string; model: ChatModelConfig; reportToMe: boolean; group: string }
->()
+export interface MemberDispatch {
+  toolUseId: string
+  model: ChatModelConfig
+  reportToMe: boolean
+  group: string
+  task: string
+  delivered: boolean
+}
+
+/**
+ * 成员会话 id → 还没交差的派发，按派出先后。成员正忙时插进来的追加在后面，各自交差一次：成员用 reply_task 先交回
+ * 某一项，其余的由本轮最终回复一并交回（见 replyTask / reportMemberTurn）。
+ */
+export const memberDispatches = new Map<string, MemberDispatch[]>()
+
+/** 全部成员还没交差的派发（查汇总组还有谁在做）。 */
+function allDispatches(): MemberDispatch[] {
+  return [...memberDispatches.values()].flat()
+}
+
+/** 派出 / 交差改动某成员的派发表（空了就删键）。 */
+function setDispatches(sid: string, list: MemberDispatch[]): void {
+  if (list.length) memberDispatches.set(sid, list)
+  else memberDispatches.delete(sid)
+}
+
+/** 名单上还没交差的任务（兼容旧版只记一项的 openTask）。 */
+function openTasksOf(ref: MemberRef): OpenTask[] {
+  return ref.openTasks ?? (ref.openTask ? [ref.openTask] : [])
+}
+
+/** 改写名单上还没交差的任务（顺带去掉旧版字段）；调用方负责落盘。 */
+export function setOpenTasks(ref: MemberRef, list: OpenTask[]): void {
+  ref.openTask = undefined
+  ref.openTasks = list.length ? list : undefined
+}
+
+/** 成员会话的插入消息送达了模型（见 chat-turns.ts takeInserts）：其中的派发从此算交到成员手里。 */
+export function markDispatchesDelivered(sid: string, ids: string[]): void {
+  for (const d of memberDispatches.get(sid) ?? []) if (ids.includes(d.toolUseId)) d.delivered = true
+}
+
+/** 已交到成员手里的派发 id（本轮收尾、还有插入没送达时，只有这几项随本轮的最终回复交差）。 */
+export function deliveredDispatchIds(sid: string): Set<string> {
+  return new Set((memberDispatches.get(sid) ?? []).filter((d) => d.delivered).map((d) => d.toolUseId))
+}
 
 /**
  * 成员会话 id → 本轮调用 report_to_main 时写的说明（要主智能体做什么）：本轮结束时结论改为唤醒主智能体处理，
@@ -111,20 +155,25 @@ function memberProgress(mainId: string): MemberProgressGroup[] {
     })
     groups.set(g, { items })
   }
-  for (const [sid, d] of memberDispatches) {
-    if (!d.reportToMe || getSession(sid)?.parentId !== mainId) continue
+  for (const [sid, list] of memberDispatches) {
+    if (getSession(sid)?.parentId !== mainId) continue
     const name = nameOf(sid)
     if (!name) continue
-    const g = groups.get(d.group) ?? { items: [] }
-    g.items.push({ sid, name, status: 'running' })
-    groups.set(d.group, g)
+    for (const d of list) {
+      if (!d.reportToMe) continue
+      const g = groups.get(d.group) ?? { items: [] }
+      // 同组里它还有一项在做：显示为进行中（先交回的那项不单列「已完成」，同一组一人只占一格）。
+      if (!g.items.some((i) => i.sid === sid && i.status === 'running'))
+        g.items = [...g.items.filter((i) => i.sid !== sid), { sid, name, status: 'running' }]
+      groups.set(d.group, g)
+    }
   }
   return [...groups.values()].filter((g) => g.items.some((i) => i.status === 'running'))
 }
 
 /** 推送主对话的成员进度（会话级，空 turnId）；先删去已没人在做的组。 */
 function emitMemberProgress(mainId: string): void {
-  const running = new Set([...memberDispatches.values()].filter((d) => d.reportToMe).map((d) => d.group))
+  const running = new Set(allDispatches().filter((d) => d.reportToMe).map((d) => d.group))
   for (const [g, rec] of memberGroupDone) if (rec.mainId === mainId && !running.has(g)) memberGroupDone.delete(g)
   emit('', mainId, { type: 'member_progress', groups: memberProgress(mainId) })
 }
@@ -291,32 +340,47 @@ function addMember(
 }
 
 /**
- * 用户在成员会话里说话，而主智能体派来的上一项任务还没做完（被停止、出错，或 Deva 重启中断了，见 MemberRef.openTask）：
- * 这一轮算接着做那项任务——任务标题不变，结束时照常交回主对话（成员以自己的身份回复，或按 report_to_me 唤醒主智能体）。
+ * 用户在成员会话里说话，而主智能体派来的任务还没做完（被停止、出错，或 Deva 重启中断了，见 MemberRef.openTasks）：
+ * 这一轮算接着做这几项——任务标题不变，结束时照常交回主对话（成员以自己的身份回复，或按 report_to_me 唤醒主智能体）。
  * 停止时排给主智能体、还没送到的「已停止」通知随之作废。返回是否接上了。
  */
 export function resumeMemberTask(sub: StoredSession, model: ChatModelConfig): boolean {
-  if (memberDispatches.has(sub.id)) return false
+  if (memberDispatches.get(sub.id)?.length) return false
   const main = sub.parentId ? getSession(sub.parentId) : undefined
   const ref = main?.members?.find((m) => m.sessionId === sub.id && !m.removed)
-  const open = ref?.openTask
-  if (!main || !open) return false
-  memberDispatches.set(sub.id, { toolUseId: open.toolUseId, model, reportToMe: open.reportToMe, group: open.group })
+  const open = ref ? openTasksOf(ref) : []
+  if (!main || !ref || !open.length) return false
+  setDispatches(
+    sub.id,
+    open.map((o) => ({
+      toolUseId: o.toolUseId,
+      model,
+      reportToMe: o.reportToMe,
+      group: o.group,
+      task: o.task ?? ref.task ?? '',
+      delivered: true
+    }))
+  )
+  const ids = new Set(open.map((o) => o.toolUseId))
   const queue = pendingNotices.get(main.id)
   if (queue) {
-    const left = queue.filter((n) => n.toolUseId !== open.toolUseId)
+    const left = queue.filter((n) => !ids.has(n.toolUseId))
     if (left.length) pendingNotices.set(main.id, left)
     else pendingNotices.delete(main.id)
   }
   // 要汇总的组里它又在做了：从「已完成」里拿掉（同再派一次）。
-  const groupDone = memberGroupDone.get(open.group)
-  if (groupDone) groupDone.items = groupDone.items.filter((i) => i.sid !== sub.id)
+  for (const o of open) {
+    const groupDone = memberGroupDone.get(o.group)
+    if (groupDone) groupDone.items = groupDone.items.filter((i) => i.sid !== sub.id)
+  }
   emitMemberProgress(main.id)
   return true
 }
 
 /** 用户直接在成员会话里说了一句：取这条消息开头（≤20 字）记作成员当前的任务标题。 */
 export function noteMemberDirectTask(sub: StoredSession, text: string): void {
+  // 来不及插入、改作下一轮发出的派发任务（见 chat-turns.ts flushInserts）：标题派任务时已记好。
+  if (text.startsWith(MEMBER_TASK_MARKER)) return
   const main = sub.parentId ? getSession(sub.parentId) : undefined
   const ref = main?.members?.find((m) => m.sessionId === sub.id)
   const title = text.replace(/\s+/g, ' ').trim()
@@ -417,37 +481,42 @@ function sendToMember(
     return { content: '缺少任务标题（task）。', summary: '缺少任务', isError: true }
   const owner = personaName(main)
   const first = !sub.messages.some((m) => m.role === 'user')
+  const busy = busySessions.has(sub.id)
   // 不附用户原话：任务由主智能体理解后派发，说明（message）由它写完整；首次派发附上主对话最近几轮作背景。
+  // 正忙时插进它当前的工作：附上插入说明（无关的可先用 reply_task 单独交回）。
   const content = buildTaskMessage({
     owner,
     task: title,
     note: note || title,
-    context: first ? recentMainContext(main.messages, owner) : ''
+    context: first ? recentMainContext(main.messages, owner) : '',
+    inserted: busy
   })
   // 每次派任务都按主对话同步：模型（被 @ 的角色设了偏好模型就用它）、思考等级。用户在成员会话里亲自改过的
   // 以成员为准，不覆盖。文件夹是成员自己的，不跟随主对话。
   if (!member.modelSet) sub.model = memberModelRef(member, main)
   if (!member.effortSet && main.effort) sub.effort = main.effort
   const prevTask = member.task
-  const prevOpen = member.openTask
+  const prevOpen = openTasksOf(member)
+  const open: OpenTask = { toolUseId, reportToMe, group, task: title }
   member.task = title
-  member.openTask = { toolUseId, reportToMe, group }
+  // 正忙：追加在手上的任务后面，各自交差；空闲：取代没做完的旧任务（主智能体重新派了）。
+  setOpenTasks(member, busy ? [...prevOpen, open] : [open])
   saveProject(main.id)
-  const prevDispatch = memberDispatches.get(sub.id)
-  memberDispatches.set(sub.id, { toolUseId, model, reportToMe, group })
+  const prevDispatches = memberDispatches.get(sub.id) ?? []
+  const dispatch: MemberDispatch = { toolUseId, model, reportToMe, group, task: title, delivered: !busy }
+  setDispatches(sub.id, busy ? [...prevDispatches, dispatch] : [dispatch])
   // 同一组里再派给已交差的成员：它又在做了，从「已完成」里拿掉。
   const groupDone = memberGroupDone.get(group)
   if (groupDone) groupDone.items = groupDone.items.filter((i) => i.sid !== sub.id)
   publishSessionsChanged()
 
-  if (busySessions.has(sub.id)) {
-    const r = insertMessage({ sessionId: sub.id, text: content, model })
+  if (busy) {
+    const r = insertMessage({ sessionId: sub.id, text: content, model }, false, toolUseId)
     if (!r.ok) {
-      // 没派出去：它手上那项任务的交差仍按原来的派发处理，名单上的任务也还是原来那项。
-      if (prevDispatch) memberDispatches.set(sub.id, prevDispatch)
-      else memberDispatches.delete(sub.id)
+      // 没派出去：派发表与名单上的任务都还是原来那几项。
+      setDispatches(sub.id, prevDispatches)
       member.task = prevTask
-      member.openTask = prevOpen
+      setOpenTasks(member, prevOpen)
       saveProject(main.id)
       return {
         content: `成员「${member.name}」正忙，暂时无法接收新任务，请等它完成后再派。`,
@@ -495,9 +564,9 @@ function stopMember(main: StoredSession, member: MemberRef): MemberToolResult {
       summary: '没有进行中的任务',
       isError: false
     }
-  // 主智能体叫停 = 这项任务不要了：用户之后在成员会话里再说话，不再算接着做它（见 MemberRef.openTask）。
-  if (member.openTask) {
-    member.openTask = undefined
+  // 主智能体叫停 = 手上的任务不要了：用户之后在成员会话里再说话，不再算接着做它们（见 MemberRef.openTasks）。
+  if (openTasksOf(member).length) {
+    setOpenTasks(member, [])
     saveProject(main.id)
   }
   abortTurn(turnId)
@@ -557,10 +626,13 @@ function memberStatus(main: StoredSession, rawName: string): MemberToolResult {
     } else {
       lines.push('状态：空闲')
       // 派来的任务没做完（被停止、出错或 Deva 重启中断）：用户在成员会话里让它接着做时，完成后照常交回。
-      if (m.openTask)
+      const open = openTasksOf(m)
+      if (open.length) {
+        const titles = open.map((o) => o.task ?? m.task ?? '').filter(Boolean)
         lines.push(
-          `上次派的任务${m.task ? `「${m.task}」` : ''}还没做完（被停止、出错或因 Deva 重启中断）。要现在接着做就用 member_send 再派一次。`
+          `上次派的任务${titles.length ? `「${titles.join('」「')}」` : ''}还没做完（被停止、出错或因 Deva 重启中断）。要现在接着做就用 member_send 再派一次。`
         )
+      }
     }
     if (m.last) {
       const label = m.last.status === 'done' ? '已完成' : m.last.status === 'stopped' ? '已停止' : '未完成'
@@ -633,16 +705,24 @@ export async function mainMemberTool(
   return sendToMember(main, member, str('task'), str('message'), tc.id, model, a.report_to_me === true, turnId)
 }
 
-/** 成员会话的成员工具（read_main：往前翻主对话的正文；report_to_main：本轮结论交给主智能体处理）。 */
+/**
+ * 成员会话的成员工具（read_main：往前翻主对话的正文；report_to_main：本轮结论交给主智能体处理；reply_task：先交回
+ * 其中一项派来的任务）。
+ */
 export async function memberSideTool(
   memberId: string,
   tc: { id: string; name: string; args: unknown }
 ): Promise<MemberToolResult> {
   const sub = getSession(memberId)
   const main = sub?.parentId ? getSession(sub.parentId) : undefined
-  if (!main) return { content: '找不到主对话（可能已被删除）。', summary: '找不到主对话', isError: true }
+  if (!sub || !main) return { content: '找不到主对话（可能已被删除）。', summary: '找不到主对话', isError: true }
   const a = (tc.args ?? {}) as { before?: unknown; round?: unknown; offset?: unknown; reason?: unknown }
   const owner = personaName(main)
+  if (tc.name === 'reply_task') {
+    const r = (tc.args ?? {}) as { task?: unknown; conclusion?: unknown }
+    const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+    return replyTask(sub, main, str(r.task), str(r.conclusion))
+  }
   if (tc.name === 'report_to_main') {
     const reason = typeof a.reason === 'string' ? a.reason.trim().replace(/\s+/g, ' ') : ''
     memberToMain.set(memberId, reason || '处理成员的结论')
@@ -664,22 +744,197 @@ export async function memberSideTool(
   }
 }
 
+/** 交差标题：这几项派发的任务标题（旧记录没有时用名单上的当前任务）。 */
+function titleOf(closing: MemberDispatch[], ref: MemberRef): string {
+  const titles = [...new Set(closing.map((d) => d.task).filter(Boolean))]
+  return titles.length ? titles.join('、') : (ref.task ?? '')
+}
+
 /**
- * 成员会话一轮结束：结论记进主对话名单（最近一次）。派来的任务正常完成时，成员以自己的身份在主对话里回一条
- * 结论原文（不调用模型，见 commitMemberReports）；出错时不显示，唤醒主智能体处理；被停止的不显示也不唤醒。
- * 派任务时设了 report_to_me 的改为以通知唤醒主智能体处理（同一轮派出的几项等最后一个交差再唤醒一次）。
- * 用户直接跟成员说的话以不唤醒的通知同步给主智能体。
- * 成员本轮调用了 report_to_main（见 memberToMain）：不论是派来的任务还是用户直接说的话，都改为唤醒主智能体处理。
+ * 几项派发一起交差（调用方已把它们从派发表里拿掉）：名单记下最近一次结论；正常完成的从名单的未完成任务里去掉，
+ * 被停止、出错的留着，用户在成员会话里接着说话时接上（见 resumeMemberTask）；汇总组更新进度。返回交差标题。
+ */
+function recordConclusion(
+  main: StoredSession,
+  ref: MemberRef,
+  sid: string,
+  closing: MemberDispatch[],
+  status: MemberRunStatus,
+  conclusion: string
+): string {
+  const title = titleOf(closing, ref)
+  ref.last = {
+    text: conclusion.length > 200 ? `${conclusion.slice(0, 200)}…` : conclusion,
+    at: Date.now(),
+    status,
+    ...(title ? { task: title } : {})
+  }
+  const left = memberDispatches.get(sid) ?? []
+  if (closing.length && status === 'done') {
+    const leftIds = new Set(left.map((d) => d.toolUseId))
+    setOpenTasks(ref, openTasksOf(ref).filter((o) => leftIds.has(o.toolUseId)))
+  }
+  // 还有没交差的：名单上的当前任务写最近派来的那项（成员卡片显示它）。
+  if (left.length) ref.task = left[left.length - 1].task || ref.task
+  saveProject(main.id)
+  publishSessionsChanged()
+  // 要汇总的组：更新主对话的进度提示（最后一位交差时提示消失，随后唤醒主智能体汇总）。
+  for (const g of new Set(closing.filter((d) => d.reportToMe).map((d) => d.group)))
+    noteMemberDone(main.id, g, sid, ref.removed ? null : status)
+  return title
+}
+
+/**
+ * 把几项派发的结论交回主对话（本轮结束时一起交，或成员用 reply_task 先交回一项）。正常完成时成员以自己的身份在
+ * 主对话里回一条结论原文（不调用模型，见 commitMemberReports）；出错时不显示，唤醒主智能体处理；被停止的不显示
+ * 也不唤醒。派任务时设了 report_to_me 的改为以通知唤醒主智能体处理（同一轮派出的几项等最后一个交差再唤醒一次）；
+ * 成员调用了 report_to_main（toMain）的同样唤醒主智能体。
+ */
+function deliverConclusion(
+  main: StoredSession,
+  ref: MemberRef,
+  closing: MemberDispatch[],
+  title: string,
+  status: MemberRunStatus,
+  text: string,
+  error: string | undefined,
+  toMain: string | undefined
+): void {
+  const owner = personaName(main)
+  const conclusion = text.trim() || (error ? `执行出错：${error}` : '（没有给出结论。）')
+  const label = status === 'done' ? '已完成' : status === 'stopped' ? '已停止' : '未完成'
+  // 通知挂在最近派来的那项上：所在轮次被删时据此撤回；自动起轮时用它的模型。
+  const last = closing[closing.length - 1]
+  // 唤醒主智能体：派任务时要了（report_to_me），且同一轮派出、要唤醒的其余几项都已交差。被停止的单独不唤醒，
+  // 但同组已有交差在等它时照样唤醒（不然那几项的结论就没人处理了）。几项分属不同的组时，有一组齐了就唤醒。
+  let wake = false
+  // 有组还有在做的（含它自己手上同组的另一项）：交给那组最后一个交差的那次唤醒一并处理。
+  let deferred = false
+  const groups = new Set(closing.filter((d) => d.reportToMe).map((d) => d.group))
+  if (groups.size) {
+    const pending = allDispatches()
+    for (const g of groups) {
+      if (pending.some((d) => d.reportToMe && d.group === g)) {
+        deferred = true
+        if (status !== 'stopped') memberGroupsWaiting.add(g)
+      } else {
+        if (status !== 'stopped' || memberGroupsWaiting.has(g)) wake = true
+        memberGroupsWaiting.delete(g)
+      }
+    }
+  } else if (toMain) wake = true
+  if (!wake && !deferred) {
+    // 不要汇总、正常交回：成员以自己的身份（头像和名字）在主对话里回复（不调用模型，见 commitMemberReports）。
+    if (status === 'done') {
+      addMemberReport(main.id, {
+        name: ref.name,
+        headline: isEn()
+          ? `${ref.name} finished${title ? `: ${title}` : ''}`
+          : `${ref.name}已完成${title ? `：${title}` : ''}`,
+        conclusion: text.trim()
+      })
+      return
+    }
+    // 出错：主对话里不显示，唤醒主智能体处理（补救或告诉用户）。被停止的（主智能体或用户叫停的）既不显示
+    // 也不唤醒，随主智能体下一次开口一并告诉它。
+    enqueueNotice(main.id, {
+      toolUseId: last.toolUseId,
+      headline: `成员「${ref.name}」${label}${title ? `：${title}` : ''}`,
+      body: [
+        MEMBER_NOTICE_TAG,
+        `成员：${ref.name}`,
+        ...(title ? [`任务：${title}`] : []),
+        `状态：${label}${status === 'failed' && error ? `（${error}）` : ''}`,
+        ...(text.trim() ? ['已有的结论：', text.trim()] : []),
+        status === 'failed'
+          ? '用户看不到这次出错。请你处理：能补救就补救（如换个做法再用 member_send 派一次，或改派给别的成员），补救不了再简短告诉用户原因和你的建议。'
+          : '这项任务已被停止，用户没有看到它的结论；用户问起或需要时再处理。',
+        '</成员通知>'
+      ].join('\n'),
+      wake: status === 'failed',
+      model: last.model
+    })
+    return
+  }
+  // 要唤醒主智能体处理的（含同组还在等其余几项的）：结论以通知交给它，唤醒后由它回复用户。
+  enqueueNotice(main.id, {
+    toolUseId: last.toolUseId,
+    headline: toMain
+      ? `成员「${ref.name}」请${owner}处理：${toMain}`
+      : `成员「${ref.name}」${label}${title ? `：${title}` : ''}`,
+    body: [
+      MEMBER_NOTICE_TAG,
+      `成员：${ref.name}`,
+      ...(title ? [`任务：${title}`] : []),
+      `状态：${label}${status === 'failed' && error ? `（${error}）` : ''}`,
+      ...(toMain ? [`要你做的事：${toMain}`] : []),
+      '结论：',
+      conclusion,
+      ...(toMain
+        ? [
+            '成员没有直接回复用户，用户还没看到这份结论。请按成员的说明接着处理（只有你能做的事你来做，要别的成员配合的用 member_send 派），再回复用户。'
+          ]
+        : []),
+      '</成员通知>'
+    ].join('\n'),
+    wake,
+    model: last.model
+  })
+}
+
+/**
+ * reply_task：成员不等本轮结束，先交回其中一项派来的任务（正忙时插进来、与手上的无关的那项），交差方式同本轮结束时
+ * （见 deliverConclusion）。只剩一项时不受理：那项由最终回复交差，免得本轮结束时最终回复无处可交。
+ * 只认已送达成员的派发（还在插入队列里的，成员还没见过它的标题）。
+ */
+function replyTask(sub: StoredSession, main: StoredSession, rawTask: string, rawConclusion: string): MemberToolResult {
+  const fail = (content: string): MemberToolResult => ({ content, summary: '未能交回', isError: true })
+  const ref = main.members?.find((m) => m.sessionId === sub.id && !m.removed)
+  if (!ref) return fail('你已不在主对话的成员名单里，无法交回结论。')
+  const open = memberDispatches.get(sub.id) ?? []
+  if (!open.length) return fail('当前没有派来的任务（这是用户直接跟你说的话），不用调用本工具，直接写最终回复即可。')
+  if (open.length < 2) return fail('只剩这一项派来的任务，不用调用本工具，直接写最终回复即可。')
+  const delivered = open.filter((d) => d.delivered)
+  const want = rawTask.trim().replace(/^「/, '').replace(/」$/, '').trim()
+  const norm = (s: string): string => s.replace(/\s+/g, '').toLowerCase()
+  const hit = delivered.find((d) => d.task === want) ?? delivered.find((d) => norm(d.task) === norm(want))
+  if (!hit)
+    return fail(
+      `没有标题为「${want}」的待交任务。还没交回的有：${delivered.map((d) => `「${d.task}」`).join('、')}。task 请原样填写其中一个标题。`
+    )
+  const conclusion = rawConclusion.trim()
+  if (!conclusion) return fail('缺少结论（conclusion）。')
+  setDispatches(sub.id, open.filter((d) => d !== hit))
+  const title = recordConclusion(main, ref, sub.id, [hit], 'done', conclusion)
+  deliverConclusion(main, ref, [hit], title, 'done', conclusion, undefined, undefined)
+  const owner = personaName(main)
+  return {
+    content:
+      (hit.reportToMe
+        ? `已把「${hit.task}」的结论交给${owner}处理。`
+        : `已把「${hit.task}」的结论以你的身份回复用户。`) + '接着做其余的任务；最终回复里不要再重复这项的结论。',
+    summary: hit.reportToMe ? `已交给${owner}` : '已回复用户',
+    isError: false
+  }
+}
+
+/**
+ * 成员会话一轮结束：本轮的最终回复作为结论，交回还没交差的派发（见 deliverConclusion）。only = 只交这几项：本轮
+ * 收尾时还有插入没送达（马上作为下一轮发出），那几项留给下一轮的最终回复。
+ * 不是派来的任务（用户直接跟成员说的话）：以不唤醒的通知同步给主智能体；成员本轮调用了 report_to_main（见
+ * memberToMain）时改为唤醒主智能体处理。
  */
 export function reportMemberTurn(
   sub: StoredSession,
   endReason: StopReason,
   text: string,
   error: string | undefined,
-  model: ChatModelConfig
+  model: ChatModelConfig,
+  only?: ReadonlySet<string>
 ): void {
-  const dispatch = memberDispatches.get(sub.id)
-  memberDispatches.delete(sub.id)
+  const all = memberDispatches.get(sub.id) ?? []
+  const closing = only ? all.filter((d) => only.has(d.toolUseId)) : all
+  setDispatches(sub.id, only ? all.filter((d) => !only.has(d.toolUseId)) : [])
   const askedMain = memberToMain.get(sub.id)
   memberToMain.delete(sub.id)
   const main = sub.parentId ? getSession(sub.parentId) : undefined
@@ -695,134 +950,48 @@ export function reportMemberTurn(
   const toMain = status === 'stopped' ? undefined : askedMain
   const owner = personaName(main)
   const conclusion = text.trim() || (error ? `执行出错：${error}` : '（没有给出结论。）')
-  ref.last = {
-    text: conclusion.length > 200 ? `${conclusion.slice(0, 200)}…` : conclusion,
-    at: Date.now(),
-    status,
-    ...(ref.task ? { task: ref.task } : {})
-  }
-  // 派来的任务做完了才算交差；被停止、出错的留着，用户在成员会话里接着说话时接上（见 resumeMemberTask）。
-  if (dispatch && status === 'done') ref.openTask = undefined
-  saveProject(main.id)
-  publishSessionsChanged()
-  // 要汇总的组：更新主对话的进度提示（最后一位交差时提示消失，随后唤醒主智能体汇总）。
-  if (dispatch?.reportToMe) noteMemberDone(main.id, dispatch.group, sub.id, ref.removed ? null : status)
+  const title = recordConclusion(main, ref, sub.id, closing, status, conclusion)
   if (ref.removed) return
+  if (closing.length) {
+    deliverConclusion(main, ref, closing, title, status, text, error, toMain)
+    return
+  }
   // 不是派来的任务：用户直接在成员会话里说的话。同步给主智能体，但不为此唤醒它（用户正在跟成员说，
   // 主对话不必插话），随它下一次开口时一并看到。
-  if (!dispatch) {
-    const said = lastDirectUserText(sub.messages)
-    // 成员判断要主智能体处理（如建角色、呈交文件这类它没有工具的事）：唤醒主智能体。用户在成员会话里已看到成员的回复。
-    if (toMain) {
-      enqueueNotice(main.id, {
-        toolUseId: '',
-        headline: `成员「${ref.name}」请${owner}处理：${toMain}`,
-        body: [
-          MEMBER_NOTICE_TAG,
-          `用户直接在成员「${ref.name}」的会话里说了话（不是你派的任务），成员把这件事交给你处理。`,
-          `用户说：${said || '（无文字）'}`,
-          `要你做的事：${toMain}`,
-          '成员的结论：',
-          conclusion,
-          '用户在成员的会话里已看到上面的结论。请按成员的说明接着处理（只有你能做的事你来做，要别的成员配合的用 member_send 派），处理完在这里简短回复用户。',
-          '</成员通知>'
-        ].join('\n'),
-        wake: true,
-        model
-      })
-      return
-    }
+  const said = lastDirectUserText(sub.messages)
+  // 成员判断要主智能体处理（如建角色、呈交文件这类它没有工具的事）：唤醒主智能体。用户在成员会话里已看到成员的回复。
+  if (toMain) {
     enqueueNotice(main.id, {
       toolUseId: '',
-      headline: `你和成员「${ref.name}」的对话`,
+      headline: `成员「${ref.name}」请${owner}处理：${toMain}`,
       body: [
         MEMBER_NOTICE_TAG,
-        `用户直接在成员「${ref.name}」的会话里说了话（不是你派的任务），以下供你了解进展：`,
+        `用户直接在成员「${ref.name}」的会话里说了话（不是你派的任务），成员把这件事交给你处理。`,
         `用户说：${said || '（无文字）'}`,
-        `成员回复：${conclusion}`,
+        `要你做的事：${toMain}`,
+        '成员的结论：',
+        conclusion,
+        '用户在成员的会话里已看到上面的结论。请按成员的说明接着处理（只有你能做的事你来做，要别的成员配合的用 member_send 派），处理完在这里简短回复用户。',
         '</成员通知>'
       ].join('\n'),
-      wake: false,
-      model,
-      shown: true
+      wake: true,
+      model
     })
     return
   }
-  const label = status === 'done' ? '已完成' : status === 'stopped' ? '已停止' : '未完成'
-  // 唤醒主智能体：派任务时要了（report_to_me），且同一轮派出、要唤醒的其余几项都已交差。被停止的单独不唤醒，
-  // 但同组已有交差在等它时照样唤醒（不然那几项的结论就没人处理了）。
-  let wake = false
-  // 同组还有在跑的：交给最后一个交差的那次唤醒一并处理。
-  let deferred = false
-  if (dispatch.reportToMe) {
-    const othersPending = [...memberDispatches.values()].some(
-      (d) => d.reportToMe && d.group === dispatch.group
-    )
-    if (othersPending) {
-      deferred = true
-      if (status !== 'stopped') memberGroupsWaiting.add(dispatch.group)
-    } else {
-      wake = status !== 'stopped' || memberGroupsWaiting.has(dispatch.group)
-      memberGroupsWaiting.delete(dispatch.group)
-    }
-  } else if (toMain) wake = true
-  if (!wake && !deferred) {
-    // 不要汇总、正常交回：成员以自己的身份（头像和名字）在主对话里回复（不调用模型，见 commitMemberReports）。
-    if (status === 'done') {
-      const task = ref.task ?? ''
-      addMemberReport(main.id, {
-        name: ref.name,
-        headline: isEn()
-          ? `${ref.name} finished${task ? `: ${task}` : ''}`
-          : `${ref.name}已完成${task ? `：${task}` : ''}`,
-        conclusion: text.trim()
-      })
-      return
-    }
-    // 出错：主对话里不显示，唤醒主智能体处理（补救或告诉用户）。被停止的（主智能体或用户叫停的）既不显示
-    // 也不唤醒，随主智能体下一次开口一并告诉它。
-    enqueueNotice(main.id, {
-      toolUseId: dispatch.toolUseId,
-      headline: `成员「${ref.name}」${label}${ref.task ? `：${ref.task}` : ''}`,
-      body: [
-        MEMBER_NOTICE_TAG,
-        `成员：${ref.name}`,
-        ...(ref.task ? [`任务：${ref.task}`] : []),
-        `状态：${label}${status === 'failed' && error ? `（${error}）` : ''}`,
-        ...(text.trim() ? ['已有的结论：', text.trim()] : []),
-        status === 'failed'
-          ? '用户看不到这次出错。请你处理：能补救就补救（如换个做法再用 member_send 派一次，或改派给别的成员），补救不了再简短告诉用户原因和你的建议。'
-          : '这项任务已被停止，用户没有看到它的结论；用户问起或需要时再处理。',
-        '</成员通知>'
-      ].join('\n'),
-      wake: status === 'failed',
-      model: dispatch.model
-    })
-    return
-  }
-  // 要唤醒主智能体处理的（含同组还在等其余几项的）：结论以通知交给它，唤醒后由它回复用户。
   enqueueNotice(main.id, {
-    toolUseId: dispatch.toolUseId,
-    headline: toMain
-      ? `成员「${ref.name}」请${owner}处理：${toMain}`
-      : `成员「${ref.name}」${label}${ref.task ? `：${ref.task}` : ''}`,
+    toolUseId: '',
+    headline: `你和成员「${ref.name}」的对话`,
     body: [
       MEMBER_NOTICE_TAG,
-      `成员：${ref.name}`,
-      ...(ref.task ? [`任务：${ref.task}`] : []),
-      `状态：${label}${status === 'failed' && error ? `（${error}）` : ''}`,
-      ...(toMain ? [`要你做的事：${toMain}`] : []),
-      '结论：',
-      conclusion,
-      ...(toMain
-        ? [
-            '成员没有直接回复用户，用户还没看到这份结论。请按成员的说明接着处理（只有你能做的事你来做，要别的成员配合的用 member_send 派），再回复用户。'
-          ]
-        : []),
+      `用户直接在成员「${ref.name}」的会话里说了话（不是你派的任务），以下供你了解进展：`,
+      `用户说：${said || '（无文字）'}`,
+      `成员回复：${conclusion}`,
       '</成员通知>'
     ].join('\n'),
-    wake,
-    model: dispatch.model
+    wake: false,
+    model,
+    shown: true
   })
 }
 

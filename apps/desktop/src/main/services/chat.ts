@@ -96,7 +96,7 @@ import {
 import { imageRef, loadDisplay, displayOf } from './chat-display'
 import { cancelBackground, wakeForNotices } from './background-tasks'
 import { pendingHandoffs } from './chat-task-handoff'
-import { memberDispatches, memberGroupDone, markMemberSetting, setMemberFolder } from './chat-members'
+import { memberDispatches, memberGroupDone, markMemberSetting, setMemberFolder, setOpenTasks } from './chat-members'
 import {
   type ScheduledTurnResult,
   insertMessage,
@@ -690,7 +690,7 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
       const ref = main?.members?.find((m) => m.sessionId === memberSessionId && !m.removed)
       if (!main || !ref) return { ok: false }
       ref.removed = true
-      ref.openTask = undefined
+      setOpenTasks(ref, [])
       saveProject(sessionId)
       const turnId = busySessions.get(memberSessionId)
       if (turnId) abortTurn(turnId)
