@@ -65,6 +65,12 @@ export interface PersonaRecord {
   avatarImage: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认（见 model-resolve.ts）。 */
   model: string
+  /**
+   * 默认工作区目录（frontmatter `workspace`，绝对路径；空串 = 不默认挂载）。**只是新建对话时的默认值**：
+   * 绑定此角色的新对话开场即挂载它（主进程在 chat:create-session 应用并登记受信根，见该处注释），
+   * 对话内的挂/卸是会话级覆盖，不回写角色。目录失效时静默按未挂载建档。
+   */
+  workspace: string
   /** .md 正文 = 要追加进系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -77,6 +83,8 @@ export interface PersonaUpsertInput {
   description?: string
   avatar?: string
   model?: string
+  /** 可选：默认工作区目录（绝对路径；空/缺省 = 不默认挂载）。 */
+  workspace?: string
   prompt?: string
   /** 可选：一并设置启用态（新建默认关）。 */
   enabled?: boolean
@@ -176,6 +184,7 @@ function parsePersona(id: string, raw: string, enabled: boolean, withImage: bool
     avatar: fmString(data, 'avatar'),
     avatarImage: withImage ? readAvatarImage(id) : '',
     model: fmString(data, 'model'),
+    workspace: fmString(data, 'workspace'),
     prompt: body.trim(),
     enabled
   }
@@ -245,6 +254,7 @@ function composePersonaMd(input: {
   description: string
   avatar: string
   model: string
+  workspace?: string
   prompt: string
 }): string {
   const lines = ['---', `name: ${fmScalar(input.name)}`]
@@ -252,6 +262,8 @@ function composePersonaMd(input: {
   // avatar 为 JSON 字符串（含引号/大括号），必须经 fmScalar 引号化 + 转义，方能安全存进 YAML 单行。
   if (input.avatar) lines.push(`avatar: ${fmScalar(input.avatar)}`)
   if (input.model) lines.push(`model: ${fmScalar(input.model)}`)
+  // workspace 可含空格/中文（目录名常见），同样经 fmScalar 引号化；空 = 不默认挂载，不写该行（旧文件零差异）。
+  if (input.workspace) lines.push(`workspace: ${fmScalar(input.workspace)}`)
   lines.push('---', '', input.prompt.trim(), '')
   return lines.join('\n')
 }
@@ -268,6 +280,7 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
     description: (input.description ?? '').trim(),
     avatar: (input.avatar ?? '').trim(),
     model: (input.model ?? '').trim(),
+    workspace: (input.workspace ?? '').trim(),
     prompt: input.prompt ?? ''
   })
 
@@ -291,6 +304,7 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
       avatar: (input.avatar ?? '').trim(),
       avatarImage: readAvatarImage(id),
       model: (input.model ?? '').trim(),
+      workspace: (input.workspace ?? '').trim(),
       prompt: input.prompt ?? '',
       enabled: input.enabled === true
     }

@@ -260,6 +260,8 @@ export interface PersonaRecord {
   avatarImage: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
   model: string
+  /** 默认工作区目录（绝对路径；空串 = 不默认挂载）。绑定此角色的新对话开场即挂载，对话内可换可卸。 */
+  workspace: string
   /** 正文 = 追加进主智能体系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -299,6 +301,8 @@ export interface PersonaUpsertInput {
   description?: string
   avatar?: string
   model?: string
+  /** 可选：默认工作区目录（绝对路径；空/缺省 = 不默认挂载）。 */
+  workspace?: string
   prompt?: string
   enabled?: boolean
 }

@@ -211,8 +211,18 @@ export function PersonaEditor({
   const [name, setName] = useState(editing?.name ?? draft?.name ?? '')
   const [desc, setDesc] = useState(editing?.desc ?? draft?.desc ?? '')
   const [model, setModel] = useState(editing?.model ?? draft?.model ?? '')
+  // 默认工作区：仅编辑/新建态可设（名片草稿不带——目录只能由用户亲手在系统对话框里挑）。
+  // 非空时，绑定此角色的新对话由主进程开场即挂载（见 chat:create-session）；对话内挂/卸是会话级，不回写这里。
+  const [workspace, setWorkspace] = useState(editing?.workspace ?? '')
   const [prompt, setPrompt] = useState(editing?.prompt ?? draft?.prompt ?? '')
   const [saving, setSaving] = useState(false)
+  // 选目录走与输入框「挂载工作区」同一入口（fs.openFolder：系统对话框，选中即登记受信根）。
+  const pickWorkspace = (): void => {
+    void (async () => {
+      const r = await window.deva.fs.openFolder()
+      if (r) setWorkspace(r.path)
+    })()
+  }
 
   // 头像：初始化解析为**具体** spec，此后只处理显式值、保存也写显式值（杜绝漂移）。
   // 编辑=沿用已存（空则按 id 确定性生成，与各处显示一致）；名片=按角色名确定性生成（与聊天名片预览一致）；
@@ -294,6 +304,7 @@ export function PersonaEditor({
         // 存显式头像 spec（JSON 串）：所见即所存即所渲染。
         avatar: serializeAvatarSpec(avatar),
         model,
+        workspace: workspace.trim(),
         prompt,
         enabled: true
       }
@@ -409,6 +420,26 @@ export function PersonaEditor({
                   items={modelItems}
                   display={modelDisplay}
                 />
+              </div>
+
+              {/* 默认工作区：可空。设置后该角色的新对话开场即挂载（AGENTS.md / 项目记忆 / 相对路径基准随之生效），
+                  对话内仍可换可卸；目录失效时新对话静默按未挂载开始。 */}
+              <div className="cf-field">
+                <label className="cf-field__label">{t('cf.fWorkspace')}</label>
+                <div className="cf-editor__wsrow">
+                  <span className="cf-editor__wsrow-path" title={workspace || undefined}>
+                    {workspace || t('cf.wsNone')}
+                  </span>
+                  <button type="button" className="cf-btn" onClick={pickWorkspace}>
+                    {t('cf.wsPick')}
+                  </button>
+                  {workspace ? (
+                    <button type="button" className="cf-btn" onClick={() => setWorkspace('')}>
+                      {t('cf.wsClear')}
+                    </button>
+                  ) : null}
+                </div>
+                <span className="cf-field__hint">{t('cf.wsHint')}</span>
               </div>
 
               <div className="cf-field">

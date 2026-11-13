@@ -126,6 +126,7 @@ function personaRecToPersona(rec: PersonaRecord): Persona {
     avatar: rec.avatar,
     avatarImage: rec.avatarImage ?? '',
     model: rec.model,
+    workspace: rec.workspace ?? '',
     prompt: rec.prompt,
     scope: 'global',
     source: 'custom',
@@ -141,6 +142,7 @@ function personaToInput(p: Persona): PersonaUpsertInput {
     description: p.desc,
     avatar: p.avatar,
     model: p.model,
+    workspace: p.workspace,
     prompt: p.prompt,
     enabled: p.enabled
   }

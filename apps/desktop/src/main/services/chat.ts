@@ -44,6 +44,7 @@ import {
   type CreateTaskResult
 } from './tasks'
 import type { TaskCreateInput, TaskRecord } from './tasks-types'
+import { getPersona } from './personas'
 import { trustRoot } from './fs-guard'
 import { activeTodoList, todoUserCancelNote, todoState, type TodoState } from './todos'
 import {
@@ -510,7 +511,28 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
     'chat:create-session',
     (_e, payload: ChatCreateSessionRequest): { ok: true } => {
       const { sessionId, personaId, focusRoot, modelRef } = payload
-      ensureSession(sessionId, { personaId, focusRoot, model: modelRef })
+      // 角色默认工作区：调用方未显式挂载（focusRoot 为空）且角色配置了默认目录时，新对话开场即挂载——
+      // AGENTS.md 注入、项目私有记忆、相对路径基准随 focusRoot 全部自动生效，角色常处理同一目录的内容时省掉
+      // 每次手动挂载与「需要挂载工作区」打断。路径只认主进程自己的 persona 记录（目录由用户在编辑器经系统
+      // 对话框挑选后落盘），与 answerMount / chat:list-sessions 的落盘恢复同级别信任来源——渲染层传值不采信，
+      // fs-guard 受信根边界不放宽。目录已失效（删移/便携搬移）→ 静默按未挂载建档，角色里的路径原样保留待更新；
+      // 对话内后续挂/卸是会话级（chat:set-focus），不回写角色。
+      let root = focusRoot ?? null
+      if (!root && personaId) {
+        const ws = getPersona(personaId)?.workspace
+        if (ws) {
+          const abs = resolvePath(ws)
+          try {
+            if (statSync(abs).isDirectory()) {
+              root = abs
+              trustRoot(abs)
+            }
+          } catch {
+            /* 目录失效：静默不挂载 */
+          }
+        }
+      }
+      ensureSession(sessionId, { personaId, focusRoot: root, model: modelRef })
       saveProject(sessionId)
       return { ok: true }
     }
