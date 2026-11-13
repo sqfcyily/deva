@@ -28,6 +28,7 @@ import { registerDeliverablesIpc } from './services/deliverables'
 import { registerTasksIpc } from './services/tasks'
 import { startScheduler } from './services/scheduler'
 import { registerRemoteIpc, stopAllChannels } from './services/remote'
+import { registerChannelServerIpc, stopChannelServer } from './services/channel-server'
 import { registerUpdaterIpc } from './services/updater'
 import { registerToastIdentity } from './services/portable'
 import { integrateAppImage } from './services/appimage'
@@ -335,6 +336,9 @@ if (!app.requestSingleInstanceLock()) {
   // 远程通道 / 手机端（飞书等 IM 机器人；默认关闭，需在设置里开启并配对）。订阅会话总线，须在 chat 之后。
   registerRemoteIpc(() => mainWindow)
 
+  // 安卓客户端入站通道（局域网 HTTP + SSE；Bearer 鉴权，配对后可用）。与远程通道共用会话总线，也须在 chat 之后。
+  registerChannelServerIpc(() => mainWindow)
+
   // 检查点清扫（异步不阻塞启动）：删已不存在会话的备份目录、超 30 天的 blob 与残留临时文件
   void sweepCheckpoints(listSessions().map((m) => m.id)).catch((e) =>
     console.warn('[checkpoints] 清扫失败：', e)
@@ -427,6 +431,8 @@ app.on('before-quit', (e) => {
   }
   void disconnectAllServers()
   void stopAllChannels()
+  // 入站通道最后停（先停出站再停入站，设计 §3.5）
+  void stopChannelServer()
   disposeAllPages()
 })
 
