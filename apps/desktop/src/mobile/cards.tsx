@@ -1,20 +1,18 @@
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { WebItem } from '../shared/remote-web'
-import type { ActionValue, NoticeView, PromptView } from '../shared/remote-views'
+import type { ActionValue, PromptView } from '../shared/remote-views'
 import { t } from './link'
 
 /**
- * 记录条目的渲染：用户气泡 / 回复气泡（Markdown）/ 通知卡 / 交互卡（提问、计划、挂载、定时任务、角色）。
- * 卡片按钮的 value 由电脑端 hub 生成，这里原样回传；按钮所在记录的 id 一并带上（指令回执用完即删）。
+ * 交互卡（提问、计划、挂载、定时任务名片、角色名片）。按钮的 value 由电脑端 hub 生成，这里原样回传。
  */
 
-type Act = (id: string, value: ActionValue, form?: Record<string, string | string[]>) => Promise<void>
+export type Act = (key: string, value: ActionValue, form?: Record<string, string | string[]>) => Promise<void>
 
 /**
  * 通知 / 卡片里的文案是电脑端按「一行一项」拼的纯文本（单个换行），按 Markdown 规则会被并成一段：
- * 代码块之外的单个换行补成硬换行（行尾两个空格）。模型回复不做这个处理，按标准 Markdown 渲染。
+ * 代码块之外的单个换行补成硬换行。模型回复不做这个处理，按标准 Markdown 渲染。
  */
 function hardBreaks(text: string): string {
   const parts = text.split(/(```[\s\S]*?```)/)
@@ -31,39 +29,19 @@ export function Markdown({ text, breaks }: { text: string; breaks?: boolean }): 
   )
 }
 
-export function ItemView({ item, onAction }: { item: WebItem; onAction: Act }): React.JSX.Element {
-  switch (item.kind) {
-    case 'user':
-      return <div className="bubble bubble--user">{item.text}</div>
-    case 'reply':
-      return (
-        <div className="bubble bubble--reply">
-          <Markdown text={item.text} />
-          {item.note && <div className="note">{item.note}</div>}
-        </div>
-      )
-    case 'notice':
-      return <NoticeCard id={item.id} view={item.view} onAction={onAction} />
-    case 'prompt':
-      return <PromptCard id={item.id} view={item.view} onAction={onAction} />
-  }
-}
-
 function Buttons({
-  id,
+  k,
   buttons,
-  layout,
   onAction
 }: {
-  id: string
+  k: string
   buttons: { label: string; value: ActionValue; primary?: boolean }[]
-  layout?: 'row' | 'column'
   onAction: Act
 }): React.JSX.Element | null {
   const [busy, setBusy] = useState(false)
   if (!buttons.length) return null
   return (
-    <div className={`btns btns--${layout ?? 'row'}`}>
+    <div className="btns">
       {buttons.map((b, i) => (
         <button
           key={i}
@@ -72,7 +50,7 @@ function Buttons({
           onClick={async () => {
             setBusy(true)
             try {
-              await onAction(id, b.value)
+              await onAction(k, b.value)
             } finally {
               setBusy(false)
             }
@@ -81,16 +59,6 @@ function Buttons({
           {b.label}
         </button>
       ))}
-    </div>
-  )
-}
-
-function NoticeCard({ id, view, onAction }: { id: string; view: NoticeView; onAction: Act }): React.JSX.Element {
-  return (
-    <div className={`card card--${view.tone ?? 'info'}`}>
-      {view.title && <div className="card__title">{view.title}</div>}
-      <Markdown text={view.text} breaks />
-      <Buttons id={id} buttons={view.buttons ?? []} layout={view.buttonLayout} onAction={onAction} />
     </div>
   )
 }
@@ -120,10 +88,11 @@ function Head({ title, sub }: { title: string; sub?: string }): React.JSX.Elemen
   )
 }
 
-function PromptCard({ id, view, onAction }: { id: string; view: PromptView; onAction: Act }): React.JSX.Element {
+export function PromptCard({ view, onAction, showSession }: { view: PromptView; onAction: Act; showSession?: boolean }): React.JSX.Element {
+  const sub = showSession ? view.sessionTitle : undefined
   switch (view.kind) {
     case 'ask':
-      return <AskCard id={id} view={view} onAction={onAction} />
+      return <AskCard view={view} onAction={onAction} sub={sub} />
     case 'plan': {
       const title =
         view.state === 'open'
@@ -136,12 +105,12 @@ function PromptCard({ id, view, onAction }: { id: string; view: PromptView; onAc
                 ? '计划已忽略'
                 : '计划审阅已结束'
       return (
-        <div className={`card card--prompt${view.state === 'open' ? '' : ' is-done'}`}>
-          <Head title={title} sub={view.sessionTitle} />
+        <div className={`card${view.state === 'open' ? '' : ' is-done'}`}>
+          <Head title={title} sub={sub} />
           <Fold text={view.plan} limit={view.state === 'open' ? 1500 : 300} />
           {view.state === 'open' && (
             <Buttons
-              id={id}
+              k={view.key}
               buttons={[
                 { label: '继续完善', value: { k: 'plan', key: view.key, d: 'keep' } },
                 { label: '忽略', value: { k: 'plan', key: view.key, d: 'ignore' } },
@@ -155,15 +124,15 @@ function PromptCard({ id, view, onAction }: { id: string; view: PromptView; onAc
     }
     case 'mount':
       return (
-        <div className={`card card--prompt${view.state === 'open' ? '' : ' is-done'}`}>
-          <Head title={view.state === 'open' ? '需要挂载工作区' : '工作区挂载'} sub={view.sessionTitle} />
+        <div className={`card${view.state === 'open' ? '' : ' is-done'}`}>
+          <Head title={view.state === 'open' ? '需要挂载工作区' : '工作区挂载'} sub={sub} />
           {view.state === 'open' ? (
             <>
               <p>
                 这一步（<b>{view.tool}</b> {view.path && <code>{view.path}</code>}）需要一个工作区目录，但当前对话还没有挂载文件夹。
               </p>
               <p className="muted">挂载文件夹需要在电脑端选择；也可以先跳过，让它改用绝对路径。</p>
-              <Buttons id={id} buttons={[{ label: '暂不挂载', value: { k: 'mount', key: view.key } }]} onAction={onAction} />
+              <Buttons k={view.key} buttons={[{ label: '暂不挂载', value: { k: 'mount', key: view.key } }]} onAction={onAction} />
             </>
           ) : (
             <p className="muted">
@@ -183,11 +152,8 @@ function PromptCard({ id, view, onAction }: { id: string; view: PromptView; onAc
     case 'autotask': {
       const open = view.state === 'open'
       return (
-        <div className={`card card--prompt${open ? '' : ' is-done'}`}>
-          <Head
-            title={open ? '确认定时任务' : view.state === 'created' ? '定时任务已创建' : '已忽略这个定时任务'}
-            sub={view.sessionTitle}
-          />
+        <div className={`card${open ? '' : ' is-done'}`}>
+          <Head title={open ? '确认定时任务' : view.state === 'created' ? '定时任务已创建' : '已忽略这个定时任务'} sub={sub} />
           <div className="kv">
             <b>{view.title}</b>
             <div>
@@ -214,7 +180,7 @@ function PromptCard({ id, view, onAction }: { id: string; view: PromptView; onAc
             <>
               <p className="muted">创建后到点自动运行，运行时不会再询问你。需要改日程、身份或模型，请在电脑端的名片上编辑。</p>
               <Buttons
-                id={id}
+                k={view.key}
                 buttons={[
                   { label: '忽略', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'dismiss' } },
                   { label: '创建任务', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'create' }, primary: true }
@@ -229,8 +195,8 @@ function PromptCard({ id, view, onAction }: { id: string; view: PromptView; onAc
     case 'agent': {
       const open = view.state === 'open'
       return (
-        <div className={`card card--prompt${open ? '' : ' is-done'}`}>
-          <Head title={open ? '新角色名片' : view.state === 'accepted' ? '角色已添加' : '已拒绝这个角色'} sub={view.sessionTitle} />
+        <div className={`card${open ? '' : ' is-done'}`}>
+          <Head title={open ? '新角色名片' : view.state === 'accepted' ? '角色已添加' : '已拒绝这个角色'} sub={sub} />
           <div className="kv">
             <b>{view.name}</b>
             {view.desc && <div className="muted">{view.desc}</div>}
@@ -241,7 +207,7 @@ function PromptCard({ id, view, onAction }: { id: string; view: PromptView; onAc
             <>
               <p className="muted">头像会自动生成，之后可以在电脑端修改。</p>
               <Buttons
-                id={id}
+                k={view.key}
                 buttons={[
                   { label: '不要', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'reject' } },
                   { label: '添加角色', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'accept' }, primary: true }
@@ -262,15 +228,15 @@ type AskView = Extract<PromptView, { kind: 'ask' }>
  * 问答卡：每题按单选 / 多选列出选项，并可附一行自由文字（没有选项的题只有文字框）。
  * 表单字段名与 hub 约定一致：q{i} = 选中项（多选为数组），q{i}_text = 自由文字。
  */
-function AskCard({ id, view, onAction }: { id: string; view: AskView; onAction: Act }): React.JSX.Element {
+function AskCard({ view, onAction, sub }: { view: AskView; onAction: Act; sub?: string }): React.JSX.Element {
   const [picks, setPicks] = useState<string[][]>(() => view.questions.map(() => []))
   const [texts, setTexts] = useState<string[]>(() => view.questions.map(() => ''))
   const [busy, setBusy] = useState(false)
 
   if (view.state !== 'open')
     return (
-      <div className="card card--prompt is-done">
-        <Head title={view.state === 'answered' ? '已回答' : '问题已结束'} sub={view.sessionTitle} />
+      <div className="card is-done">
+        <Head title={view.state === 'answered' ? '已回答' : '问题已结束'} sub={sub} />
         {view.questions.map((q, n) => (
           <div key={n} className="ask__q">
             <b>
@@ -304,15 +270,15 @@ function AskCard({ id, view, onAction }: { id: string; view: AskView; onAction: 
     })
     setBusy(true)
     try {
-      await onAction(id, { k: 'ask', key: view.key }, form)
+      await onAction(view.key, { k: 'ask', key: view.key }, form)
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <div className="card card--prompt">
-      <Head title="需要你的回答" sub={view.sessionTitle} />
+    <div className="card">
+      <Head title="需要你的回答" sub={sub} />
       {view.questions.map((q, n) => {
         const labels = [...new Set(q.options.map((o) => o.label))]
         return (
@@ -359,7 +325,7 @@ function AskCard({ id, view, onAction }: { id: string; view: AskView; onAction: 
           </div>
         )
       })}
-      <div className="btns btns--row">
+      <div className="btns">
         <button className="btn btn--primary" disabled={!complete || busy} onClick={() => void submit()}>
           {t('submit')}
         </button>

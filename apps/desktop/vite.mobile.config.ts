@@ -11,6 +11,10 @@ export default defineConfig({
   root: resolve(__dirname, 'src/mobile'),
   base: './',
   publicDir: resolve(__dirname, 'src/mobile/public'),
+  resolve: {
+    // 复用渲染层的头像组件（components/humation.tsx）等。
+    alias: { '@renderer': resolve(__dirname, 'src/renderer/src') }
+  },
   plugins: [react()],
   build: {
     outDir: resolve(__dirname, 'out/mobile'),

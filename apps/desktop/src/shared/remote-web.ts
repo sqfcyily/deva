@@ -1,7 +1,10 @@
-import type { ActionValue, NoticeView, PromptView } from './remote-views'
+import type { ActionValue, PromptView } from './remote-views'
 
 /**
  * 手机网页端 ⇄ 桌面端的线上协议（JSON 帧，走 WebSocket）。
+ *
+ * 手机端是桌面 Deva 的 IM 形态：对话列表、角色（通讯录）、单个对话的历史与最终回复。对话记录的真源是
+ * 电脑上的对话文件，手机按需拉取；进行中只推「正在做什么」一行状态，回合结束再推一次对话摘要，手机据此刷新。
  *
  * 传输无关：内网直连时手机连桌面端自带的 HTTP 服务（/ws）；经中转时手机连中转、桌面端也连中转，
  * 中转只按桌面 id 原样转发帧（见 apps/relay）。两条路上跑的都是这同一套帧。
@@ -9,38 +12,103 @@ import type { ActionValue, NoticeView, PromptView } from './remote-views'
  * 鉴权：连上后第一帧必须是 hello（带长期 token）或 pair（带电脑端二维码里的一次性配对码）。
  */
 
-export const WEB_PROTOCOL_VERSION = 1
+export const WEB_PROTOCOL_VERSION = 2
 
-/** 聊天记录里的一条（桌面端按用户保存，手机端整段同步）。id 单调递增，原地更新同一 id 即覆盖。 */
-export type WebItem =
-  | { id: string; at: number; kind: 'user'; text: string }
-  | { id: string; at: number; kind: 'reply'; text: string; note?: string }
-  | { id: string; at: number; kind: 'notice'; view: NoticeView }
-  | { id: string; at: number; kind: 'prompt'; view: PromptView }
+/** 角色（通讯录里的一行）。avatar = Humation 参数（JSON 串，空 = 按 id 生成）；avatarImage = 上传的图片 data URI。 */
+export interface WebPersona {
+  id: string
+  name: string
+  description: string
+  model: string
+  avatar: string
+  avatarImage: string
+  enabled: boolean
+}
+
+/** 对话（列表里的一行）。busy = 正在处理；waiting = 停下来等你在卡片上决定；status = 进行中的一行提示。 */
+export interface WebSession {
+  id: string
+  title: string
+  personaId?: string
+  createdAt: number
+  updatedAt: number
+  /** 最近一条消息的摘要（列表第二行）。 */
+  preview: string
+  /** 最近一条是谁说的（列表里给用户消息加「我：」）。 */
+  previewRole?: 'user' | 'assistant'
+  busy: boolean
+  waiting: boolean
+  status?: string
+  /** task = 定时任务的对话（闹钟头像）。 */
+  kind: 'chat' | 'task'
+  focusRoot?: string | null
+}
+
+/** 对话里的一条消息（由桌面端的展示投影归约而来：只有正文，工具调用与过程不下发）。id = 在对话里的序号。 */
+export type WebMessage =
+  | { id: string; role: 'user'; text: string; attachments?: string[]; notify?: boolean }
+  | { id: string; role: 'assistant'; text: string; notes?: string[]; durationMs?: number }
+
+/** 需要你决定的交互卡（提问 / 计划 / 挂载 / 定时任务名片 / 角色名片），按 key 原地更新。 */
+export interface WebPrompt {
+  view: PromptView
+  at: number
+}
+
+/** 一条通知（定时任务跑完 / 自动暂停 …），可关联到某个对话。 */
+export interface WebNotice {
+  id: string
+  at: number
+  title?: string
+  text: string
+  tone?: 'info' | 'success' | 'warning' | 'error'
+  sessionId?: string
+}
 
 export type WebClientFrame =
   | { t: 'hello'; v: number; token: string }
   | { t: 'pair'; v: number; code: string; name?: string }
-  /** cid = 客户端临时 id，服务端用 sent 帧回对应的记录 id。 */
-  | { t: 'send'; cid: string; text: string }
-  /** id = 按钮所在记录的 id；rid = 请求 id，result 帧带回。 */
-  | { t: 'action'; rid: string; id: string; value: ActionValue; form?: Record<string, string | string[]> }
   | { t: 'ping' }
+  /** 重新拉对话列表与角色列表。 */
+  | { t: 'refresh' }
+  /** 某对话的历史：before = 只要序号小于它的（往前翻页），缺省取最新一页。 */
+  | { t: 'history'; sid: string; before?: number; limit?: number }
+  /** cid = 客户端临时 id，服务端用 sent 帧回结果。进行中的对话会作为插入送达。 */
+  | { t: 'send'; sid: string; text: string; cid: string }
+  | { t: 'stop'; sid: string }
+  /** 新建对话（按角色）；rid 用 created 帧回。 */
+  | { t: 'new'; rid: string; personaId?: string }
+  /** 交互卡上的动作（key = 卡片 key；rid 用 result 帧回）。 */
+  | { t: 'action'; rid: string; key: string; value: ActionValue; form?: Record<string, string | string[]> }
 
 export type WebServerFrame =
-  /** hello 成功：当前用户、机器人名、最近的记录（整段覆盖本地）与「正在输入」状态。 */
-  | { t: 'ok'; v: number; user: { id: string; name?: string }; bot: { name: string }; items: WebItem[]; typing: boolean }
+  /** hello 成功：当前用户、机器人与电脑名、角色、对话列表、未决的交互卡。 */
+  | {
+      t: 'ok'
+      v: number
+      user: { id: string; name?: string }
+      bot: { name: string; computer: string }
+      personas: WebPersona[]
+      sessions: WebSession[]
+      prompts: WebPrompt[]
+    }
   /** 配对成功：拿到长期 token，客户端存好后再发 hello。 */
   | { t: 'paired'; token: string }
   | { t: 'err'; code: 'unauthorized' | 'pair' | 'version' | 'bad_request'; message: string }
-  | { t: 'item'; item: WebItem }
-  | { t: 'remove'; id: string }
-  | { t: 'typing'; on: boolean }
-  | { t: 'sent'; cid: string; id: string }
-  | { t: 'result'; rid: string; ok: boolean; message: string }
+  | { t: 'pong' }
   /** 中转发出：这台电脑的 Deva 没连上中转。 */
   | { t: 'offline' }
-  | { t: 'pong' }
+  | { t: 'sessions'; list: WebSession[] }
+  | { t: 'session'; s: WebSession }
+  | { t: 'session_gone'; sid: string }
+  | { t: 'personas'; list: WebPersona[] }
+  /** start = 第一条的序号，total = 对话里的消息总数（messages[i].id = String(start + i)）。 */
+  | { t: 'history'; sid: string; messages: WebMessage[]; start: number; total: number }
+  | { t: 'sent'; cid: string; sid: string; ok: boolean; message?: string }
+  | { t: 'created'; rid: string; sid?: string; error?: string }
+  | { t: 'prompt'; p: WebPrompt }
+  | { t: 'notice'; n: WebNotice }
+  | { t: 'result'; rid: string; ok: boolean; message: string }
 
 // ───────── 桌面端 ⇄ 中转 ─────────
 

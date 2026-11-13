@@ -1,23 +1,72 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { WebItem } from '../shared/remote-web'
+import type { WebMessage, WebNotice, WebPersona, WebPrompt, WebSession } from '../shared/remote-web'
 import type { ActionValue } from '../shared/remote-views'
-import { Link, t, type LinkState, type Snapshot } from './link'
-import { ItemView, Markdown } from './cards'
+import { Link, t, type Hello, type LinkState } from './link'
+import { ChatList, NewChatSheet } from './chats'
+import { Contacts, PersonaProfile } from './contacts'
+import { ChatPage } from './chat'
+import { MeTab } from './me'
 
 /**
- * 手机网页端主界面：像聊天软件一样的一列消息 + 底部输入框。
- * 记录由电脑端保存，每次连上整段同步（见 link.ts）；本地只维护一份数组，按 id 覆盖 / 删除。
+ * 手机网页端：三个 tab（对话 / 角色 / 我）的 IM 形态。对话与角色列表来自电脑端，按帧增量更新；
+ * 打开某个对话时按需拉历史。页面内导航用一层「栈」：列表 → 对话 / 角色资料，配合 history 让系统返回键可用。
  */
+
+export type Tab = 'chats' | 'contacts' | 'me'
+
+export interface Route {
+  tab: Tab
+  /** 打开的对话。 */
+  chat?: string
+  /** 打开的角色资料。 */
+  profile?: string
+  /** 只看定时任务的对话列表（从通讯录的入口进来）。 */
+  tasks?: boolean
+}
 
 type Toast = { id: number; text: string; ok: boolean }
 
+export interface Store {
+  link: Link
+  sessions: Map<string, WebSession>
+  personas: Map<string, WebPersona>
+  prompts: Map<string, WebPrompt>
+  seen: Map<string, number>
+  markSeen(sid: string): void
+  act(key: string, value: ActionValue, form?: Record<string, string | string[]>): Promise<void>
+  open(r: Partial<Route>): void
+  back(): void
+  toast(text: string, ok?: boolean): void
+}
+
+const SEEN_KEY = `deva.web.seen:${location.host}`
+
+function loadSeen(): Map<string, number> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SEEN_KEY) ?? '{}') as Record<string, number>
+    return new Map(Object.entries(raw))
+  } catch {
+    return new Map()
+  }
+}
+
 export function App(): React.JSX.Element {
   const [state, setState] = useState<LinkState>({ kind: 'connecting' })
-  const [snap, setSnap] = useState<Snapshot | null>(null)
-  const [items, setItems] = useState<WebItem[]>([])
-  const [typing, setTyping] = useState(false)
+  const [hello, setHello] = useState<Hello | null>(null)
+  const [sessions, setSessions] = useState<Map<string, WebSession>>(new Map())
+  const [personas, setPersonas] = useState<Map<string, WebPersona>>(new Map())
+  const [prompts, setPrompts] = useState<Map<string, WebPrompt>>(new Map())
+  const [seen, setSeen] = useState<Map<string, number>>(loadSeen)
+  const [route, setRoute] = useState<Route>({ tab: 'chats' })
+  const [sheet, setSheet] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [notices, setNotices] = useState<WebNotice[]>([])
+  const [hist, setHist] = useState<Map<string, { messages: WebMessage[]; start: number; total: number }>>(new Map())
   const linkRef = useRef<Link | null>(null)
+  const routeRef = useRef(route)
+  routeRef.current = route
+  const sessionsRef = useRef(sessions)
+  sessionsRef.current = sessions
 
   const toast = useCallback((text: string, ok = true) => {
     const id = Date.now() + Math.random()
@@ -25,27 +74,80 @@ export function App(): React.JSX.Element {
     window.setTimeout(() => setToasts((l) => l.filter((x) => x.id !== id)), 2600)
   }, [])
 
+  // 系统通知：回复完成 / 需要你决定时，页面不在前台才弹。
+  const notify = useCallback((title: string, body: string) => {
+    try {
+      if (localStorage.getItem('deva.web.notify') !== '1') return
+      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+      if (document.visibilityState === 'visible') return
+      new Notification(title, { body, tag: title })
+    } catch {
+      /* 不支持通知 */
+    }
+  }, [])
+
   useEffect(() => {
     const link = new Link({
       onState: setState,
-      onSnapshot: (s) => {
-        setSnap(s)
-        setItems(s.items)
-        setTyping(s.typing)
+      onHello: (h) => {
+        setHello(h)
+        setSessions(new Map(h.sessions.map((s) => [s.id, s])))
+        setPrompts(new Map(h.prompts.map((p) => [p.view.key, p])))
       },
-      onItem: (item) =>
-        setItems((list) => {
-          const i = list.findIndex((x) => x.id === item.id)
-          if (i >= 0) {
-            const next = list.slice()
-            next[i] = item
-            return next
-          }
-          return [...list, item]
+      onSessions: (list) => setSessions(new Map(list.map((s) => [s.id, s]))),
+      onSession: (s) =>
+        setSessions((m) => {
+          const prev = m.get(s.id)
+          const next = new Map(m)
+          next.set(s.id, s)
+          if (prev?.busy && !s.busy) notify(s.title, s.preview)
+          if (!prev?.waiting && s.waiting) notify(s.title, t('waiting'))
+          return next
         }),
-      onRemove: (id) => setItems((list) => list.filter((x) => x.id !== id)),
-      onTyping: setTyping,
-      onSent: () => undefined
+      onSessionGone: (sid) =>
+        setSessions((m) => {
+          const next = new Map(m)
+          next.delete(sid)
+          return next
+        }),
+      onPersonas: (list) => setPersonas(new Map(list.map((p) => [p.id, p]))),
+      onHistory: (sid, messages, start, total) =>
+        setHist((m) => {
+          const next = new Map(m)
+          const cur = m.get(sid)
+          // 往前翻页：拼到前面；否则（最新一页）整段覆盖尾部，保留已有的更早部分。
+          if (cur && start + messages.length <= cur.start) next.set(sid, { messages: [...messages, ...cur.messages], start, total })
+          else if (cur && cur.start < start) {
+            const keep = cur.messages.filter((x) => Number(x.id) < start)
+            next.set(sid, { messages: [...keep, ...messages], start: cur.start, total })
+          } else next.set(sid, { messages, start, total })
+          return next
+        }),
+      onPrompt: (p) =>
+        setPrompts((m) => {
+          const next = new Map(m)
+          if (p.view.state === 'open') next.set(p.view.key, p)
+          else {
+            next.set(p.view.key, p)
+            // 已决议的卡片留一会儿让人看到结果，然后收起。
+            window.setTimeout(
+              () =>
+                setPrompts((m2) => {
+                  if (m2.get(p.view.key)?.view.state === 'open') return m2
+                  const n2 = new Map(m2)
+                  n2.delete(p.view.key)
+                  return n2
+                }),
+              4000
+            )
+          }
+          return next
+        }),
+      onNotice: (n) => {
+        setNotices((l) => [...l.slice(-19), n])
+        notify(n.title ?? 'Deva', n.text)
+        if (!n.sessionId || routeRef.current.chat !== n.sessionId) toast(n.title ? `${n.title}：${n.text}` : n.text, n.tone !== 'error')
+      }
     })
     linkRef.current = link
     link.start()
@@ -53,60 +155,135 @@ export function App(): React.JSX.Element {
       link.stop()
       linkRef.current = null
     }
+  }, [notify, toast])
+
+  // 系统返回键：出栈。
+  useEffect(() => {
+    const onPop = (): void => setRoute((r) => (r.chat || r.profile || r.tasks ? { tab: r.tab } : r))
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  const send = useCallback((text: string) => {
-    const body = text.trim()
-    if (!body || !linkRef.current) return false
-    linkRef.current.sendText(body)
-    return true
+  const open = useCallback((r: Partial<Route>) => {
+    setRoute((cur) => {
+      const next: Route = { tab: r.tab ?? cur.tab, chat: r.chat, profile: r.profile, tasks: r.tasks }
+      if (next.chat || next.profile || next.tasks) history.pushState({ deva: 1 }, '')
+      return next
+    })
+    setSheet(false)
+  }, [])
+
+  const back = useCallback(() => {
+    if (history.state?.deva) history.back()
+    else setRoute((r) => ({ tab: r.tab }))
+  }, [])
+
+  const markSeen = useCallback((sid: string) => {
+    const s = sessionsRef.current.get(sid)
+    const at = s?.updatedAt ?? Date.now()
+    setSeen((m) => {
+      if ((m.get(sid) ?? 0) >= at) return m
+      const next = new Map(m)
+      next.set(sid, at)
+      try {
+        localStorage.setItem(SEEN_KEY, JSON.stringify(Object.fromEntries(next)))
+      } catch {
+        /* ignore */
+      }
+      return next
+    })
   }, [])
 
   const act = useCallback(
-    async (id: string, value: ActionValue, form?: Record<string, string | string[]>) => {
+    async (key: string, value: ActionValue, form?: Record<string, string | string[]>) => {
       const link = linkRef.current
       if (!link) return
-      const r = await link.action(id, value, form)
+      const r = await link.action(key, value, form)
       toast(r.message, r.ok)
     },
     [toast]
   )
 
-  const viaRelay = linkRef.current?.viaRelay ?? false
-  const ready = state.kind === 'ready'
+  const store = useMemo<Store | null>(
+    () =>
+      linkRef.current
+        ? { link: linkRef.current, sessions, personas, prompts, seen, markSeen, act, open, back, toast }
+        : null,
+    [sessions, personas, prompts, seen, markSeen, act, open, back, toast]
+  )
+
+  if (state.kind === 'pair') return <PairScreen message={state.message} onSubmit={(code) => linkRef.current?.pair(code)} />
+  if (!store || !hello)
+    return (
+      <div className="app">
+        <div className="splash">
+          <div className="splash__logo">D</div>
+          <div className="muted">{state.kind === 'error' ? state.message : state.kind === 'offline' ? t('offline') : t('connecting')}</div>
+          {state.kind === 'offline' && <div className="muted small">{t('offlineHint')}</div>}
+        </div>
+      </div>
+    )
+
+  const banner =
+    state.kind === 'offline' ? (
+      <div className="banner is-offline">
+        <b>{t('offline')}</b>
+        <span>{t('offlineHint')}</span>
+      </div>
+    ) : state.kind === 'error' ? (
+      <div className="banner is-error">
+        <b>{t('errorTitle')}</b>
+        <span>{state.message}</span>
+      </div>
+    ) : state.kind === 'connecting' ? (
+      <div className="banner">{t('disconnected')}</div>
+    ) : null
+
+  let page: React.JSX.Element
+  if (route.chat) {
+    const s = sessions.get(route.chat)
+    page = (
+      <ChatPage
+        store={store}
+        sid={route.chat}
+        session={s}
+        history={hist.get(route.chat)}
+        ready={state.kind === 'ready'}
+        banner={banner}
+      />
+    )
+  } else if (route.profile) {
+    page = <PersonaProfile store={store} personaId={route.profile} />
+  } else {
+    const body =
+      route.tab === 'chats' || route.tasks ? (
+        <ChatList store={store} tasksOnly={!!route.tasks} onNew={() => setSheet(true)} />
+      ) : route.tab === 'contacts' ? (
+        <Contacts store={store} />
+      ) : (
+        <MeTab store={store} hello={hello} state={state} notices={notices} />
+      )
+    page = (
+      <>
+        {body}
+        {banner}
+        <nav className="tabs">
+          {(['chats', 'contacts', 'me'] as Tab[]).map((tab) => (
+            <button key={tab} className={`tab${route.tab === tab ? ' is-on' : ''}`} onClick={() => setRoute({ tab })}>
+              <TabIcon tab={tab} />
+              {t(tab === 'chats' ? 'tabChats' : tab === 'contacts' ? 'tabContacts' : 'tabMe')}
+              {tab === 'chats' && <Badge sessions={sessions} seen={seen} />}
+            </button>
+          ))}
+        </nav>
+      </>
+    )
+  }
 
   return (
     <div className="app">
-      <header className="top">
-        <div className="top__name">{snap?.bot.name ?? 'Deva'}</div>
-        <div className={`top__state is-${state.kind}`}>
-          <span className="dot" />
-          {state.kind === 'ready' ? t('ready') : state.kind === 'offline' ? t('offline') : state.kind === 'connecting' ? t('connecting') : state.kind === 'pair' ? '' : t('errorTitle')}
-        </div>
-      </header>
-
-      {state.kind === 'pair' ? (
-        <PairScreen message={state.message} onSubmit={(code) => linkRef.current?.pair(code)} />
-      ) : (
-        <>
-          <Timeline items={items} typing={typing} onAction={act} />
-          {state.kind === 'offline' && (
-            <div className="banner is-offline">
-              <b>{t('offline')}</b>
-              <span>{t('offlineHint')}</span>
-            </div>
-          )}
-          {state.kind === 'error' && (
-            <div className="banner is-error">
-              <b>{t('errorTitle')}</b>
-              <span>{state.message}</span>
-            </div>
-          )}
-          {state.kind === 'connecting' && snap && <div className="banner">{t('disconnected')}</div>}
-          <Composer disabled={!ready} onSend={send} viaRelay={viaRelay} />
-        </>
-      )}
-
+      {page}
+      {sheet && <NewChatSheet store={store} onClose={() => setSheet(false)} />}
       <div className="toasts" aria-live="polite">
         {toasts.map((x) => (
           <div key={x.id} className={`toast${x.ok ? '' : ' is-error'}`}>
@@ -118,173 +295,76 @@ export function App(): React.JSX.Element {
   )
 }
 
+function Badge({ sessions, seen }: { sessions: Map<string, WebSession>; seen: Map<string, number> }): React.JSX.Element | null {
+  let n = 0
+  for (const s of sessions.values()) if (s.waiting || (s.updatedAt > (seen.get(s.id) ?? 0) && s.previewRole === 'assistant')) n++
+  return n ? <span className="badge">{n > 99 ? '99+' : n}</span> : null
+}
+
+function TabIcon({ tab }: { tab: Tab }): React.JSX.Element {
+  if (tab === 'chats')
+    return (
+      <svg className="ic" viewBox="0 0 24 24">
+        <path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12z" />
+      </svg>
+    )
+  if (tab === 'contacts')
+    return (
+      <svg className="ic" viewBox="0 0 24 24">
+        <circle cx="9" cy="8" r="4" />
+        <path d="M2 21a7 7 0 0 1 14 0M17 4a4 4 0 0 1 0 8M22 21a7 7 0 0 0-5-6.7" />
+      </svg>
+    )
+  return (
+    <svg className="ic" viewBox="0 0 24 24">
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21a8 8 0 0 1 16 0" />
+    </svg>
+  )
+}
+
 function PairScreen({ message, onSubmit }: { message?: string; onSubmit: (code: string) => void }): React.JSX.Element {
   const [code, setCode] = useState('')
   const valid = /^\d{6}$/.test(code)
   return (
-    <form
-      className="pair"
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (valid) onSubmit(code)
-      }}
-    >
-      <div className="pair__logo">D</div>
-      <h1 className="pair__title">{t('pairTitle')}</h1>
-      <p className="pair__lead">{t('pairLead')}</p>
-      <input
-        className="pair__input"
-        inputMode="numeric"
-        pattern="\d*"
-        maxLength={6}
-        autoComplete="one-time-code"
-        placeholder={t('pairPlaceholder')}
-        value={code}
-        onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-      />
-      {message && <div className="pair__error">{message}</div>}
-      <button className="btn btn--primary pair__btn" type="submit" disabled={!valid}>
-        {t('pairSubmit')}
-      </button>
-    </form>
-  )
-}
-
-/** 相邻两条相隔超过这个时长就插一行时间。 */
-const TIME_GAP_MS = 5 * 60_000
-
-function Timeline({
-  items,
-  typing,
-  onAction
-}: {
-  items: WebItem[]
-  typing: boolean
-  onAction: (id: string, value: ActionValue, form?: Record<string, string | string[]>) => Promise<void>
-}): React.JSX.Element {
-  const ref = useRef<HTMLDivElement>(null)
-  const stick = useRef(true)
-
-  // 用户没有往上翻时，新消息来了自动贴底。
-  const onScroll = (): void => {
-    const el = ref.current
-    if (!el) return
-    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  }
-  const lastId = items[items.length - 1]?.id
-  useEffect(() => {
-    const el = ref.current
-    if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [lastId, typing, items])
-
-  const rows = useMemo(() => {
-    const out: { item: WebItem; time?: string }[] = []
-    let prev = 0
-    for (const item of items) {
-      const gap = item.at - prev > TIME_GAP_MS
-      out.push({ item, time: gap ? fmtTime(item.at) : undefined })
-      prev = item.at
-    }
-    return out
-  }, [items])
-
-  return (
-    <div className="timeline" ref={ref} onScroll={onScroll}>
-      {items.length === 0 && !typing && <div className="empty">{t('empty')}</div>}
-      {rows.map(({ item, time }) => (
-        <div key={item.id} className={`row row--${item.kind}`}>
-          {time && <div className="time">{time}</div>}
-          <ItemView item={item} onAction={onAction} />
-        </div>
-      ))}
-      {typing && (
-        <div className="row row--reply">
-          <div className="bubble bubble--typing" aria-label={t('typing')}>
-            <span />
-            <span />
-            <span />
-          </div>
-        </div>
-      )}
-      <div className="timeline__pad" />
+    <div className="app">
+      <form
+        className="pair"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (valid) onSubmit(code)
+        }}
+      >
+        <div className="splash__logo">D</div>
+        <h1 className="pair__title">{t('pairTitle')}</h1>
+        <p className="pair__lead">{t('pairLead')}</p>
+        <input
+          id="pair-code"
+          className="pair__input"
+          inputMode="numeric"
+          pattern="\d*"
+          maxLength={6}
+          autoComplete="one-time-code"
+          placeholder={t('pairPlaceholder')}
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+        />
+        {message && <div className="pair__error">{message}</div>}
+        <button className="btn btn--primary pair__btn" type="submit" disabled={!valid}>
+          {t('pairSubmit')}
+        </button>
+      </form>
     </div>
   )
 }
 
-function fmtTime(at: number): string {
+/** 列表里的时间：今天只显示时分，昨天写「昨天」，更早写月日。 */
+export function fmtListTime(at: number): string {
   const d = new Date(at)
   const now = new Date()
-  const sameDay = d.toDateString() === now.toDateString()
-  const hm = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-  return sameDay ? hm : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${hm}`
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  const y = new Date(now)
+  y.setDate(now.getDate() - 1)
+  if (d.toDateString() === y.toDateString()) return t('yesterday')
+  return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
 }
-
-const QUICK: { label: () => string; cmd: string }[] = [
-  { label: () => t('cmdNew'), cmd: '/new' },
-  { label: () => t('cmdList'), cmd: '/list' },
-  { label: () => t('cmdStop'), cmd: '/stop' },
-  { label: () => t('cmdStatus'), cmd: '/status' }
-]
-
-function Composer({
-  disabled,
-  onSend
-}: {
-  disabled: boolean
-  onSend: (text: string) => boolean
-  viaRelay: boolean
-}): React.JSX.Element {
-  const [text, setText] = useState('')
-  const ta = useRef<HTMLTextAreaElement>(null)
-
-  // 输入框随内容长高（最多约 6 行）。
-  useEffect(() => {
-    const el = ta.current
-    if (!el) return
-    el.style.height = '0px'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-  }, [text])
-
-  const submit = (): void => {
-    if (disabled) return
-    if (onSend(text)) setText('')
-  }
-
-  return (
-    <div className="composer">
-      <div className="quick">
-        {QUICK.map((q) => (
-          <button key={q.cmd} className="chip" disabled={disabled} onClick={() => onSend(q.cmd)}>
-            {q.label()}
-          </button>
-        ))}
-      </div>
-      <div className="composer__row">
-        <textarea
-          ref={ta}
-          className="composer__input"
-          rows={1}
-          placeholder={t('composer')}
-          value={text}
-          disabled={disabled}
-          enterKeyHint="send"
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            // 桌面浏览器里 Enter 发送、Shift+Enter 换行；手机键盘的 Enter 通常是换行，用按钮发。
-            if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-        />
-        <button className="composer__send" disabled={disabled || !text.trim()} onClick={submit} aria-label={t('send')}>
-          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden>
-            <path d="M3 11.5 20 4l-4 16-4.5-6.5L3 11.5z" fill="currentColor" />
-          </svg>
-        </button>
-      </div>
-    </div>
-  )
-}
-
-export { Markdown }

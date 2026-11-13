@@ -44,6 +44,7 @@ export type PromptView =
   | {
       kind: 'ask'
       key: string
+      sessionId: string
       sessionTitle: string
       questions: AskQuestion[]
       state: 'open' | 'answered' | 'cancelled'
@@ -52,6 +53,7 @@ export type PromptView =
   | {
       kind: 'plan'
       key: string
+      sessionId: string
       sessionTitle: string
       plan: string
       state: 'open' | 'approve' | 'keep' | 'ignore' | 'cancelled'
@@ -59,6 +61,7 @@ export type PromptView =
   | {
       kind: 'mount'
       key: string
+      sessionId: string
       sessionTitle: string
       tool: string
       path: string
@@ -103,6 +106,8 @@ export interface ReplyView {
 export interface NoticeView {
   title?: string
   text: string
+  /** 关联的对话（手机网页端把通知挂到该对话上；IM 适配器不用）。 */
+  sessionId?: string
   tone?: 'info' | 'success' | 'warning' | 'error'
   buttons?: { label: string; value: ActionValue; primary?: boolean }[]
   /** row = 按钮横排一行（少量快捷动作）；column = 每个按钮独占一行、撑满宽度（列表选择）。 */

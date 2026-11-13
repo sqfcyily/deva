@@ -1,9 +1,7 @@
 import { ipcMain, type BrowserWindow } from 'electron'
 import { randomBytes, randomInt } from 'node:crypto'
-import { join } from 'node:path'
 import QRCode from 'qrcode'
 import { isEn } from '../../locale'
-import { getDevaHome } from '../config'
 import { deleteSecretsByPrefix, getSecret, setSecret } from '../secrets'
 import { FeishuAdapter, fetchFeishuBotName } from './feishu'
 import { startFeishuScan } from './feishu-onboard'
@@ -73,7 +71,6 @@ const ADAPTERS: Record<Platform, (bot: BotConfig) => Promise<RemoteAdapter | str
       port: w.port,
       lan: w.lan,
       relay: { enabled: w.relay.enabled, url: w.relay.url, deskId: w.deskId, key },
-      logFile: join(getDevaHome(), 'remote', `web-${bot.id}.json`),
       botName: () => getBot(bot.id)?.name || 'Deva'
     })
     webAdapters.set(bot.id, adapter)
