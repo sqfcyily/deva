@@ -22,7 +22,7 @@ import { AUTO_SHAPE, legacyAutoShape } from '../../shared/avatar-shape'
  *
  * 定位（对标 ChatGPT「自定义指令」/ 人格 profile）：每条 persona 是一段命名的**附加系统提示词**
  * （性格、语气、行文风格、偏好等）。可多条并存、独立启停；**已启用**的会在每轮对话前**追加**进
- * 主智能体系统提示词（见 chat.ts `systemPrompt`）。与 skill/subagent 的启停模型一致（叠加，非单选）。
+ * 主智能体系统提示词（见 chat-prompts.ts `systemPrompt`）。与 skill/subagent 的启停模型一致（叠加，非单选）。
  *
  * 设计（照 agents.ts 裁剪，但更简单：**无 tools**——角色不收窄工具，全部工具按需可用）：
  * - **身份 = 文件名去扩展名（id），显示名 = frontmatter `name`**。文件名恒定不改（改显示名只重写

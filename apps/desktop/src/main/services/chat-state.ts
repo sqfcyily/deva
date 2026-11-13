@@ -12,13 +12,8 @@ import {
 } from '../providers/types'
 import { getPersona, resolvePersonaId } from './personas'
 import { notifyNeedsInput, type PendingInput } from './reply-notify'
-import {
-  getSession, type StoredNotice,
-  type StoredSession
-} from './chat-store'
-import {
-  gcBlobs, type CheckpointRec, type UndoFile
-} from './checkpoints'
+import { getSession, type StoredNotice, type StoredSession } from './chat-store'
+import { gcBlobs, type CheckpointRec, type UndoFile } from './checkpoints'
 
 /** 计划审阅的结果（PlanResponse 去掉键，feedback 已清洗：仅 keep 且非空时才有）。 */
 export type PlanVerdict = { decision: 'approve' | 'keep' | 'ignore'; feedback?: string }

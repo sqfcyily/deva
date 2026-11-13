@@ -13,17 +13,12 @@ import {
   deferTool,
   fitToolSearch
 } from './tool-search'
-import {
-  DEFERRED_MEMBER_TOOLS, mainMemberTools, type MemberRef
-} from './members'
+import { DEFERRED_MEMBER_TOOLS, mainMemberTools, type MemberRef } from './members'
 import {
   SUBAGENT_EXCLUDED
 } from './tool-catalog'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
-import {
-  GENERAL_SUBAGENT, subagentSummaries,
-  type SubagentDef
-} from './subagents'
+import { GENERAL_SUBAGENT, subagentSummaries, type SubagentDef } from './subagents'
 import {
   HANDOFF_TOOL
 } from './handoff'

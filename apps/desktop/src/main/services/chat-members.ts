@@ -7,21 +7,21 @@ import type {
 } from '../../shared/chat-protocol'
 import { publishSessionsChanged } from './chat-bus'
 import { statSync } from 'node:fs'
-import {
-  type ContentPart, type StopReason
-} from '../providers/types'
-import {
-  memberAddedRecord, type MemberListingItem
-} from './listing'
+import { type ContentPart, type StopReason } from '../providers/types'
+import { memberAddedRecord, type MemberListingItem } from './listing'
 import {
   MAX_MEMBERS,
-  MEMBER_NOTICE_TAG, NO_FOLDER,
+  MEMBER_NOTICE_TAG,
+  NO_FOLDER,
   activeMembers,
   buildTaskMessage,
   findMember,
   lastDirectUserText,
-  lastReplyText, readMainPage,
-  readMainRound, recentMainContext, resolveMemberFolder,
+  lastReplyText,
+  readMainPage,
+  readMainRound,
+  recentMainContext,
+  resolveMemberFolder,
   rootLabel,
   type MemberProgressGroup,
   type MemberRef,
@@ -31,10 +31,7 @@ import { NEW_MEMBER_TOKENS } from '../../shared/mention'
 import { withoutQuotes } from '../../shared/quote'
 import { DEFAULT_PERSONA_ID, getPersona, listPersonas, resolvePersonaId } from './personas'
 import { notifyReplyDone } from './reply-notify'
-import {
-  ensureSession,
-  getSession, save as saveProject, type StoredSession
-} from './chat-store'
+import { ensureSession, getSession, save as saveProject, type StoredSession } from './chat-store'
 import { isEn } from '../locale'
 import {
   browserHasHandoff

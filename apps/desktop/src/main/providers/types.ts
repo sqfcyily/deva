@@ -157,7 +157,7 @@ export type StreamEvent =
   | { type: 'tool_call'; id: string; name: string; args: unknown }
   /**
    * 参数没能完整解析的工具调用：参数原文残缺、不可执行，cause 说明原因（见 BrokenCallCause）。
-   * 循环把它记成一次失败的工具调用，按原因回灌纠正提示（见 chat.ts runAgentLoop）。
+   * 循环把它记成一次失败的工具调用，按原因回灌纠正提示（见 agent-loop.ts runAgentLoop）。
    */
   | {
       type: 'tool_call_truncated'

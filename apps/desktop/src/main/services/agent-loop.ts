@@ -1,9 +1,7 @@
 /**
  * agent 循环：调模型、执行工具、回灌结果，直到模型收尾；中途的提问 / 计划审阅 / 挂载请求在这里等用户回应。
  */
-import type {
-  AskQuestion, ChatModelConfig
-} from '../../shared/chat-protocol'
+import type { AskQuestion, ChatModelConfig } from '../../shared/chat-protocol'
 import { randomUUID } from 'node:crypto'
 import { streamChat } from '../providers'
 import {
@@ -14,38 +12,35 @@ import {
   type StopReason,
   type ToolSpec
 } from '../providers/types'
-import {
-  OUTPUT_BUDGET_SAFE,
-  OUTPUT_BUDGET_WIDE, type ContextOverflow
-} from '../../shared/context'
+import { OUTPUT_BUDGET_SAFE, OUTPUT_BUDGET_WIDE, type ContextOverflow } from '../../shared/context'
 import { REPEAT_STOP, REPEAT_WARN } from '../../shared/limits'
 import {
   executeTool,
   isMcpTool,
   needsWorkspaceMount,
-  toolCategory, type ToolContext,
+  toolCategory,
+  type ToolContext,
   type ToolResult
 } from './tools'
 import { enabledSkillSummaries, loadSkillInstructionsByName } from './skills'
 import {
-  attachListing, memberListingPart,
+  attachListing,
+  memberListingPart,
   memoryListingPart,
   skillListingPart,
   type MemberListingItem
 } from './listing'
 import {
   TOOL_SEARCH,
-  USAGE_SUMMARY, runToolSearch,
+  USAGE_SUMMARY,
+  runToolSearch,
   searchedNames,
   skillToolUsages,
   unknownUsages,
   usageGateResult,
   usageListingPart
 } from './tool-search'
-import {
-  DEFERRED_MEMBER_TOOLS,
-  MAIN_MEMBER_TOOLS, MEMBER_SIDE_TOOLS
-} from './members'
+import { DEFERRED_MEMBER_TOOLS, MAIN_MEMBER_TOOLS, MEMBER_SIDE_TOOLS } from './members'
 import {
   PARALLEL_READ_TOOLS,
   SUBAGENT_EXCLUDED
@@ -66,15 +61,14 @@ import {
   pruneSubagents,
   removeSessionSubagents,
   saveSubagent,
-  setSubagentBusy, type SubagentRecord
+  setSubagentBusy,
+  type SubagentRecord
 } from './subagent-store'
 import {
   modelOverrides
 } from './model-resolve'
 import { sealedDecision } from './sealed'
-import {
-  HANDOFF_TOOL, stubLongInforms
-} from './handoff'
+import { HANDOFF_TOOL, stubLongInforms } from './handoff'
 import { dispatchMcpTool } from './mcp'
 import {
   getSession
@@ -84,11 +78,13 @@ import { isEn } from '../locale'
 import {
   markBrowserTurnEnded
 } from './browser'
+import { type Recorder, type WriteSnap } from './checkpoints'
 import {
-  type Recorder, type WriteSnap
-} from './checkpoints'
-import {
-  compactionWorthRetry, insertText, modelMessages, needsCompactionMidTurn, rememberContextLimit,
+  compactionWorthRetry,
+  insertText,
+  modelMessages,
+  needsCompactionMidTurn,
+  rememberContextLimit,
   rememberOutputBudget
 } from './compaction'
 import { trailingRepetition, watchRepetition } from './repetition'
@@ -111,7 +107,8 @@ import {
   degenerateMessage,
   callFingerprint,
   EMPTY_NUDGE,
-  MAX_TRUNCATED_STREAK, truncatedCallInput,
+  MAX_TRUNCATED_STREAK,
+  truncatedCallInput,
   BROKEN_CALL_LABEL,
   truncatedCallResult,
   delay

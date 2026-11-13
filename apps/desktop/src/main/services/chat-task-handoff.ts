@@ -12,26 +12,14 @@ import {
 import {
   type MemberListingItem
 } from './listing'
-import {
-  MEMBER_NOTICE_TAG, NO_FOLDER, buildTaskMessage,
-  findMember
-} from './members'
-import {
-  resolveDefaultModel, resolveModelRefOrNull
-} from './model-resolve'
-import {
-  findTaskBySession, tasksOwnedBy
-} from './tasks'
+import { MEMBER_NOTICE_TAG, NO_FOLDER, buildTaskMessage, findMember } from './members'
+import { resolveDefaultModel, resolveModelRefOrNull } from './model-resolve'
+import { findTaskBySession, tasksOwnedBy } from './tasks'
 import type { TaskRecord } from './tasks-types'
 import { describeSchedule } from './schedule'
-import {
-  buildHandoffBody, headOf,
-  lastInformBody, parseHandoffArgs, type HandoffInput
-} from './handoff'
+import { buildHandoffBody, headOf, lastInformBody, parseHandoffArgs, type HandoffInput } from './handoff'
 import { notifyReplyDone } from './reply-notify'
-import {
-  getSession, save as saveProject, type StoredSession
-} from './chat-store'
+import { getSession, save as saveProject, type StoredSession } from './chat-store'
 import {
   NOTIFY_MARKER
 } from './compaction'

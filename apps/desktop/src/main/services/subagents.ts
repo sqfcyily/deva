@@ -20,7 +20,7 @@ export interface SubagentDef {
   description: string
   /** 内置工具白名单；`'*'` = 全部（交互/创建类除外）。已连接的 MCP 工具恒全量附加。 */
   tools: string[] | '*'
-  /** 职责正文，追加在固定的隔离/约束说明之后（见 chat.ts 的 buildSubagentSystem）。 */
+  /** 职责正文，追加在固定的隔离/约束说明之后（见 chat-prompts.ts 的 buildSubagentSystem）。 */
   prompt: string
 }
 

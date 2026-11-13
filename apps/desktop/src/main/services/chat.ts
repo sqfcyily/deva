@@ -16,7 +16,8 @@ import type {
   ChatSetEffortRequest,
   ChatSetFocusRequest,
   ChatSetModelRequest,
-  ChatStreamEvent, DisplayMessage,
+  ChatStreamEvent,
+  DisplayMessage,
   MountResponse,
   PlanResponse,
   ResolveAutotaskResult
@@ -36,16 +37,15 @@ import {
   resolveModelRef
 } from './model-resolve'
 import {
-  createTask, releaseTasksOwnedBy,
+  createTask,
+  releaseTasksOwnedBy,
   setTaskSessionPurger,
-  syncTaskModel, type CreateTaskResult
+  syncTaskModel,
+  type CreateTaskResult
 } from './tasks'
 import type { TaskCreateInput, TaskRecord } from './tasks-types'
 import { trustRoot } from './fs-guard'
-import {
-  activeTodoList, todoUserCancelNote,
-  todoState, type TodoState
-} from './todos'
+import { activeTodoList, todoUserCancelNote, todoState, type TodoState } from './todos'
 import {
   deriveTitle,
   ensureSession,
@@ -54,27 +54,25 @@ import {
   listSessions,
   save as saveProject,
   setSessionArchived,
-  type ChatSessionMeta, type StoredSession
+  type ChatSessionMeta,
+  type StoredSession
 } from './chat-store'
 import { thumbnailDataUrl } from './image-read'
 import { isEn } from '../locale'
-import {
-  closeSessionPages, setBrowserSessionBusyCheck,
-  setSessionAborter
-} from './browser'
+import { closeSessionPages, setBrowserSessionBusyCheck, setSessionAborter } from './browser'
 import {
   applyFiles,
-  buildRestoreNote, planRewind,
+  buildRestoreNote,
+  planRewind,
   publicPreview,
   removeSessionCheckpoints,
   summarizeTurns,
-  undoFiles, type RewindFile,
+  undoFiles,
+  type RewindFile,
   type RewindStatus,
   type RewindTurnStat
 } from './checkpoints'
-import {
-  isCompactionSummary, type CompactStatus
-} from './compaction'
+import { isCompactionSummary, type CompactStatus } from './compaction'
 import { turnRanges, turnToolIds } from './chat-history'
 import {
   activeTurns,

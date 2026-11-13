@@ -4,9 +4,7 @@
 import type {
   ChatModelConfig
 } from '../../shared/chat-protocol'
-import {
-  getSession, save as saveProject
-} from './chat-store'
+import { getSession, save as saveProject } from './chat-store'
 import { isEn } from '../locale'
 import {
   NOTIFY_MARKER
