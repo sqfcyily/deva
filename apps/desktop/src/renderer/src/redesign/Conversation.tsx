@@ -627,7 +627,7 @@ export function Conversation({
     const inner = el?.firstElementChild
     if (!el || !inner || !isTail) return
     const ro = new ResizeObserver(() => {
-      // 贴底时可视区变矮（如输入框上方多出一排胶囊：浏览器 / 待办 / 后台任务）：立刻贴回底部。否则最新的步骤、思考
+      // 贴底时可视区变矮（如输入框上方多出一排胶囊：浏览器 / 待办 / 后台任务，消息区底部随之加出留白，内容区变矮）：立刻贴回底部。否则最新的步骤、思考
       // 被挤到可视区下面，要等下一次内容更新才滚回来——Deva 正在执行耗时的步骤时，那一行会一直被挡着
       if (stickRef.current) {
         if (el.scrollHeight - el.scrollTop - el.clientHeight > 1) el.scrollTop = el.scrollHeight

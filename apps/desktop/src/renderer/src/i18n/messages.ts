@@ -742,7 +742,7 @@ const zhCN: MessageTree = {
     replyModeOpt: { stream: '流式卡片', final: '仅最终结果' },
     replyModeHint: {
       stream: '回复和工具调用实时更新在同一张卡片里。',
-      final: '像聊天一样：工作时显示「正在输入」，只发最终回复和需要你处理的事。'
+      final: '只发最终回复和需要你处理的事。'
     },
     scope: '回复范围',
     scopeOpt: { all: '全部', personas: '角色', sessions: '对话' },
@@ -2196,7 +2196,7 @@ const en: MessageTree = {
     replyModeOpt: { stream: 'Streaming card', final: 'Final result only' },
     replyModeHint: {
       stream: 'The reply and tool calls update live in a single card.',
-      final: 'Like a chat: shows typing while working, then sends only the final reply and anything that needs you.'
+      final: 'Sends only the final reply and anything that needs you.'
     },
     scope: 'Reply scope',
     scopeOpt: { all: 'All', personas: 'Personas', sessions: 'Chats' },

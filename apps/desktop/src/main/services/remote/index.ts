@@ -252,7 +252,7 @@ export function registerRemoteIpc(getWindow: () => BrowserWindow | null): void {
           name: r.bot.name,
           enabled: true,
           createdAt: Date.now(),
-          replyMode: 'stream',
+          replyMode: 'final',
           scope: DEFAULT_SCOPE,
           users: r.bot.users,
           bindings: {},
