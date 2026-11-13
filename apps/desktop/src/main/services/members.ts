@@ -15,6 +15,7 @@
  * 名单存在主对话的 `members` 属性里（不在消息里），压缩、按轮删除都不影响；移除只做标记，成员会话保留。
  * 主智能体通过随消息下发的【成员名单】（见 listing.ts memberListingPart）得知名单，增减成员不改工具表与系统提示词。
  */
+import type { MemberRunStatus } from '../../shared/chat-protocol'
 import { isAbsolute, resolve } from 'path'
 import type { Message, ToolSpec } from '../providers/types'
 import { isAutoNudge, isCompactionSummary, isTaskNotification } from './compaction'
@@ -75,17 +76,9 @@ export interface MemberRef {
   effortSet?: boolean
 }
 
-/** 成员一次任务的结局。 */
-export type MemberRunStatus = 'done' | 'failed' | 'stopped'
+export type { MemberRunStatus } from '../../shared/chat-protocol'
 
-/**
- * 要主智能体汇总的一组派发（同一主轮派出、report_to_me）的进度：主对话里显示「前端已完成」「2 位成员已完成」
- * 的居中提示（带已完成成员的头像），全部交差时整组消失、主智能体开始汇总。items 里已交差的在前（按交差先后），
- * 还在做的（running）在后；sid 是成员会话 id（渲染层据此画头像）。
- */
-export type MemberProgressGroup = {
-  items: { sid: string; name: string; status: MemberRunStatus | 'running' }[]
-}
+export type { MemberProgressGroup } from '../../shared/chat-protocol'
 
 /** 未移除的成员。 */
 export function activeMembers(list: MemberRef[] | undefined): MemberRef[] {

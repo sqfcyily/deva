@@ -4,6 +4,64 @@ import type { UpdateState } from '../shared/update'
 import type { DeliverableInfo } from '../shared/deliverables'
 import type { AgentDraft, AutotaskDraft } from '../shared/drafts'
 import type { BrowserLiveFrame, BrowserUiState } from '../shared/browser'
+import type {
+  ChatModelConfig,
+  ChatSendRequest,
+  ChatInsertRequest,
+  ChatInsertResult,
+  ChatCompactRequest,
+  ChatCreateSessionRequest,
+  ChatSetModelRequest,
+  ChatSetEffortRequest,
+  ChatSetFocusRequest,
+  ChatRenameSessionRequest,
+  AttachmentChip,
+  HandoffInfo,
+  MemberTask,
+  DisplayBlock,
+  DisplayMessage,
+  AskOption,
+  AskQuestion,
+  AskResponse,
+  PlanResponse,
+  TodoItem,
+  TodoList,
+  TodoState,
+  MountResponse,
+  ResolveAutotaskResult,
+  ChatStreamEvent,
+  MemberProgressGroup
+} from '../shared/chat-protocol'
+
+/** 聊天 IPC 协议类型：与主进程共用 shared/chat-protocol.ts。 */
+export type {
+  ChatModelConfig,
+  ChatSendRequest,
+  ChatInsertRequest,
+  ChatInsertResult,
+  ChatCompactRequest,
+  ChatCreateSessionRequest,
+  ChatSetModelRequest,
+  ChatSetEffortRequest,
+  ChatSetFocusRequest,
+  ChatRenameSessionRequest,
+  AttachmentChip,
+  HandoffInfo,
+  MemberTask,
+  DisplayBlock,
+  DisplayMessage,
+  AskOption,
+  AskQuestion,
+  AskResponse,
+  PlanResponse,
+  TodoItem,
+  TodoList,
+  TodoState,
+  MountResponse,
+  ResolveAutotaskResult,
+  ChatStreamEvent,
+  MemberProgressGroup
+}
 
 /** 目录项（单层）。 */
 export interface DirEntry {
@@ -29,90 +87,6 @@ export interface ReadFileResult {
 /** 思考等级：定义在主进程 / 渲染层共用模块（含模型能力表），此处转出供渲染层按既有方式取用。 */
 export type { EffortLevel }
 
-/** 会话「线缆类型」：与主进程 providers/chat 结构一致，按既定模式在 preload 内复述。 */
-export interface ChatModelConfig {
-  adapter: 'anthropic' | 'openai' | 'responses'
-  providerId: string
-  baseURL: string
-  model: string
-}
-
-export interface ChatSendRequest {
-  sessionId: string
-  text: string
-  model: ChatModelConfig
-  workspaceRoot: string | null
-  /** 用户经原生选择框挑选的附件绝对路径（正文由主进程读取，base64 不经渲染层）。 */
-  attachments?: string[]
-  /** 首发绑定的 persona id（对话优先外壳：一对话一身份，单选定值）。缺省 = 旧壳叠加行为。 */
-  personaId?: string
-  /** 本对话聚焦工作区绝对路径；null = 全机通用助手（无聚焦）。缺省 = 不改动已存值。 */
-  focusRoot?: string | null
-  /**
-   * 本对话模型引用 `"providerId:modelId"`（快照固定/只改当前对话）：新建带角色偏好快照、聊天中切换即更新。
-   * 缺省 = 不改动已存值；空串 = 显式回落全局默认。删除的模型由主进程 resolveModelRef 自动回落默认。
-   */
-  modelRef?: string
-  /** 本对话生效的思考等级：发送时恒带上并落库（同 modelRef）。缺省 = 不改动已存值。 */
-  effort?: EffortLevel
-}
-
-/**
- * 回合进行中插入一条消息：当前步骤结束后交给模型，来不及就在本轮结束后作为普通消息发出（model 此时作回落）。
- */
-export interface ChatInsertRequest {
-  sessionId: string
-  text: string
-  model: ChatModelConfig
-}
-
-/** idle = 回合刚结束（改走普通发送）；busy = 正在跑的不接受插入（如定时任务）；empty = 正文为空。 */
-export type ChatInsertResult = { ok: true } | { ok: false; reason: 'idle' | 'busy' | 'empty' }
-
-/** 手动 /compact 压缩请求（无用户文本、无后续模型轮；locale 在主进程解析）。 */
-export interface ChatCompactRequest {
-  sessionId: string
-  model: ChatModelConfig
-  workspaceRoot: string | null
-}
-
-/**
- * 立即建档一条空对话（对话优先外壳）：与角色开启新对话时即落盘，重启仍在。
- * 绑定信息（persona / 聚焦工作区 / 本对话模型）随之写入会话，与 chat:send 首发绑定同语义。
- */
-export interface ChatCreateSessionRequest {
-  sessionId: string
-  workspaceRoot: string | null
-  personaId?: string
-  focusRoot?: string | null
-  modelRef?: string
-}
-
-/** 对话输入框切换本对话模型：立即落库（会话尚未建档则不建档，由覆盖层随首发落库）。 */
-export interface ChatSetModelRequest {
-  sessionId: string
-  modelRef: string
-}
-
-/** 对话输入框切换本对话思考等级：立即落库（会话尚未建档则不建档，由覆盖层随首发落库）。 */
-export interface ChatSetEffortRequest {
-  sessionId: string
-  effort: EffortLevel
-}
-
-/** 挂载 / 卸载本对话的聚焦工作区：立即落库（会话尚未建档则不建档，由覆盖层随首发落库）。 */
-export interface ChatSetFocusRequest {
-  sessionId: string
-  /** 聚焦工作区绝对路径；null = 卸载回全机通用助手。 */
-  focusRoot: string | null
-}
-
-export interface ChatRenameSessionRequest {
-  sessionId: string
-  /** 新标题；空串 = 恢复自动标题（由首条用户消息派生）。 */
-  title: string
-}
-
 /** 附件类型（与 services/attachments.ts 对齐）。 */
 /** file = 只把位置交给模型的文件（Word 等读不进消息的格式、超过体积上限的）。 */
 export type AttachmentKind = 'image' | 'document' | 'text' | 'file' | 'unsupported'
@@ -136,18 +110,6 @@ export interface DroppedFolder {
 
 /** 拖入 / 粘贴的一项：文件夹，或带真实路径的文件（与 services/attachments.ts 对齐）。 */
 export type DroppedEntry = { folder: DroppedFolder } | { file: PickedAttachment }
-
-/** 用户消息上的附件贴片（与 services/chat.ts 对齐）：文件夹另带绝对路径。 */
-export interface AttachmentChip {
-  name: string
-  /** file = 只把位置交给模型的文件，带 path。 */
-  kind: 'image' | 'document' | 'text' | 'folder' | 'file'
-  path?: string
-  /** 文件大小（字节；文件夹没有）。 */
-  size?: number
-  /** 图片在对话记录里的位置，取缩略图 / 原图用（chat.attachmentImage）。 */
-  ref?: string
-}
 
 /** 会话元信息（左侧列表用，与 chat-store.ts 对齐）。 */
 export interface ChatSessionMeta {
@@ -196,93 +158,8 @@ export interface MemberMeta {
   effortSet?: boolean
 }
 
-/** 绑定的定时任务交来的结果（与 services/handoff.ts 的 HandoffInfo 对齐）。 */
-export interface HandoffInfo {
-  /** 任务名。 */
-  title: string
-  /** 一句话摘要（居中一行上显示）。 */
-  summary: string
-  /** 全文（点开看）。 */
-  content: string
-  /** 需要主角色处理（已唤醒它）；false = 只是告知（其后那条回复以任务的身份显示）。 */
-  needsAction: boolean
-}
-
-/** 成员会话里主智能体派来的任务（工作记录里画成「X 派来的任务」）。 */
-export interface MemberTask {
-  owner: string
-  title: string
-  quote: string
-  note: string
-}
-
 /** 名片草稿（角色 / 定时任务）：主进程与渲染层共用 shared/drafts.ts。 */
 export type { AgentDraft, AutotaskDraft }
-
-/** 重建历史用的展示块 / 消息（与 services/chat.ts 的 DisplayMessage 对齐）。 */
-export type DisplayBlock =
-  | { kind: 'text'; text: string }
-  /** status=running 仅见于仍在后台运行的子智能体 Task 卡。 */
-  | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error' | 'running'; summary?: string }
-  | {
-      kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated' | 'degenerate'
-    }
-  /**
-   * 压缩提示，摘要正文（已去掉写给模型的开头）默认折叠。steps 有值 = 一轮进行中压缩，是执行步骤里的节点；
-   * 否则是两轮之间的分隔提示（first = 前面没有消息）。
-   */
-  | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
-  | { kind: 'error'; message: string }
-  | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
-  /**
-   * 定时任务确认名片（重建）：草稿从 create_task 入参归一化，status/taskId 由主进程 autotasks 边车还原。
-   * pending = 待用户议定授权后创建；created = 已创建（taskId 指向独占会话）；dismissed = 已忽略。
-   */
-  | {
-      kind: 'autotaskcard'
-      id: string
-      draft: AutotaskDraft
-      status: 'pending' | 'created' | 'dismissed'
-      taskId?: string
-    }
-  /**
-   * ask_user 询问卡（重建）：问题从 tool_use 入参重解析，答案由主进程 asks 边车还原。
-   * answers 有值（含空数组）= 已答/已取消（渲染为已答态，逐题回述，不可交互）；
-   * null = 取消/中止（渲染层归一为空数组）；undefined = 从未答复（罕见：应用关闭于问询挂起时）。
-   */
-  | { kind: 'ask'; id: string; questions: AskQuestion[]; answers?: string[] | null }
-  /**
-   * exit_plan 计划卡（重建）：计划正文从 tool_use 入参（input.plan）还原，decision 由主进程 plans 边车还原。
-   * 恒为终态：'approve'/'keep' = 用户的决定；'cancelled' = 中止 / 未决。重建卡一律只读、不再可点。
-   * feedback = 继续完善时用户写的回复（未写则缺省）。
-   */
-  | {
-      kind: 'plan'
-      id: string
-      plan: string
-      decision: 'approve' | 'keep' | 'ignore' | 'cancelled'
-      feedback?: string
-    }
-  /** 已完成的待办清单卡（重建）：画在令清单全部完成的那次 todo_write 处；其余 todo_write 不画。 */
-  | { kind: 'todolist'; id: string; title: string; items: TodoItem[] }
-
-export type DisplayMessage =
-  | {
-      role: 'user'
-      text: string
-      attachments: AttachmentChip[]
-      /** 后台任务通知：展示为一行系统通知而非用户气泡，text 为其标题。 */
-      notify?: true
-      /** 成员交差的通知：不显示（其后主角色的回复就是交差内容），只留作一轮的起点。 */
-      quiet?: true
-      /** 成员会话里主智能体派来的任务；text 为附注。 */
-      task?: MemberTask
-      /** 绑定的定时任务交来的结果：需要处理的画成居中一行、点开看全文；只是告知的不显示（quiet）。 */
-      handoff?: HandoffInfo
-    }
-  /** durationMs：本轮耗时（未记录则缺省）。 */
-  | { role: 'assistant'; blocks: DisplayBlock[]; durationMs?: number }
 
 /** 回滚列表里每轮自身的改动量（与 services/checkpoints.ts 的 RewindTurnStat 对齐）。 */
 export interface RewindTurnStat {
@@ -341,62 +218,6 @@ export type RewindApplyResult =
 export type RewindUndoResult =
   | { ok: true; messages: DisplayMessage[]; restored: string[]; skipped: string[] }
   | { ok: false; error: 'no-undo' | 'busy' }
-
-/** ask_user 候选项（与 services/chat.ts 对齐）。 */
-export interface AskOption {
-  label: string
-  description?: string
-}
-
-/** ask_user 单个问题：题干 + 候选项 + 是否多选 + 是否必答（与 services/chat.ts 对齐）。 */
-export interface AskQuestion {
-  question: string
-  options: AskOption[]
-  multi: boolean
-  /** false=可跳过（允许空答）；缺省/true=必答。 */
-  required?: boolean
-}
-
-export interface AskResponse {
-  key: string
-  /** 用户对每个问题的答复（answers[i] 对应 questions[i]）；null 表示取消。 */
-  answers: string[] | null
-}
-
-/** 用户对 exit_plan 计划审阅的决定：approve=批准并执行 / keep=继续完善。 */
-export interface PlanResponse {
-  key: string
-  decision: 'approve' | 'keep' | 'ignore'
-  /** 选「继续完善」时在卡上直接写的回复；缺省 / 空 = 未写。 */
-  feedback?: string
-}
-
-/** 待办清单的一项（与 services/todos.ts 对齐）。 */
-export interface TodoItem {
-  content: string
-  status: 'pending' | 'in_progress' | 'completed'
-}
-
-/** 一个待办清单（同一清单的多次 todo_write 折叠后的现状）。 */
-export interface TodoList {
-  id: string
-  /** 可为空串：界面回落通用名。 */
-  title: string
-  items: TodoItem[]
-  createdAt: number
-  updatedAt: number
-}
-
-/** 某会话待办清单的状态：胶囊显示的当前清单（无进行中的清单——没建过 / 已完成 / 已取消——则 null）。 */
-export interface TodoState {
-  active: TodoList | null
-}
-
-/** 用户对「请求挂载工作区」的回应：path=已选目录的绝对路径；null=暂不挂载。 */
-export interface MountResponse {
-  key: string
-  path: string | null
-}
 
 /** 技能记录（与 services/skills.ts 的 SkillRecord 对齐）。 */
 export interface SkillRecord {
@@ -606,22 +427,6 @@ export type PreviewScheduleResult =
   | { ok: true; description: string; nextRunAt: number | null }
   | { ok: false; error: 'invalid-input' | 'invalid-tz' | 'invalid-cron' | 'invalid-once' }
 
-/** 确认名片决议结果（chat:resolve-autotask，与 services/chat.ts 的 ResolveAutotaskResult 对齐）。 */
-export type ResolveAutotaskResult =
-  | { ok: true; status: 'created'; taskId: string }
-  | { ok: true; status: 'dismissed' }
-  | {
-      ok: false
-      error:
-        | 'invalid-input'
-        | 'invalid-tz'
-        | 'invalid-cron'
-        | 'invalid-once'
-        | 'expired'
-        | 'no-session'
-        | 'no-input'
-    }
-
 /** 终端「线缆类型」（与 services/terminal.ts 对齐，按既定模式在 preload 内复述）。 */
 export interface TerminalCreateOptions {
   cols: number
@@ -747,122 +552,6 @@ export interface ProviderListModelsResult {
   models?: string[]
   kind?: string
   message?: string
-}
-
-/** 主进程 → 渲染层的富事件（与 services/chat.ts 的 ChatStreamEvent 对齐）。 */
-export type ChatStreamEvent =
-  | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; text: string }
-  /**
-   * depth>0 + agent + parent：来自某子智能体（折叠进 parent 那次 run_subagent 调用开出的 Task 卡）。
-   * bg：来自后台运行的子智能体，不属于任何回合（turnId 为空串），Task 卡可能在任意一条历史消息里。
-   */
-  | {
-      type: 'tool_call'
-      id: string
-      name: string
-      args: unknown
-      depth?: number
-      agent?: string
-      parent?: string
-      bg?: true
-    }
-  | {
-      type: 'tool_result'
-      id: string
-      name: string
-      summary: string
-      isError: boolean
-      /** depth>0 + agent + parent：来自某子智能体的工具结果（折叠进 parent 那张 Task 卡）。 */
-      depth?: number
-      agent?: string
-      parent?: string
-      /** 后台子智能体：嵌套结果，或（depth 0）它结束时给自己那张 Task 卡定格的壳结果。 */
-      bg?: true
-    }
-  | { type: 'ask_user'; key: string; questions: AskQuestion[] }
-  /** 计划审阅：exit_plan 提交计划，暂停等待用户批准（approve/keep）。 */
-  | { type: 'plan_review'; key: string; plan: string }
-  /** 待办清单状态（会话级）：每次 todo_write、按轮删除 / 回滚 / 用户手动取消后推送；后几种 turnId 为空串。 */
-  | { type: 'todos'; state: TodoState }
-  /** 本次 todo_write 令清单全部完成：在对话流里落一张「已完成清单」卡。 */
-  | { type: 'todo_done'; id: string; title: string; items: TodoItem[] }
-  /**
-   * 请求挂载工作区：未挂载工作区时，模型的某次调用缺「相对路径基准」（写相对路径 / 扫描类工具
-   * 省略 path），暂停等待用户一键挂载或跳过。tool=触发的工具名，path=模型给的相对路径（可为空）。
-   */
-  /** member：为成员选择它负责的文件夹（create_member 的 pick_folder），不是挂载本对话的工作区。 */
-  | { type: 'mount_request'; key: string; tool: string; path: string; member?: string }
-  /** 用量。input 为总提示 token（含缓存命中/写入）；cacheRead/cacheWrite 供观测缓存是否生效。 */
-  | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
-  | { type: 'reconnecting'; attempt: number; max: number }
-  /** 引擎自愈中（截断续写 / 空回合追问 / 上下文压缩重试 / 输出预算降档），显示为状态横幅。 */
-  | {
-      type: 'auto_retry'
-      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition' | 'output_fit'
-      attempt: number
-      max: number
-      /** context：报错里解析出的真实窗口；output_limit：用户所设输出上限被拒后降到的值。 */
-      limit?: number
-    }
-  | { type: 'stream_reset' }
-  | { type: 'error'; kind: string; message: string }
-  /** 上下文压缩结果（自动或手动 /compact）。 */
-  | {
-      type: 'compacted'
-      scope: 'auto' | 'manual'
-      status: 'compacted' | 'none' | 'failed'
-      message?: string
-    }
-  /** 正在压缩上下文：开始请求摘要时 active=true，结束（不论结果）active=false，成对出现。 */
-  | { type: 'compacting'; active: boolean }
-  /** 某张交互卡已被答复（可能来自手机端）：渲染层据此把同 key 的卡收成已决态。 */
-  | {
-      type: 'interaction_resolved'
-      key: string
-      kind: 'ask' | 'plan' | 'mount'
-      answers?: string[] | null
-      decision?: 'approve' | 'keep' | 'ignore' | null
-      feedback?: string
-      path?: string | null
-    }
-  /** 角色名片 / 定时任务名片已决议（可能来自手机端）；不属于任何回合，turnId 为空串。 */
-  | {
-      type: 'card_resolved'
-      card: 'agent' | 'autotask'
-      toolUseId: string
-      status: 'accepted' | 'rejected' | 'created' | 'dismissed'
-      taskId?: string
-    }
-  /** 回合开始（本轮首个事件）：带本轮用户消息，供渲染层把别处发起的一轮当本地回合呈现。 */
-  | {
-      type: 'turn_start'
-      /** notify：本轮由后台任务通知自动发起，text 为通知标题；task：成员会话里主智能体派来的任务。 */
-      user: {
-        text: string
-        attachments: AttachmentChip[]
-        notify?: true
-        quiet?: true
-        task?: MemberTask
-        handoff?: HandoffInfo
-      }
-    }
-  /** 插入的消息已随本步工具结果交给模型：执行步骤里添一个节点。 */
-  | { type: 'insert'; text: string }
-  /** 该对话待送达的插入消息（会话级，turnId 为空串）；空数组 = 没有。 */
-  | { type: 'inserts'; pending: string[] }
-  /** 回合被停止或出错，待送达的插入消息退回（会话级，turnId 为空串）：放回该对话的输入框。 */
-  | { type: 'inserts_returned'; text: string }
-  /** durationMs：本轮耗时（扣除等用户处置的时间）。 */
-  | { type: 'done'; stopReason: string; durationMs?: number }
-  /** 成员交差已记进主对话、以成员的身份显示（会话级，turnId 为空串）：从主进程重载该对话。 */
-  | { type: 'member_report' }
-  /** 主对话里要汇总的成员派发组的进度（会话级，turnId 为空串）：空数组 = 没有在等的组。 */
-  | { type: 'member_progress'; groups: MemberProgressGroup[] }
-
-/** 要主角色汇总的一组派发的进度：已交差的在前（按交差先后），还在做的（running）在后；sid 是成员会话 id。 */
-export type MemberProgressGroup = {
-  items: { sid: string; name: string; status: 'done' | 'failed' | 'stopped' | 'running' }[]
 }
 
 /** IM 机器人（远程通道）状态，与 services/remote/index.ts 的 BotView / ScanEvent 对齐。 */

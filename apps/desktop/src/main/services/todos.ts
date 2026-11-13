@@ -1,3 +1,4 @@
+import type { TodoStatus, TodoItem, TodoList, TodoState } from '../../shared/chat-protocol'
 /**
  * 待办清单（todo_write）· 纯函数，零依赖。
  *
@@ -22,12 +23,9 @@
  * 以及上面那两条随用户消息带给模型的提醒。
  */
 
-export type TodoStatus = 'pending' | 'in_progress' | 'completed'
+export type { TodoStatus } from '../../shared/chat-protocol'
 
-export interface TodoItem {
-  content: string
-  status: TodoStatus
-}
+export type { TodoItem } from '../../shared/chat-protocol'
 
 /** 一次 todo_write 的快照（StoredSession.todos 的元素）。 */
 export interface TodoEntry {
@@ -43,19 +41,9 @@ export interface TodoEntry {
   done?: true
 }
 
-/** 折叠后的一个清单（推给渲染层的形态）。 */
-export interface TodoList {
-  id: string
-  title: string
-  items: TodoItem[]
-  createdAt: number
-  updatedAt: number
-}
+export type { TodoList } from '../../shared/chat-protocol'
 
-/** 推给渲染层的状态：胶囊要显示的当前清单（无则 null）。较早的清单不展示，故不下发。 */
-export interface TodoState {
-  active: TodoList | null
-}
+export type { TodoState } from '../../shared/chat-protocol'
 
 const STATUSES = new Set<TodoStatus>(['pending', 'in_progress', 'completed'])
 /** 单个清单的条目上限：防模型把整份计划逐行塞进来，清单失去「一眼看进度」的意义。 */
