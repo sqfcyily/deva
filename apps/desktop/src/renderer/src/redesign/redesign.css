@@ -3965,6 +3965,22 @@ button.cf-mask__pill:hover {
   font-size: 11px;
   color: var(--fg-subtle);
 }
+/* 角色编辑器「默认工作区」行：路径（可空占位）+ 选择 / 清除。路径过长单行省略，悬停 title 给全文。 */
+.cf-editor__wsrow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  min-width: 0;
+}
+.cf-editor__wsrow-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--fg);
+}
 
 /* 表单控件通用外观 */
 .cf-input,
