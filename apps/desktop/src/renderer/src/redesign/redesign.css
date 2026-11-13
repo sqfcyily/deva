@@ -999,6 +999,8 @@ body.cf-resizing-y * {
   min-width: 0;
   min-height: 0;
   background: var(--bg);
+  /* 输入框上方胶囊排占的高度：胶囊 30px + 与输入盒的间距 8px（见 .cf-dock）。 */
+  --cf-dock-room: 38px;
 }
 .cf-conv__head {
   display: flex;
@@ -1595,6 +1597,30 @@ body.cf-resizing-y * {
   flex: 1;
   min-height: 0;
 }
+/*
+ * 输入框上方原有的那段间距（12px）做成渐隐：输入区不留上内边距（见 .cf-composer），消息区往下延伸进这段间距，
+ * 底边铺同高的渐隐——总间距不变，文字到输入框上沿已完全淡出，不在一条线上被硬切；完全看清的范围与原来相同。
+ * 消息区底部同时补上这段高度，滚到底时最后一条位置不变、不落进渐隐里。
+ * 有胶囊排时（胶囊浮在消息区底部，见 .cf-dock）再加出胶囊排的高度，滚到底时最后一条落在胶囊上方。贴底跟随不受影响——
+ * 加了内边距后 .cf-msgs 内容区变矮，Conversation 里的 ResizeObserver 会贴回底部。
+ * 只在有输入区时生效（选择删除时换成底栏）。渐隐右侧让出滚动条；用叠层而不用 mask：mask 会连带裁掉消息里浮出滚动区的弹层。
+ */
+.cf-conv:has(> .cf-composer) .cf-convmid::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 8px;
+  bottom: 0;
+  height: var(--space-3);
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+.cf-conv:has(> .cf-composer) .cf-msgs {
+  padding-bottom: calc(var(--space-5) + var(--space-3));
+}
+.cf-conv:has(> .cf-composer .cf-dock:not(:empty)) .cf-msgs {
+  padding-bottom: calc(var(--space-5) + var(--space-3) + var(--cf-dock-room));
+}
 .cf-msgs {
   flex: 1;
   min-height: 0;
@@ -2119,10 +2145,13 @@ button.cf-mask__pill:hover {
   white-space: pre-wrap;
 }
 
-/* 输入区。上方分隔线已去掉，但保留 1px 透明边框：边距与有分隔线时逐像素一致（有无待办胶囊都不变）。 */
+/*
+ * 输入区。上方分隔线已去掉，但保留 1px 透明边框。不留上内边距：输入框上方那段间距由消息区底部的渐隐承担
+ * （见 .cf-convmid::after），总间距不变。
+ */
 .cf-composer {
   position: relative;
-  padding: var(--space-3) var(--space-4) var(--space-4);
+  padding: 0 var(--space-4) var(--space-4);
   border-top: 1px solid transparent;
 }
 /* 回到最新浮标：锚在输入区顶边正上方居中（bottom:100% 相对 .cf-composer）。 */
@@ -2131,7 +2160,8 @@ button.cf-mask__pill:hover {
   bottom: 100%;
   left: 50%;
   transform: translateX(-50%);
-  margin-bottom: var(--space-2);
+  /* 输入区不留上内边距（见 .cf-composer），这里补上那 12px：浮标与输入框的距离同原来，不落进渐隐 */
+  margin-bottom: calc(var(--space-2) + var(--space-3));
   width: 34px;
   height: 34px;
   border-radius: var(--radius-full);
@@ -2143,9 +2173,17 @@ button.cf-mask__pill:hover {
   display: grid;
   place-items: center;
 }
+/* --bg-hover 是半透明叠色，单独用会让浮标悬停时透出底下的文字；叠在不透明底色上。 */
 .cf-jump:hover {
-  background: var(--bg-hover);
+  background: linear-gradient(var(--bg-hover), var(--bg-hover)), var(--bg-elevated);
   color: var(--fg);
+}
+/*
+ * 有胶囊排时浮标再让出胶囊排的高度，与胶囊的距离同胶囊占位时（约 21px），也避开胶囊四周的光晕
+ *（见 .cf-todo__pill::before 一组）。
+ */
+.cf-composer:has(.cf-dock:not(:empty)) .cf-jump {
+  margin-bottom: calc(var(--space-2) + var(--space-3) + var(--cf-dock-room));
 }
 .cf-composer__inner {
   position: relative; /* 「/ 指令」联想面板的定位锚 */
@@ -2258,12 +2296,22 @@ button.cf-mask__pill:hover {
 /*
  * 输入盒正上方的胶囊排：待办清单、后台任务、浏览网页、插入对话，左对齐、随内容宽，始终一行——换行会让输入框上方忽高忽低。
  * 先后按出现的先后，新出现的在最右（各胶囊根节点上的 order，见 useDockOrder）。
- * 放不下时两枚按各自内容宽度等比收缩，文字各自省略（计数、停止键等不收缩）；都没有时整排不占位。
+ * 放不下时两枚按各自内容宽度等比收缩，文字各自省略（计数、停止键等不收缩）；都没有时整排不出现。
+ * 整排浮在输入盒正上方、压在消息区底部，不占输入区高度：消息区与没有胶囊时一样大，往上翻时文字从胶囊后面经过，
+ * 只在每枚胶囊四周虚化一圈（见下方光晕），不整行遮挡。胶囊之间的空白不接鼠标，点选、拖选、滚轮照常落到消息上。
+ * 待办面板、浏览器预览等浮层仍以整排（与输入盒同宽）为基准向上展开，位置与胶囊占位时相同。
+ * z-index 取这些浮层原来的层级（30）：整排成了层叠上下文，里面浮层的 z-index 只在排内比较。
  */
 .cf-dock {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
   display: flex;
   gap: var(--space-2);
   margin-bottom: var(--space-2);
+  pointer-events: none;
 }
 .cf-dock:empty {
   display: none;
@@ -2271,6 +2319,33 @@ button.cf-mask__pill:hover {
 .cf-dock > * {
   flex: 0 1 auto;
   min-width: 0;
+  pointer-events: auto;
+}
+/* 「/ 指令」联想面板让到胶囊排之上（与胶囊占位时一样）。 */
+.cf-composer__inner:has(> .cf-dock:not(:empty)) > .cf-slash {
+  margin-bottom: calc(var(--space-2) + var(--cf-dock-room));
+}
+/*
+ * 胶囊四周的虚化：一圈背景色光晕，盖住从胶囊后面经过的文字、向外渐淡。画在胶囊下面单独一层
+ * （z-index:-1，落在整排的层叠上下文里），几枚挨着时光晕不会盖到相邻胶囊的边缘。插入对话胶囊用的也是 .cf-bg__pill。
+ * 胶囊下沿以下裁掉：那里已是输入区，没有文字要盖，光晕只会把输入框上边框洗淡一截。
+ */
+.cf-todo__pill,
+.cf-bg__pill,
+.cf-browser__pill {
+  position: relative;
+}
+.cf-todo__pill::before,
+.cf-bg__pill::before,
+.cf-browser__pill::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  box-shadow: 0 0 8px 4px var(--bg);
+  clip-path: inset(-16px -16px 0 -16px);
+  pointer-events: none;
 }
 /*
  * 胶囊里的文字最多这么宽：长网页标题 / 长消息不把整排撑满，几个同时出现时也不会有一个独占大半；
