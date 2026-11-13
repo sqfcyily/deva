@@ -27,6 +27,16 @@ import { useModels, findActive, hasUsableModel } from './models'
 import { useWorkspace } from './workspace'
 import { formatTokens } from '../../../shared/context'
 import { normalizeAgentDraft, normalizeAutotaskDraft, type AgentDraft, type AutotaskDraft } from '../../../shared/drafts'
+import type {
+  AskOption,
+  AskQuestion,
+  ChatStreamEvent as StreamEvent,
+  DisplayMessage,
+  HandoffInfo
+} from '../../../shared/chat-protocol'
+
+/** 交互卡与交接的协议类型：与主进程共用 shared/chat-protocol.ts。 */
+export type { AskOption, AskQuestion, HandoffInfo }
 
 /**
  * 会话状态（渲染层）。
@@ -56,21 +66,6 @@ export interface AttachChip {
   file?: string
 }
 
-/** ask_user 候选项（与 preload/主进程对齐）。 */
-export interface AskOption {
-  label: string
-  description?: string
-}
-
-/** ask_user 单个问题：题干 + 候选项 + 是否多选 + 是否必答（与 preload/主进程对齐）。 */
-export interface AskQuestion {
-  question: string
-  options: AskOption[]
-  multi: boolean
-  /** false=可跳过（允许空答）；缺省/true=必答。 */
-  required?: boolean
-}
-
 /** 折叠 Task 卡内的子工具项（子智能体内部的一次工具调用，收纳进卡内不占主流）。 */
 export interface SubagentChild {
   id: string
@@ -82,14 +77,6 @@ export interface SubagentChild {
 
 /** 名片草稿（角色 / 定时任务）：与主进程共用 shared/drafts.ts。 */
 export type { AgentDraft, AutotaskDraft } from '../../../shared/drafts'
-
-/** 绑定的定时任务交来的结果（与 preload/主进程 HandoffInfo 对齐）。 */
-export interface HandoffInfo {
-  title: string
-  summary: string
-  content: string
-  needsAction: boolean
-}
 
 export type ChatBlock =
   | { kind: 'text'; text: string }
@@ -306,129 +293,6 @@ export interface SessionLiveState {
   /** 正在进行的这一轮从何时开始（streaming 时才有）：成员卡片显示「正在做 · 38 秒」。 */
   startedAt?: number
 }
-
-/** 与 preload/主进程 DisplayMessage 结构一致（渲染层结构化复述）。 */
-type DisplayBlock =
-  | { kind: 'text'; text: string }
-  | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error' | 'running'; summary?: string }
-  | {
-      kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated' | 'degenerate'
-    }
-  | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
-  | { kind: 'error'; message: string }
-  | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
-  | {
-      kind: 'autotaskcard'
-      id: string
-      draft: AutotaskDraft
-      status: 'pending' | 'created' | 'dismissed'
-      taskId?: string
-    }
-  | { kind: 'ask'; id: string; questions: AskQuestion[]; answers?: string[] | null }
-  | {
-      kind: 'plan'
-      id: string
-      plan: string
-      decision: 'approve' | 'keep' | 'ignore' | 'cancelled'
-      feedback?: string
-    }
-  | { kind: 'todolist'; id: string; title: string; items: TodoItem[] }
-  | { kind: 'insert'; text: string }
-type DisplayMessage =
-  | {
-      role: 'user'
-      text: string
-      attachments: AttachChip[]
-      notify?: true
-      quiet?: true
-      task?: MemberTask
-      handoff?: HandoffInfo
-    }
-  | { role: 'assistant'; blocks: DisplayBlock[]; durationMs?: number }
-
-/** 与 preload/主进程 ChatStreamEvent 结构一致（按既定模式在渲染层复述线缆类型）。 */
-type StreamEvent =
-  | { type: 'text_delta'; text: string }
-  | { type: 'thinking_delta'; text: string }
-  | {
-      type: 'tool_call'
-      id: string
-      name: string
-      args: unknown
-      depth?: number
-      agent?: string
-      parent?: string
-      bg?: true
-    }
-  | {
-      type: 'tool_result'
-      id: string
-      name: string
-      summary: string
-      isError: boolean
-      depth?: number
-      agent?: string
-      parent?: string
-      bg?: true
-    }
-  | { type: 'ask_user'; key: string; questions: AskQuestion[] }
-  | { type: 'plan_review'; key: string; plan: string }
-  | { type: 'todos'; state: TodoState }
-  | { type: 'todo_done'; id: string; title: string; items: TodoItem[] }
-  | { type: 'mount_request'; key: string; tool: string; path: string; member?: string }
-  | { type: 'member_report' }
-  | { type: 'member_progress'; groups: MemberProgressGroup[] }
-  | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
-  | { type: 'reconnecting'; attempt: number; max: number }
-  | {
-      type: 'auto_retry'
-      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition' | 'output_fit'
-      attempt: number
-      max: number
-      /** context：报错里解析出的真实窗口；output_limit：用户所设上限被拒后降到的值（见主进程 chat.ts）。 */
-      limit?: number
-    }
-  | { type: 'stream_reset' }
-  | { type: 'error'; kind: string; message: string }
-  | {
-      type: 'compacted'
-      scope: 'auto' | 'manual'
-      status: 'compacted' | 'none' | 'failed'
-      message?: string
-    }
-  | { type: 'compacting'; active: boolean }
-  | {
-      type: 'interaction_resolved'
-      key: string
-      kind: 'ask' | 'plan' | 'mount'
-      answers?: string[] | null
-      decision?: 'approve' | 'keep' | 'ignore' | null
-      feedback?: string
-      path?: string | null
-    }
-  | {
-      type: 'card_resolved'
-      card: 'agent' | 'autotask'
-      toolUseId: string
-      status: 'accepted' | 'rejected' | 'created' | 'dismissed'
-      taskId?: string
-    }
-  | {
-      type: 'turn_start'
-      user: {
-        text: string
-        attachments: AttachChip[]
-        notify?: true
-        quiet?: true
-        task?: MemberTask
-        handoff?: HandoffInfo
-      }
-    }
-  | { type: 'insert'; text: string }
-  | { type: 'inserts'; pending: string[] }
-  | { type: 'inserts_returned'; text: string }
-  | { type: 'done'; stopReason: string; durationMs?: number }
 
 /**
  * 接上一轮正等用户处理的回合（attachSession）：历史里重建出的提问卡没有答复（key 是调用 id，答了也没人接）、

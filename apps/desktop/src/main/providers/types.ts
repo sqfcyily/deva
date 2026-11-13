@@ -84,30 +84,11 @@ export interface ToolSpec {
   inputSchema: Record<string, unknown>
 }
 
-/**
- * 归一化的终止原因。
- * 'refusal' = 模型拒绝作答、或被服务端内容策略拦截（OpenAI finish_reason 'content_filter' /
- * 智谱 'sensitive' / Anthropic stop_reason 'refusal'）。**必须与 end_turn 区分**：这类回合同样「自然结束且无正文」，
- * 混作 end_turn 会让空回合被一律归咎于「上下文接近上限」，给出完全错误的排查方向。
- * 'step_limit' / 'repeated' = 引擎层的终止原因（与 aborted / error 同属循环层，服务端不会给）：定时任务达到
- * 单次运行的步数上限 / 同一工具同参数同结果连续出现到上限（原地打转），收尾后停下（见 shared/limits.ts）。
- * 'degenerate' 同属引擎层：回复（正文或思考）陷入逐字复读，重试后仍如此，截掉复读段后停下（见 repetition.ts）。
- * **同样必须与 end_turn 区分**：任务没做完，运行记录须记失败而非成功，对话里也要留下说明。
- */
-export type StopReason =
-  | 'end_turn'
-  | 'tool_use'
-  | 'max_tokens'
-  | 'stop'
-  | 'refusal'
-  | 'aborted'
-  | 'error'
-  | 'step_limit'
-  | 'repeated'
-  | 'degenerate'
+export type { StopReason } from '../../shared/chat-protocol'
 
 // 思考等级的档位定义与模型能力表在主进程 / 渲染层共用模块里（见 shared/effort.ts）。
 export { isEffortLevel, type EffortLevel } from '../../shared/effort'
+import type { StopReason } from '../../shared/chat-protocol'
 import type { EffortRequest } from '../../shared/effort'
 import { parseContextLimit, parseContextOverflow, type ContextOverflow } from '../../shared/context'
 import { isEn } from '../locale'

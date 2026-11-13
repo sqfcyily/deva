@@ -16,6 +16,7 @@
  * 命名避坑：工具名与标签都不带「任务 / Task」字样（现有命名规则：`create_task`、`autotaskcard`、`tasks:` 专指
  * 定时任务，「Task」卡专指子智能体）。
  */
+import type { HandoffInfo } from '../../shared/chat-protocol'
 import type { Message, ToolSpec } from '../providers/types'
 
 /** 交接工具名（只在绑定任务的定时运行轮提供，见 chat.ts runTurn）。 */
@@ -38,17 +39,7 @@ export interface HandoffInput {
   needsAction: boolean
 }
 
-/** 一次交接在主对话里的展示信息（见 chat.ts DisplayMessage.handoff）。 */
-export interface HandoffInfo {
-  /** 任务名。 */
-  title: string
-  /** 一句话摘要（居中一行上显示）。 */
-  summary: string
-  /** 全文（点开看）。 */
-  content: string
-  /** 需要主角色处理（已唤醒它）；false = 只是告知。 */
-  needsAction: boolean
-}
+export type { HandoffInfo } from '../../shared/chat-protocol'
 
 /** 交接工具的定义：参数只有摘要、全文与是否需要处理，交给谁由系统决定（任务绑定的主对话）。 */
 export function handoffTool(owner: string): ToolSpec {

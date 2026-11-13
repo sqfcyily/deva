@@ -1,3 +1,4 @@
+import type { CompactStatus } from '../../shared/chat-protocol'
 import { streamChat } from '../providers'
 import type { ContentPart, Message } from '../providers/types'
 import { getConfig } from './config'
@@ -80,7 +81,7 @@ export function insertBody(text: string): string | null {
   return nl >= 0 ? text.slice(nl + 1) : ''
 }
 
-export type CompactStatus = 'compacted' | 'none' | 'failed'
+export type { CompactStatus } from '../../shared/chat-protocol'
 
 interface CompactionCfg {
   enabled: boolean
