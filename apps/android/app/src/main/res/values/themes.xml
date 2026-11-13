@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 接管全部绘制，XML 主题只负责窗口底色与去系统 ActionBar（深色优先，与 ui/Theme.kt 一致） -->
+    <style name="Theme.Deva" parent="android:Theme.Material.NoActionBar" />
+</resources>
