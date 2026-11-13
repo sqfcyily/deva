@@ -4906,6 +4906,9 @@ button.cf-mask__pill:hover {
   font-weight: 700;
   line-height: 1;
 }
+.bots-logo--web {
+  background: linear-gradient(135deg, #2f6df6, #5b8dff);
+}
 /* 内置品牌图标：原图自带配色，不加底色、不裁圆角。 */
 .bots-logo--img {
   border-radius: 0;
@@ -5831,4 +5834,78 @@ body.cf-pop-open * {
   height: 0;
   margin-top: calc(-1 * var(--space-5));
   overflow: hidden;
+}
+
+/* ───────── 机器人：手机网页的接入方式 ───────── */
+.bots-way {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.bots-way:first-of-type {
+  margin-top: 8px;
+  padding-top: 0;
+  border-top: 0;
+}
+.bots-way__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bots-way__title {
+  font-weight: 600;
+}
+.bots-way__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.bots-way__head .cf-switch {
+  margin-left: auto;
+}
+.bots-way__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.bots-way__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.bots-way__label {
+  flex: none;
+  min-width: 64px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+}
+.bots-way__input {
+  flex: 1;
+  min-width: 160px;
+}
+.bots-way__port {
+  width: 96px;
+  font-family: var(--font-mono);
+}
+.bots-way__url {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  user-select: all;
+}
+.bots-way__id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-subtle);
+  user-select: all;
+}
+.bots-qr__url {
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+  user-select: all;
 }

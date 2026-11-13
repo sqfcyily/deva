@@ -76,7 +76,8 @@ function readRemote(): Record<string, unknown> {
 function normalize(raw: unknown): BotConfig | null {
   if (!raw || typeof raw !== 'object') return null
   const c = raw as Record<string, unknown>
-  if (typeof c.id !== 'string' || (c.platform !== 'feishu' && c.platform !== 'telegram')) return null
+  if (typeof c.id !== 'string' || (c.platform !== 'feishu' && c.platform !== 'telegram' && c.platform !== 'web'))
+    return null
   const users = Array.isArray(c.users)
     ? (c.users as PairedUser[])
         .filter((u) => u && typeof u.id === 'string')

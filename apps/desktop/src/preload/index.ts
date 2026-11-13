@@ -555,7 +555,7 @@ export interface ProviderListModelsResult {
 }
 
 /** IM 机器人（远程通道）状态，与 services/remote/index.ts 的 BotView / ScanEvent 对齐。 */
-export type BotPlatform = 'feishu' | 'telegram'
+export type BotPlatform = 'feishu' | 'telegram' | 'web'
 export type BotReplyMode = 'stream' | 'final'
 /** 回复范围：all 全部 / personas 选中角色的对话 / sessions 选中的对话（两份清单都保留，切模式不丢）。 */
 export interface BotReplyScope {
@@ -575,6 +575,24 @@ export interface BotView {
   replyMode: BotReplyMode
   scope: BotReplyScope
   users: { id: string; name?: string; pairedAt: number }[]
+  /** 手机网页机器人：接入方式与状态（与 services/remote/index.ts 的 WebInfo 对齐）。 */
+  web?: BotWebInfo
+}
+export interface BotWebInfo {
+  port: number
+  lan: boolean
+  relay: { enabled: boolean; url: string }
+  deskId: string
+  /** 内网可访问的页面地址（每个网卡一条）。 */
+  urls: string[]
+  status: {
+    lan: 'off' | 'on' | 'error'
+    lanError?: string
+    relay: 'off' | 'connecting' | 'on' | 'error'
+    relayError?: string
+  }
+  /** 中转托管的页面地址（填了中转地址才有）。 */
+  relayPage: string | null
 }
 export interface RemoteState {
   bots: BotView[]
@@ -1160,6 +1178,21 @@ const api = {
     pairCancel: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('remote:pair-cancel', id),
     removeUser: (id: string, userId: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('remote:remove-user', id, userId),
+    /** 手机网页：添加（无需扫码授权，立即建好并启动）。 */
+    webCreate: (): Promise<{ ok: true; botId: string } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('remote:web-create'),
+    /** 手机网页：生成带一次性配对码的二维码（内网地址或中转地址）。 */
+    webQr: (
+      id: string,
+      via: 'lan' | 'relay',
+      url?: string
+    ): Promise<{ ok: true; url: string; qr: string; code: string; expiresAt: number } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('remote:web-qr', id, via, url),
+    /** 手机网页：改端口 / 内网开关 / 中转设置（启用中的机器人会按新设置重启）。 */
+    webUpdate: (
+      id: string,
+      patch: { port?: number; lan?: boolean; relay?: { enabled?: boolean; url?: string } }
+    ): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('remote:web-update', id, patch),
     onChanged: (cb: (state: RemoteState) => void): (() => void) => {
       const listener = (_e: unknown, state: RemoteState): void => cb(state)
       ipcRenderer.on('remote:changed', listener)

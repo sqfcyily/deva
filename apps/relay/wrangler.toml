@@ -1,0 +1,21 @@
+name = "deva-relay"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+# 手机网页（apps/desktop 构建出的 out/mobile，`pnpm sync-page` 复制到这里）。
+# 命中静态文件的请求直接由 Cloudflare 返回；其余（/desk/*、/d/*/ws）进 Worker。
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[durable_objects.bindings]]
+name = "DESK"
+class_name = "Desk"
+
+# SQLite 后端的 Durable Objects 免费套餐也能用。
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Desk"]
+
+[observability]
+enabled = true

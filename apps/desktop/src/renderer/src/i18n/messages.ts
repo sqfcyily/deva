@@ -694,7 +694,7 @@ const zhCN: MessageTree = {
     detailEmpty: '在左侧选择一个机器人查看详情。',
     paneHint: '把聊天工具接入 Deva，在手机上继续对话。',
     unnamed: '未命名机器人',
-    platform: { feishu: '飞书', telegram: 'Telegram' },
+    platform: { feishu: '飞书', telegram: 'Telegram', web: '手机网页' },
     region: { cn: '中国', intl: '国际' },
     state: { off: '未启用', connecting: '连接中', connected: '已连接', error: '连接失败' },
     enable: '启用',
@@ -731,7 +731,8 @@ const zhCN: MessageTree = {
     invite: '邀请其他账号',
     inviteHint: {
       feishu: '让对方在飞书里私聊这个机器人，发送：',
-      telegram: '让对方在 Telegram 里私聊这个机器人，发送：'
+      telegram: '让对方在 Telegram 里私聊这个机器人，发送：',
+      web: '让对方用手机扫码，或打开地址后输入配对码。'
     },
     inviteExpires: '{s} 后失效',
     inviteRegen: '重新生成',
@@ -767,7 +768,31 @@ const zhCN: MessageTree = {
     delete: '删除机器人',
     deleteConfirm: {
       feishu: '删除后机器人将断开连接，手机上无法再使用。飞书开放平台上的应用不会被删除，可自行在开放平台删除。',
-      telegram: '删除后机器人将断开连接，手机上无法再使用。Telegram 上的机器人不会被删除，可在 @BotFather 里用 /deletebot 删除。'
+      telegram: '删除后机器人将断开连接，手机上无法再使用。Telegram 上的机器人不会被删除，可在 @BotFather 里用 /deletebot 删除。',
+      web: '删除后手机网页将无法再连接，已配对的设备需要重新扫码才能使用新的机器人。'
+    },
+    web: {
+      access: '接入方式',
+      accessHint: '手机通过哪条路连到这台电脑，两种可以同时开。',
+      lan: '内网直连',
+      lanHint: '手机与电脑在同一 Wi-Fi 下，扫码即用；电脑自带网页服务，不经过任何第三方。首次启用时系统防火墙若询问，请允许 Deva 接受连接。',
+      port: '端口',
+      urls: '访问地址',
+      urlsEmpty: '没有找到局域网地址，请检查网络连接。',
+      relay: '经中转访问',
+      relayHint:
+        '电脑主动连到中转服务，手机在任何网络下都能用。中转可以部署到 Cloudflare 或自己的服务器（见仓库 apps/relay）。',
+      relayUrl: '中转地址',
+      relayUrlPlaceholder: 'https://deva-relay.example.workers.dev',
+      deskId: '桌面 id',
+      status: { off: '未启用', on: '可用', connecting: '连接中', error: '不可用' },
+      showQr: '显示二维码',
+      qrTitle: '用手机扫码连接',
+      qrLead: '用手机相机或浏览器扫码打开页面，会自动完成配对。也可以手动打开下面的地址，再输入配对码：',
+      qrCode: '配对码',
+      qrVia: { lan: '内网直连', relay: '经中转' },
+      saved: '已保存',
+      noWay: '内网直连与中转至少要开启一个。'
     }
   },
   settings: {
@@ -2148,7 +2173,7 @@ const en: MessageTree = {
     detailEmpty: 'Select a bot on the left to see its details.',
     paneHint: 'Connect a chat app to Deva and keep chatting from your phone.',
     unnamed: 'Unnamed bot',
-    platform: { feishu: 'Feishu', telegram: 'Telegram' },
+    platform: { feishu: 'Feishu', telegram: 'Telegram', web: 'Phone web' },
     region: { cn: 'China', intl: 'Intl' },
     state: { off: 'Off', connecting: 'Connecting', connected: 'Connected', error: 'Connection failed' },
     enable: 'Enable',
@@ -2185,7 +2210,8 @@ const en: MessageTree = {
     invite: 'Invite another account',
     inviteHint: {
       feishu: 'Ask them to send this to the bot in a direct chat on Feishu:',
-      telegram: 'Ask them to send this to the bot in a direct chat on Telegram:'
+      telegram: 'Ask them to send this to the bot in a direct chat on Telegram:',
+      web: 'Ask them to scan the QR code, or open the address and enter the pairing code.'
     },
     inviteExpires: 'Expires in {s}',
     inviteRegen: 'Regenerate',
@@ -2224,7 +2250,31 @@ const en: MessageTree = {
       feishu:
         'The bot will be disconnected and stop working on your phone. The app on the Feishu Open Platform is not deleted; you can remove it there yourself.',
       telegram:
-        'The bot will be disconnected and stop working on your phone. The bot itself is not deleted from Telegram; use /deletebot with @BotFather to remove it.'
+        'The bot will be disconnected and stop working on your phone. The bot itself is not deleted from Telegram; use /deletebot with @BotFather to remove it.',
+      web: 'The phone web page will no longer be able to connect; paired devices must scan a new bot again.'
+    },
+    web: {
+      access: 'Access',
+      accessHint: 'How phones reach this computer. Both can be on at the same time.',
+      lan: 'Local network',
+      lanHint: 'Phone and computer on the same Wi-Fi: scan and go. Served by this computer, no third party involved. If the system firewall asks on first use, allow Deva to accept connections.',
+      port: 'Port',
+      urls: 'Addresses',
+      urlsEmpty: 'No local network address found. Check the connection.',
+      relay: 'Via relay',
+      relayHint:
+        'The computer connects out to a relay so phones can reach it from any network. Deploy the relay to Cloudflare or your own server (see apps/relay in the repo).',
+      relayUrl: 'Relay address',
+      relayUrlPlaceholder: 'https://deva-relay.example.workers.dev',
+      deskId: 'Desk id',
+      status: { off: 'Off', on: 'Available', connecting: 'Connecting', error: 'Unavailable' },
+      showQr: 'Show QR code',
+      qrTitle: 'Scan to connect',
+      qrLead: 'Scan with the phone camera or browser to open the page; pairing completes automatically. Or open the address below and enter the code:',
+      qrCode: 'Pairing code',
+      qrVia: { lan: 'Local network', relay: 'Via relay' },
+      saved: 'Saved',
+      noWay: 'Enable local network or relay access first.'
     }
   },
   settings: {

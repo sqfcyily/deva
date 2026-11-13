@@ -35,6 +35,7 @@ import type {
   NoticeView,
   PromptView,
   RemoteAdapter,
+  RemoteUser,
   TurnBlock,
   TurnPage,
   TurnStatus
@@ -192,36 +193,42 @@ function isAuthorized(id: ChannelId, userId: string): boolean {
   return getChannelConfig(id).users.some((u) => u.id === userId)
 }
 
-async function tryPair(msg: InboundMessage, code: string): Promise<void> {
-  const id = msg.chat.channel
+/**
+ * 用配对码把一个平台用户加入白名单（chatId = 与其私聊的会话 id）。IM 上由 /pair 指令触发（tryPair），
+ * 手机网页端在扫码页里直接调用。失败给出可直接展示给用户的原因。
+ */
+export function redeemPairCode(
+  id: ChannelId,
+  user: RemoteUser,
+  chatId: string,
+  code: string
+): { ok: true } | { ok: false; message: string } {
   const p = pairing.get(id)
   if (!p || p.expiresAt < Date.now()) {
     pairing.delete(id)
-    return notice(msg.chat, {
-      tone: 'warning',
-      text: '配对码已过期或尚未生成。请在电脑端 Deva 的「机器人」面板里生成新的配对码。'
-    })
+    return { ok: false, message: '配对码已过期或尚未生成。请在电脑端 Deva 的「机器人」面板里生成新的配对码。' }
   }
   if (code !== p.code) {
     p.failures++
     if (p.failures >= PAIR_MAX_FAILURES) pairing.delete(id)
-    return notice(msg.chat, {
-      tone: 'error',
-      text:
-        p.failures >= PAIR_MAX_FAILURES
-          ? '配对码错误次数过多，已作废。请在电脑端重新生成。'
-          : '配对码不正确，请核对后重发。'
-    })
+    return {
+      ok: false,
+      message:
+        p.failures >= PAIR_MAX_FAILURES ? '配对码错误次数过多，已作废。请在电脑端重新生成。' : '配对码不正确，请核对后重发。'
+    }
   }
   pairing.delete(id)
   updateChannelConfig(id, (c) => ({
     ...c,
-    users: [
-      ...c.users.filter((u) => u.id !== msg.user.id),
-      { id: msg.user.id, name: msg.user.name, chatId: msg.chat.chatId, pairedAt: Date.now() }
-    ]
+    users: [...c.users.filter((u) => u.id !== user.id), { id: user.id, name: user.name, chatId, pairedAt: Date.now() }]
   }))
   notifyState()
+  return { ok: true }
+}
+
+async function tryPair(msg: InboundMessage, code: string): Promise<void> {
+  const r = redeemPairCode(msg.chat.channel, msg.user, msg.chat.chatId, code)
+  if (!r.ok) return notice(msg.chat, { tone: r.message.includes('不正确') ? 'error' : 'warning', text: r.message })
   await notice(msg.chat, { tone: 'success', title: '配对成功', text: `现在可以直接给我发消息了。\n\n${HELP}` })
 }
 
