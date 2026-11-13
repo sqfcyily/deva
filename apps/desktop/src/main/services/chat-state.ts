@@ -73,7 +73,7 @@ export const busySince = new Map<string, number>()
 /**
  * 后台运行中的子智能体（默认即后台，模型设 foreground 才前台），键 = 开出它的 run_subagent / send_to_subagent 调用 id（即其
  * Task 卡 id）。它们不属于任何回合：有自己的取消控制器，派发它的那一轮结束或被中止都不影响它；跑完后把结论
- * 作为通知交给主智能体（见 registerChatIpc 内的 launchBackgroundSubagent / wakeForNotices）。
+ * 作为通知交给主智能体（见 subagent-run.ts launchBackgroundSubagent、background-tasks.ts wakeForNotices）。
  */
 export interface BackgroundSubagent {
   sessionId: string

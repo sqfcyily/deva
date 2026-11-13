@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
 import { useModels } from '../../store/models'
-import { useChat } from '../../store/chat'
+import { useChatActions } from '../../store/chat'
 import { useToast } from '../../components/ToastProvider'
 import { Select } from '../../components/Select'
 
@@ -92,7 +92,7 @@ export function ModelSetupCard(): React.JSX.Element {
     toggleModel,
     setActiveModel
   } = useModels()
-  const { setSessionModel } = useChat()
+  const { setSessionModel } = useChatActions()
 
   const [phase, setPhase] = useState<Phase>('pick')
   /** 选中的服务商：官方预置的 id，或 CUSTOM（自定义地址）。 */

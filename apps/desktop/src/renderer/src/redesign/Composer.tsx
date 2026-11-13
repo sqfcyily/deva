@@ -2,6 +2,7 @@
  * 输入框：草稿、/指令、插话胶囊、模型与思考等级选择。
  */
 import {
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -38,7 +39,7 @@ import { TodoCapsule } from '../features/chat/Todos'
 import { BackgroundCapsule } from '../features/chat/BackgroundTasks'
 import { BrowserCapsule } from '../features/browser/BrowserCapsule'
 import { useDockOrder } from '../features/chat/dockOrder'
-import { useChat, type AttachKind, type SendAttachment } from '../store/chat'
+import { type AttachKind, type SendAttachment, useChatState, useChatActions } from '../store/chat'
 import { rolesAllow, useExtensions } from '../store/extensions'
 import { findActive, useModels } from '../store/models'
 import {
@@ -164,7 +165,8 @@ export function restoreToComposer(sessionId: string, text: string): void {
  */
 function InsertCapsule({ sessionId }: { sessionId: string }): React.JSX.Element | null {
   const { t } = useI18n()
-  const { pendingInserts, withdrawInserts } = useChat()
+  const { pendingInserts } = useChatState()
+  const { withdrawInserts } = useChatActions()
   const [busy, setBusy] = useState(false)
   const order = useDockOrder(pendingInserts.length > 0, sessionId)
   if (pendingInserts.length === 0) return null
@@ -207,7 +209,7 @@ export function MemberProgressNotice({
   faceOf: (sid: string) => Persona | undefined
 }): React.JSX.Element | null {
   const { t } = useI18n()
-  const { memberProgress } = useChat()
+  const { memberProgress } = useChatState()
   const shown = memberProgress
     .map((g) => ({ g, done: g.items.filter((i) => i.status === 'done') }))
     .filter((x) => x.done.length > 0)
@@ -256,7 +258,8 @@ export function useDraftPreview(id: string): string | null {
   })
 }
 
-export function Composer({
+// 包 memo：流式输出时对话流每帧重渲染，输入框的 props 不变就不跟着重渲染（回调见 Conversation 的 useStableCallback）。
+export const Composer = memo(function Composer({
   sessionId,
   owner,
   mentionables,
@@ -300,7 +303,7 @@ export function Composer({
     [allSkills, ownerId]
   )
   const toast = useToast()
-  const { insert: onInsert } = useChat()
+  const { insert: onInsert } = useChatActions()
   const [input, setInput] = useState('')
   const [pending, setPending] = useState<Picked[]>([])
   const pendingRef = useRef(pending)
@@ -971,7 +974,7 @@ export function Composer({
       </div>
     </div>
   )
-}
+})
 
 /**
  * 模型选择器。复用 app.css 的既有类
@@ -987,7 +990,8 @@ export function Composer({
 function ModelPicker(): React.JSX.Element {
   const { t } = useI18n()
   const { activeModel, providers, setActiveModel } = useModels()
-  const { currentBinding, setSessionModel } = useChat()
+  const { currentBinding } = useChatState()
+  const { setSessionModel } = useChatActions()
   const [open, setOpen] = useState(false)
   // 只列对话模型（purpose==='llm'）：决策模型（如 Jev）不生成文本，绝不可被选为对话模型。
   const groups = providers
@@ -1078,7 +1082,8 @@ function ModelPicker(): React.JSX.Element {
 function EffortPicker(): React.JSX.Element | null {
   const { t } = useI18n()
   const { activeEffort, setActiveEffort, activeModel, providers } = useModels()
-  const { currentBinding, setSessionEffort } = useChat()
+  const { currentBinding } = useChatState()
+  const { setSessionEffort } = useChatActions()
   const [open, setOpen] = useState(false)
   // 本对话生效模型（同 ModelPicker：本对话已选 → 否则回落最近使用）。选择器只列对话模型，adapter 必属三协议之一。
   const active = findActive(providers, currentBinding.model ?? null) ?? activeModel

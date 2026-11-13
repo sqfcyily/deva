@@ -485,7 +485,59 @@ interface ChatContextValue {
   onInsertsReturned: (cb: (sessionId: string, text: string) => void) => () => void
 }
 
-const ChatContext = createContext<ChatContextValue | null>(null)
+/*
+ * 按变化频率拆成三份下发，使用方按需订阅：
+ *  - actions：操作函数，引用恒定（内部转调最新一次渲染的实现），可放心传给 memo 组件、写进依赖数组；
+ *  - state：对话列表、各会话活动态、当前绑定、交互卡、清单等，流式输出期间不变；
+ *  - stream：当前对话的消息与流式状态，每帧都可能变。只有对话流本身需要订阅它。
+ */
+type ChatActionKey = {
+  [K in keyof ChatContextValue]: ChatContextValue[K] extends (...args: never[]) => unknown ? K : never
+}[keyof ChatContextValue]
+export type ChatActions = Pick<ChatContextValue, ChatActionKey>
+export type ChatState = Omit<ChatContextValue, ChatActionKey | 'messages' | 'streamStatus'>
+export type ChatStream = Pick<ChatContextValue, 'messages' | 'streaming' | 'streamStatus'>
+
+/** 全部操作函数名。写成 Record 是为了与 ChatContextValue 同步：漏一个、多一个都编译不过。 */
+const ACTION_KEYS: Record<ChatActionKey, true> = {
+  send: true,
+  stop: true,
+  newSession: true,
+  selectSession: true,
+  deleteSession: true,
+  renameSession: true,
+  setArchived: true,
+  deleteSessions: true,
+  deleteTurns: true,
+  rewindApply: true,
+  rewindUndo: true,
+  mountFocus: true,
+  setSessionModel: true,
+  setSessionEffort: true,
+  respondAsk: true,
+  respondPlan: true,
+  respondMount: true,
+  resolveProposal: true,
+  resolveAutotask: true,
+  cancelTodoList: true,
+  stopSubagent: true,
+  removeMember: true,
+  insert: true,
+  withdrawInserts: true,
+  onInsertsReturned: true
+}
+
+/** 引用恒定的操作函数：每次调用转给 ref 里最新一次渲染的实现。 */
+function bindActions(ref: { readonly current: ChatContextValue }): ChatActions {
+  const out: Partial<Record<ChatActionKey, unknown>> = {}
+  for (const k of Object.keys(ACTION_KEYS) as ChatActionKey[])
+    out[k] = (...args: unknown[]) => (ref.current[k] as (...a: unknown[]) => unknown)(...args)
+  return out as ChatActions
+}
+
+const ChatActionsContext = createContext<ChatActions | null>(null)
+const ChatStateContext = createContext<ChatState | null>(null)
+const ChatStreamContext = createContext<ChatStream | null>(null)
 
 /** 各会话「插入消息被退回」的订阅者（见 onInsertsReturned）。 */
 const insertReturnListeners = new Set<(sessionId: string, text: string) => void>()
@@ -964,6 +1016,23 @@ function hasAttention(messages: ChatMessage[]): boolean {
       (b.kind === 'mount' && !b.decided) ||
       ((b.kind === 'agentcard' || b.kind === 'autotaskcard') && b.status === 'pending')
   )
+}
+
+/** 两份会话活动态摘要内容是否相同（键集合与每条的各字段）。 */
+function sameSessionStates(a: Record<string, SessionLiveState>, b: Record<string, SessionLiveState>): boolean {
+  const ka = Object.keys(a)
+  if (ka.length !== Object.keys(b).length) return false
+  return ka.every((k) => {
+    const x = a[k]
+    const y = b[k]
+    return (
+      !!y &&
+      x.streaming === y.streaming &&
+      x.attention === y.attention &&
+      x.unread === y.unread &&
+      x.startedAt === y.startedAt
+    )
+  })
 }
 
 export function ChatProvider({ children }: { children: ReactNode }): React.JSX.Element {
@@ -1620,6 +1689,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
   // 各会话活动态摘要（左侧列表角标用）；仅 runtimes / 未读集 / 后台进行中集变化时重算。
   // 后台回合没缓存 runtime（进行中靠 bgStreaming，完成后 runtime 也会被丢弃），这类会话单独补一条。
+  const sessionStatesRef = useRef<Record<string, SessionLiveState> | null>(null)
   const sessionStates = useMemo<Record<string, SessionLiveState>>(() => {
     const out: Record<string, SessionLiveState> = {}
     for (const [id, r] of runtimes) {
@@ -1643,6 +1713,10 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       for (const k of parent ? [id, parent] : [id])
         out[k] = out[k] ? { ...out[k], attention: true } : { streaming: false, attention: true, unread: unread.has(k) }
     }
+    // runtimes 随流式输出每帧都变，摘要却很少变：内容相同就沿用上一份，免得订阅它的列表每帧重渲染。
+    const prev = sessionStatesRef.current
+    if (prev && sameSessionStates(prev, out)) return prev
+    sessionStatesRef.current = out
     return out
   }, [runtimes, unread, bgStreaming, pendingCards, allSessions])
 
@@ -2305,11 +2379,69 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     dropRuntime
   ])
 
-  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
+  // 拆开下发（见 ChatActions）。ref 在渲染时更新：子组件本次渲染里拿到的操作函数，转调的就是本次渲染的实现。
+  const latest = useRef(value)
+  latest.current = value
+  const actions = useMemo(() => bindActions(latest), [])
+  const state = useMemo<ChatState>(
+    () => ({
+      sessions: value.sessions,
+      currentSessionId: value.currentSessionId,
+      streaming: value.streaming,
+      sessionStates: value.sessionStates,
+      currentBinding: value.currentBinding,
+      draftSession: value.draftSession,
+      pendingCards: value.pendingCards,
+      todos: value.todos,
+      pendingInserts: value.pendingInserts,
+      memberProgress: value.memberProgress
+    }),
+    [
+      value.sessions,
+      value.currentSessionId,
+      value.streaming,
+      value.sessionStates,
+      value.currentBinding,
+      value.draftSession,
+      value.pendingCards,
+      value.todos,
+      value.pendingInserts,
+      value.memberProgress
+    ]
+  )
+  const stream = useMemo<ChatStream>(
+    () => ({ messages: value.messages, streaming: value.streaming, streamStatus: value.streamStatus }),
+    [value.messages, value.streaming, value.streamStatus]
+  )
+
+  return (
+    <ChatActionsContext.Provider value={actions}>
+      <ChatStateContext.Provider value={state}>
+        <ChatStreamContext.Provider value={stream}>
+          {children}
+        </ChatStreamContext.Provider>
+      </ChatStateContext.Provider>
+    </ChatActionsContext.Provider>
+  )
 }
 
-export function useChat(): ChatContextValue {
-  const ctx = useContext(ChatContext)
-  if (!ctx) throw new Error('useChat 必须在 ChatProvider 内使用')
+/** 操作函数（引用恒定）。 */
+export function useChatActions(): ChatActions {
+  const ctx = useContext(ChatActionsContext)
+  if (!ctx) throw new Error('useChatActions 必须在 ChatProvider 内使用')
+  return ctx
+}
+
+/** 流式输出期间不变的状态（对话列表、活动态、当前绑定、交互卡、清单等）。 */
+export function useChatState(): ChatState {
+  const ctx = useContext(ChatStateContext)
+  if (!ctx) throw new Error('useChatState 必须在 ChatProvider 内使用')
+  return ctx
+}
+
+/** 当前对话的消息与流式状态（每帧都可能变）。 */
+export function useChatStream(): ChatStream {
+  const ctx = useContext(ChatStreamContext)
+  if (!ctx) throw new Error('useChatStream 必须在 ChatProvider 内使用')
   return ctx
 }

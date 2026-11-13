@@ -11,7 +11,7 @@ import type {
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/ToastProvider'
 import { useI18n } from '../i18n/i18n'
-import { useChat } from '../store/chat'
+import { useChatActions } from '../store/chat'
 
 /** 列表里的一轮：turn 与渲染层 groupTurns / 主进程 turnRanges 同源（0 基）；text 为提问摘要。 */
 export interface RewindTurnItem {
@@ -48,7 +48,7 @@ export function RewindModal({
 }): React.JSX.Element {
   const { t } = useI18n()
   const toast = useToast()
-  const { rewindApply, rewindUndo } = useChat()
+  const { rewindApply, rewindUndo } = useChatActions()
   const [stats, setStats] = useState<{ turns: RewindTurnStat[]; canUndo: boolean } | null>(null)
   const [sel, setSel] = useState<number | null>(initialTurn)
   // 按轮缓存预览结果；preview.turn !== sel 即加载中（免得另设 loading 态与之失同步）。

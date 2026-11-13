@@ -32,7 +32,7 @@ import {
   clipChatTitle
 } from '../features/chat/TaskPickers'
 import { taskErrorKey } from '../features/chat/TaskConfirmCard'
-import { useChat, type SessionMeta } from '../store/chat'
+import { type SessionMeta, useChatState } from '../store/chat'
 import { useExtensions } from '../store/extensions'
 import { useModels } from '../store/models'
 import { useTasks } from '../store/tasks'
@@ -96,7 +96,7 @@ export function TasksPane({
   const { t, locale } = useI18n()
   const { tasks, create, setStatus, runNow, update, remove } = useTasks()
   // 详情「运行方式」行里的会话名（在会话中运行的任务）。
-  const { sessions: chatSessions } = useChat()
+  const { sessions: chatSessions } = useChatState()
   const chatTitle = (task: TaskRecord): string | null => {
     if (!task.ownerSessionId) return null
     const s = chatSessions.find((x) => x.id === task.ownerSessionId)

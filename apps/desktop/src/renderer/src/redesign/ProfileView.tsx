@@ -7,7 +7,7 @@ import type { Persona } from '../mock/extensions'
 import type {
   PersonaUpsertInput
 } from '../../../preload'
-import { useChat, type AgentDraft, type SessionMeta } from '../store/chat'
+import { type AgentDraft, type SessionMeta, useChatActions } from '../store/chat'
 import { useExtensions } from '../store/extensions'
 import { useModels } from '../store/models'
 import { useI18n } from '../i18n/i18n'
@@ -202,7 +202,7 @@ export function PersonaEditor({
   const { t } = useI18n()
   const { providers } = useModels()
   const { upsertPersona, setPersonaAvatarImage } = useExtensions()
-  const { resolveProposal } = useChat()
+  const { resolveProposal } = useChatActions()
   const editing = initial.mode === 'edit' ? initial.persona : null
   // propose 态：预填 LLM 草稿，接受才落盘、拒绝不写；editing 恒 null → upsert 无 id → 只创建不覆盖。
   const proposing = initial.mode === 'propose' ? initial : null

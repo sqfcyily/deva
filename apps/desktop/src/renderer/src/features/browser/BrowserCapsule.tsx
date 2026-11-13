@@ -13,7 +13,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
-import { useChat } from '../../store/chat'
+import { useChatState } from '../../store/chat'
 import { useDockOrder } from '../chat/dockOrder'
 import { doingText, siteOf, tabTitle } from './text'
 import { PagesPanel, useBrowserState } from './shared'
@@ -49,7 +49,7 @@ interface Preview {
  */
 export function BrowserCapsule({ sessionId }: { sessionId: string | null }): React.JSX.Element | null {
   const { t } = useI18n()
-  const { streaming } = useChat()
+  const { streaming } = useChatState()
   const s = useBrowserState()
   const api = window.deva.browser
   const [listOpen, setListOpen] = useState(false)

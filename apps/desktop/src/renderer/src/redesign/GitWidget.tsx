@@ -30,9 +30,7 @@ import type {
   GitOpResult,
   GitStatus
 } from '../../../preload'
-import {
-  useChat
-} from '../store/chat'
+import { useChatState } from '../store/chat'
 import { findActive, useModels } from '../store/models'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
@@ -172,7 +170,7 @@ export function GitWidget({ root, streaming }: { root: string; streaming: boolea
   const toast = useToast()
   const dialog = useDialog()
   const { activeModel, providers, hasKey } = useModels()
-  const { currentBinding } = useChat()
+  const { currentBinding } = useChatState()
   const { available, status, busy, refresh } = useGitStatus(root)
 
   // 一轮结束（正常完成 / 中断 / 出错，streaming 由 true 落为 false）后刷新一次：

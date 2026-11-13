@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CalendarClock, Check, AlertTriangle, Pencil, ChevronUp } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
-import { useChat, type ChatBlock } from '../../store/chat'
+import { type ChatBlock, useChatState, useChatActions } from '../../store/chat'
 import { useExtensions } from '../../store/extensions'
 import { useModels } from '../../store/models'
 import { useTasks } from '../../store/tasks'
@@ -185,7 +185,8 @@ function TaskEditor({
   block: Extract<ChatBlock, { kind: 'autotaskcard' }>
 }): React.JSX.Element {
   const { t, locale } = useI18n()
-  const { resolveAutotask, currentBinding } = useChat()
+  const { currentBinding } = useChatState()
+  const { resolveAutotask } = useChatActions()
   const { personas } = useExtensions()
   const modelLabel = useModelLabel()
   const nextShort = useNextShort()

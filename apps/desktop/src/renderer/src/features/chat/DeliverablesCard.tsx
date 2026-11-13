@@ -11,7 +11,7 @@ import {
   Package
 } from 'lucide-react'
 import { useI18n } from '../../i18n/i18n'
-import { useChat, type ChatBlock } from '../../store/chat'
+import { type ChatBlock, useChatState } from '../../store/chat'
 import { useToast } from '../../components/ToastProvider'
 import type { DeliverableInfo } from '../../../../shared/deliverables'
 
@@ -55,7 +55,7 @@ export function DeliverablesCard({
 }): React.JSX.Element {
   const { t } = useI18n()
   const toast = useToast()
-  const { currentSessionId: sessionId } = useChat()
+  const { currentSessionId: sessionId } = useChatState()
   const [files, setFiles] = useState<DeliverableInfo[]>(() => placeholders(block.args))
   const [loaded, setLoaded] = useState(false)
   const [thumbs, setThumbs] = useState<Record<number, string | null>>({})
