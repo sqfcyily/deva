@@ -588,7 +588,7 @@ export function BlockView({
   onOpenAutotask?: (taskId: string) => void
   /**
    * 待处理的提问 / 计划 / 挂载卡不画卡头：主对话末尾成员在等你处理时，卡片上方的胶囊已经写明谁在等什么
-   * （见 ChatFirstShell MemberAsks）。已处理的卡不受影响。
+   * （见 redesign/MemberBar.tsx MemberAsks）。已处理的卡不受影响。
    */
   bare?: boolean
   /** 待处理的提问 / 计划 / 挂载卡操作行里附加的一项（成员的「打开对话」），排在左侧按钮之后。 */

@@ -4,10 +4,13 @@
 import type {
   ChatInsertRequest,
   ChatInsertResult,
-  ChatModelConfig, ChatSendRequest
+  ChatModelConfig,
+  ChatSendRequest
 } from '../../shared/chat-protocol'
 import {
-  isEffortLevel, type ContentPart, type Message,
+  isEffortLevel,
+  type ContentPart,
+  type Message,
   type StopReason,
   type ToolSpec
 } from '../providers/types'
@@ -19,17 +22,9 @@ import {
   type ToolContext
 } from './tools'
 import { loadSkillInstructionsByName } from './skills'
-import {
-  buildToolSearchTool, fitToolSearch, skillToolUsages,
-  unknownUsages
-} from './tool-search'
-import {
-  readMainTool, reportToMainTool, rootLabel
-} from './members'
-import {
-  MEMBER_EXCLUDED,
-  MEMBER_FOLDER_ONLY, UNATTENDED_EXCLUDED
-} from './tool-catalog'
+import { buildToolSearchTool, fitToolSearch, skillToolUsages, unknownUsages } from './tool-search'
+import { readMainTool, reportToMainTool, rootLabel } from './members'
+import { MEMBER_EXCLUDED, MEMBER_FOLDER_ONLY, UNATTENDED_EXCLUDED } from './tool-catalog'
 import { slashTokens } from '../../shared/slash'
 import { memoryPromptSection } from './memory'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
@@ -49,33 +44,31 @@ import {
 } from './handoff'
 import { getMcpToolSpecs } from './mcp'
 import { notifyReplyDone } from './reply-notify'
-import {
-  applyTodoWrite,
-  todoReminderText,
-  todoResultText, todoState
-} from './todos'
+import { applyTodoWrite, todoReminderText, todoResultText, todoState } from './todos'
 import {
   deriveTitle,
   ensureSession,
-  getSession, save as saveProject,
-  setSessionArchived, type StoredSession
+  getSession,
+  save as saveProject,
+  setSessionArchived,
+  type StoredSession
 } from './chat-store'
 import {
   buildAttachmentPart
 } from './attachments'
 import { isEn } from '../locale'
-import {
-  clearBrowserOperating, markBrowserTurnEnded
-} from './browser'
+import { clearBrowserOperating, markBrowserTurnEnded } from './browser'
 import {
   createRecorder,
   enforceCap
 } from './checkpoints'
 import {
-  compactSession, lastTurnStart,
+  compactSession,
+  lastTurnStart,
   modelMessages,
   modelStart,
-  needsCompaction, type CompactModelConfig
+  needsCompaction,
+  type CompactModelConfig
 } from './compaction'
 import { clearStaleToolResults } from './tool-results'
 import { repairDanglingToolUses, turnToolIds } from './chat-history'

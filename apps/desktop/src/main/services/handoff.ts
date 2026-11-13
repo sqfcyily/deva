@@ -9,7 +9,7 @@
  * 不调用 = 没有新情况：只留在任务自己的运行记录和任务对话里，主对话不出现、不通知（调度器也不弹通知，见
  * scheduler.ts notifyForRun）。所以提醒、日报这类每次都要让用户看到的，每次都得交——工具说明与系统提示词都写明了。
  *
- * 在会话中运行的任务对主角色来说相当于成员（见 chat.ts askTask）：随成员名单下发，主角色可用 member_send 把用户的
+ * 在会话中运行的任务对主角色来说相当于成员（见 chat-task-handoff.ts askTask）：随成员名单下发，主角色可用 member_send 把用户的
  * 追问转给它（它在自己的对话里回答，回答同样以任务身份发进主对话）、用 member_status 看它最近一次发来的全文。
  * 所以只是告知的长内容不必留在主角色的上下文里：发给模型时换成一行占位（见 stubLongInforms），全文只给用户看。
  *
@@ -19,7 +19,7 @@
 import type { HandoffInfo } from '../../shared/chat-protocol'
 import type { Message, ToolSpec } from '../providers/types'
 
-/** 交接工具名（只在绑定任务的定时运行轮提供，见 chat.ts runTurn）。 */
+/** 交接工具名（只在绑定任务的定时运行轮提供，见 chat-turns.ts runTurn）。 */
 export const HANDOFF_TOOL = 'deliver_result'
 
 /**
@@ -167,7 +167,7 @@ function textOf(m: Message): string {
 
 /**
  * 主对话里每次「只是告知」：[i] 不显示的交接通知、[i+1] 以任务身份显示的回复「任务名：摘要」+ 原文
- * （见 chat.ts commitHandoffs）。逐对回调，给出解析出的交接信息与原文（去掉标题行）。
+ * （见 chat-task-handoff.ts commitHandoffs）。逐对回调，给出解析出的交接信息与原文（去掉标题行）。
  */
 function eachInform(
   history: Message[],

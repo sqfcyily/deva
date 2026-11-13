@@ -1,5 +1,5 @@
 /**
- * 主对话里的「@名字」：渲染层（输入框上色）与主进程（chat.ts handleMentions 认人）共用同一套认法。
+ * 主对话里的「@名字」：渲染层（输入框上色）与主进程（chat-members.ts handleMentions 认人）共用同一套认法。
  */
 
 /**

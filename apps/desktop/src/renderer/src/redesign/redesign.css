@@ -1902,7 +1902,7 @@ body.cf-resizing-y * {
 }
 
 /*
- * 高度可过渡的折叠块（见 ChatFirstShell Fold）：收起 = 行高 1fr → 0fr + 淡出，展开反之。内容裁在 .cf-fold__in 里；
+ * 高度可过渡的折叠块（见 redesign/shell-common.tsx Fold）：收起 = 行高 1fr → 0fr + 淡出，展开反之。内容裁在 .cf-fold__in 里；
  * 收起后内容 visibility: hidden（等过渡放完才藏，不能再被 Tab 到）。时长用 --fold-dur，各处自己覆盖。
  */
 .cf-fold {
@@ -4642,7 +4642,7 @@ button.cf-mask__pill:hover {
   flex: none;
   color: var(--fg-muted);
 }
-/* 运行状态图标（右详情「上次」值 + 运行历史行共用，见 ChatFirstShell RunStatusIcon）：同宽 14px 线框圆形，
+/* 运行状态图标（右详情「上次」值 + 运行历史行共用，见 redesign/TasksPane.tsx RunStatusIcon）：同宽 14px 线框圆形，
    颜色按状态——成功绿、失败红、跳过黄；已中止同对话里「已停止本轮回复」的提示（.msg__notice）：黄色信息图标。 */
 .cf-runicon {
   flex: none;

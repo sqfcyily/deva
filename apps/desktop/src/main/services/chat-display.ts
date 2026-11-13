@@ -1,38 +1,23 @@
 /**
  * 把 provider 消息记录归约成渲染层的展示消息（重开对话时重建对话流）。
  */
-import type {
-  AttachmentChip, DisplayBlock,
-  DisplayMessage
-} from '../../shared/chat-protocol'
+import type { AttachmentChip, DisplayBlock, DisplayMessage } from '../../shared/chat-protocol'
 import { basename } from 'node:path'
-import {
-  type ContentPart, type Message
-} from '../providers/types'
-import {
-  TOOL_SEARCH,
-  USAGE_SUMMARY, isUsageGateResult
-} from './tool-search'
-import {
-  MEMBER_NOTICE_TAG, MEMBER_TASK_MARKER, parseTaskMessage
-} from './members'
+import { type ContentPart, type Message } from '../providers/types'
+import { TOOL_SEARCH, USAGE_SUMMARY, isUsageGateResult } from './tool-search'
+import { MEMBER_NOTICE_TAG, MEMBER_TASK_MARKER, parseTaskMessage } from './members'
 import { normalizeAgentDraft, normalizeAutotaskDraft } from '../../shared/drafts'
 import {
   GENERAL_SUBAGENT
 } from './subagents'
-import {
-  getSubagentMeta, subagentIdFor
-} from './subagent-store'
+import { getSubagentMeta, subagentIdFor } from './subagent-store'
 import {
   parseHandoff
 } from './handoff'
 import {
   type TodoEntry
 } from './todos'
-import {
-  getSession, save as saveProject, type StoredNotice,
-  type StoredSession
-} from './chat-store'
+import { getSession, save as saveProject, type StoredNotice, type StoredSession } from './chat-store'
 import {
   ATTACH_FOLDER_PREFIX,
   ATTACH_PATH_PREFIX,
@@ -41,9 +26,11 @@ import {
 import { isEn } from '../locale'
 import {
   displaySummary,
-  insertBody, isAutoNudge,
+  insertBody,
+  isAutoNudge,
   isCompactionSummary,
-  isTaskNotification, NOTIFY_MARKER
+  isTaskNotification,
+  NOTIFY_MARKER
 } from './compaction'
 import { parseAskQuestions } from './ask-questions'
 import { repairDanglingToolUses } from './chat-history'

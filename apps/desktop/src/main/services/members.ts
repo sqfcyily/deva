@@ -31,7 +31,7 @@ export const MEMBER_TASK_MARKER = '⟦deva:member-task⟧'
 
 /**
  * 成员通知正文的开头标签（交给主智能体的结论、用户直接跟成员说话的同步）。主对话里含它的后台任务通知
- * 不显示那一行（见 chat.ts toDisplayMessages 的 quiet）：交差内容由其后主角色的回复呈现。
+ * 不显示那一行（见 chat-display.ts toDisplayMessages 的 quiet）：交差内容由其后主角色的回复呈现。
  */
 export const MEMBER_NOTICE_TAG = '<成员通知>'
 
@@ -45,7 +45,7 @@ export interface MemberRef {
   personaId: string
   /**
    * 负责的文件夹（绝对路径）；null = 没有文件夹（用户可在成员对话里自己挂）。与成员会话的 focusRoot 同步，读取以成员会话为准
-   * （见 chat.ts memberFolder）：2026-11-09 前 null 表示「跟随主对话」，那些成员会话的 focusRoot 已是当时主对话的目录。
+   * （见 chat-members.ts memberFolder）：2026-11-09 前 null 表示「跟随主对话」，那些成员会话的 focusRoot 已是当时主对话的目录。
    */
   root: string | null
   /** 一句话职责。 */
@@ -425,7 +425,7 @@ export function readMainTool(): ToolSpec {
 /**
  * 成员会话的 report_to_main 工具：本轮的结论交给主智能体处理（唤醒它），不以成员的身份直接回复用户。
  * 成员自己判断：要做的事得用它没有的工具（创建角色 / 技能 / MCP / 定时任务、呈交文件），或要别的成员配合、要主智能体
- * 据此安排下一步。效果在本轮结束时生效（见 chat.ts reportMemberTurn），最终回复照常写，作为交给主智能体的结论。
+ * 据此安排下一步。效果在本轮结束时生效（见 chat-members.ts reportMemberTurn），最终回复照常写，作为交给主智能体的结论。
  */
 export function reportToMainTool(): ToolSpec {
   return {

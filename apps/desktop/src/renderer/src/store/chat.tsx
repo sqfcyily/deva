@@ -230,7 +230,7 @@ export interface ChatMessage {
   task?: MemberTask
   /**
    * 绑定的定时任务交来的结果：需要处理的画成居中一行「任务名 摘要」、点开看全文；只是告知的不显示这一行（quiet），
-   * 其后那条回复以任务的身份显示（见 ChatFirstShell reportOf）。
+   * 其后那条回复以任务的身份显示（见 redesign/Conversation.tsx reportOf）。
    */
   handoff?: HandoffInfo
   /** 助手消息：本轮耗时（毫秒，主进程计时、扣除等用户处置的时间），工作过程折叠条据此显示「已处理 X」。 */
@@ -617,8 +617,8 @@ function isSubagentCall(name: string): boolean {
 
 /**
  * 调用参数 → 子智能体 Task 卡（实时与历史回填共用）。续聊卡的任务正文取 message 并标 continued；
- * 它的 agent / description 由主进程从子智能体记录补进参数（见 chat.ts 的 withSubagentMeta）。
- * 是否后台运行同样由主进程补进参数（background，见 chat.ts 的 subagentDisplayArgs）：模型的原参数看不出来。
+ * 它的 agent / description 由主进程从子智能体记录补进参数（见 chat-display.ts 的 withSubagentMeta）。
+ * 是否后台运行同样由主进程补进参数（background，见 chat-display.ts 的 subagentDisplayArgs）：模型的原参数看不出来。
  */
 function subagentBlock(
   id: string,
