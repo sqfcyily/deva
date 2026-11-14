@@ -52,9 +52,58 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   @media (prefers-color-scheme: dark) { .toolbar button { border-color: #fff4; } }
   .bubble { max-width: 86%; padding: 9px 12px; border-radius: 14px; margin: 6px 0; white-space: pre-wrap;
     word-break: break-word; line-height: 1.45; font-size: 15px; }
-  .bubble.user { background: #0a84ff; color: #fff; margin-left: auto; }
+  /* 用户气泡按内容宽度收缩（短句不拉满整行），并且不许被逐字拆行 */
+  .bubble.user { background: #0a84ff; color: #fff; margin-left: auto; width: fit-content;
+    max-width: 86%; word-break: normal; overflow-wrap: break-word; }
   .bubble.assistant { background: #00000010; }
   @media (prefers-color-scheme: dark) { .bubble.assistant { background: #ffffff18; } }
+  /* 消息行：头像 + 正文两列（照桌面 .cf-msg 的 32px 栅格） */
+  .msg { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 12px; margin: 10px 0; min-width: 0; }
+  .msg .ava { width: 32px; height: 32px; border-radius: 50%; overflow: hidden; background: #00000012; position: relative; }
+  @media (prefers-color-scheme: dark) { .msg .ava { background: #ffffff18; } }
+  .msg .ava img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .msg .ava .dot { position: absolute; top: -2px; right: -2px; width: 9px; height: 9px; border-radius: 50%;
+    background: #ff453a; box-shadow: 0 0 0 2px #f5f5f7; }
+  @media (prefers-color-scheme: dark) { .msg .ava .dot { box-shadow: 0 0 0 2px #1c1c1e; } }
+  .msg__body { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  /* 处理条：名字 + 标题 + 箭头同一行、无框（照桌面 .msg__process-row） */
+  .process-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; min-height: 22px; }
+  .process-row .pname { font-size: 13px; font-weight: 700; color: inherit; }
+  .process-head { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; width: fit-content;
+    padding: 2px 0; border: none; background: none; color: inherit; opacity: .6;
+    font-size: 12.5px; text-align: left; cursor: pointer; }
+  .process-time { font-variant-numeric: tabular-nums; }
+  .process-caret { width: 11px; height: 11px; transition: transform .15s; }
+  .process-fold.is-open .process-caret { transform: rotate(180deg); }
+  .process-body { display: none; padding: 6px 0 0; }
+  .process-fold.is-open .process-body { display: block; }
+  /* 运行中的当前步骤行（照桌面 preview）：spinner + 工具名 */
+  .stepline { display: flex; align-items: center; gap: 8px; font-size: 12.5px; opacity: .65; min-width: 0; }
+  .stepline .spin { width: 12px; height: 12px; flex: none; border: 1.5px solid #8886; border-top-color: #0a84ff;
+    border-radius: 50%; animation: wb-spin .8s linear infinite; }
+  @keyframes wb-spin { to { transform: rotate(360deg); } }
+  .stepline .arg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 待插入胶囊（照桌面 .cf-ins__pill）：输入框上方一行，右侧可撤回 */
+  .ins-pill { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; padding: 5px 6px 5px 10px;
+    border: 1px solid #0002; border-radius: 10px; font-size: 12px; background: #00000008; }
+  @media (prefers-color-scheme: dark) { .ins-pill { border-color: #fff3; background: #ffffff10; } }
+  .ins-pill .tag { color: #0a84ff; font-weight: 600; flex: none; }
+  .ins-pill .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .75; }
+  .ins-pill button { flex: none; border: 1px solid #0003; background: none; color: inherit;
+    border-radius: 7px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
+  @media (prefers-color-scheme: dark) { .ins-pill button { border-color: #fff4; } }
+  /* 交付文件卡（照桌面 DeliveryCards：回合结束后排在最后） */
+  .files { border: 1px solid #0002; border-radius: 12px; margin: 8px 0; overflow: hidden; }
+  @media (prefers-color-scheme: dark) { .files { border-color: #fff3; } }
+  .files .fh { padding: 8px 12px; font-size: 12px; font-weight: 600; opacity: .65; border-bottom: 1px solid #0001; }
+  @media (prefers-color-scheme: dark) { .files .fh { border-color: #fff2; } }
+  .files a { display: flex; gap: 8px; align-items: center; padding: 9px 12px; font-size: 13.5px;
+    color: #0a84ff; text-decoration: none; border-bottom: 1px solid #0001; }
+  @media (prefers-color-scheme: dark) { .files a { border-color: #fff2; } }
+  .files a:last-child { border-bottom: none; }
+  .files .ext { width: 34px; height: 26px; border-radius: 7px; background: #00000010; display: inline-flex;
+    align-items: center; justify-content: center; font-size: 9px; font-weight: 700; color: inherit; opacity: .6; flex: none; }
+  @media (prefers-color-scheme: dark) { .files .ext { background: #ffffff14; } }
   .rowline { font-size: 12px; opacity: .6; margin: 4px 0; }
   .note { text-align: center; font-size: 12px; opacity: .55; margin: 6px 0; }
   .cardbox { border: 1px solid #0a84ff66; border-radius: 12px; padding: 12px 14px; margin: 8px 0; }
@@ -72,7 +121,9 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
     display: flex; gap: 8px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); background: inherit; border-top: 1px solid #0001; }
   @media (prefers-color-scheme: dark) { .composer { border-color: #fff2; } }
   .composer input { flex: 1; }
-  .composer button { width: 64px; border: none; border-radius: 10px; background: #0a84ff; color: #fff; font-size: 14px; cursor: pointer; }
+  .composer input { min-width: 0; }
+  .composer button { padding: 0 16px; height: 40px; border: none; border-radius: 10px; background: #0a84ff;
+    color: #fff; font-size: 14px; cursor: pointer; flex: none; }
   .composer button.stop { background: #ff453a; }
   .hidden { display: none !important; }
 </style>
@@ -108,8 +159,8 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
     </div>
   </main>
   <div class="composer hidden" id="composer">
-    <input type="text" id="cInput" placeholder="发消息…" autocomplete="off">
-    <button id="cStop" class="stop hidden">停止</button>
+    <div class="ins-pill hidden" id="insPill"><span class="tag">待插入</span><span class="txt" id="insTxt"></span><button id="insWd" type="button">撤回</button></div>
+    <input type="text" id="cInput" placeholder="交代一个目标…" autocomplete="off">
     <button id="cSend">发送</button>
   </div>
 </div>
@@ -118,7 +169,11 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   'use strict'
   var TOKEN_KEY = 'deva.web.token'
   var state = { token: localStorage.getItem(TOKEN_KEY) || '', view: 'pair', sessions: [], sid: null,
-    sseAbort: null, lastEventId: 0, activeTurn: null, bubbleByTurn: {}, toolById: {}, cards: {}, unknown: 0, pollTimer: null }
+    sseAbort: null, lastEventId: 0, activeTurn: null, bubbleByTurn: {}, toolById: {}, cards: {}, unknown: 0, pollTimer: null,
+    // 移动端打磨（外部网关移植）：personaId→头像 dataURI 缓存；待插入队列；本回合起点锚；
+    // 已读标记（列表红点）；当前消息角色名
+    avatarByPersona: {}, inserts: [], turnStartedAt: 0, turnElapsed: 0, readAt: {}, pname: '', procTimer: null,
+    procEl: null, procSteps: 0, procThinking: false, curToolRunning: [] }
   // 诊断探针：wedge 排查用（SSE 帧到达时刻/计数、重连次数、最近的 fetch 异常）
   window.__wb = { lastFrameAt: 0, frameCount: 0, sseReconnects: 0, sseClosed: 0, lastFetchError: '', frameErrors: [] }
 
@@ -127,6 +182,41 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   function show(id) { $(id).classList.remove('hidden') }
   function hide(id) { $(id).classList.add('hidden') }
   function fmtTime(ms) { var d = new Date(ms); return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes() }
+  // 秒 →「1 分 12 秒」（照桌面 chat.process.*：高位为 0 省略、秒恒显示）
+  function fmtDuration(sec) {
+    sec = Math.max(0, Math.floor(sec))
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), r = sec % 60
+    return h ? h + ' 小时 ' + m + ' 分 ' + r + ' 秒' : m ? m + ' 分 ' + r + ' 秒' : r + ' 秒'
+  }
+  // 已读标记：本设备看过某会话「完成」的时间，localStorage 持久（手机锁屏回来也不丢）
+  function markRead(sid, at) {
+    if (!sid) return
+    try {
+      var all = JSON.parse(localStorage.getItem('deva.web.read') || '{}')
+      all[sid] = Math.max(all[sid] || 0, at || Date.now())
+      localStorage.setItem('deva.web.read', JSON.stringify(all))
+    } catch (e) {}
+  }
+  function isUnread(s) {
+    if (s.busy) return false
+    var all = {}
+    try { all = JSON.parse(localStorage.getItem('deva.web.read') || '{}') } catch (e) {}
+    return (s.completedAt || 0) > (all[s.id] || 0)
+  }
+  // 角色徽标：用角色首字 + FNV 配色的圆形占位（配色取样与 shared/avatar-shape 同源思路）。
+  // 真 Humation 头像只在渲染层能画；接它需要通道新增端点，见 PR 描述的后续建议。
+  function avatarFor(personaId, name) {
+    var seed = personaId || name || '?'
+    var h = 0x811c9dc5
+    for (var i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 0x01000193) }
+    var hue = (h >>> 0) % 360
+    var ch = (name || seed || '?').trim().slice(0, 1).toUpperCase() || '?'
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+      '<rect width="32" height="32" fill="hsl(' + hue + ',58%,52%)"/>' +
+      '<text x="16" y="21" text-anchor="middle" font-family="system-ui" font-size="14" font-weight="700" fill="#fff">' +
+      ch.replace('&', '&amp;').replace('<', '&lt;') + '</text></svg>')
+  }
 
   function api(path, opts) {
     opts = opts || {}
@@ -174,11 +264,30 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
       if (!state.sessions.length) box.appendChild(el('div', 'note', '没有会话，点上方「+ 新对话」开始。'))
       state.sessions.forEach(function (s) {
         var row = el('div', 'row')
-        var s1 = el('div', 's1'); s1.appendChild(el('span', null, s.title || '(无标题)'))
+        row.style.display = 'flex'; row.style.gap = '10px'
+        var ava = el('span', 'ava')
+        ava.style.cssText = 'width:36px;height:36px;border-radius:50%;overflow:hidden;position:relative;flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff'
+        var img = document.createElement('img')
+        img.src = avatarFor(s.personaId, (s.personaName || s.title || '?').slice(0, 1))
+        img.alt = ''; img.style.cssText = 'width:100%;height:100%;object-fit:cover'
+        ava.appendChild(img)
+        if (isUnread(s)) ava.appendChild(el('span', 'dot'))
+        row.appendChild(ava)
+        var body = el('div', null)
+        body.style.cssText = 'flex:1;min-width:0'
+        var s1 = el('div', 's1')
+        var tt = el('span', null, s.title || '(无标题)')
+        tt.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'
+        s1.appendChild(tt)
+        // 右上角色名（照桌面列表）
+        var pn = el('span', null, s.personaName || '')
+        pn.style.cssText = 'font-size:11px;opacity:.6;flex:none;white-space:nowrap'
+        if (s.personaName) s1.appendChild(pn)
         if (s.busy) s1.appendChild(el('span', 'badge busy', '进行中'))
         if (s.pendingCard) s1.appendChild(el('span', 'badge', '待操作'))
-        row.appendChild(s1)
-        row.appendChild(el('div', 's2', (s.lastMessage ? s.lastMessage + ' · ' : '') + fmtTime(s.updatedAt)))
+        body.appendChild(s1)
+        body.appendChild(el('div', 's2', (s.lastMessage ? s.lastMessage + ' · ' : '') + fmtTime(s.updatedAt)))
+        row.appendChild(body)
         row.onclick = function () { openSession(s.id, s.title) }
         box.appendChild(row)
       })
@@ -191,9 +300,14 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   function openSession(id, title) {
     state.sid = id; state.view = 'chat'; state.lastEventId = 0; state.activeTurn = null
     state.bubbleByTurn = {}; state.toolById = {}; state.cards = {}; state.unknown = 0
+    state.liveWrap = null; state.inserts = []; state.liveThinking = false
     stopPoll(); hide('#listView'); show('#chatView'); show('#composer'); show('#hdr')
     $('#btnBack').classList.remove('hidden'); $('#hTitle').textContent = title || '对话'; $('#hSub').textContent = ''
     $('#timeline').textContent = ''
+    // 会话详情带 personaName（server.ts 已有），取来给消息行和列表用
+    api('/api/sessions/' + id).then(function (r) {
+      if (r.status === 200 && r.j.personaName) state.pname = r.j.personaName
+    }).catch(function () {})
     backfill(); sseLoop()
   }
 
@@ -214,20 +328,94 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
       else if (m.card.kind === 'plan') renderPlan(m.card.key, m.card.plan, true)
       return
     }
-    if (m.role === 'user' && m.text) addBubble('user', m.text)
+    if (m.role === 'user' && (m.text || m.attachments)) addBubble('user', m.text || '')
     if (m.role === 'assistant') {
-      if (m.text) addBubble('assistant', m.text)
-      ;(m.tools || []).forEach(function (t) { addToolRow('t' + Math.random(), t, null) })
-      if (m.attachments) tl.appendChild(el('div', 'rowline', '[' + m.attachments + ' 个附件]'))
-      ;(m.files || []).forEach(function (f) { tl.appendChild(fileLink(f)) })
+      // 照桌面 ProcessFold：名字 + 「已处理 X · N 步」同一行、默认收起，最终回答在外
+      var steps = (m.tools || []).length
+      var wrap = assistantMsg(m.durationMs || 0, steps, false)
+      var bodyEl = wrap.querySelector('.msgbd')
+      if (m.text) bodyEl.appendChild(el('div', 'bubble assistant', m.text))
+      if ((m.files || []).length) bodyEl.appendChild(filesCard(m.files))
+      tl.appendChild(wrap)
     }
   }
 
+  /**
+   * 助手消息容器（照桌面 .cf-msg）：头像 + 角色/处理条同行 + 正文区。
+   * live=true 时标题为「处理中 · N 步 · X 秒」并每秒走表；结束后由 done 帧的 durationMs 定格「已处理」。
+   */
+  function assistantMsg(durationMs, steps, live, personaName) {
+    var pn = personaName || state.pname || 'Deva'
+    var wrap = el('div', 'msg')
+    var ava = el('span', 'ava')
+    var img = document.createElement('img')
+    img.src = avatarFor(state.pAvatarId, pn)
+    img.alt = ''
+    ava.appendChild(img)
+    wrap.appendChild(ava)
+    var bodyEl = el('div', 'msgbd')
+    var fold = el('div', 'process-fold')
+    var row = el('div', 'process-row')
+    row.appendChild(el('span', 'pname', pn))
+    var head = el('button', 'process-head')
+    head.type = 'button'
+    head.innerHTML = '<span class="plabel"></span><svg class="process-caret" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m3 4.5 3 3 3-3"/></svg>'
+    row.appendChild(head)
+    fold.appendChild(row)
+    var foldBody = el('div', 'process-body')
+    fold.appendChild(foldBody)
+    bodyEl.appendChild(fold)
+    wrap.appendChild(bodyEl)
+    wrap.__fold = fold; wrap.__plabel = head.querySelector('.plabel'); wrap.__foldBody = foldBody
+    paintProcess(wrap, { live: live, durationMs: durationMs, steps: steps })
+    head.onclick = function () { fold.classList.toggle('is-open') }
+    return wrap
+  }
+
+  /** 填处理条标题：live=处理中+计时；否则已处理/已执行/已思考（照桌面 blocks.tsx 2051-2065）。 */
+  function paintProcess(wrap, o) {
+    if (!wrap || !wrap.__plabel) return
+    var n = o.steps || 0
+    var count = n ? ' · ' + n + ' 步' : ''
+    var label
+    if (o.live) label = '处理中' + count + ' · ' + fmtDuration((Date.now() - (state.turnStartedAt || Date.now())) / 1000)
+    else if (o.durationMs > 0) label = (n === 1 && o.thoughtOnly ? '已思考 ' : '已处理 ') + fmtDuration(o.durationMs / 1000) + (o.thoughtOnly ? '' : count)
+    else label = n ? '已执行 ' + n + ' 步' : '已思考'
+    wrap.__plabel.textContent = label
+  }
+
+  /** 运行中每秒只刷新处理条文字（不重绘时间线，不冲掉卡片输入）。 */
+  function startProcTimer(wrap, stepsOf) {
+    stopProcTimer()
+    state.procEl = wrap
+    state.procSteps = stepsOf
+    state.procTimer = setInterval(function () {
+      if (!state.activeTurn || !state.procEl || !state.procEl.isConnected) { stopProcTimer(); return }
+      paintProcess(state.procEl, { live: true, steps: stepsOf() })
+    }, 1000)
+  }
+  function stopProcTimer() { if (state.procTimer) { clearInterval(state.procTimer); state.procTimer = null } }
+
   function fileLink(f) {
-    var a = el('a', 'filelink', (f.image ? '\\uD83D\\uDDBC ' : '\\uD83D\\uCCE4 ') + f.name + (f.size != null ? ' (' + Math.round(f.size / 1024) + 'KB)' : ''))
+    // 注意：不要先把文件名当 a 的文本，否则会与下面的 meta 各渲染一份（截图上文件名叫了两遍）
+    var a = el('a')
     a.href = '/api/files?path=' + encodeURIComponent(f.path) + '&session=' + encodeURIComponent(state.sid)
     a.target = '_blank'; a.rel = 'noopener'
+    var ext = ((f.name || '').split('.').pop() || '?').toUpperCase().slice(0, 4)
+    a.appendChild(el('span', 'ext', ext))
+    var meta = el('span', null, f.name || '文件')
+    meta.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'
+    a.appendChild(meta)
+    if (f.size != null) a.appendChild(el('span', null, Math.round(f.size / 1024) + 'KB'))
     return a
+  }
+
+  /** 把一组交付文件合成一张卡（照桌面 DeliveryCards：回合结束后排在回复末尾）。 */
+  function filesCard(files) {
+    var box = el('div', 'files')
+    box.appendChild(el('div', 'fh', '交付文件 · ' + files.length))
+    files.forEach(function (f) { box.appendChild(fileLink(f)) })
+    return box
   }
 
   function addBubble(role, text) {
@@ -237,8 +425,63 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
     return b
   }
 
+  /**
+   * live 回合容器：assistantMsg + 当前步骤行（照桌面 preview——正在运行的工具一并列出，最多 5 行）。
+   * 工具行挂进 .process-body（折叠体里，点开看全部），当前步骤行挂在折叠条下方。
+   */
+  function liveMsg() {
+    var wrap = assistantMsg(0, 0, true, state.pname)
+    wrap.__steps = []
+    var stepBox = el('div')
+    wrap.__stepBox = stepBox
+    wrap.__foldBody.parentElement.insertBefore(stepBox, wrap.__foldBody)
+    state.liveWrap = wrap
+    $('#timeline').appendChild(wrap)
+    $('#timeline').scrollTop = $('#timeline').scrollHeight
+    startProcTimer(wrap, function () { return wrap.__steps.length })
+    return wrap
+  }
+
+  /** 把一条工具写进 live 回合：折叠体一行 + 若在运行则同时是「当前步骤」行。 */
+  function liveTool(id, name, summary, running) {
+    var wrap = state.liveWrap
+    if (!wrap) return null
+    var line = el('div', 'rowline', (running ? '⚙ ' : '✓ ') + name + (summary ? ' — ' + summary : '…'))
+    wrap.__foldBody.appendChild(line)
+    wrap.__steps.push({ id: id, name: name, summary: summary, running: running, line: line })
+    paintCurrentSteps(wrap)
+    $('#timeline').scrollTop = $('#timeline').scrollHeight
+    return line
+  }
+
+  /** 当前步骤行（照桌面 currentSteps：运行中的并列出，最多 5 行；无运行中且末步后无正文则露末步）。 */
+  function paintCurrentSteps(wrap) {
+    if (!wrap || !wrap.__stepBox) return
+    var running = wrap.__steps.filter(function (x) { return x.running })
+    var box = wrap.__stepBox
+    box.textContent = ''
+    if (state.liveThinking) return // 思考中标题已写「思考中」，不重复节点
+    if (running.length) {
+      running.slice(-5).forEach(function (s) {
+        var line = el('div', 'stepline')
+        line.appendChild(el('span', 'spin'))
+        line.appendChild(el('span', 'arg', s.name + (s.summary ? ' · ' + s.summary : '')))
+        box.appendChild(line)
+        s.liveLine = line
+      })
+    } else if (wrap.__steps.length) {
+      var last = wrap.__steps[wrap.__steps.length - 1]
+      var line = el('div', 'stepline')
+      line.appendChild(el('span', 'spin'))
+      line.appendChild(el('span', 'arg', last.name + (last.summary ? ' · ' + last.summary : '')))
+      box.appendChild(line)
+    }
+  }
+
   function addToolRow(id, name, summary) {
-    var line = el('div', 'rowline', (summary ? (summary.indexOf('\\u2717') === 0 ? '' : '\\u2713 ') : '\\u2699 ') + name + (summary ? ' — ' + summary : '…'))
+    // live 回合期间：工具行进折叠体 + 当前步骤行；回填时退回旧的平铺行
+    if (state.liveWrap) return liveTool(id, name, summary, true)
+    var line = el('div', 'rowline', '⚙ ' + name + (summary ? ' — ' + summary : '…'))
     line.id = id
     var tl = $('#timeline'); tl.appendChild(line); tl.scrollTop = tl.scrollHeight
     state.toolById[id] = line
@@ -350,50 +593,105 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   function handleFrame(d) {
     window.__wb.lastFrameAt = Date.now()
     window.__wb.frameCount++
-    var tl = $('#timeline')
     if (d.type === 'turn_start') {
       var u = d.user || {}
       if (!u.notify && !u.quiet && u.text) addBubble('user', u.text)
       if (d.turnId) state.activeTurn = d.turnId
+      // 计时锚点：本地收到 turn_start 的时刻（协议帧暂不带 startedAt；误差可接受，见 PR 描述）
+      state.turnStartedAt = Date.now()
+      state.turnElapsed = 0
+      var sess = state.sessions.find(function (x) { return x.id === state.sid })
+      state.pname = (sess && sess.personaName) || state.pname || 'Deva'
+      liveMsg()
       setStopMode(true)
     } else if (d.type === 'text_delta') {
-      var b = state.bubbleByTurn[d.turnId]
-      if (!b) { b = addBubble('assistant', ''); state.bubbleByTurn[d.turnId] = b }
+      var wrap = state.liveWrap
+      if (!wrap) { var bb = addBubble('assistant', ''); bb.textContent += d.text || ''; return }
+      var bodyEl = wrap.querySelector('.msgbd')
+      var b = bodyEl.querySelector('.bubble.assistant:last-child')
+      if (!b) { b = el('div', 'bubble assistant', ''); bodyEl.appendChild(b) }
       b.textContent += d.text || ''
-      tl.scrollTop = tl.scrollHeight
+      // 最后一步之后已在输出正文 → 收起当前步骤行（照桌面 currentSteps 语义）
+      wrap.__stepBox.textContent = ''
+      $('#timeline').scrollTop = $('#timeline').scrollHeight
+    } else if (d.type === 'thinking_delta') {
+      state.liveThinking = true
+      var wl = state.liveWrap
+      if (wl && wl.__plabel) wl.__plabel.textContent = '思考中'
     } else if (d.type === 'tool_call') {
-      state.toolById[d.id] = addToolRow(d.id, d.name || '工具', null)
+      state.liveThinking = false
+      addToolRow(d.id, d.name || '工具', null)
     } else if (d.type === 'tool_result') {
-      var line = state.toolById[d.id]
-      if (line) line.textContent = (d.isError ? '\\u2717 ' : '\\u2713 ') + (d.name || '') + (d.summary ? ' — ' + d.summary : '')
+      var wrap2 = state.liveWrap
+      var steps = wrap2 ? wrap2.__steps : []
+      var st = null
+      for (var si = steps.length - 1; si >= 0; si--) if (steps[si].id === d.id) { st = steps[si]; break }
+      if (st) { st.running = false; st.summary = d.summary || ''; if (st.line) st.line.textContent = (d.isError ? '✗ ' : '✓ ') + (d.name || '') + (d.summary ? ' — ' + d.summary : '') }
+      if (wrap2) paintCurrentSteps(wrap2)
+      // present_files 完成：拉 deliveries 清单合成一张卡（照桌面 DeliveryCards）
+      if (d.name === 'present_files' && !d.isError && wrap2 && state.sid) {
+        api('/api/sessions/' + state.sid + '/deliveries?toolUseId=' + encodeURIComponent(d.id))
+          .then(function (r) {
+            if (r.status !== 200 || !r.j.files || !r.j.files.length) return
+            var bd = wrap2.querySelector('.msgbd')
+            if (bd && wrap2.isConnected) bd.appendChild(filesCard(r.j.files))
+          }).catch(function () {})
+      }
     } else if (d.type === 'ask_user') {
       renderAsk(d.key, d.questions, false)
     } else if (d.type === 'plan_review') {
       renderPlan(d.key, d.plan, false)
     } else if (d.type === 'mount_request') {
       renderMount(d.key, d.tool, d.path, d.member)
+    } else if (d.type === 'inserts') {
+      // 待插入队列（桌面 inserts 事件同帧）：显示胶囊
+      state.inserts = Array.isArray(d.pending) ? d.pending : []
+      var pill = $('#insPill')
+      if (pill) {
+        pill.classList.toggle('hidden', state.inserts.length === 0)
+        if (state.inserts.length) $('#insTxt').textContent = state.inserts[state.inserts.length - 1] + (state.inserts.length > 1 ? ' +' + (state.inserts.length - 1) : '')
+      }
     } else if (d.type === 'replay_reset') {
-      // 协议恢复语义：Last-Event-ID 早于缓冲最老一帧时服务端发本帧并关闭连接，要求客户端
-      // 重新拉 /messages 整体回填、且不再带旧 id 续传（否则服务端会再次 reset+关闭，死循环）
       state.lastEventId = 0
       backfill()
     } else if (d.type === 'interaction_resolved') {
-      markResolved(d.key, '\\u2713 已处理')
+      markResolved(d.key, '✓ 已处理')
     } else if (d.type === 'done') {
+      // 定格处理条：done 带净耗时（扣除等答题等），照桌面「已处理 X · N 步」
+      var fw = state.liveWrap
+      if (fw) paintProcess(fw, { live: false, durationMs: d.durationMs || 0, steps: fw.__steps.length })
+      stopProcTimer()
+      state.liveWrap = null
       state.bubbleByTurn = {}
       if (d.stopReason === 'aborted') addNote('已停止')
       else if (d.stopReason && d.stopReason !== 'end_turn') addNote('回合结束（' + d.stopReason + '）')
-      state.activeTurn = null; setStopMode(false); loadSessions()
+      state.activeTurn = null; setStopMode(false)
+      var cur = state.sessions.find(function (x) { return x.id === state.sid })
+      if (cur) { cur.busy = false; cur.completedAt = Date.now() }
+      markRead(state.sid, Date.now())
+      loadSessions()
     } else {
       state.unknown++
     }
   }
 
+  /**
+   * 单键三态（照桌面 canInsert = streaming && 输入框有字）：
+   *   空闲 → 「发送」；流式中输入框有字 → 「发送」（实为插入当前轮）；流式中空 → 「停止」。
+   * 要停止就先清空输入框——桌面刻意的设计，避免想补话时误触停止。
+   */
   function setStopMode(busy) {
-    var b = $('#cStop')
-    if (busy) b.classList.remove('hidden')
-    else b.classList.add('hidden')
+    var b = $('#cSend')
+    var inp = $('#cInput')
+    if (!b || !inp) return
+    var stopMode = busy && !inp.value.trim()
+    b.textContent = stopMode ? '停止' : '发送'
+    b.classList.toggle('stop', stopMode)
+    inp.placeholder = busy ? '补充或纠正，当前步骤结束后交给 ' + (state.pname || 'Deva') + '…' : '交代一个目标…'
   }
+  $('#cInput').addEventListener('input', function () {
+    if (state.activeTurn) setStopMode(true)
+  })
 
   function stopTurn() {
     if (state.activeTurn) api('/api/turns/' + state.activeTurn + '/abort', { method: 'POST' }).catch(function () {})
@@ -413,10 +711,10 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
           if (chunk.done) throw new Error('stream end')
           buf += dec.decode(chunk.value, { stream: true })
           var idx
-          while ((idx = buf.indexOf('\\n\\n')) >= 0) {
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
             var block = buf.slice(0, idx); buf = buf.slice(idx + 2)
             var dataLine = null
-            block.split('\\n').forEach(function (ln) {
+            block.split('\n').forEach(function (ln) {
               if (ln.indexOf('id:') === 0) state.lastEventId = parseInt(ln.slice(3).trim(), 10) || state.lastEventId
               else if (ln.indexOf('data:') === 0) dataLine = ln.slice(5).trim()
             })
@@ -443,9 +741,17 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
 
   function stopSse() { if (state.sseAbort) { state.sseAbort.abort(); state.sseAbort = null } }
 
+  /**
+   * 同一枚键的分发（照桌面 canInsert = streaming && 输入框有字）：
+   *   空闲 → 发新消息；运行中 + 有字 → 插入当前轮（服务端 busy→insert）；
+   *   运行中 + 空   → 停止当前轮。要停止就先清空输入框。
+   */
+  function onSendClick() {
+    if (state.activeTurn && !$('#cInput').value.trim()) { stopTurn(); return }
+    send()
+  }
+
   function send() {
-    // 发送永远发消息：回合忙时服务端 busy→insert 回退（与桌面/IM 同语义）；
-    // 停止是独立按钮（卡片待答时回合挂着 activeTurn，若把发送兼做停止会误中止回合）
     var inp = $('#cInput'); var text = inp.value.trim()
     if (!text || !state.sid) return
     var b = $('#cSend')
@@ -453,8 +759,9 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
     api('/api/sessions/' + state.sid + '/send', { method: 'POST', body: { text: text } }).then(function (r) {
       b.disabled = false
       if (r.status !== 200) { addNote(r.j.error || '发送失败'); return }
-      if (r.j.inserted) addNote('回合进行中，已插入队列')
+      if (r.j.inserted) addNote('已排队，当前步骤结束后交给 ' + (state.pname || 'Deva'))
       inp.value = ''
+      setStopMode(!!state.activeTurn)
     }).catch(function () { b.disabled = false; addNote('发送超时或网络错误——若反复出现请刷新页面（连接池可能被浏览器耗尽）') })
   }
 
@@ -492,10 +799,23 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   }
   $('#btnRefresh').onclick = loadSessions
   $('#btnLogout').onclick = function () { logout('已退出配对。') }
-  $('#btnBack').onclick = function () { state.sid = null; stopSse(); showList() }
+  $('#btnBack').onclick = function () { state.sid = null; stopSse(); stopProcTimer(); showList() }
   $('#cSend').onclick = send
-  $('#cStop').onclick = stopTurn
-  $('#cInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') send() })
+  $('#cSend').onclick = onSendClick
+  $('#cInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') onSendClick() })
+  // 撤回本轮未送达的插入（桌面 chat.withdrawInserts 同语义：原文还回输入框）
+  $('#insWd').onclick = function () {
+    if (!state.sid) return
+    api('/api/sessions/' + state.sid + '/withdraw-inserts', { method: 'POST' }).then(function (r) {
+      if (r.status === 200 && r.j && r.j.text) {
+        var inp = $('#cInput')
+        inp.value = inp.value.trim() ? r.j.text + ' ' + inp.value : r.j.text
+      }
+      state.inserts = []
+      $('#insPill').classList.add('hidden')
+      setStopMode(!!state.activeTurn)
+    }).catch(function () {})
+  }
 
   boot()
 })()
