@@ -19,6 +19,7 @@ import type { MemberRunStatus } from '../../shared/chat-protocol'
 import { isAbsolute, resolve } from 'path'
 import type { Message, ToolSpec } from '../providers/types'
 import { isAutoNudge, isCompactionSummary, isTaskNotification } from './compaction'
+import { shownText } from './skill-invoke'
 
 /** 一个主对话的成员上限（含已移除的不算）。 */
 export const MAX_MEMBERS = 10
@@ -139,11 +140,11 @@ export function resolveMemberFolder(folder: string, mainRoot: string | null): st
 export function realUserText(m: Message): string | null {
   if (m.role !== 'user') return null
   if (isCompactionSummary(m) || isAutoNudge(m) || isTaskNotification(m)) return null
-  if (typeof m.content === 'string') return m.content
+  if (typeof m.content === 'string') return shownText(m.content)
   if (m.content.some((p) => p.type === 'tool_result')) return null
   for (let i = m.content.length - 1; i >= 0; i--) {
     const p = m.content[i]
-    if (p.type === 'text') return p.text
+    if (p.type === 'text') return shownText(p)
   }
   return ''
 }
