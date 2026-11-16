@@ -29,7 +29,7 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
   const [editingAvatar, setEditingAvatar] = useState(false)
   const [savingAvatar, setSavingAvatar] = useState(false)
 
-  const { mem, pending, errorText, handlers, clearAll } = useMemoryEditor({
+  const { mem, pending, errorText, handlers, clearAll, archive, restore } = useMemoryEditor({
     clearTitle: t('cf.profile.memClear'),
     clearConfirm: t('cf.profile.memClearConfirm')
   })
@@ -108,6 +108,40 @@ export function ProfilePanel({ onClose }: { onClose: () => void }): React.JSX.El
                 entries={mem?.entries ?? null}
                 h={handlers}
               />
+
+              {/* 遗忘区：归档的旧记忆不进注入预算，这里只读展示 + 「取回」。
+                  没有归档条目不渲染，免得占版面。 */}
+              {archive && archive.count > 0 && (
+                <section className="cf-arc" aria-label={t('cf.profile.arcTitle')}>
+                  <div className="cf-arc__head">
+                    <span className="cf-arc__name">{t('cf.profile.arcTitle')}</span>
+                    <span className="cf-arc__count">
+                      {fill(t('cf.profile.arcCount'), { n: archive.count, chars: archive.chars })}
+                    </span>
+                  </div>
+                  <div className="cf-arc__list">
+                    {archive.entries.slice(-12).reverse().map((e) => (
+                      <div key={e.id} className="cf-arc__row">
+                        <span className="cf-arc__text" title={e.content}>
+                          {e.content}
+                        </span>
+                        <button
+                          type="button"
+                          className="cf-arc__restore"
+                          disabled={pending}
+                          onClick={() => restore(e.id)}
+                        >
+                          {t('cf.profile.arcRestore')}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  {archive.count > 12 && (
+                    <div className="cf-arc__more">{fill(t('cf.profile.arcMore'), { n: archive.count - 12 })}</div>
+                  )}
+                  <div className="cf-arc__hint">{t('cf.profile.arcHint')}</div>
+                </section>
+              )}
 
               <div className="cf-editor__actions cf-me__actions">
                 <button

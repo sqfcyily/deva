@@ -22,6 +22,7 @@ import {
   PROJECT_MEMORY_BUDGET_CHARS,
   formatMemoryLine,
   listMemories,
+  markMemoriesSeen,
   type MemoryEntry
 } from './memory'
 import { NO_FOLDER } from './members'
@@ -171,6 +172,11 @@ export function memoryListingPart(history: Message[], root: string | null): Text
   ]
   const d = diffListing(history, 'memory', items, (i) => i.entry.id, (i) => i.entry.content)
   if (!d) return null
+
+  // 埋点：本次真正附给模型的这批条目算「用过了」（淘汰排序的主信号，见 memory-archive 的 pickEvictionVictims）。
+  // 只在 listing 真正产出时记一次，diff 为 null（没有变化、不发清单）时不记——那是真的没用上。
+  markMemoriesSeen(GLOBAL_SCOPE, g.kept.map((e) => e.id))
+  if (root) markMemoriesSeen({ kind: 'project', root }, p.kept.map((e) => e.id))
 
   const lines = [
     d.initial

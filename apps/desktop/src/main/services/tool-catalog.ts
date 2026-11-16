@@ -44,6 +44,10 @@ const CATALOG: Record<string, ToolTraits> = {
   web_fetch: { category: 'read', parallel: true },
   // 读记忆：主进程直读 ~/.deva 下的全局 / 项目记忆，无路径入参。
   memory_read: { category: 'read', parallel: true },
+  // 查遗忘区（只读归档文件，不写主记忆）。
+  memory_recall: { category: 'read', parallel: true },
+  // 记忆体检（dry-run）：只列建议、不改任何东西，属读类。
+  memory_check: { category: 'read', parallel: true },
 
   // ── 写 / 执行 ──
   write_file: { category: 'edit', path: 'file' },
@@ -71,8 +75,13 @@ const CATALOG: Record<string, ToolTraits> = {
   create_mcp: { subagent: false, unattended: false, member: false },
 
   // ── 写 / 删记忆：无人看管时不得改写（免得被任务抓取的外部内容悄悄污染）──
+  // memory_merge 也是写操作（它搬原文进遗忘区、换掉主记忆条目），一并排除在无人值守之外。
   memory_write: { subagent: false, unattended: false, member: 'with-folder' },
   memory_delete: { subagent: false, unattended: false, member: 'with-folder' },
+  memory_merge: { subagent: false, unattended: false, member: 'with-folder' },
+  // memory_tidy 允许无人值守：它不改写、不概括、不删原文（只搬进遗忘区 + 按顺序拼接重复条目），
+  // 产生不了新知识，因此不存在「被任务抓的外部内容污染记忆」的风险。
+  memory_tidy: { subagent: false, member: 'with-folder' },
 
   // ── 交付文件：只核对文件存在，不读内容、不写盘 ──
   present_files: { category: 'read', subagent: false, member: false },

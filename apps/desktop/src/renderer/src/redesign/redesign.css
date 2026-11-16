@@ -4118,6 +4118,74 @@ button.cf-mask__pill:hover {
 .cf-me__board .cf-me__err {
   padding-inline: var(--space-5);
 }
+/* ── 遗忘区（归档的旧记忆，不进注入预算；只读展示 + 取回）── */
+.cf-arc {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: 11.5px;
+}
+.cf-arc__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--fg-mute);
+}
+.cf-arc__name {
+  font-weight: 600;
+}
+.cf-arc__count {
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.cf-arc__list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.cf-arc__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.cf-arc__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+.cf-arc__restore {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 11px;
+  border-radius: 5px;
+  border: 1px solid var(--line-soft);
+  background: transparent;
+  color: var(--fg-mute);
+  cursor: pointer;
+}
+.cf-arc__restore:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-subtle);
+}
+.cf-arc__restore:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.cf-arc__more,
+.cf-arc__hint {
+  color: var(--fg-subtle);
+  font-size: 11px;
+}
+
 .cf-me__hint {
   margin: 0;
   color: var(--fg-muted);

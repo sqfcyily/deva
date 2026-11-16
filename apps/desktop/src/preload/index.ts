@@ -279,6 +279,17 @@ export interface MemoryEntry {
   content: string
   createdAt: number
   updatedAt: number
+  /** 上次被注入进上下文的时间戳（淘汰排序的主信号）。 */
+  lastSeenAt?: number
+  /** 被注入进上下文的次数。 */
+  seenCount?: number
+}
+/** 遗忘区条目（归档后的完整原文 + 元信息）。 */
+export interface ArchiveEntry extends MemoryEntry {
+  originalId: string
+  fromScope: 'global' | 'project'
+  archivedAt: number
+  reason: 'budget' | 'entries' | 'manual'
 }
 export interface MemorySnapshot {
   entries: MemoryEntry[]
@@ -288,6 +299,13 @@ export interface MemorySnapshot {
   budget: number
   maxEntries: number
   maxChars: number
+  /** 遗忘区统计：归档区不吃注入预算，故不进 used。 */
+  archive: { count: number; chars: number }
+}
+export interface ArchiveSnapshot {
+  entries: ArchiveEntry[]
+  count: number
+  chars: number
 }
 export type MemoryErrorCode = 'empty' | 'tooLong' | 'full' | 'budget' | 'notFound' | 'duplicate'
 export type MemoryIpcResult = { ok: true; snapshot: MemorySnapshot } | { ok: false; code: MemoryErrorCode }
@@ -696,7 +714,12 @@ const api = {
     write: (content: string, id?: string, root?: string): Promise<MemoryIpcResult> =>
       ipcRenderer.invoke('memory:write', content, id, root),
     remove: (id: string, root?: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:delete', id, root),
-    clear: (root?: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:clear', root)
+    clear: (root?: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:clear', root),
+    /** 遗忘区列表（只读；归档区不吃注入预算）。 */
+    archive: (root?: string): Promise<ArchiveSnapshot> => ipcRenderer.invoke('memory:archive', root),
+    /** 从遗忘区取回一条：原文写回主记忆并从归档移除。 */
+    restore: (archiveId: string, root?: string): Promise<MemoryIpcResult> =>
+      ipcRenderer.invoke('memory:restore', archiveId, root)
   },
   /** Agent 提示词（全局 ~/.deva/personas）：列出 / 读取 / 新建更新 / 删除 / 启停。 */
   personas: {
