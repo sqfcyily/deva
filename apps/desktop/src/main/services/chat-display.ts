@@ -33,6 +33,7 @@ import {
   NOTIFY_MARKER
 } from './compaction'
 import { parseAskQuestions } from './ask-questions'
+import { shownText } from './skill-invoke'
 import { repairDanglingToolUses } from './chat-history'
 import {
   TRUNCATED_FLAG
@@ -300,7 +301,7 @@ export function toDisplayMessages(
     }
 
     if (typeof m.content === 'string') {
-      out.push(userDisplay(m.content, []))
+      out.push(userDisplay(shownText(m.content), []))
       // 真实用户轮：断开 assistant 合并链，其后的 assistant 段另起新气泡（新头像）。
       lastAssistant = null
       return
@@ -361,7 +362,7 @@ export function toDisplayMessages(
         atts.push({ name: basename(file) || file, kind: 'file', path: file })
       }
     }
-    const question = textParts.length ? textParts[textParts.length - 1].text : ''
+    const question = textParts.length ? shownText(textParts[textParts.length - 1]) : ''
     out.push(userDisplay(question, atts))
     // 真实用户轮：断开 assistant 合并链，其后的 assistant 段另起新气泡（新头像）。
     lastAssistant = null

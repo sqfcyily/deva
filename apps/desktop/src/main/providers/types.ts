@@ -13,6 +13,11 @@ export interface TextPart {
    * 「已告知的状态」。只在主进程内部使用，适配器只发 text，不会发给模型。
    */
   listing?: ListingRecord
+  /**
+   * 气泡里显示的原话（只用于提问正文块）：text 被引擎改写过时才有——如「/技能名」把技能全文展开进 text，
+   * 这里留用户实际打的字。只在主进程内部使用，适配器只发 text，不会发给模型。
+   */
+  display?: string
 }
 /**
  * 随消息下发的清单种类。guide：按需加载工具的完整用法（tool_search 等给出，见 tool-search.ts）；

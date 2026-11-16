@@ -26,6 +26,7 @@ import { buildToolSearchTool, fitToolSearch, skillToolUsages, unknownUsages } fr
 import { readMainTool, replyTaskTool, reportToMainTool, rootLabel } from './members'
 import { MEMBER_EXCLUDED, MEMBER_FOLDER_ONLY, UNATTENDED_EXCLUDED } from './tool-catalog'
 import { slashTokens } from '../../shared/slash'
+import { skillInvocationText } from './skill-invoke'
 import { memoryPromptSection } from './memory'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
 import { DEFAULT_PERSONA_ID, getPersona, resolvePersonaId } from './personas'
@@ -918,16 +919,11 @@ async function startTurn(
   if (activated.length) {
     const lead = activated.find((x) => x.start === text.length - text.trimStart().length)
     const rest = (lead ? text.slice(0, lead.start) + text.slice(lead.end) : text).trim()
-    const names = activated.map((x) => x.loaded.name)
-    effectiveText =
-      `（用户通过 ${names.map((n) => `/${n}`).join('、')} 显式激活了技能${names.map((n) => `「${n}」`).join('')}，请严格据下述指令完成本次任务）\n` +
-      activated
-        .map(
-          ({ loaded }) =>
-            `===== 技能指令：${loaded.name} =====\n${skillDirNote(loaded.dir)}${loaded.instructions}\n===== 指令结束 =====`
-        )
-        .join('\n') +
-      (rest ? `\n\n${lead ? '用户补充' : '用户的消息'}：${rest}` : '')
+    effectiveText = skillInvocationText(
+      activated.map(({ loaded }) => ({ name: loaded.name, body: skillDirNote(loaded.dir) + loaded.instructions })),
+      rest,
+      !!lead
+    )
     // 成员会话不提供创建类工具，那几个的用法不附。
     const usable = [...new Set(activated.flatMap((x) => x.loaded.allowedTools))].filter(
       (n) => !session.parentId || !MEMBER_EXCLUDED.has(n)
@@ -948,7 +944,10 @@ async function startTurn(
   // 读附件期间另一端可能抢先起了一轮：落历史前再确认一次。
   if (historyLocked(sessionId)) throw busyError()
   const question = effectiveText.trim() || (parts.length ? '请理解并处理上述附件。' : '')
-  const questionText = notes.length ? `${question}\n（${notes.join('；')}）` : question
+  const withNotes = (s: string): string => (notes.length ? `${s}\n（${notes.join('；')}）` : s)
+  const questionText = withNotes(question)
+  // 技能展开改写了正文：气泡仍显示用户的原话（重开对话、手机端、成员读主对话都按它），技能全文只给模型。
+  const shown = effectiveText !== text ? withNotes(text.trim()) : undefined
   // 「仅恢复代码」后的首条消息：把回滚说明作为**第一个**独立 text 块带给模型（展示层只取最后一个
   // text 块作气泡正文，故用户看不到它），用一次即清。
   if (session.restoreNote) {
@@ -974,8 +973,8 @@ async function startTurn(
   // 用户直接在成员会话里交代事情：名单上记下它在做什么（成员卡片显示任务标题）。派来的上一项任务还没做完的，
   // 这一轮算接着做它（任务标题不变，完成后交回主对话，见 resumeMemberTask）。
   if (session.parentId && !resumeMemberTask(session, model)) noteMemberDirectTask(session, text)
-  if (parts.length) {
-    parts.push({ type: 'text', text: questionText })
+  if (parts.length || shown !== undefined) {
+    parts.push(shown !== undefined ? { type: 'text', text: questionText, display: shown } : { type: 'text', text: questionText })
     history.push({ role: 'user', content: parts })
   } else {
     history.push({ role: 'user', content: questionText })
