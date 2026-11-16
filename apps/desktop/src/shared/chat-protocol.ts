@@ -375,6 +375,60 @@ export type AutoRetryReason =
   | 'output_fit'
 
 /** 发往渲染层的富事件（比 provider 的 StreamEvent 多了工具执行/权限阶段）。 */
+/** 上下文占用快照的字段（主进程 chat:context-usage 与渲染层胶囊共用）。见 ChatStreamEvent 的 context_usage。 */
+export interface ContextUsage {
+  /** 当前输入量（token）。 */
+  used: number
+  /** 生效上下文窗口（用户填写 > 自动推断 > 全局默认，再与进程内学到的真实上限取小）。 */
+  window: number
+  /** 自动压缩触发线（窗口 − 输出预留 − 余量，或比例更早的那个）。 */
+  compactAt: number
+  /** 上一轮的提示缓存命中 / 写入量（纯观测；模型是否支持前缀缓存由服务商决定）。 */
+  cacheRead: number
+  cacheWrite: number
+  /** 本会话的压缩触发比例（0～1）：滑块显示的就是它。 */
+  ratio: number
+  /**
+   * 实际生效比例：min(比例, (窗口−输出预留−余量)/窗口)。比例只能让压缩提前——越过它不会生效，
+   * 因为要撞「输入 + 输出预留 > 窗口」的 400。面板据此把滑块高段标成「受输出预留限制」。
+   */
+  actualRatio: number
+  /** 滑块范围与默认值（0～1）。 */
+  minRatio: number
+  maxRatio: number
+  defaultRatio: number
+  /** 本会话的压缩记录（最旧在前）；面板按时间倒序展示。 */
+  compactLog: CompactLogItem[]
+  /**
+   * 提示词构成（已按真实总量等比缩放的 token）：system / 工具表 / 消息。
+   * provider 只回报总输入，分项是本地字符估算再缩放，故三项之和恒等于 used——
+   * 不会出现「分项加起来对不上」的怪账。无估算（会话从未跑过）时缺省。
+   */
+  parts?: { system: number; tools: number; messages: number }
+  /**
+   * 该模型「标称」的窗口（同一推断但**未**套 AUTO_WINDOW_CAP）。仅用于说明：window 只有
+   * 模型的 1/4 时，面板要讲清「标称 1M，自动值被封到 256K、可在模型详情页改」，否则用户会以为是算错了。
+   */
+  windowUncapped?: number
+}
+
+/** 一次压缩的观测记录（与主进程 chat-store 的 CompactLogEntry 结构一致）。 */
+export interface CompactLogItem {
+  /** 压缩完成时刻（毫秒时间戳）。 */
+  at: number
+  /** 第几轮（1 基，按真实用户轮计）。 */
+  turn: number
+  scope: 'auto' | 'manual'
+  /** 压缩前的输入量；null = 当时无真实读数。 */
+  before: number | null
+  /** 压缩后的输入量；null = 还等下一次 usage 回报（面板显示「待定稿」）。 */
+  after: number | null
+  /** 被折进摘要的消息条数。 */
+  folded: number
+  /** 失败原因（面板标红）。 */
+  error?: string
+}
+
 export type ChatStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
@@ -503,6 +557,11 @@ export type ChatStreamEvent =
    * pending 为各条原文，空数组 = 没有待送达的。
    */
   | { type: 'inserts'; pending: string[] }
+  /**
+   * 上下文占用快照（输入框的用量胶囊）：本轮真实输入 token / 生效窗口 / 自动压缩线 / 提示缓存命中量。
+   * used 无真实读数时按字符估算模型视图；compactAt = 自动压缩触发线（与压缩判定同源，故百分比就是压缩的实际依据）。
+   */
+  | (ContextUsage & { type: 'context_usage' })
   /**
    * 回合被停止或出错，待送达的插入消息不再发出（会话级，空 turnId）：渲染层把 text 放回该对话的输入框。
    */

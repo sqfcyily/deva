@@ -1068,6 +1068,29 @@ const zhCN: MessageTree = {
       revealOther: '在文件管理器中打开',
       revealFailed: '无法打开该文件夹'
     },
+    // 输入框工具条里的上下文用量胶囊（占用百分比 + 缓存命中率）
+    ctx: {
+      usage: '上下文占用',
+      cache: '缓存',
+      panelTitle: '压缩阈值',
+      panelRatio: '自动压缩触发点',
+      panelDefault: '默认',
+      panelActual: '实际生效 {n}（{at}）',
+      panelClamped: '受输出预留限制，实际生效 {n}（{at}）——比这更晚不会生效',
+      panelUsed: '当前占用',
+      windowCapped: '该模型标称 {full}，自动值按 {cap} 计算（长上下文易退化，可在模型详情页改成 {full}）',
+      partSystem: '系统提示词',
+      partTools: '工具定义',
+      partMessages: '对话消息',
+      panelReset: '恢复默认',
+      panelClose: '关闭',
+      panelLogTitle: '压缩记录',
+      panelLogEmpty: '本对话还没有压缩过',
+      turnN: '第 {n} 轮',
+      foldedN: '折叠 {n} 条',
+      pending: '待定稿',
+      tip: '上下文 {used} / {window}（{pct}）\n自动压缩线 {compact}（已用 {compactPct}）\n提示缓存：命中 {read}，写入 {write}（命中率 {hit}）'
+    },
     // 输入框「/ 指令」联想（技能项的说明取自各自 SKILL.md，不在此处）
     slash: {
       title: '指令',
@@ -2522,6 +2545,28 @@ const en: MessageTree = {
     resizeSidebar: 'Drag to resize, double-click to reset',
     resizeComposer: 'Drag to resize the input box, double-click to reset',
     mountWorkspace: 'Mount workspace',
+    ctx: {
+      usage: 'Context usage',
+      cache: 'Cache',
+      panelTitle: 'Compaction threshold',
+      panelRatio: 'Compact at',
+      panelDefault: 'default',
+      panelActual: 'Effective {n} ({at})',
+      panelClamped: 'Capped by output reserve: effective {n} ({at}) — later than this has no effect',
+      panelUsed: 'Current usage',
+      windowCapped: 'Model nominally supports {full}; auto value uses {cap} (long contexts degrade; set {full} in model settings)',
+      partSystem: 'System prompt',
+      partTools: 'Tool definitions',
+      partMessages: 'Messages',
+      panelReset: 'Reset to default',
+      panelClose: 'Close',
+      panelLogTitle: 'Compaction log',
+      panelLogEmpty: 'This chat has not been compacted yet',
+      turnN: 'turn {n}',
+      foldedN: 'folded {n} msgs',
+      pending: 'pending',
+      tip: 'Context {used} / {window} ({pct})\nAuto-compact at {compact} ({compactPct} used)\nPrompt cache: {read} read, {write} written (hit rate {hit})'
+    },
     ws: {
       menuHint: 'Folder actions',
       copyPath: 'Copy path',

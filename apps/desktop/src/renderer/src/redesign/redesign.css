@@ -2718,8 +2718,14 @@ button.cf-mask__pill:hover {
 /* 模型选择器吸右：占尽左侧空白，把「模型选择器 + 发送键」一并推到工具条右端，
    模型切换恰落在发送键之前（📎 / 工作区 chip 仍留在左侧）。仅作用于对话输入框，
    不影响任务表单的同款选择器。 */
-.cf-composer .model-pick {
+.cf-composer .model-pick,
+.cf-composer .cf-usage {
   margin-left: auto;
+}
+/* 胶囊吸右后，模型 / 思考贴片依次紧跟（不再各自吃空白，否则胶囊与模型之间会被撑出一道缝）。 */
+.cf-composer .cf-usage + .model-pick,
+.cf-composer .model-pick + .model-pick {
+  margin-left: 0;
 }
 /* 思考等级选择器紧贴模型选择器：只让第一个吃掉左侧空白；再抵掉工具条的 gap、收窄两枚贴片
    相邻一侧的内边距，二者读作一组（贴片无底色，否则中间会空出一截比到发送键还宽的距离）。 */
@@ -2731,6 +2737,218 @@ button.cf-mask__pill:hover {
 }
 .cf-composer .model-pick + .model-pick .chip {
   padding-left: 4px;
+}
+/* 上下文用量胶囊：与模型贴片同一行、同等高（28px，见 .chip），紧贴其左侧。
+   左半环形进度 + 占用百分比（分母 = 生效窗口），随后是压缩线进度与上一轮提示缓存命中率。
+   底色跟随分级：正常 → 过半转黄 → 越过压缩线转红，一眼看出快压缩了。
+   字号压到 11px、文案用短标签：工具条横向空间有限，不能把模型贴片挤窄。 */
+.cf-usage {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 7px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+  /* 可点：点开就是压缩阈值面板（滑块 + 压缩记录）。 */
+  cursor: pointer;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  transition:
+    color 0.2s ease,
+    background 0.2s ease;
+}
+.cf-usage.is-open {
+  background: var(--bg-active);
+  color: var(--fg);
+}
+.cf-usage:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.cf-usage.is-warn,
+.cf-usage.is-warn:hover {
+  color: #d9a03a;
+}
+.cf-usage.is-hot,
+.cf-usage.is-hot:hover {
+  color: #e5674a;
+}
+.cf-usage__ring {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  /* 圆弧取当前字色（分级配色随之变化） */
+  color: inherit;
+}
+.cf-usage__ring-bg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  opacity: 0.22;
+}
+.cf-usage__ring-fg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease;
+}
+.cf-usage__pct {
+  color: var(--fg);
+  font-weight: 600;
+}
+.cf-usage__sep {
+  color: var(--fg-subtle);
+  opacity: 0.6;
+}
+.cf-usage__cache {
+  color: var(--fg-subtle);
+}
+/* 数值前的小图标（缓存 ⚡）：只作区分，很淡。 */
+.cf-usage__icon {
+  margin-right: 1px;
+  font-size: 9.5px;
+  opacity: 0.8;
+}
+/* ── 压缩阈值面板（点胶囊弹出；复用 .model-pick__menu 的弹出定位，只加内容排版）── */
+.cf-usage-panel {
+  width: 320px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: default;
+}
+.cf-usage-panel__head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.cf-usage-panel__head--log {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.cf-usage-panel__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.cf-usage-panel__range {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.cf-usage-panel__scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--fg-subtle);
+}
+.cf-usage-panel__note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-subtle);
+}
+/* 比例被输出预留收窄（滑块高段不生效）时标黄：这不是显示错误，是口径所致。 */
+.cf-usage-panel__note.is-warn {
+  color: #d9a03a;
+}
+.cf-usage-panel__stats {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.cf-usage-panel__cap {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-subtle);
+  padding: 2px 0 4px;
+}
+/* 提示词构成：三项 + 色点，右对齐数值。分项是估算（按真实总量等比缩放），故前置 ~。 */
+.cf-usage-panel__parts {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 0 4px;
+}
+.cf-usage-panel__part {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.cf-usage-panel__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.cf-usage-panel__dot.is-sys {
+  background: #8e8e99;
+}
+.cf-usage-panel__dot.is-tool {
+  background: #8b6ff0;
+}
+.cf-usage-panel__dot.is-msg {
+  background: #4f8dfb;
+}
+.cf-usage-panel__num {
+  margin-left: auto;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.cf-usage-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.cf-usage-panel__empty {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  padding: 2px 0 4px;
+}
+.cf-usage-panel__log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.cf-usage-panel__entry {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+}
+.cf-usage-panel__entry.is-error {
+  background: color-mix(in oklab, #e5674a 14%, transparent);
+}
+.cf-usage-panel__when {
+  font-size: 10px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.cf-usage-panel__nums {
+  font-size: 11.5px;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.cf-usage-panel__err {
+  font-size: 11.5px;
+  color: #e5674a;
 }
 /* 思考等级菜单项：档位名 + 一行说明。 */
 .cf-effort__text {

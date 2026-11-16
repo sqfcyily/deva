@@ -34,8 +34,18 @@ import {
   removeSessionSubagents
 } from './subagent-store'
 import {
-  resolveModelRef
+  resolveModelRef,
+  resolveModelRefOrNull,
+  resolveDefaultModel
 } from './model-resolve'
+import {
+  estimateTokens,
+  compactRatioInfo,
+  triggerTokens,
+  COMPACT_RATIO_MIN,
+  COMPACT_RATIO_MAX
+} from './compaction'
+import { modelMessages } from './model-view'
 import {
   createTask,
   releaseTasksOwnedBy,
@@ -284,6 +294,51 @@ export function getChatRuntime(): ChatRuntime | null {
 /** 推送某会话待办清单的状态（按轮删除 / 回滚 / 用户手动取消之后；不属于任何回合步骤，turnId 为空串）。 */
 function emitTodos(s: StoredSession): void {
   emit('', s.id, { type: 'todos', state: todoState(s.todos, s.todoCancelled) })
+}
+
+/**
+ * 某会话的上下文用量快照（输入框胶囊 + 压缩阈值面板的数据源）。与压缩判定同源：
+ * used 取本轮真实输入 token（无则字符估算），window / compactAt 由 compaction.ts 给出。
+ * 阈值比例也一并带出，故面板与胶囊永远显示同一个数。
+ */
+function usageSnapshot(
+  s: StoredSession,
+  ref: { adapter: 'anthropic' | 'openai' | 'responses'; providerId: string; model: string; baseURL: string }
+): Extract<ChatStreamEvent, { type: 'context_usage' }> {
+  const info = compactRatioInfo(s, ref)
+  const used =
+    s.lastInputTokens && s.lastInputTokens > 0
+      ? s.lastInputTokens
+      : estimateTokens(modelMessages(s.messages))
+  // 提示词构成：三项是本地估算，按「真实总量 / 估算总量」等比缩放——三项之和恒等于 used。
+  const p = s.lastPromptParts
+  const sum = p ? p.system + p.tools + p.messages : 0
+  const scale = p && sum > 0 ? used / sum : 0
+  return {
+    type: 'context_usage',
+    used,
+    window: info.window,
+    // 实际触发点（min(比例, 窗口−输出预留−余量)）：胶囊的「压缩线」读它。
+    compactAt: triggerTokens(ref, undefined, info.ratio),
+    cacheRead: s.lastCacheRead ?? 0,
+    cacheWrite: s.lastCacheWrite ?? 0,
+    ratio: info.ratio,
+    actualRatio: info.actualRatio,
+    minRatio: info.minRatio,
+    maxRatio: info.maxRatio,
+    defaultRatio: info.defaultRatio,
+    windowUncapped: info.windowUncapped,
+    compactLog: s.compactLog ?? [],
+    ...(p && scale > 0
+      ? {
+          parts: {
+            system: Math.round(p.system * scale),
+            tools: Math.round(p.tools * scale),
+            messages: Math.round(p.messages * scale)
+          }
+        }
+      : {})
+  }
 }
 
 // 持久化角色名片的终态（接受/拒绝）。名片本体随 Message[] 存活，但终态无处落，
@@ -630,6 +685,56 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
       } catch {
         return null
       }
+    }
+  )
+
+  /**
+   * 上下文占用快照（输入框的用量胶囊用）：本轮真实输入 token / 生效窗口 / 自动压缩线 / 缓存命中量。
+   * 与压缩判定同源（compaction.ts 的 contextWindowFor / triggerTokens），故显示的百分比就是压缩的实际依据。
+   * 会话不存在（草稿会话尚未落库）回 null，渲染层不显示胶囊。
+   */
+  ipcMain.handle(
+    'chat:context-usage',
+    (_e, sessionId: string): Extract<ChatStreamEvent, { type: 'context_usage' }> | null => {
+      const s = getSession(sessionId)
+      if (!s) return null
+      const ref = resolveModelRefOrNull(s.model) ?? resolveDefaultModel()
+      if (!ref) return null
+      return usageSnapshot(s, ref)
+    }
+  )
+
+  /**
+   * 设置本对话的自动压缩触发比例（0～1）；ratio=null 恢复默认。立即落库、立即回推用量快照，
+   * 下一轮（含轮中逐步检查）即按新比例判定——不必重启，也不必等一次压缩发生。
+   * 超出 [COMPACT_RATIO_MIN, COMPACT_RATIO_MAX] 视为非法（返回当前快照，不改值）。
+   */
+  ipcMain.handle(
+    'chat:set-compact-ratio',
+    (
+      _e,
+      req: { sessionId: string; ratio: number | null }
+    ): Extract<ChatStreamEvent, { type: 'context_usage' }> | null => {
+      const s = getSession(req?.sessionId)
+      if (!s) return null
+      const ratio = req?.ratio
+      if (ratio === null || ratio === undefined) delete s.compactRatio
+      else if (
+        typeof ratio === 'number' &&
+        Number.isFinite(ratio) &&
+        ratio >= COMPACT_RATIO_MIN &&
+        ratio <= COMPACT_RATIO_MAX
+      )
+        s.compactRatio = Number(ratio.toFixed(3))
+      s.updatedAt = Date.now()
+      saveProject(s.id)
+      publishSessionsChanged()
+      const ref = resolveModelRefOrNull(s.model) ?? resolveDefaultModel()
+      if (!ref) return null
+      const snap = usageSnapshot(s, ref)
+      // 别处打开着的窗口也要跟着变（会话级事件）：阈值改了，胶囊的压缩线读数立刻更新。
+      emit('', s.id, snap)
+      return snap
     }
   )
 

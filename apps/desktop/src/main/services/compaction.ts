@@ -2,7 +2,7 @@ import type { CompactStatus } from '../../shared/chat-protocol'
 import { streamChat } from '../providers'
 import type { ContentPart, Message } from '../providers/types'
 import { getConfig } from './config'
-import { save as saveProject, type StoredSession } from './chat-store'
+import { save as saveProject, type StoredSession, type CompactLogEntry, COMPACT_LOG_LIMIT } from './chat-store'
 import { todoSnapshotText } from './todos'
 import { modelOverrides } from './model-resolve'
 import { stubLongInforms } from './handoff'
@@ -19,7 +19,8 @@ import {
   DEFAULT_CONTEXT_WINDOW,
   autoContextWindow,
   autoOutputBudget,
-  estimateTextTokens
+  estimateTextTokens,
+  uncappedContextWindow
 } from '../../shared/context'
 
 /**
@@ -33,6 +34,13 @@ import {
  * - 触发优先用上一轮真实 usage.input（持久化在会话上，最准，天然覆盖图片/工具）；无则回退字符估算。
  * - 边界吸附到真实用户轮，绝不切开 assistant(tool_use)↔user(tool_result)，且必留本轮问题。
  * - 摘要失败绝不改动历史（宁可不压，也不破坏真源）。
+ *
+ * 参考来源（阈值面板与压缩记录两项的取舍依据，均为公开实现 / 文档口径，非代码照搬）：
+ * - 阈值滑块：DSH 插件 `dsh-compaction-threshold`（MIT，npm）的 `thresholdRatio` 与 20%–95% 范围，
+ *   见下方 COMPACT_RATIO_MIN / MAX 的注释。
+ * - 「压后」读数延后定稿：同一插件的压缩记录（COMPACTION_LOG）面板——压缩刚结束时读数虚低，
+ *   等下一次 provider usage 回报再回填，见 settleCompactLog。
+ * - 触发线算式（窗口 − 输出上限 − 余量）与输出预留：对齐 Claude Code；保留尾部上限参照 Codex 与 OpenCode。
  */
 
 export interface CompactModelConfig {
@@ -168,7 +176,11 @@ const OUTPUT_RESERVE_UNKNOWN = 20_000
  * 输出上限必须扣：Anthropic 等要求「输入 + max_tokens」不超窗口。它封顶半个窗口，防填错值时每轮都压。
  * 用户在 config.json 写了 triggerRatio 时取两者中更早的那个。
  */
-function triggerTokens(model: LimitModelRef, cfg: CompactionCfg): number {
+export function triggerTokens(
+  model: LimitModelRef,
+  cfg: CompactionCfg = compactionConfig(),
+  ratioOverride?: number
+): number {
   const window = contextWindowFor(model, cfg)
   const output =
     modelOverrides(model.providerId, model.model).maxOutput ??
@@ -176,7 +188,9 @@ function triggerTokens(model: LimitModelRef, cfg: CompactionCfg): number {
     learnedOutputBudget(model) ??
     OUTPUT_RESERVE_UNKNOWN
   const byWindow = window - Math.min(output, window / 2) - Math.min(COMPACT_BUFFER, window * 0.1)
-  return cfg.triggerRatio !== undefined ? Math.min(window * cfg.triggerRatio, byWindow) : byWindow
+  // 比例只取「更早的那个」：越过 byWindow 会撞「输入 + 输出预留 > 窗口」的 400（见上面的注释）。
+  const ratio = ratioOverride ?? cfg.triggerRatio
+  return ratio !== undefined ? Math.min(window * ratio, byWindow) : byWindow
 }
 
 // ── token 估算（字符法，中日韩文字另计；图片/文档按固定成本，规避 base64 数长度失真）──────
@@ -184,7 +198,8 @@ const CHARS_PER_TOKEN = 3.5
 const IMAGE_TOKENS = 1600
 const DOC_TOKENS = 3000
 
-function partTokens(p: ContentPart): number {
+/** 单个内容块的 token 估算（与 estimateTokens 同一口径，导出供分项统计用）。 */
+export function partTokens(p: ContentPart): number {
   switch (p.type) {
     case 'text':
       return estimateTextTokens(p.text)
@@ -201,7 +216,8 @@ function partTokens(p: ContentPart): number {
   }
 }
 
-function messageTokens(m: Message): number {
+/** 单条消息的 token 估算（同上）。 */
+export function messageTokens(m: Message): number {
   if (typeof m.content === 'string') return estimateTextTokens(m.content) + 4
   let t = 4
   for (const p of m.content) t += partTokens(p)
@@ -226,7 +242,7 @@ export function needsCompaction(
     session.lastInputTokens && session.lastInputTokens > 0
       ? session.lastInputTokens
       : estimateTokens(modelMessages(session.messages))
-  return used >= triggerTokens(model, cfg)
+  return used >= triggerTokens(model, cfg, effectiveRatio(session, cfg))
 }
 
 /**
@@ -240,10 +256,11 @@ export function needsCompactionMidTurn(
   model: LimitModelRef,
   lastInput: number,
   lastInputAt: number,
-  cfg: CompactionCfg = compactionConfig()
+  cfg: CompactionCfg = compactionConfig(),
+  ratioOverride?: number
 ): boolean {
   if (!cfg.enabled) return false
-  return usedTokensMidTurn(messages, lastInput, lastInputAt) >= triggerTokens(model, cfg)
+  return usedTokensMidTurn(messages, lastInput, lastInputAt) >= triggerTokens(model, cfg, ratioOverride)
 }
 
 /** 一轮进行中的上下文用量：最近一次真实读数 + 其后新增消息的估算；没有读数时估算模型视图。 */
@@ -576,9 +593,98 @@ async function summarize(
   }
 }
 
-// 保留尾部目标 ≈ 窗口的 30%，但不超过 KEEP_TOKENS_MAX：按比例算，大窗口压完仍留几十万 token
+/** 保留尾部目标 ≈ 窗口的 30%，但不超过 KEEP_TOKENS_MAX：按比例算，大窗口压完仍留几十万 token
 // （1M 窗口留 30 万），上下文降不下来，到下次压缩前能涨的空间反而小。封顶参照 Codex（最近用户消息
 // 2 万 / 服务端压缩 6.4 万）与 OpenCode（1.5 万）；Deva 保留的尾部含工具结果，取 4 万。
+const KEEP_RATIO = 0.3
+const KEEP_TOKENS_MIN = 2000
+const KEEP_TOKENS_MAX = 40_000
+
+/** 追加一条压缩记录并裁到上限（最旧的先丢）。 */
+export function appendLog(
+  log: CompactLogEntry[] | undefined,
+  entry: CompactLogEntry
+): CompactLogEntry[] {
+  const list = [...(log ?? []), entry]
+  return list.length > COMPACT_LOG_LIMIT ? list.slice(list.length - COMPACT_LOG_LIMIT) : list
+}
+
+/**
+ * 压缩记录定稿：把「待定稿」的那几条（after 为 null 且不是失败）补上压缩后的读数。
+ * 压缩刚结束那一刻测不准——压缩后的视图刚替换，投影还持有压缩前的印记，不调模型也算不出压后真实输入量；
+ * 等下一次 provider 回报真实 usage 才是真实值（口径与 DSH 的 COMPACTION_LOG 插件一致：它的面板同样
+ * 只在下一个回合的 usage 到达后回填「压后」）。
+ * 调用点：本轮拿到真实用量之后（见 chat-turns.ts 的 emitContextUsage 之前）。
+ */
+export function settleCompactLog(session: StoredSession, afterTokens: number): boolean {
+  const log = session.compactLog
+  if (!log?.length) return false
+  let changed = false
+  for (let i = log.length - 1; i >= 0; i--) {
+    if (log[i].after === null && !log[i].error) {
+      log[i] = { ...log[i], after: afterTokens }
+      changed = true
+    }
+  }
+  return changed
+}
+
+/**
+ * 本会话生效的自动压缩触发比例（0～1）：会话覆盖 > 全局 config 的 triggerRatio > 按窗口算。
+ * 面板的滑块显示的就是它；「实际触发点」还要经 triggerTokens 的 min() 收口（见 compactRatioInfo）。
+ */
+export function effectiveRatio(
+  session: StoredSession | undefined,
+  cfg: CompactionCfg = compactionConfig()
+): number | undefined {
+  if (session?.compactRatio !== undefined) return session.compactRatio
+  return cfg.triggerRatio
+}
+
+/**
+ * 压缩阈值的完整口径（面板用）：比例、范围、默认值，以及「实际触发点」被输出预留收窄后的真实比例。
+ * 滑块只能让压缩提前——越过 actualRatio 的部分不会生效（越过会撞「输入+输出超窗口」的 400，见 triggerTokens）。
+ */
+export function compactRatioInfo(
+  session: StoredSession | undefined,
+  model: LimitModelRef,
+  cfg: CompactionCfg = compactionConfig()
+): {
+  ratio: number
+  minRatio: number
+  maxRatio: number
+  defaultRatio: number
+  actualRatio: number
+  window: number
+  /** 同一推断的未封顶值：仅用于说明「标称多大、自动值被封到多少」，不参与判定。 */
+  windowUncapped: number
+} {
+  const window = contextWindowFor(model, cfg)
+  // 实际触发点自带的「窗口−输出预留−余量」上限，折算成比例：滑块永远不能越过它。
+  const byWindowRatio =
+    window > 0 ? triggerTokens(model, { ...cfg, triggerRatio: undefined }) / window : 0
+  // 本会话没有覆盖、全局也没写 triggerRatio 时，默认行为是「按窗口−预留−余量」压（byWindow），
+  // 此时滑块显示的就是这个**等效比例**——不是硬塞一个 0.75，否则改面板会让默认压缩点提前。
+  const ratio = session?.compactRatio ?? cfg.triggerRatio ?? byWindowRatio
+  return {
+    ratio,
+    minRatio: COMPACT_RATIO_MIN,
+    maxRatio: COMPACT_RATIO_MAX,
+    defaultRatio: cfg.triggerRatio ?? byWindowRatio,
+    // 实际生效比例：min(比例, byWindow 折算的等效比例)。
+    actualRatio: Math.min(ratio, byWindowRatio),
+    window,
+    windowUncapped: uncappedContextWindow(model.model, cfg.defaultWindow)
+  }
+}
+
+/** 面板滑块范围（同 DSH 的 dsh-compaction-threshold 插件：过低会在压完立刻又压（抖动），过高则单轮上下文太满）。 */
+export const COMPACT_RATIO_MIN = 0.2
+export const COMPACT_RATIO_MAX = 0.95
+
+/** 保留尾部目标 ≈ 窗口的 30%，但不超过 KEEP_TOKENS_MAX：按比例算，大窗口压完仍留几十万 token
+ * （1M 窗口留 30 万），上下文降不下来，到下次压缩前能涨的空间反而小。封顶参照 Codex（最近用户消息
+ * 2 万 / 服务端压缩 6.4 万）与 OpenCode（1.5 万）；Deva 保留的尾部含工具结果，取 4 万。 */
 const KEEP_RATIO = 0.3
 const KEEP_TOKENS_MIN = 2000
 const KEEP_TOKENS_MAX = 40_000
@@ -606,6 +712,8 @@ export async function compactSession(args: {
   midTurn?: boolean
   /** 选定了可压的段、即将请求摘要时调用（无可压时不调）：调用方据此显示「正在压缩」。 */
   onStart?: () => void
+  /** 压缩触发者（auto=自动 / manual=/compact）；仅用于写压缩记录。 */
+  scope?: 'auto' | 'manual'
 }): Promise<{ status: CompactStatus; message?: string }> {
   const { session, model, signal } = args
   const cfg = compactionConfig()
@@ -631,6 +739,28 @@ export async function compactSession(args: {
 
   const toSummarize = view.slice(0, boundary)
   const tail = view.slice(boundary)
+  // 压缩前的读数（真实 usage 优先，无则字符估算——与 triggerTokens 的判定同源）。
+  const beforeTokens =
+    session.lastInputTokens && session.lastInputTokens > 0
+      ? session.lastInputTokens
+      : estimateTokens(modelMessages(msgs))
+  // 轮号：按真实用户轮计（压缩发生时已有的轮数）。取不到时记 0。
+  const turnNo = msgs.filter(isGenuineUserTurn).length
+  // 记一条压缩记录（成功与失败都记，面板据此显示「压缩前后」与失败原因）。after 留空——
+  // 压缩刚结束时投影仍持有压缩前的印记，读数虚低，等下一次真实 usage 回报再定稿（见 settleCompactLog）。
+  const record = (error?: string): void => {
+    const entry: CompactLogEntry = {
+      at: Date.now(),
+      turn: turnNo,
+      scope: args.scope ?? 'auto',
+      before: beforeTokens,
+      after: null,
+      // 折叠条数：被并入摘要的消息条数（失败为 0）。
+      folded: error ? 0 : boundary,
+      ...(error ? { error } : {})
+    }
+    session.compactLog = appendLog(session.compactLog, entry)
+  }
   // 定时任务只是告知的长内容：摘要里同样只留标题（同发给模型时，见 handoff.ts stubLongInforms）。
   const transcript = buildTranscript(stubLongInforms(toSummarize), locale, transcriptBudget(window))
 
@@ -642,21 +772,28 @@ export async function compactSession(args: {
     // 失败原因原样带回（鉴权 / 断流 / 超时 / 无正文）：调用方会连同提示一起展示给用户。
     // 历史在此之前一个字都没动，返回即安全收场。
     const message = e instanceof SummaryAborted ? '已中止' : ((e as Error)?.message ?? String(e))
+    record(message)
     return { status: 'failed', message }
   }
-  if (signal.aborted) return { status: 'failed', message: '已中止' }
-  if (!summary) return { status: 'failed', message: '模型没有返回摘要正文' }
+  if (signal.aborted) {
+    record('已中止')
+    return { status: 'failed', message: '已中止' }
+  }
+  if (!summary) {
+    record('模型没有返回摘要正文')
+    return { status: 'failed', message: '模型没有返回摘要正文' }
+  }
 
   const zh = locale !== 'en'
   // 摘要把关①：模型退化时摘要也会复读（反复吐同一个标记 / 同一段话），采信就会用垃圾顶替真实历史，
   // 此后每一轮都被它带偏。宁可这次不压。
-  if (findRepetition(summary))
-    return {
-      status: 'failed',
-      message: zh
-        ? '摘要里有大段重复内容，模型输出可能异常'
-        : 'The summary contains long repeated text; the model output may be degenerate'
-    }
+  if (findRepetition(summary)) {
+    const message = zh
+      ? '摘要里有大段重复内容，模型输出可能异常'
+      : 'The summary contains long repeated text; the model output may be degenerate'
+    record(message)
+    return { status: 'failed', message }
+  }
   const header =
     keepHead >= 0
       ? zh
@@ -676,13 +813,13 @@ export async function compactSession(args: {
   const head = keepHead >= 0 ? [view[keepHead]] : []
 
   // 摘要把关②：压完反而不比原来短（被压的段本就不大、摘要却写得长），白白丢掉原文细节，放弃这次结果。
-  if (estimateTokens([...head, summaryMsg, ...tail]) >= estimateTokens(view))
-    return {
-      status: 'failed',
-      message: zh
-        ? '摘要不比被压缩的内容短'
-        : 'The summary is not shorter than the content it replaces'
-    }
+  if (estimateTokens([...head, summaryMsg, ...tail]) >= estimateTokens(view)) {
+    const message = zh
+      ? '摘要不比被压缩的内容短'
+      : 'The summary is not shorter than the content it replaces'
+    record(message)
+    return { status: 'failed', message }
+  }
 
   // 插在保留部分的第一条消息前；记录里的消息一条不删，检查点、子智能体、各边车都不受影响。
   const at = toRecord(boundary)
@@ -691,6 +828,8 @@ export async function compactSession(args: {
   if (session.notices?.length)
     session.notices = session.notices.map((nt) => (nt.after > at ? { ...nt, after: nt.after + 1 } : nt))
   session.lastInputTokens = undefined // 发给模型的内容已缩短，旧计数失效
+  // 成功也记一条（before 取压缩前读数、after 待下一次 usage 回报后定稿）；folded = 被折进摘要的消息条数。
+  record()
   session.updatedAt = Date.now()
   saveProject(session.id)
   return { status: 'compacted' }

@@ -30,11 +30,15 @@ import type {
   MountResponse,
   ResolveAutotaskResult,
   ChatStreamEvent,
-  MemberProgressGroup
+  MemberProgressGroup,
+  ContextUsage,
+  CompactLogItem
 } from '../shared/chat-protocol'
 
 /** 聊天 IPC 协议类型：与主进程共用 shared/chat-protocol.ts。 */
 export type {
+  ContextUsage,
+  CompactLogItem,
   ChatModelConfig,
   ChatSendRequest,
   ChatInsertRequest,
@@ -813,6 +817,23 @@ const api = {
     /** 对话记录里的图片附件（ref 见 AttachmentChip）：缩略图，full 为 true 时取原图（data URI）；对不上为 null */
     attachmentImage: (sessionId: string, ref: string, full = false): Promise<string | null> =>
       ipcRenderer.invoke('chat:attachment-image', sessionId, ref, full),
+    /**
+     * 上下文占用快照（输入框的用量胶囊）：本轮真实输入 token / 生效窗口 / 自动压缩线 / 缓存命中量。
+     * 与压缩判定同源，故显示的百分比即压缩的实际依据。会话尚未落库（草稿会话）回 null，胶囊不显示。
+     */
+    contextUsage: (
+      sessionId: string
+    ): Promise<Extract<ChatStreamEvent, { type: 'context_usage' }> | null> =>
+      ipcRenderer.invoke('chat:context-usage', sessionId),
+    /**
+     * 设置本对话的自动压缩触发比例（0～1）；null = 恢复默认（跟随全局 / 按窗口算）。
+     * 立即落库并对下一轮生效（不必重启，也不必等一次压缩）。
+     */
+    setCompactRatio: (req: {
+      sessionId: string
+      ratio: number | null
+    }): Promise<Extract<ChatStreamEvent, { type: 'context_usage' }> | null> =>
+      ipcRenderer.invoke('chat:set-compact-ratio', req),
     /** 载入历史 + 进行中回合的 turnId（同一时刻取出，用于接上别处发起、仍在跑的一轮） */
     /** 接上某会话：历史 + 进行中的回合（turnId 与开始时刻 startedAt，空闲时都为 null）。 */
     attachSession: (

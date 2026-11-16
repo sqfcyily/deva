@@ -80,7 +80,7 @@ Members can ask questions, submit plans and write project memory for the folder 
 | Skills and MCP | `SKILL.md` skill format; MCP over stdio, SSE and Streamable HTTP; both can be limited to specific personas |
 | Scheduled tasks | One-off, recurring or cron schedules, run unattended; can be bound to a conversation and hand new findings to its lead persona |
 | Remote access | Continue the same session from your phone through Feishu / Lark or Telegram bots |
-| Context management | Automatic compaction near the context limit, or `/compact` on demand; long tool output is saved to files; per-model window and output limits |
+| Context management | Automatic compaction near the context limit, or `/compact` on demand; the composer chip shows window usage and cache hit rate, with a per-chat compaction threshold; long tool output is saved to files; per-model window and output limits |
 | Git | Switch and create branches, pull, push, commit; commit messages can be generated following `AGENTS.md` |
 
 ## Quick Start
@@ -223,7 +223,8 @@ Each run of a scheduled task is equivalent to the scheduler sending the task's i
 
 - The system prompt and tool list stay fixed within a turn; the skill list, memory entries and member roster are delivered incrementally with messages, so installing a skill, updating memory or changing members does not invalidate the prompt cache.
 - Rarely used tools with long instructions (such as `browser`) keep only a short description in the tool list; `tool_search` fetches their full usage on demand.
-- Once input reaches "context window − output limit − 13K", older content is compacted into a summary automatically; `compaction.triggerRatio` in `config.json` can set an earlier trigger.
+- Once input reaches "context window − output limit − 13K", older content is compacted into a summary automatically; `compaction.triggerRatio` in `config.json` can set an earlier trigger, or set it per chat from the context chip in the composer toolbar.
+- The context chip shows this chat's window usage and the last turn's prompt-cache hit rate; opening it reveals a drag-to-set trigger ratio and the log of each compaction's before/after readings. The ratio can only move compaction earlier: the effective trigger is the smaller of "window × ratio" and the window formula above.
 - Long tool output is saved to a file, keeping only a preview of its beginning and end in context. After the prompt cache expires, older large tool results are replaced with placeholders; the full text remains readable by path.
 - Context window and output limits can be set per model on the model detail page; otherwise the built-in capability table is used.
 

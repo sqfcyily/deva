@@ -9,6 +9,7 @@ import {
   type ReactNode
 } from 'react'
 import type {
+  ContextUsage,
   EffortLevel,
   MemberMeta,
   MemberProgressGroup,
@@ -413,6 +414,17 @@ interface ChatContextValue {
   /** 设置**当前对话**的思考等级（只改当前对话，立即落库；不动全局「最近使用」，那由调用方另记）。 */
   setSessionEffort: (level: EffortLevel) => void
   /**
+   * 设置**当前对话**的自动压缩触发比例（0～1）；null = 恢复默认（跟随全局 / 按窗口算）。
+   * 立即落库并对下一轮生效；主进程回推快照，胶囊与面板即时同步。
+   */
+  setCompactRatio: (ratio: number | null) => void
+  /**
+   * 立刻重拉**当前对话**的上下文用量快照（主进程 chat:context-usage）。
+   * 用的场景：打开阈值面板时——压缩记录 / 提示词构成这类边上数据只在回合收尾时推送，
+   * 面板打开了还显示上一轮的旧值就会被当成「没生效」。
+   */
+  refreshContextUsage: () => void
+  /**
    * 各会话正等用户处理的交互卡（键=sessionId，见 PendingCard）：主对话据此在末尾为成员显示「在等你回答」的胶囊与卡片。
    * 卡片答复 / 在别处收敛 / 该会话本轮结束即移除。
    */
@@ -455,6 +467,11 @@ interface ChatContextValue {
   ) => Promise<ResolveAutotaskResult>
   /** 当前会话的待办清单状态（输入框上方的进度胶囊 + 清单面板）。无进行中的清单时 active 为 null。 */
   todos: TodoState
+  /**
+   * 当前会话的上下文占用快照（输入框的用量胶囊）：本轮输入 token / 生效窗口 / 自动压缩线 / 缓存命中量。
+   * 会话尚未落库或从未跑过一轮时为 null（胶囊不显示）。
+   */
+  contextUsage: ContextUsage | null
   /** 手动取消当前会话的清单（不再进行）：胶囊收起，下一条消息告知模型。回合进行中主进程不受理。 */
   cancelTodoList: () => void
   /**
@@ -514,6 +531,8 @@ const ACTION_KEYS: Record<ChatActionKey, true> = {
   mountFocus: true,
   setSessionModel: true,
   setSessionEffort: true,
+  setCompactRatio: true,
+  refreshContextUsage: true,
   respondAsk: true,
   respondPlan: true,
   respondMount: true,
@@ -1178,6 +1197,9 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     [patchRuntime]
   )
 
+  // 各会话的上下文占用快照（键=sessionId）：由 context_usage 事件推送、切到会话时按需拉取。
+  // 与待办清单同一套缓存策略（本窗口收得到所有会话的事件，故缓存不会过期）。
+  const [contextUsages, setContextUsages] = useState<Map<string, ContextUsage>>(() => new Map())
   // 各会话的待办清单状态（键=sessionId）：todos 事件推送、切到会话时拉取。本窗口收得到所有会话的事件，
   // 故缓存不会过期。ref 供事件回调 / 拉取回调同步读（判定拉取期间事件是否已先到）。
   const [todoStates, setTodoStates] = useState<Map<string, TodoState>>(() => new Map())
@@ -1408,6 +1430,31 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       // 或别处发起、经 turn_start / attachSession 接上的。只有这样的会话才能把流事件正确拼进气泡；
       // 其余是本层没缓存的后台回合 —— 内容以主进程 + 磁盘为唯一真源，绝不在此凑合拼装。
       const localStreaming = runtimesRef.current.get(sid)?.streaming === true
+
+      // 用量快照（会话级，主进程在回合收尾时推送）：喂给输入框的上下文胶囊。须放在下面的
+      // localStreaming 早退之前——它总在本轮 done 之后到达，那时本层已不再是「流式中」，否则会被吞掉。
+      if (ev.type === 'context_usage') {
+        setContextUsages((prev) => {
+          const map = new Map(prev)
+          map.set(sid, {
+            used: ev.used,
+            window: ev.window,
+            compactAt: ev.compactAt,
+            cacheRead: ev.cacheRead,
+            cacheWrite: ev.cacheWrite,
+            ratio: ev.ratio,
+            actualRatio: ev.actualRatio,
+            minRatio: ev.minRatio,
+            maxRatio: ev.maxRatio,
+            defaultRatio: ev.defaultRatio,
+            compactLog: ev.compactLog,
+            parts: ev.parts,
+            windowUncapped: ev.windowUncapped
+          })
+          return map
+        })
+        return
+      }
 
       // 交互卡另记一份到 pendingCards（不 return，照常并入气泡）：成员会话的卡没人打开着看，主对话靠它在末尾显示胶囊与卡片。
       if (ev.type === 'ask_user' || ev.type === 'plan_review' || ev.type === 'mount_request') {
@@ -1660,6 +1707,38 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })
       .catch(() => undefined)
   }, [currentSessionId, setTodoState])
+
+  // 切到某会话时拉取其上下文用量（此后的变化走 context_usage 事件）。已有缓存则不重复拉。
+  useEffect(() => {
+    const sid = currentSessionId
+    if (!sid || contextUsages.has(sid)) return
+    window.deva.chat
+      .contextUsage(sid)
+      .then((cu) => {
+        if (!cu) return
+        setContextUsages((prev) => {
+          if (prev.has(sid)) return prev
+          const map = new Map(prev)
+          map.set(sid, {
+            used: cu.used,
+            window: cu.window,
+            compactAt: cu.compactAt,
+            cacheRead: cu.cacheRead,
+            cacheWrite: cu.cacheWrite,
+            ratio: cu.ratio,
+            actualRatio: cu.actualRatio,
+            minRatio: cu.minRatio,
+            maxRatio: cu.maxRatio,
+            defaultRatio: cu.defaultRatio,
+            compactLog: cu.compactLog,
+            parts: cu.parts,
+            windowUncapped: cu.windowUncapped
+          })
+          return map
+        })
+      })
+      .catch(() => undefined)
+  }, [currentSessionId, contextUsages])
 
   // 回合之外新建的对话（手机上 /new，还没发消息）：没有 turn_start 可借，主进程单独通知刷新列表。
   useEffect(() => window.deva.chat.onSessionsChanged(() => void refreshSessions()), [refreshSessions])
@@ -2051,6 +2130,67 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       })()
     }
 
+    // 把一份快照写进本层缓存（三处调用：事件推送、切会话拉取、面板打开时重拉）。
+    const putContextUsage = (sid: string, cu: ContextUsage): void => {
+      setContextUsages((prev) => {
+        const map = new Map(prev)
+        map.set(sid, cu)
+        return map
+      })
+    }
+
+    // 设置当前对话的自动压缩触发比例（null = 恢复默认）：立即落库、主进程回推新快照，
+    // 故面板滑块立刻同步（下一轮就按新比例判定，不必重启）。
+    const setCompactRatio = (ratio: number | null): void => {
+      const sid = sessionIdRef.current
+      if (!sid) return
+      void (async () => {
+        const cu = await window.deva.chat.setCompactRatio({ sessionId: sid, ratio })
+        if (!cu) return
+        putContextUsage(sid, {
+          used: cu.used,
+          window: cu.window,
+          compactAt: cu.compactAt,
+          cacheRead: cu.cacheRead,
+          cacheWrite: cu.cacheWrite,
+          ratio: cu.ratio,
+          actualRatio: cu.actualRatio,
+          minRatio: cu.minRatio,
+          maxRatio: cu.maxRatio,
+          defaultRatio: cu.defaultRatio,
+          compactLog: cu.compactLog,
+          parts: cu.parts,
+          windowUncapped: cu.windowUncapped
+        })
+      })()
+    }
+
+    // 面板打开时重拉一次：压缩记录 / 提示词构成这些边上数据只在回合收尾时推送，
+    // 而回合还在跑（尤其刚压缩完）时，缓存里那份是压缩前的旧值——不重拉就会一直显示「还没压过」。
+    const refreshContextUsage = (): void => {
+      const sid = sessionIdRef.current
+      if (!sid) return
+      void (async () => {
+        const cu = await window.deva.chat.contextUsage(sid)
+        if (!cu || sid !== sessionIdRef.current) return
+        putContextUsage(sid, {
+          used: cu.used,
+          window: cu.window,
+          compactAt: cu.compactAt,
+          cacheRead: cu.cacheRead,
+          cacheWrite: cu.cacheWrite,
+          ratio: cu.ratio,
+          actualRatio: cu.actualRatio,
+          minRatio: cu.minRatio,
+          maxRatio: cu.maxRatio,
+          defaultRatio: cu.defaultRatio,
+          compactLog: cu.compactLog,
+          parts: cu.parts,
+          windowUncapped: cu.windowUncapped
+        })
+      })()
+    }
+
     const selectSession = (id: string): void => {
       if (id === sessionIdRef.current) return
       setCurrent(id)
@@ -2332,6 +2472,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       mountFocus,
       setSessionModel,
       setSessionEffort,
+      setCompactRatio,
+      refreshContextUsage,
       pendingCards,
       respondAsk,
       respondPlan,
@@ -2339,6 +2481,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       resolveProposal,
       resolveAutotask,
       todos: todoStates.get(currentSessionId) ?? EMPTY_TODOS,
+      contextUsage: contextUsages.get(currentSessionId) ?? null,
       cancelTodoList,
       stopSubagent,
       removeMember,
@@ -2355,6 +2498,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     dropPendingCard,
     currentSessionId,
     todoStates,
+    contextUsages,
     setTodoState,
     insertStates,
     progressStates,
@@ -2393,6 +2537,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       draftSession: value.draftSession,
       pendingCards: value.pendingCards,
       todos: value.todos,
+      contextUsage: value.contextUsage,
       pendingInserts: value.pendingInserts,
       memberProgress: value.memberProgress
     }),
@@ -2405,6 +2550,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       value.draftSession,
       value.pendingCards,
       value.todos,
+      value.contextUsage,
       value.pendingInserts,
       value.memberProgress
     ]

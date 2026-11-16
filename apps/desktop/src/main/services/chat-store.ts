@@ -203,7 +203,51 @@ export interface StoredSession {
    * 注入即清空（展示层取最后一个 text 块，故不出现在气泡里）。
    */
   restoreNote?: string
+  /**
+   * 本会话的自动压缩触发比例（0～1）：输入量到窗口的这个比例就压缩。缺省 = 跟随全局
+   * config.json 的 compaction.triggerRatio，再缺省按 triggerTokens 的「窗口−输出预留−余量」算。
+   * 只影响本对话，改完下一轮即生效（不必重启，也不必等压缩）。
+   * 注意：它只能让压缩**提前**——实际触发点恒取 min(窗口×比例, 窗口−输出预留−余量)，
+   * 越过后者会撞「输入+输出超窗」的 400，故面板要如实显示被 clamp 后的实际比例。
+   */
+  compactRatio?: number
+  /**
+   * 本会话的压缩记录（最旧在前，超上限时丢最旧的）。每次自动/手动压缩各记一条：
+   * 压缩前的输入量、压缩后的输入量（等下一次真实 usage 回报后才定稿，见 writeCompactLog）、
+   * 被折叠的消息条数与省下的 token。面板按时间倒序展示。
+   */
+  compactLog?: CompactLogEntry[]
+  /**
+   * 最近一次请求的「提示词构成」本地估算（token）：system / 工具表 / 消息三块。
+   * provider 只回报一个总输入，分项无从得知，故这三项是字符估算；渲染层按
+   * 「真实总量 / 这三项之和」等比缩放后展示，保证三项之和恒等于真实总量。
+   */
+  lastPromptParts?: { system: number; tools: number; messages: number }
 }
+
+/** 一次压缩的观测记录（StoredSession.compactLog 项）。 */
+export interface CompactLogEntry {
+  /** 压缩完成时刻（毫秒时间戳）。 */
+  at: number
+  /** 压缩发生在第几轮（1 基，按真实用户轮计；取不到时为 0）。 */
+  turn: number
+  /** auto = 自动触发，manual = /compact。 */
+  scope: 'auto' | 'manual'
+  /** 压缩前的输入量（token）；null = 当时还没有真实读数，无从测量。 */
+  before: number | null
+  /**
+   * 压缩后的输入量；null = 压缩刚结束、下一次 usage 还没回报（面板显示「待下次请求后定稿」）。
+   * 压缩后立刻测会虚低：surface 替换发生在 usage 刷新之前，投影仍持有压缩前的印记。
+   */
+  after: number | null
+  /** 被折叠进摘要的消息条数。 */
+  folded: number
+  /** 失败原因（压缩失败也记，面板标红）。 */
+  error?: string
+}
+
+/** 压缩记录保留上限（条）。 */
+export const COMPACT_LOG_LIMIT = 200
 
 /** 回合终态提示（持久化边车项）。见 StoredSession.notices。 */
 export interface StoredNotice {
@@ -235,6 +279,8 @@ export interface ChatSessionMeta {
   members?: MemberRef[]
   /** 成员会话所属的主对话 id。见 StoredSession.parentId。 */
   parentId?: string
+  /** 本对话的自动压缩触发比例（0～1）；缺省 = 跟随全局 / 按窗口算。见 StoredSession.compactRatio。 */
+  compactRatio?: number
 }
 
 /**
@@ -291,7 +337,8 @@ function metaOf(s: StoredSession): ChatSessionMeta {
     effort: s.effort,
     archived: s.archived,
     ...(s.members?.length ? { members: s.members } : {}),
-    ...(s.parentId ? { parentId: s.parentId } : {})
+    ...(s.parentId ? { parentId: s.parentId } : {}),
+    ...(s.compactRatio !== undefined ? { compactRatio: s.compactRatio } : {})
   }
 }
 

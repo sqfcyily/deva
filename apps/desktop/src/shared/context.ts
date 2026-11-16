@@ -133,6 +133,26 @@ export function autoContextWindow(modelId: string, fallback = DEFAULT_CONTEXT_WI
   return builtin !== undefined ? capAutoWindow(modelId, builtin) : fallback
 }
 
+/**
+ * 「自动」窗口的**未封顶**值：同一个推断，但跳过 AUTO_WINDOW_CAP。
+ * 只用于**说明**（面板上要讲清「模型标称 1M，自动值被封到 256K」），绝不参与压缩判定——
+ * 判定用 autoContextWindow / contextWindowFor，才是真正生效的那个数。
+ */
+export function uncappedContextWindow(modelId: string, fallback = DEFAULT_CONTEXT_WINDOW): number {
+  const km = /(\d+)k\b/i.exec(modelId)
+  if (km) {
+    const n = Number(km[1])
+    if (n >= 4 && n <= 4000) return n * 1000
+  }
+  const mm = /(\d+)m\b/i.exec(modelId)
+  if (mm) {
+    const n = Number(mm[1])
+    if (n >= 1 && n <= 10) return n * 1_000_000
+  }
+  const builtin = builtinContextWindow(modelId)
+  return builtin !== undefined ? builtin : fallback
+}
+
 /** Claude 系的每步输出预算：带思考的新模型给小了会被思维链吃光，一字未出就撞限。 */
 export const OUTPUT_BUDGET_WIDE = 32_000
 /** 保守输出预算：Anthropic / Responses 适配器的默认值，也是被服务商拒绝后的降档值。 */

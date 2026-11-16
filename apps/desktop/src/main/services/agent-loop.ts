@@ -224,6 +224,11 @@ interface AgentLoopArgs {
    */
   compact?: () => Promise<boolean>
   /**
+   * 本会话的自动压缩触发比例覆盖（0～1，见 StoredSession.compactRatio）。轮中判定的比例口径必须与轮前
+   * （needsCompaction）一致，否则「面板显示 80% 却按 75% 压」；缺省 = 按全局 / 窗口算。
+   */
+  compactRatio?: number
+  /**
    * 本对话的项目成员名单（见 members.ts）：每步请求前与历史里已告知的比对，有变化即随消息下发（同技能清单）。
    * 仅主对话的主轮传入（工具表带着 member_send 时）。
    */
@@ -411,7 +416,7 @@ export async function runAgentLoop(args: AgentLoopArgs): Promise<LoopResult> {
       step > 0 &&
       args.compact &&
       !controller.signal.aborted &&
-      needsCompactionMidTurn(history, model, run.usedInput, run.usedAt) &&
+      needsCompactionMidTurn(history, model, run.usedInput, run.usedAt, undefined, args.compactRatio) &&
       (await args.compact())
     )
       run.usedInput = 0 // 历史已改写，旧读数作废：回退估算，直到本步拿到新读数

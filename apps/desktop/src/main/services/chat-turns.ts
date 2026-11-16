@@ -57,6 +57,7 @@ import {
   buildAttachmentPart
 } from './attachments'
 import { isEn } from '../locale'
+import { estimateTextTokens } from '../../shared/context'
 import { clearBrowserOperating, markBrowserTurnEnded } from './browser'
 import {
   createRecorder,
@@ -64,10 +65,16 @@ import {
 } from './checkpoints'
 import {
   compactSession,
+  compactRatioInfo,
+  contextWindowFor,
+  estimateTokens,
   lastTurnStart,
+  messageTokens,
   modelMessages,
   modelStart,
   needsCompaction,
+  settleCompactLog,
+  triggerTokens,
   type CompactModelConfig
 } from './compaction'
 import { clearStaleToolResults } from './tool-results'
@@ -194,6 +201,53 @@ export function emitTurnStart(turnId: string, sessionId: string, history: Messag
 /** 接受插入的回合（对话的主轮，见 runTurn）。定时任务、压缩、回滚期间都不在其中。 */
 const insertableTurns = new Set<string>()
 
+/**
+ * 推送某会话的上下文占用快照（输入框的用量胶囊）。与压缩判定同源：used 取本轮真实输入 token（无则字符估算），
+ * window / compactAt 由 compaction.ts 的 contextWindowFor / triggerTokens 给出——胶囊显示的百分比即压缩的实际依据。
+ * 会话级事件（空 turnId）：胶囊不属于任何一轮，切走再切回来仍在。
+ */
+export function emitContextUsage(
+  sessionId: string,
+  session: StoredSession,
+  model: ChatModelConfig
+): void {
+  const window = contextWindowFor(model)
+  const used =
+    session.lastInputTokens && session.lastInputTokens > 0
+      ? session.lastInputTokens
+      : estimateTokens(modelMessages(session.messages))
+  const info = compactRatioInfo(session, model)
+  // 提示词构成：三项是本地估算，按「真实总量 / 估算总量」等比缩放——三项之和恒等于 used。
+  const p = session.lastPromptParts
+  const sum = p ? p.system + p.tools + p.messages : 0
+  const scale = p && sum > 0 ? used / sum : 0
+  emit('', sessionId, {
+    type: 'context_usage',
+    used,
+    window,
+    // 实际触发点（min(比例, 窗口−输出预留−余量)）；面板与胶囊的「压缩线」都读它。
+    compactAt: triggerTokens(model, undefined, info.ratio),
+    cacheRead: session.lastCacheRead ?? 0,
+    cacheWrite: session.lastCacheWrite ?? 0,
+    ratio: info.ratio,
+    actualRatio: info.actualRatio,
+    minRatio: info.minRatio,
+    maxRatio: info.maxRatio,
+    defaultRatio: info.defaultRatio,
+    windowUncapped: info.windowUncapped,
+    compactLog: session.compactLog ?? [],
+    ...(p && scale > 0
+      ? {
+          parts: {
+            system: Math.round(p.system * scale),
+            tools: Math.round(p.tools * scale),
+            messages: Math.round(p.messages * scale)
+          }
+        }
+      : {})
+  })
+}
+
 /** 推送某会话待送达的插入消息（插入 / 送达 / 撤回 / 回合结束后）。 */
 function emitInserts(sessionId: string): void {
   emit('', sessionId, { type: 'inserts', pending: (pendingInserts.get(sessionId) ?? []).map((e) => e.text) })
@@ -296,7 +350,8 @@ function midTurnCompactor(
         session,
         model,
         signal: controller.signal,
-        midTurn: true
+        midTurn: true,
+        scope: 'auto'
       })
       if (r.status === 'none') return false
       if (r.status === 'failed') {
@@ -477,7 +532,12 @@ export async function runTurn(
     // 失败 / 无需压缩都发事件供渲染层弱提示，且绝不阻断本轮（宁可这一轮不压也要照常回答）。
     if (!controller.signal.aborted && needsCompaction(session, turnModel)) {
       try {
-        const r = await compactWithStatus(turnId, sessionId, { session, model: turnModel, signal: controller.signal })
+        const r = await compactWithStatus(turnId, sessionId, {
+          session,
+          model: turnModel,
+          signal: controller.signal,
+          scope: 'auto'
+        })
         // 失败原因落主进程日志：渲染层虽已展示，但后台回合（定时任务）无人盯着，日志是唯一痕迹。
         if (r.status === 'failed') console.warn('[compaction] 自动压缩失败：', r.message)
         if (r.status !== 'none')
@@ -487,6 +547,9 @@ export async function runTurn(
             status: r.status,
             message: r.message
           })
+        // 压缩改写了模型视图（used 会从真实读数回落到字符估算），必须立刻推一次快照：
+        // 否则整轮要跑十几分钟，胶囊和面板一直显示压缩前的旧值（显示成「已超标 100%」「还没压过」）。
+        if (r.status === 'compacted') emitContextUsage(sessionId, session, turnModel)
       } catch (e) {
         /* 压缩自身抛错（极少）：忽略，历史未动，本轮照常 */
         console.warn('[compaction] 自动压缩异常：', (e as Error)?.message ?? e)
@@ -542,14 +605,10 @@ export async function runTurn(
       ...projectDocPromptSection(loadProjectDoc(effectiveRoot))
     ]
 
-    // 主轮 = depth 0：可问询（定时任务除外）、可派生子智能体、由本封装发终态 done（嵌套调用不发 done）。
-    const { stopReason, errorMessage, text } = await runAgentLoop({
-      turnId,
-      sessionId,
-      history,
-      // 记忆在 system 里只有固定的规则段，条目随消息下发（见 listing.ts），记忆增删改不动 system。
-      // 定时任务换用无人值守版（不提问、不等确认），记忆只读。
-      system: isMember
+    // 系统提示词本轮回合定格：既传给循环，也用来算「提示词构成」的 system 项（见 recordPromptParts）。
+    // 记忆在 system 里只有固定的规则段，条目随消息下发（见 listing.ts），记忆增删改不动 system。
+    // 定时任务换用无人值守版（不提问、不等确认），记忆只读。
+    const system = isMember
         ? memberSystemPrompt({
             member: memberRef ?? {
               sessionId,
@@ -585,7 +644,23 @@ export async function runTurn(
             personas,
             memoryPromptSection({ writable: true, root: effectiveRoot }),
             projectDoc
-          ),
+          )
+
+    // 提示词构成（system / 工具表 / 消息）是本地的字符估算：provider 只回报一个总输入，分项无从得知。
+    // 记下三项估算，渲染层按「真实总量 / 估算总量」等比缩放后展示——三项之和恒等于真实总量，
+    // 不会出现「分项加起来对不上」的怪账（DSH 卡片那种算法即用此口径投影）。
+    session.lastPromptParts = {
+      system: estimateTextTokens(system),
+      tools: estimateTextTokens(JSON.stringify(tools)),
+      messages: modelMessages(history).reduce((n, m) => n + messageTokens(m), 0)
+    }
+
+    // 主轮 = depth 0：可问询（定时任务除外）、可派生子智能体、由本封装发终态 done（嵌套调用不发 done）。
+    const { stopReason, errorMessage, text } = await runAgentLoop({
+      turnId,
+      sessionId,
+      history,
+      system,
       tools,
       personaId: rolePersonaId,
       model: turnModel,
@@ -657,10 +732,21 @@ export async function runTurn(
       onStep: () => saveProject(sessionId),
       // 轮中压缩：旧读数作废（别让 finally 把压缩前的大数存成下轮触发依据）；轮起点重新定位到本轮请求之后
       // （摘要插在本轮中间，不是轮起点；被并入摘要的步骤都带工具调用，不影响「是否产出可见回复」的判定）。
-      compact: midTurnCompactor(turnId, sessionId, session, turnModel, controller, () => {
-        lastInput = 0
-        turnStart = lastTurnStart(history) + 1
-      })
+      compact: midTurnCompactor(
+        turnId,
+        sessionId,
+        session,
+        turnModel,
+        controller,
+        () => {
+          lastInput = 0
+          turnStart = lastTurnStart(history) + 1
+          // 轮中压缩同样立刻推快照（理由同轮前那次）：否则一步就要跑几分钟，界面停在压缩前的读数上。
+          emitContextUsage(sessionId, session, turnModel)
+        }
+      ),
+      // 本会话的压缩阈值覆盖（见 StoredSession.compactRatio）：轮中判定与轮前判定必须用同一个比例。
+      compactRatio: session.compactRatio
     })
     emit(turnId, sessionId, { type: 'done', stopReason, durationMs: finishDuration() })
     // 终态提示持久化（须在 finally 落盘前执行）：错误红框 / 截断 / 空回合入 notices 边车。
@@ -685,7 +771,13 @@ export async function runTurn(
       session.lastInputTokens = lastInput
       session.lastCacheRead = lastCacheRead
       session.lastCacheWrite = lastCacheWrite
+      // 压缩记录定稿：压缩刚结束时测不准（surface 已替换、投影还持着压缩前的印记），
+      // 此时才拿到本轮真实 usage，用它回填「压缩后」的读数。
+      settleCompactLog(session, lastInput)
     }
+    // 用量快照推给渲染层（输入框的上下文胶囊）：会话级事件，空 turnId——胶囊不属于任何一轮，切会话后仍在。
+    // 与上面的落盘字段同源，故胶囊显示的百分比就是压缩的实际依据（含本轮的缓存命中量）。
+    emitContextUsage(sessionId, session, turnModel)
     // 检查点保留上限：只保留最近若干轮的备份，更早的释放 blob（元信息保留，回滚时如实显示备份缺失）。
     enforceCap(session, turnToolIds(session.messages))
     // 兜底：循环抛异常跳出时，历史里可能留着没有结果的 tool_use（正常 / 中止路径已在循环内补齐）。
