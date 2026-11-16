@@ -206,7 +206,7 @@ export function redeemPairCode(
   const p = pairing.get(id)
   if (!p || p.expiresAt < Date.now()) {
     pairing.delete(id)
-    return { ok: false, message: '配对码已过期或尚未生成。请在电脑端 Deva 的「机器人」面板里生成新的配对码。' }
+    return { ok: false, message: '配对码已过期或尚未生成。请在电脑端 Deva 的「手机」面板里生成新的配对码。' }
   }
   if (code !== p.code) {
     p.failures++
@@ -304,7 +304,7 @@ export function allowedPersonas(channel: ChannelId): PersonaRecord[] {
 }
 
 /** 回复范围限定了角色、却没有一个可用（选中的都删了 / 停用了）：新建不了对话。 */
-const NO_PERSONA = '回复范围内没有可用的角色，请在电脑端「机器人」里调整回复范围。'
+const NO_PERSONA = '回复范围内没有可用的角色，请在电脑端「手机」面板里调整回复范围。'
 
 function sessionTitle(sessionId: string): string {
   return getSession(sessionId)?.title || '新对话'
@@ -962,7 +962,7 @@ async function handleMessage(msg: InboundMessage): Promise<void> {
     return notice(msg.chat, {
       tone: 'warning',
       title: '尚未配对',
-      text: '请让机器人的主人在电脑端 Deva 的「机器人」面板里生成邀请码，然后在这里发送：\n/pair 邀请码'
+      text: '请让机器人的主人在电脑端 Deva 的「手机」面板里生成邀请码，然后在这里发送：\n/pair 邀请码'
     })
   }
   // 扫码创建时还不知道私聊 chatId（主动打招呼也可能失败）：用户第一次发消息时补上。

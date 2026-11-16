@@ -25,6 +25,7 @@ import { useI18n } from '../i18n/i18n'
 import { useToast } from '../components/ToastProvider'
 import { useModels, findActive, hasUsableModel } from './models'
 import { useWorkspace } from './workspace'
+import { useRemoteSync } from './remote-sync'
 import { formatTokens } from '../../../shared/context'
 import { normalizeAgentDraft, normalizeAutotaskDraft, type AgentDraft, type AutotaskDraft } from '../../../shared/drafts'
 import type {
@@ -1663,6 +1664,42 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
   // 回合之外新建的对话（手机上 /new，还没发消息）：没有 turn_start 可借，主进程单独通知刷新列表。
   useEffect(() => window.deva.chat.onSessionsChanged(() => void refreshSessions()), [refreshSessions])
+
+  // 与手机同步已读、删除、归档、改模型（见 remote-sync.ts）。
+  const dropUnread = (sid: string): void =>
+    setUnread((prev) => {
+      if (!prev.has(sid)) return prev
+      const next = new Set(prev)
+      next.delete(sid)
+      return next
+    })
+  useRemoteSync(currentSessionId, allSessions.find((s) => s.id === currentSessionId)?.updatedAt, {
+    onRead: dropUnread,
+    onGone: (sid) => {
+      dropUnread(sid)
+      void (async () => {
+        const path = projectPathRef.current
+        const list = await window.deva.chat.listSessions(path)
+        if (projectPathRef.current !== path) return
+        setSessions(list)
+        const meta = list.find((x) => x.id === sid)
+        if (!meta) dropRuntime(sid)
+        if (sid === sessionIdRef.current && (!meta || meta.archived)) openFirstSession(list)
+      })()
+    },
+    onModel: (sid) => {
+      // 本地记的模型（覆盖层）会挡住手机上的改动：撤掉，以对话里存的为准。
+      const cur = bindingsRef.current.get(sid)
+      if (cur?.model !== undefined) {
+        const { model: _stale, ...rest } = cur
+        const map = new Map(bindingsRef.current)
+        map.set(sid, rest)
+        bindingsRef.current = map
+        setBindings(map)
+      }
+      void refreshSessions()
+    }
+  })
 
   const viewed = runtimes.get(currentSessionId)
   const viewedStreaming = viewed?.streaming ?? false

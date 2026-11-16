@@ -1,209 +1,274 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { WebMessage, WebSession } from '../shared/remote-web'
-import { Avatar } from './avatar'
-import { Markdown, PromptCard } from './cards'
+import { ChevronLeft, MoreHorizontal } from 'lucide-react'
+import type { WebMessage, WebPersona } from '../shared/remote-web'
 import type { Store } from './App'
-import { t } from './link'
+import { Avatar, SessionFace } from './avatar'
+import { Markdown, PromptCard } from './cards'
+import { ChatMenu } from './chat-menu'
+import { Composer } from './composer'
+import { AttachmentThumb, FileCard } from './files'
+import { Banner } from './onboard'
+import type { Outgoing } from './outbox'
+import { fmtDuration, t } from './strings'
 
 /**
- * 对话页：和电脑上同一个对话。历史按页拉取（最新一页，往上翻更早）；对话摘要一变（回合结束 / 发了消息）
- * 就重新拉最新一页合并进来。进行中显示输入指示和一行「正在做什么」；需要你决定的卡片贴在最下面。
+ * 对话页（同 IM）：你发的消息在右侧气泡；助手的一轮按段拆成多条回复，左侧头像 + 气泡，写完一段就出现一段。
+ * 执行步骤不显示，进行中只在最后显示三个跳动的点（连不上电脑时点停下）。标题栏只放头像和标题，
+ * 角色、文件夹、模型等在右上角「更多」里。消息从顶部往下排；发出的消息立刻显示，电脑收下后换成对话记录里那条。
+ * 历史按页拉（先显示本机缓存），滚到顶自动往前翻；进行中有新内容只补拉最后几条。
  */
-export function ChatPage({
-  store,
-  sid,
-  session,
-  history,
-  ready,
-  banner
-}: {
-  store: Store
-  sid: string
-  session?: WebSession
-  history?: { messages: WebMessage[]; start: number; total: number }
-  ready: boolean
-  banner: React.ReactNode
-}): React.JSX.Element {
-  const { link } = store
-  const persona = session?.personaId ? store.personas.get(session.personaId) : undefined
+export function ChatPage({ store, sid }: { store: Store; sid: string }): React.JSX.Element {
+  const session = store.sessions.get(sid)
+  const persona = session ? store.personas.get(session.personaId ?? 'general') : undefined
+  const history = store.hist.get(sid)
+  const outgoing = store.outbox.get(sid) ?? []
   const prompts = useMemo(
     () => [...store.prompts.values()].filter((p) => p.view.sessionId === sid).sort((a, b) => a.at - b.at),
     [store.prompts, sid]
   )
+  const [menu, setMenu] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
-  const [text, setText] = useState('')
-  const [sending, setSending] = useState(false)
-  const ta = useRef<HTMLTextAreaElement>(null)
+  const loadingOlder = useRef(false)
+  const histRef = useRef(history)
+  histRef.current = history
 
   // 进入 / 对话有更新：拉最新一页；看过的记为已读。
   const updatedAt = session?.updatedAt ?? 0
+  const { link, ready } = store
   useEffect(() => {
-    if (ready) link.history(sid)
-  }, [link, sid, ready, updatedAt])
+    if (ready) link?.history(sid)
+  }, [link, ready, sid, updatedAt])
+  // 进行中又写完一条回复：只补拉最后几条。
+  const rev = session?.rev ?? 0
   useEffect(() => {
-    store.markSeen(sid)
-  }, [store, sid, updatedAt])
+    if (!ready || !rev) return
+    const h = histRef.current
+    link?.history(sid, h ? { from: Math.max(0, h.total - 1) } : {})
+  }, [link, ready, sid, rev])
+  // 看着这个对话（页面在前台）：记为已读；锁屏 / 切到后台时来的新回复，等回到前台再算看过。
+  useEffect(() => {
+    const seen = (): void => {
+      if (document.visibilityState === 'visible') store.markSeen(sid)
+    }
+    seen()
+    document.addEventListener('visibilitychange', seen)
+    return () => document.removeEventListener('visibilitychange', seen)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid, updatedAt, ready])
+
+  // 对话在别处被删除了：回到列表（刚新建、列表还没同步到的不算）。
+  const known = useRef(false)
+  if (session) known.current = true
+  useEffect(() => {
+    if (!session && known.current && ready) store.back()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, ready])
+
+  const busy = session?.busy ?? false
+  const typing = busy && !session?.waiting
+  const firstId = history?.messages[0]?.id
+  const prevTop = useRef<{ id?: string; height: number } | null>(null)
+
+  // 往前翻页后保持视线位置；在底部时新内容到达自动贴底。
+  useEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    const p = prevTop.current
+    if (p && p.id !== firstId) {
+      el.scrollTop += el.scrollHeight - p.height
+      prevTop.current = null
+      loadingOlder.current = false
+      return
+    }
+    if (stick.current) el.scrollTop = el.scrollHeight
+  }, [firstId, history, outgoing.length, typing, prompts.length, session?.retry])
 
   const onScroll = (): void => {
     const el = listRef.current
     if (!el) return
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-  }
-  const count = history?.messages.length ?? 0
-  const lastId = history?.messages[count - 1]?.id
-  const busy = session?.busy ?? false
-  useEffect(() => {
-    const el = listRef.current
-    if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [lastId, count, busy, prompts.length])
-
-  // 输入框随内容长高（最多约 6 行）。
-  useEffect(() => {
-    const el = ta.current
-    if (!el) return
-    el.style.height = '0px'
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
-  }, [text])
-
-  const send = async (): Promise<void> => {
-    const body = text.trim()
-    if (!body || sending || !ready) return
-    setSending(true)
-    const r = await link.sendText(sid, body)
-    setSending(false)
-    if (r.ok) {
-      setText('')
-      stick.current = true
-      if (r.message) store.toast(r.message)
-      link.history(sid)
-    } else store.toast(r.message ?? t('errorTitle'), false)
+    if (el.scrollTop < 120 && history && history.start > 0 && !loadingOlder.current && ready) {
+      loadingOlder.current = true
+      prevTop.current = { id: firstId, height: el.scrollHeight }
+      link?.history(sid, { before: history.start })
+    }
   }
 
-  const statusText = session?.waiting ? t('waiting') : session?.busy ? session.status ?? t('busy') : t('idle')
+  const messages = history?.messages ?? []
+  const last = messages[messages.length - 1]
+  // 进行中的点接在最后一组回复下面；最后是你发的消息时另起一组。
+  const dotsInLast = typing && !outgoing.length && last?.role === 'assistant'
+  const empty = history && history.total === 0 && !busy && !prompts.length && !outgoing.length
 
   return (
-    <>
-      <header className="top top--chat">
-        <button className="iconbtn iconbtn--plain" aria-label="back" onClick={store.back}>
-          <svg className="ic" viewBox="0 0 24 24">
-            <path d="m15 18-6-6 6-6" />
-          </svg>
+    <div className="page page--chat">
+      <header className="tb tb--sub">
+        <button className="ib" aria-label="back" onClick={store.back}>
+          <ChevronLeft size={26} strokeWidth={1.8} />
         </button>
-        <Avatar persona={persona} seed={session?.personaId} task={session?.kind === 'task'} busy={busy} size={32} />
-        <div className="top__who">
-          <b>{session?.title ?? ''}</b>
-          <span>
-            <span className={`dot${session?.waiting ? ' dot--warn' : busy ? ' dot--busy' : ''}`} />
-            {session?.kind === 'task' ? t('task') : persona?.name ?? 'Deva'} · {statusText}
-          </span>
-        </div>
+        {session && <SessionFace s={session} personas={store.personas} size={36} still />}
+        <b className="tb__title">{session?.title ?? ''}</b>
+        <button className="ib" aria-label={t('more')} disabled={!session} onClick={() => setMenu(true)}>
+          <MoreHorizontal size={23} strokeWidth={1.8} />
+        </button>
       </header>
+      <Banner store={store} />
       <div className="scroll msgs" ref={listRef} onScroll={onScroll}>
-        {history && history.start > 0 && (
-          <button className="linkbtn linkbtn--center" onClick={() => link.history(sid, history.start)}>
-            {t('loadMore')}
-          </button>
+        {history && history.start > 0 && <div className="msgs__more">{ready ? <span className="spin" /> : t('loadMore')}</div>}
+        {empty && <div className="empty">{t('chatEmpty')}</div>}
+        {messages.map((m) =>
+          m.role === 'user' ? (
+            <UserMessage key={m.id} m={m} store={store} sid={sid} />
+          ) : (
+            <Reply
+              key={m.id}
+              m={m}
+              persona={persona}
+              seed={session?.personaId}
+              store={store}
+              sid={sid}
+              dots={dotsInLast && m === last ? <Dots stalled={!ready} retry={session?.retry} /> : null}
+            />
+          )
         )}
-        {history && history.total === 0 && !busy && <div className="empty">{t('chatEmpty')}</div>}
-        {history?.messages.map((m) => <MessageView key={m.id} m={m} persona={persona} store={store} seed={session?.personaId} task={session?.kind === 'task'} />)}
-        {prompts.map((p) => (
-          <div key={p.view.key} className="m m--card">
-            <PromptCard view={p.view} onAction={store.act} />
-          </div>
+        {outgoing.map((o) => (
+          <OutgoingMessage key={o.id} o={o} store={store} />
         ))}
-        {busy && !session?.waiting && (
-          <div className="m">
-            <Avatar persona={persona} seed={session?.personaId} task={session?.kind === 'task'} size={28} />
-            <div className="bubble bubble--typing" aria-label={t('busy')}>
-              <span />
-              <span />
-              <span />
+        {typing && !dotsInLast && (
+          <div className="ga">
+            <Avatar persona={persona} seed={session?.personaId} size={34} />
+            <div className="ga__col">
+              <Dots stalled={!ready} retry={session?.retry} />
             </div>
           </div>
         )}
-        {busy && session?.status && !session.waiting && <div className="steps">{session.status}</div>}
+        {prompts.map((p) => (
+          <PromptCard key={p.view.key} view={p.view} onAction={store.act} who={persona} />
+        ))}
         <div className="msgs__pad" />
       </div>
-      {banner}
-      <div className="composer">
-        <textarea
-          id="composer"
-          ref={ta}
-          className="composer__input"
-          rows={1}
-          placeholder={busy ? t('composerBusy') : t('composer')}
-          value={text}
-          disabled={!ready}
-          enterKeyHint="send"
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            // 桌面浏览器里 Enter 发送、Shift+Enter 换行；手机键盘的 Enter 通常是换行，用按钮发。
-            if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) {
-              e.preventDefault()
-              void send()
-            }
-          }}
-        />
-        {busy && !text.trim() ? (
-          <button className="composer__send is-stop" disabled={!ready} onClick={() => link.stopTurn(sid)} aria-label={t('stop')}>
-            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden>
-              <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
-            </svg>
-          </button>
-        ) : (
-          <button className="composer__send" disabled={!ready || sending || !text.trim()} onClick={() => void send()} aria-label={t('send')}>
-            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden>
-              <path d="M3 11.5 20 4l-4 16-4.5-6.5L3 11.5z" fill="currentColor" />
-            </svg>
-          </button>
-        )}
-      </div>
-    </>
+      <Composer store={store} sid={sid} busy={busy} waiting={!!session?.waiting} onSent={() => (stick.current = true)} />
+      {menu && session && <ChatMenu store={store} s={session} onClose={() => setMenu(false)} />}
+    </div>
   )
 }
 
-function MessageView({
+/** 进行中：三个跳动的点。连不上电脑时停下（看得出不是在等回复）；模型连接中断 / 重试时旁边写一句。 */
+function Dots({ stalled, retry }: { stalled: boolean; retry?: string }): React.JSX.Element {
+  return (
+    <div className={`bb bb--dots${stalled ? ' is-stalled' : ''}`} aria-label={t('busy')}>
+      <i />
+      <i />
+      <i />
+      {retry && <span>{retry}</span>}
+    </div>
+  )
+}
+
+function UserMessage({ m, store, sid }: { m: Extract<WebMessage, { role: 'user' }>; store: Store; sid: string }): React.JSX.Element {
+  if (m.notify) return <div className="sys">{m.text}</div>
+  const images = m.attachments?.filter((a) => a.kind === 'image' && a.ref) ?? []
+  const others = m.attachments?.filter((a) => !(a.kind === 'image' && a.ref)) ?? []
+  return (
+    <div className="u-wrap">
+      {images.length > 0 && (
+        <div className="thumbs">
+          {images.map((a) => (
+            <AttachmentThumb key={a.ref} store={store} sid={sid} refId={a.ref!} name={a.name} />
+          ))}
+        </div>
+      )}
+      {others.length > 0 && (
+        <div className="atts">
+          {others.map((a, i) => (
+            <span key={i} className="att">
+              {a.name}
+            </span>
+          ))}
+        </div>
+      )}
+      {m.text && <div className="u">{m.text}</div>}
+    </div>
+  )
+}
+
+/** 发出去还没出现在对话记录里的消息：发送中稍等片刻才显示转圈；失败的写明原因，可重发或删除。 */
+function OutgoingMessage({ o, store }: { o: Outgoing; store: Store }): React.JSX.Element {
+  const images = o.files.filter((f) => f.preview)
+  const others = o.files.filter((f) => !f.preview)
+  return (
+    <div className={`u-wrap is-${o.state}`}>
+      {images.length > 0 && (
+        <div className="thumbs">
+          {images.map((f) => (
+            <span key={f.uid} className="thumb">
+              <img src={f.preview} alt={f.name} />
+            </span>
+          ))}
+        </div>
+      )}
+      {others.length > 0 && (
+        <div className="atts">
+          {others.map((f) => (
+            <span key={f.uid} className="att">
+              {f.name}
+            </span>
+          ))}
+        </div>
+      )}
+      {o.text && (
+        <div className="u-line">
+          {o.state === 'sending' && <span className="spin u-spin" />}
+          <div className="u">{o.text}</div>
+        </div>
+      )}
+      {o.state === 'failed' && (
+        <div className="u-fail">
+          <span>{o.error}</span>
+          <button onClick={() => store.outboxOps.retry(o.sid, o.id)}>{t('resend')}</button>
+          <button onClick={() => store.outboxOps.discard(o.sid, o.id)}>{t('delete')}</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 助手的一条回复：头像 + 一列气泡（每段正文一个），交付文件与提示按出现的先后穿插；一轮的最后一条下面写用时。 */
+function Reply({
   m,
   persona,
   seed,
-  task,
-  store
+  store,
+  sid,
+  dots
 }: {
-  m: WebMessage
-  persona?: ReturnType<Store['personas']['get']>
+  m: Extract<WebMessage, { role: 'assistant' }>
+  persona?: WebPersona
   seed?: string
-  task?: boolean
   store: Store
+  sid: string
+  dots: React.ReactNode
 }): React.JSX.Element {
-  void store
-  if (m.role === 'user')
-    return (
-      <div className={`m m--me${m.notify ? ' m--notify' : ''}`}>
-        <div className="bubble bubble--user">
-          {m.text}
-          {m.attachments && m.attachments.length > 0 && (
-            <div className="atts">
-              {m.attachments.map((a, i) => (
-                <span key={i} className="att">
-                  {a}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    )
   return (
-    <div className="m">
-      <Avatar persona={persona} seed={seed} task={task} size={28} />
-      <div className="bubble bubble--reply">
-        {m.text && <Markdown text={m.text} />}
-        {m.notes?.map((n, i) => (
-          <div key={i} className="note">
-            {n}
-          </div>
-        ))}
+    <div className="ga">
+      <Avatar persona={persona} seed={seed} size={34} />
+      <div className="ga__col">
+        {m.parts.map((p, i) =>
+          p.k === 'text' ? (
+            <div key={i} className="bb">
+              <Markdown text={p.text} />
+            </div>
+          ) : p.k === 'file' ? (
+            <FileCard key={i} file={p.file} onOpen={() => store.open({ name: 'file', sid, file: p.file })} />
+          ) : (
+            <div key={i} className="note">
+              {p.text}
+            </div>
+          )
+        )}
+        {dots}
+        {!dots && m.durationMs ? <div className="ga__meta">{t('doneMeta', { d: fmtDuration(m.durationMs) })}</div> : null}
       </div>
     </div>
   )

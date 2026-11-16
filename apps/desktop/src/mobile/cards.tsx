@@ -1,17 +1,19 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ActionValue, PromptView } from '../shared/remote-views'
-import { t } from './link'
+import type { WebPersona } from '../shared/remote-web'
+import { Avatar } from './avatar'
+import { t } from './strings'
 
 /**
- * 交互卡（提问、计划、挂载、定时任务名片、角色名片）。按钮的 value 由电脑端 hub 生成，这里原样回传。
+ * 交互卡（提问、计划、挂载、定时任务名片、角色名片），出现在对话末尾。按钮的 value 由电脑端 hub 生成，这里原样回传。
  */
 
 export type Act = (key: string, value: ActionValue, form?: Record<string, string | string[]>) => Promise<void>
 
 /**
- * 通知 / 卡片里的文案是电脑端按「一行一项」拼的纯文本（单个换行），按 Markdown 规则会被并成一段：
+ * 卡片里的文案是电脑端按「一行一项」拼的纯文本（单个换行），按 Markdown 规则会被并成一段：
  * 代码块之外的单个换行补成硬换行。模型回复不做这个处理，按标准 Markdown 渲染。
  */
 function hardBreaks(text: string): string {
@@ -41,11 +43,11 @@ function Buttons({
   const [busy, setBusy] = useState(false)
   if (!buttons.length) return null
   return (
-    <div className="btns">
+    <div className="card__btns">
       {buttons.map((b, i) => (
         <button
           key={i}
-          className={`btn${b.primary ? ' btn--primary' : ''}`}
+          className={`btn${b.primary ? ' btn--primary' : ' btn--ghost'}`}
           disabled={busy}
           onClick={async () => {
             setBusy(true)
@@ -79,34 +81,38 @@ function Fold({ text, limit = 600 }: { text: string; limit?: number }): React.JS
   )
 }
 
-function Head({ title, sub }: { title: string; sub?: string }): React.JSX.Element {
+function From({ who, label }: { who?: WebPersona; label: string }): React.JSX.Element {
   return (
-    <div className="card__head">
-      <div className="card__title">{title}</div>
-      {sub && <div className="card__sub">{sub}</div>}
+    <div className="card__from">
+      <Avatar persona={who} size={20} />
+      {label}
     </div>
   )
 }
 
-export function PromptCard({ view, onAction, showSession }: { view: PromptView; onAction: Act; showSession?: boolean }): React.JSX.Element {
-  const sub = showSession ? view.sessionTitle : undefined
+export function PromptCard({ view, onAction, who }: { view: PromptView; onAction: Act; who?: WebPersona }): React.JSX.Element {
+  const name = who?.name ?? 'Deva'
+  const done = view.state !== 'open'
   switch (view.kind) {
     case 'ask':
-      return <AskCard view={view} onAction={onAction} sub={sub} />
-    case 'plan': {
-      const title =
-        view.state === 'open'
-          ? '请审阅计划'
-          : view.state === 'approve'
-            ? '计划已批准'
-            : view.state === 'keep'
-              ? '继续完善计划'
-              : view.state === 'ignore'
-                ? '计划已忽略'
-                : '计划审阅已结束'
+      return <AskCard view={view} onAction={onAction} who={who} />
+    case 'plan':
       return (
-        <div className={`card${view.state === 'open' ? '' : ' is-done'}`}>
-          <Head title={title} sub={sub} />
+        <div className={`card${done ? ' is-done' : ''}`}>
+          <From
+            who={who}
+            label={
+              view.state === 'open'
+                ? `${name} · 请审阅计划`
+                : view.state === 'approve'
+                  ? '计划已批准'
+                  : view.state === 'keep'
+                    ? '继续完善计划'
+                    : view.state === 'ignore'
+                      ? '计划已忽略'
+                      : '计划审阅已结束'
+            }
+          />
           <Fold text={view.plan} limit={view.state === 'open' ? 1500 : 300} />
           {view.state === 'open' && (
             <Buttons
@@ -121,17 +127,23 @@ export function PromptCard({ view, onAction, showSession }: { view: PromptView; 
           )}
         </div>
       )
-    }
     case 'mount':
       return (
-        <div className={`card${view.state === 'open' ? '' : ' is-done'}`}>
-          <Head title={view.state === 'open' ? '需要挂载工作区' : '工作区挂载'} sub={sub} />
+        <div className={`card${done ? ' is-done' : ''}`}>
+          <From who={who} label={view.state === 'open' ? `${name} · 需要一个文件夹` : '文件夹'} />
           {view.state === 'open' ? (
             <>
               <p>
-                这一步（<b>{view.tool}</b> {view.path && <code>{view.path}</code>}）需要一个工作区目录，但当前对话还没有挂载文件夹。
+                这一步（<b>{view.tool}</b>
+                {view.path && (
+                  <>
+                    {' '}
+                    <code>{view.path}</code>
+                  </>
+                )}
+                ）需要先挂载一个文件夹。
               </p>
-              <p className="muted">挂载文件夹需要在电脑端选择；也可以先跳过，让它改用绝对路径。</p>
+              <p className="muted">选择文件夹要在电脑上操作；也可以先跳过，让它改用完整路径。</p>
               <Buttons k={view.key} buttons={[{ label: '暂不挂载', value: { k: 'mount', key: view.key } }]} onAction={onAction} />
             </>
           ) : (
@@ -149,19 +161,18 @@ export function PromptCard({ view, onAction, showSession }: { view: PromptView; 
           )}
         </div>
       )
-    case 'autotask': {
-      const open = view.state === 'open'
+    case 'autotask':
       return (
-        <div className={`card${open ? '' : ' is-done'}`}>
-          <Head title={open ? '确认定时任务' : view.state === 'created' ? '定时任务已创建' : '已忽略这个定时任务'} sub={sub} />
+        <div className={`card${done ? ' is-done' : ''}`}>
+          <From who={who} label={!done ? `${name} · 确认定时任务` : view.state === 'created' ? '定时任务已创建' : '已忽略这个定时任务'} />
           <div className="kv">
-            <b>{view.title}</b>
+            <b className="kv__title">{view.title}</b>
             <div>
               <span className="k">日程</span>
               {view.schedule ? (
                 <>
                   {view.schedule}
-                  {view.nextRunAt && <span className="muted">（下次：{new Date(view.nextRunAt).toLocaleString()}）</span>}
+                  {view.nextRunAt && <span className="muted">（下次 {new Date(view.nextRunAt).toLocaleString()}）</span>}
                 </>
               ) : (
                 <span className="bad">{view.error ?? '日程无效'}</span>
@@ -170,79 +181,70 @@ export function PromptCard({ view, onAction, showSession }: { view: PromptView; 
             <div>
               <span className="k">身份</span>
               {view.personaName}
-              <span className="k k--inline">模型</span>
+            </div>
+            <div>
+              <span className="k">模型</span>
               {view.modelName}
             </div>
-            <div className="k">任务指令</div>
-            <Fold text={view.prompt || '（空）'} limit={400} />
+            <Fold text={view.prompt || '（空）'} limit={300} />
           </div>
-          {open && (
-            <>
-              <p className="muted">创建后到点自动运行，运行时不会再询问你。需要改日程、身份或模型，请在电脑端的名片上编辑。</p>
-              <Buttons
-                k={view.key}
-                buttons={[
-                  { label: '忽略', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'dismiss' } },
-                  { label: '创建任务', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'create' }, primary: true }
-                ]}
-                onAction={onAction}
-              />
-            </>
+          {!done && (
+            <Buttons
+              k={view.key}
+              buttons={[
+                { label: '忽略', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'dismiss' } },
+                { label: '创建任务', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'create' }, primary: true }
+              ]}
+              onAction={onAction}
+            />
           )}
         </div>
       )
-    }
-    case 'agent': {
-      const open = view.state === 'open'
+    case 'agent':
       return (
-        <div className={`card${open ? '' : ' is-done'}`}>
-          <Head title={open ? '新角色名片' : view.state === 'accepted' ? '角色已添加' : '已拒绝这个角色'} sub={sub} />
+        <div className={`card${done ? ' is-done' : ''}`}>
+          <From who={who} label={!done ? `${name} · 新角色名片` : view.state === 'accepted' ? '角色已添加' : '已拒绝这个角色'} />
           <div className="kv">
-            <b>{view.name}</b>
+            <b className="kv__title">{view.name}</b>
             {view.desc && <div className="muted">{view.desc}</div>}
-            <div className="k">角色设定</div>
-            <Fold text={view.prompt || '（空）'} limit={400} />
+            <Fold text={view.prompt || '（空）'} limit={300} />
           </div>
-          {open && (
-            <>
-              <p className="muted">头像会自动生成，之后可以在电脑端修改。</p>
-              <Buttons
-                k={view.key}
-                buttons={[
-                  { label: '不要', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'reject' } },
-                  { label: '添加角色', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'accept' }, primary: true }
-                ]}
-                onAction={onAction}
-              />
-            </>
+          {!done && (
+            <Buttons
+              k={view.key}
+              buttons={[
+                { label: '不要', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'reject' } },
+                { label: '添加角色', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'accept' }, primary: true }
+              ]}
+              onAction={onAction}
+            />
           )}
         </div>
       )
-    }
   }
 }
 
 type AskView = Extract<PromptView, { kind: 'ask' }>
 
 /**
- * 问答卡：每题按单选 / 多选列出选项，并可附一行自由文字（没有选项的题只有文字框）。
+ * 问答卡：每题按单选 / 多选列出选项，最后一行「自己输入…」点开原地变成输入框（同电脑端）；没有选项的题只有输入框。
  * 表单字段名与 hub 约定一致：q{i} = 选中项（多选为数组），q{i}_text = 自由文字。
  */
-function AskCard({ view, onAction, sub }: { view: AskView; onAction: Act; sub?: string }): React.JSX.Element {
+function AskCard({ view, onAction, who }: { view: AskView; onAction: Act; who?: WebPersona }): React.JSX.Element {
   const [picks, setPicks] = useState<string[][]>(() => view.questions.map(() => []))
   const [texts, setTexts] = useState<string[]>(() => view.questions.map(() => ''))
+  const [editing, setEditing] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
+  const inputs = useRef<(HTMLTextAreaElement | null)[]>([])
 
   if (view.state !== 'open')
     return (
       <div className="card is-done">
-        <Head title={view.state === 'answered' ? '已回答' : '问题已结束'} sub={sub} />
+        <From who={who} label={view.state === 'answered' ? '已回答' : '问题已结束'} />
         {view.questions.map((q, n) => (
-          <div key={n} className="ask__q">
-            <b>
-              {n + 1}. {q.question}
-            </b>
-            <div className={view.answers?.[n] ? '' : 'muted'}>{view.answers?.[n] || '未作答'}</div>
+          <div key={n} className="ask__done">
+            <span>{q.question}</span>
+            <b className={view.answers?.[n] ? '' : 'muted'}>{view.answers?.[n] || '未作答'}</b>
           </div>
         ))}
       </div>
@@ -260,7 +262,15 @@ function AskCard({ view, onAction, sub }: { view: AskView; onAction: Act; sub?: 
       return next
     })
 
+  const setText = (n: number, v: string): void =>
+    setTexts((l) => {
+      const next = l.slice()
+      next[n] = v
+      return next
+    })
+
   const complete = view.questions.every((q, n) => q.required === false || picks[n].length > 0 || texts[n].trim())
+  const allOptional = view.questions.every((q) => q.required === false)
 
   const submit = async (): Promise<void> => {
     const form: Record<string, string | string[]> = {}
@@ -278,54 +288,78 @@ function AskCard({ view, onAction, sub }: { view: AskView; onAction: Act; sub?: 
 
   return (
     <div className="card">
-      <Head title="需要你的回答" sub={sub} />
+      <From who={who} label={t('askFrom', { who: who?.name ?? 'Deva' })} />
       {view.questions.map((q, n) => {
         const labels = [...new Set(q.options.map((o) => o.label))]
+        const freeOnly = labels.length === 0
+        const typed = texts[n].trim()
         return (
           <div key={n} className="ask__q">
-            <b>
+            <div className="card__q">
               {view.questions.length > 1 ? `${n + 1}. ` : ''}
               {q.question}
-            </b>
-            <span className="ask__tags">
-              {q.multi && <span>{t('multi')}</span>}
-              <span>{q.required === false ? t('optional') : t('required')}</span>
-            </span>
-            {labels.map((label) => {
-              const on = picks[n].includes(label)
-              const desc = q.options.find((o) => o.label === label)?.description
-              return (
+              {q.multi && <span className="ask__tag">{t('multi')}</span>}
+            </div>
+            <div className="opts">
+              {labels.map((label) => {
+                const on = picks[n].includes(label)
+                const desc = q.options.find((o) => o.label === label)?.description
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    className={`opt${on ? ' is-on' : ''}${q.multi ? ' is-multi' : ''}`}
+                    aria-pressed={on}
+                    onClick={() => toggle(n, label, q.multi)}
+                  >
+                    <span className="opt__mark" />
+                    <span className="opt__k">
+                      <b>{label}</b>
+                      {desc && <span>{desc}</span>}
+                    </span>
+                  </button>
+                )
+              })}
+              {freeOnly || editing === n || typed ? (
+                <div className={`opt opt--input${typed ? ' is-on' : ''}`}>
+                  <textarea
+                    ref={(el) => (inputs.current[n] = el)}
+                    rows={1}
+                    value={texts[n]}
+                    placeholder={freeOnly ? t('freeText') : t('other')}
+                    onChange={(e) => {
+                      setText(n, e.target.value)
+                      e.target.style.height = '0px'
+                      e.target.style.height = `${e.target.scrollHeight}px`
+                    }}
+                    onBlur={() => setEditing(null)}
+                  />
+                </div>
+              ) : (
                 <button
-                  key={label}
                   type="button"
-                  className={`opt${on ? ' is-on' : ''}`}
-                  aria-pressed={on}
-                  onClick={() => toggle(n, label, q.multi)}
+                  className="opt is-free"
+                  onClick={() => {
+                    setEditing(n)
+                    window.setTimeout(() => inputs.current[n]?.focus(), 0)
+                  }}
                 >
-                  <span className={`opt__mark${q.multi ? ' opt__mark--box' : ''}`} />
-                  <span className="opt__body">
-                    <span>{label}</span>
-                    {desc && <span className="opt__desc">{desc}</span>}
+                  <span className="opt__mark" />
+                  <span className="opt__k">
+                    <b>{t('other')}</b>
                   </span>
                 </button>
-              )
-            })}
-            <input
-              className="ask__text"
-              placeholder={labels.length ? t('other') : t('freeText')}
-              value={texts[n]}
-              onChange={(e) =>
-                setTexts((l) => {
-                  const next = l.slice()
-                  next[n] = e.target.value
-                  return next
-                })
-              }
-            />
+              )}
+            </div>
           </div>
         )
       })}
-      <div className="btns">
+      <div className="card__btns">
+        {allOptional && (
+          <button className="btn btn--ghost" disabled={busy} onClick={() => void submit()}>
+            {t('skip')}
+          </button>
+        )}
         <button className="btn btn--primary" disabled={!complete || busy} onClick={() => void submit()}>
           {t('submit')}
         </button>

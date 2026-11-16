@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, ExternalLink, KeyRound, Loader2, Plus, QrCode, RefreshCw, Search, Smartphone, Trash2, X } from 'lucide-react'
+import { Bot, ExternalLink, KeyRound, Loader2, Plus, QrCode, RefreshCw, Search, Smartphone, Trash2, UserMinus, X } from 'lucide-react'
 import QRCode from 'qrcode'
 import { useI18n } from '../i18n/i18n'
+import { PhoneDetail, PhoneRow, usePhoneState } from './PhonePane'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
 import { PersonaFace, parseAvatarSpec } from '../components/humation'
@@ -20,7 +21,10 @@ type ScopeKind = Exclude<Scope['mode'], 'all'>
 const DEFAULT_PERSONA_ID = 'general'
 
 /** 可添加的平台（菜单顺序）。soon = 即将支持，菜单里置灰。 */
-const PLATFORMS: { id: Platform; soon?: boolean }[] = [{ id: 'feishu' }, { id: 'telegram' }, { id: 'web' }]
+const PLATFORMS: { id: Platform; soon?: boolean }[] = [{ id: 'web' }, { id: 'feishu' }, { id: 'telegram' }]
+
+/** 左列表里「手机」（顶部固定行）的选中标记。 */
+const PHONE = 'phone'
 
 /**
  * 「机器人」tab（图标栏「设置」上方）：与对话 / 角色 / 任务同一套面板——左列表 + 右详情。
@@ -31,7 +35,6 @@ const PLATFORMS: { id: Platform; soon?: boolean }[] = [{ id: 'feishu' }, { id: '
  */
 export function BotsPane(): React.JSX.Element {
   const { t } = useI18n()
-  const toast = useToast()
   const [bots, setBots] = useState<BotView[]>([])
   const [loaded, setLoaded] = useState(false)
   const [viewId, setViewId] = useState<string | null>(null)
@@ -52,11 +55,6 @@ export function BotsPane(): React.JSX.Element {
     }
   }, [])
 
-  // 默认选第一个；选中的被删除后同理回落。
-  useEffect(() => {
-    if (viewId && bots.some((b) => b.id === viewId)) return
-    setViewId(bots[0]?.id ?? null)
-  }, [bots, viewId])
 
   const q = query.trim().toLowerCase()
   const shown = useMemo(
@@ -64,6 +62,22 @@ export function BotsPane(): React.JSX.Element {
     [bots, q]
   )
   const view = bots.find((b) => b.id === viewId) ?? null
+  const phone = usePhoneState()
+  const phoneAdded = !!phone?.added
+
+  // 默认选第一项（添加了 Deva 手机版就是它）；选中的一项被删除后同理回落。
+  useEffect(() => {
+    if (!phone || !loaded) return
+    if (viewId === PHONE ? phoneAdded : viewId && bots.some((b) => b.id === viewId)) return
+    setViewId(phoneAdded ? PHONE : (bots[0]?.id ?? null))
+  }, [bots, viewId, phone, phoneAdded, loaded])
+
+  // + 菜单：Deva 手机版最多一个，已添加就直接选中它；飞书 / Telegram 走扫码。
+  const pick = (p: Platform): void => {
+    if (p !== 'web') return setAdding(p)
+    if (phoneAdded) return setViewId(PHONE)
+    void window.deva.phone.add().then(() => setViewId(PHONE))
+  }
 
   return (
     <>
@@ -90,20 +104,16 @@ export function BotsPane(): React.JSX.Element {
               </button>
             )}
           </div>
-          <BotAddMenu
-            onPick={(p) => {
-              // 手机网页不需要平台授权：直接建好并启动，配对走详情里的二维码。
-              if (p !== 'web') return setAdding(p)
-              void window.deva.remote.webCreate().then((r) => {
-                if (r.ok) setViewId(r.botId)
-                else toast.show({ variant: 'error', message: r.error })
-              })
-            }}
-          />
+          <BotAddMenu onPick={pick} phoneAdded={phoneAdded} />
         </div>
         <div className="cf-list">
+          {!q && phone && phoneAdded && <PhoneRow state={phone} active={viewId === PHONE} onClick={() => setViewId(PHONE)} />}
           {!loaded ? null : bots.length === 0 ? (
-            <div className="cf-empty">{t('bots.listEmpty')}</div>
+            q ? (
+              <div className="cf-empty">{t('cf.searchNoResults')}</div>
+            ) : (
+              !phoneAdded && <div className="cf-empty">{t('bots.listEmpty')}</div>
+            )
           ) : shown.length === 0 ? (
             <div className="cf-empty">{t('cf.searchNoResults')}</div>
           ) : (
@@ -130,7 +140,13 @@ export function BotsPane(): React.JSX.Element {
 
       <main className="cf-conv">
         <div className="cf-dragbar" aria-hidden="true" />
-        {view ? (
+        {viewId === PHONE && phone?.added ? (
+          <div className="cf-profile">
+            <div className="bots-detail">
+              <PhoneDetail state={phone} />
+            </div>
+          </div>
+        ) : view ? (
           <div className="cf-profile">
             <div className="bots-detail">
               <BotDetail key={view.id} bot={view} />
@@ -140,7 +156,7 @@ export function BotsPane(): React.JSX.Element {
           <div className="cf-quick">
             <div className="cf-quick__inner">
               <div className="cf-quick__title">{t('bots.title')}</div>
-              <div className="cf-quick__hint">{loaded && bots.length ? t('bots.detailEmpty') : t('bots.paneHint')}</div>
+              <div className="cf-quick__hint">{loaded && (bots.length || phoneAdded) ? t('bots.detailEmpty') : t('bots.paneHint')}</div>
             </div>
           </div>
         )}
@@ -161,7 +177,7 @@ export function BotsPane(): React.JSX.Element {
 }
 
 /** 「添加机器人」：悬停展开支持的平台（交互同角色 / 任务的 AddMenu），点击即开始添加。 */
-function BotAddMenu({ onPick }: { onPick: (p: Platform) => void }): React.JSX.Element {
+function BotAddMenu({ onPick, phoneAdded }: { onPick: (p: Platform) => void; phoneAdded: boolean }): React.JSX.Element {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const closeTimer = useRef<number | null>(null)
@@ -215,6 +231,7 @@ function BotAddMenu({ onPick }: { onPick: (p: Platform) => void }): React.JSX.El
               <PlatformLogo platform={p.id} size={20} />
               <span>{t(`bots.platform.${p.id}`)}</span>
               {p.soon && <span className="bots-tag">{t('bots.soon')}</span>}
+              {p.id === 'web' && phoneAdded && <span className="bots-tag">{t('bots.added')}</span>}
             </button>
           ))}
         </div>
@@ -232,7 +249,7 @@ function PlatformLogo({ platform, size }: { platform: string; size: number }): R
     return <img className="bots-logo bots-logo--img" src={icon} width={size} height={size} alt="" aria-hidden />
   return (
     <span className={`bots-logo bots-logo--${platform}`} style={{ width: size, height: size }} aria-hidden>
-      {platform === 'web' ? <Smartphone size={size * 0.55} /> : <Bot size={size * 0.55} />}
+      {platform === 'web' ? <Smartphone size={size * 0.6} /> : <Bot size={size * 0.55} />}
     </span>
   )
 }
@@ -448,7 +465,6 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
   const dialog = useDialog()
   const [busy, setBusy] = useState(false)
   const [pair, setPair] = useState<{ code: string; expiresAt: number } | null>(null)
-  const [qr, setQr] = useState<'lan' | 'relay' | null>(null)
   const [, setTick] = useState(0)
 
   useEffect(() => {
@@ -542,8 +558,6 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
       </div>
       {bot.enabled && bot.state === 'error' && bot.error && <div className="mcp-error">{bot.error}</div>}
 
-      {bot.web && <WebAccessCard bot={bot} onQr={setQr} />}
-
       <div className="bots-card">
         <div className="bots-card__row">
           <div className="bots-card__label">
@@ -551,14 +565,7 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
             <span className="bots-card__hint">{t('bots.usersHint')}</span>
           </div>
           {bot.state === 'connected' && !pair && (
-            <button
-              className="bots-btn"
-              onClick={() => {
-                // 手机网页：邀请 = 再出一张二维码（内网可用就用内网，否则走中转）。
-                if (bot.web) setQr(bot.web.lan && bot.web.status.lan === 'on' ? 'lan' : 'relay')
-                else void window.deva.remote.pairCode(bot.id).then(setPair)
-              }}
-            >
+            <button className="bots-btn" onClick={() => void window.deva.remote.pairCode(bot.id).then(setPair)}>
               {t('bots.invite')}
             </button>
           )}
@@ -592,16 +599,19 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
               <span className="bots-user__id">{u.name || u.id}</span>
               {i === 0 && <span className="bots-tag">{t('bots.owner')}</span>}
               <span className="bots-user__at">{new Date(u.pairedAt).toLocaleString()}</span>
-              <button className="ext-linkbtn" onClick={() => void removeUser(u.id)}>
-                {t('bots.removeUser')}
+              <button
+                className="cf-rowdel"
+                title={t('bots.removeUser')}
+                aria-label={t('bots.removeUser')}
+                onClick={() => void removeUser(u.id)}
+              >
+                <UserMinus size={14} />
               </button>
             </div>
           ))
         )}
       </div>
 
-      {/* 手机网页固定为聊天式回复（仅最终结果）：没有平台卡片可供流式更新，不给切换。 */}
-      {!bot.web && (
       <div className="bots-card">
         <div className="bots-card__row">
           <div className="bots-card__label">
@@ -621,7 +631,6 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
           </div>
         </div>
       </div>
-      )}
 
       <ScopeCard bot={bot} />
 
@@ -631,257 +640,7 @@ function BotDetail({ bot }: { bot: BotView }): React.JSX.Element {
       </div>
 
       <p className="bots-warn">{t('bots.security')}</p>
-
-      {qr && bot.web && <WebQrModal bot={bot} via={qr} onClose={() => setQr(null)} />}
     </>
-  )
-}
-
-// ───────── 手机网页：接入方式 ─────────
-
-type WebInfo = NonNullable<BotView['web']>
-type WayState = 'off' | 'on' | 'connecting' | 'error'
-
-/**
- * 「接入方式」：内网直连（自带 HTTP 服务，可改端口）与经中转（填中转地址）。两者各有开关与状态；
- * 改动后主进程按新设置重启机器人并推 remote:changed，这里只编辑配置。
- */
-function WebAccessCard({ bot, onQr }: { bot: BotView; onQr: (via: 'lan' | 'relay') => void }): React.JSX.Element {
-  const { t } = useI18n()
-  const toast = useToast()
-  const web = bot.web as WebInfo
-  const [port, setPort] = useState(String(web.port))
-  const [relayUrl, setRelayUrl] = useState(web.relay.url)
-  const [busy, setBusy] = useState(false)
-  useEffect(() => setPort(String(web.port)), [web.port])
-  useEffect(() => setRelayUrl(web.relay.url), [web.relay.url])
-
-  const update = async (patch: Parameters<typeof window.deva.remote.webUpdate>[1]): Promise<void> => {
-    setBusy(true)
-    try {
-      const r = await window.deva.remote.webUpdate(bot.id, patch)
-      if (!r.ok) toast.show({ variant: 'error', message: r.error || t('bots.failed') })
-    } finally {
-      setBusy(false)
-    }
-  }
-  const savePort = (): void => {
-    const n = Number(port)
-    if (!port.trim() || n === web.port) return setPort(String(web.port))
-    void update({ port: n })
-  }
-  const saveRelayUrl = (): void => {
-    if (relayUrl.trim() === web.relay.url) return
-    void update({ relay: { url: relayUrl.trim() } })
-  }
-  const lanState: WayState = bot.enabled && web.lan ? web.status.lan : 'off'
-  const relayState: WayState = bot.enabled && web.relay.enabled ? web.status.relay : 'off'
-  const dot = (s: WayState): string => (s === 'on' ? 'connected' : s === 'connecting' ? 'connecting' : s === 'error' ? 'error' : 'off')
-  const blur = (e: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-  }
-
-  return (
-    <div className="bots-card">
-      <div className="bots-card__label">
-        {t('bots.web.access')}
-        <span className="bots-card__hint">{t('bots.web.accessHint')}</span>
-      </div>
-
-      <div className="bots-way">
-        <div className="bots-way__head">
-          <span className="bots-way__title">{t('bots.web.lan')}</span>
-          <span className="bots-way__state">
-            <span className={`bots-dot bots-dot--${dot(lanState)}`} />
-            {t(`bots.web.status.${lanState}`)}
-          </span>
-          <button
-            className={`cf-switch${web.lan ? ' is-on' : ''}`}
-            aria-pressed={web.lan}
-            disabled={busy}
-            title={t('bots.web.lan')}
-            onClick={() => void update({ lan: !web.lan })}
-          >
-            <span className="cf-switch__dot" />
-          </button>
-        </div>
-        <span className="bots-card__hint">{t('bots.web.lanHint')}</span>
-        {web.lan && (
-          <div className="bots-way__body">
-            {bot.enabled && web.status.lanError && <div className="mcp-error">{web.status.lanError}</div>}
-            <div className="bots-way__row">
-              <span className="bots-way__label">{t('bots.web.port')}</span>
-              <input
-                className="cf-input bots-way__port"
-                type="number"
-                min={1024}
-                max={65535}
-                value={port}
-                disabled={busy}
-                onChange={(e) => setPort(e.target.value)}
-                onBlur={savePort}
-                onKeyDown={blur}
-              />
-            </div>
-            <div className="bots-way__row">
-              <span className="bots-way__label">{t('bots.web.urls')}</span>
-              {web.urls.length === 0 ? (
-                <span className="bots-card__hint">{t('bots.web.urlsEmpty')}</span>
-              ) : (
-                web.urls.map((u) => (
-                  <code key={u} className="bots-way__url">
-                    {u}
-                  </code>
-                ))
-              )}
-            </div>
-            <div className="bots-way__row">
-              <button className="bots-btn" disabled={lanState !== 'on'} onClick={() => onQr('lan')}>
-                <QrCode size={13} />
-                {t('bots.web.showQr')}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="bots-way">
-        <div className="bots-way__head">
-          <span className="bots-way__title">{t('bots.web.relay')}</span>
-          <span className="bots-way__state">
-            <span className={`bots-dot bots-dot--${dot(relayState)}`} />
-            {t(`bots.web.status.${relayState}`)}
-          </span>
-          <button
-            className={`cf-switch${web.relay.enabled ? ' is-on' : ''}`}
-            aria-pressed={web.relay.enabled}
-            disabled={busy}
-            title={t('bots.web.relay')}
-            onClick={() => void update({ relay: { enabled: !web.relay.enabled, url: relayUrl.trim() } })}
-          >
-            <span className="cf-switch__dot" />
-          </button>
-        </div>
-        <span className="bots-card__hint">{t('bots.web.relayHint')}</span>
-        <div className="bots-way__body">
-          {bot.enabled && web.relay.enabled && web.status.relayError && <div className="mcp-error">{web.status.relayError}</div>}
-          <div className="bots-way__row">
-            <span className="bots-way__label">{t('bots.web.relayUrl')}</span>
-            <input
-              className="cf-input bots-way__input"
-              type="url"
-              value={relayUrl}
-              disabled={busy}
-              spellCheck={false}
-              placeholder={t('bots.web.relayUrlPlaceholder')}
-              onChange={(e) => setRelayUrl(e.target.value)}
-              onBlur={saveRelayUrl}
-              onKeyDown={blur}
-            />
-          </div>
-          <div className="bots-way__row">
-            <span className="bots-way__label">{t('bots.web.deskId')}</span>
-            <code className="bots-way__id">{web.deskId}</code>
-          </div>
-          <div className="bots-way__row">
-            <button className="bots-btn" disabled={relayState !== 'on'} onClick={() => onQr('relay')}>
-              <QrCode size={13} />
-              {t('bots.web.showQr')}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-type QrState =
-  | { phase: 'loading' }
-  | { phase: 'ready'; url: string; qr: string; code: string; expiresAt: number }
-  | { phase: 'failed'; message: string }
-
-/** 二维码弹框：地址 + 一次性配对码（10 分钟）。关闭即作废；有新设备配对成功自动关闭。 */
-function WebQrModal({ bot, via, onClose }: { bot: BotView; via: 'lan' | 'relay'; onClose: () => void }): React.JSX.Element {
-  const { t } = useI18n()
-  const [st, setSt] = useState<QrState>({ phase: 'loading' })
-  const [, setTick] = useState(0)
-
-  const load = useCallback(async () => {
-    setSt({ phase: 'loading' })
-    const r = await window.deva.remote.webQr(bot.id, via)
-    setSt(r.ok ? { phase: 'ready', url: r.url, qr: r.qr, code: r.code, expiresAt: r.expiresAt } : { phase: 'failed', message: r.error })
-  }, [bot.id, via])
-  useEffect(() => void load(), [load])
-  useEffect(
-    () => () => {
-      void window.deva.remote.pairCancel(bot.id)
-    },
-    [bot.id]
-  )
-  useEffect(() => {
-    if (st.phase !== 'ready') return
-    const id = window.setInterval(() => {
-      if (Date.now() >= st.expiresAt) setSt({ phase: 'failed', message: t('bots.scan.expired') })
-      else setTick((n) => n + 1)
-    }, 1000)
-    return () => window.clearInterval(id)
-  }, [st, t])
-
-  const userCount = bot.users.length
-  const initial = useRef(userCount)
-  useEffect(() => {
-    if (userCount > initial.current) onClose()
-  }, [userCount, onClose])
-
-  const left = st.phase === 'ready' ? Math.max(0, Math.ceil((st.expiresAt - Date.now()) / 1000)) : 0
-  const title = t('bots.web.qrTitle')
-  return (
-    <div className="cf-modal__backdrop">
-      <div className="cf-modal bots-scanmodal" role="dialog" aria-label={title}>
-        <div className="cf-modal__head">
-          <span className="cf-modal__title">
-            {title}
-            <span className="bots-tag" style={{ marginLeft: 8 }}>
-              {t(`bots.web.qrVia.${via}`)}
-            </span>
-          </span>
-          <button className="cf-modal__close" title={t('common.close')} onClick={onClose}>
-            ✕
-          </button>
-        </div>
-        <div className="bots-scanmodal__body">
-          <div className="bots-scan">
-            <div className="bots-scan__qr">
-              {st.phase === 'ready' ? (
-                <img src={st.qr} alt="QR" />
-              ) : st.phase === 'failed' ? (
-                <QrCode size={48} className="bots-scan__placeholder" />
-              ) : (
-                <Loader2 size={28} className="bots-spin" />
-              )}
-            </div>
-            <div className="bots-scan__side">
-              <p className="bots-scan__lead">{t('bots.web.qrLead')}</p>
-              {st.phase === 'ready' && (
-                <>
-                  <code className="bots-qr__url">{st.url.replace(/#.*$/, '')}</code>
-                  <code className="bots-pair__code">{st.code}</code>
-                  <span className="bots-scan__status">{t('bots.inviteExpires').replace('{s}', fmtLeft(left))}</span>
-                </>
-              )}
-              {st.phase === 'failed' && <span className="bots-scan__status is-error">{st.message}</span>}
-              {st.phase !== 'loading' && (
-                <button className="bots-btn" onClick={() => void load()}>
-                  <RefreshCw size={13} />
-                  {t('bots.inviteRegen')}
-                </button>
-              )}
-            </div>
-          </div>
-          <p className="bots-hint">{t('bots.inviteHint.web')}</p>
-        </div>
-      </div>
-    </div>
   )
 }
 

@@ -1,0 +1,176 @@
+import { basename } from 'node:path'
+import type { DisplayMessage } from '../../../../shared/chat-protocol'
+import type { WebAttachment, WebMessage, WebModel, WebPart, WebPersona } from '../../../../shared/remote-web'
+import type { ContentPart } from '../../../providers/types'
+import type { ChatSessionMeta, StoredSession } from '../../chat-store'
+import { AUTO_SHAPE, isAvatarShape } from '../../../../shared/avatar-shape'
+import { getConfig } from '../../config'
+import { resolveDefaultModel, resolveModelRefOrNull } from '../../model-resolve'
+import { getPersona, listPersonas } from '../../personas'
+
+/**
+ * 电脑端数据 → 手机端视图：消息归约（只留正文、附件、交付文件与提示）、列表摘要、角色、成员。
+ */
+
+const PREVIEW_CHARS = 80
+
+const NOTICE_TEXT: Record<string, string> = {
+  truncated: '回复达到长度上限被截断',
+  empty: '本轮没有产生回复',
+  refused: '模型拒绝回答或被内容策略拦截',
+  restored: '已回滚了代码改动',
+  aborted: '已停止',
+  step_limit: '达到单次运行的步数上限',
+  repeated: '相同的工具调用连续多次没有进展，已停止',
+  degenerate: '模型输出陷入重复，已停止'
+}
+
+/**
+ * 展示投影 → 手机端消息。助手的一轮按段拆开：两次工具调用之间写的话是一段（一个气泡），交付的文件、提示跟在
+ * 它出现的位置；进行中插入的消息拆成一条用户消息排在中间。什么都不剩的返回空数组。
+ */
+export function toWebMessages(m: DisplayMessage, index: number): WebMessage[] {
+  const out: WebMessage[] = []
+  const id = (): string => (out.length ? `${index}.${out.length}` : String(index))
+  if (m.role === 'user') {
+    if (m.quiet) return out
+    const text = m.task ? [m.task.title, m.task.quote].filter(Boolean).join('\n') || m.text : m.text
+    if (!text.trim() && !m.attachments.length) return out
+    const attachments: WebAttachment[] = m.attachments.map((a) => ({ name: a.name, kind: a.kind, ref: a.ref }))
+    out.push({ id: id(), role: 'user', text, attachments: attachments.length ? attachments : undefined, notify: m.notify })
+    return out
+  }
+  let parts: WebPart[] = []
+  let texts: string[] = []
+  const endText = (): void => {
+    const text = texts.join('\n\n').trim()
+    texts = []
+    if (text) parts.push({ k: 'text', text })
+  }
+  const endReply = (last: boolean): void => {
+    endText()
+    if (parts.length) out.push({ id: id(), role: 'assistant', parts, durationMs: last ? m.durationMs : undefined })
+    parts = []
+  }
+  const note = (text: string): void => {
+    endText()
+    parts.push({ k: 'note', text })
+  }
+  for (const b of m.blocks) {
+    if (b.kind === 'text') texts.push(b.text)
+    else if (b.kind === 'insert') {
+      endReply(false)
+      if (b.text.trim()) out.push({ id: id(), role: 'user', text: b.text })
+    } else if (b.kind === 'tool') {
+      endText()
+      if (b.name === 'present_files' && b.status === 'ok') {
+        const paths = (b.args as { paths?: unknown } | null)?.paths
+        if (Array.isArray(paths))
+          paths.forEach((p, i) => {
+            if (typeof p === 'string') parts.push({ k: 'file', file: { tool: b.id, index: i, name: basename(p) } })
+          })
+      }
+    } else if (b.kind === 'notice') note(NOTICE_TEXT[b.code] ?? b.code)
+    else if (b.kind === 'error') note(`出错：${b.message}`)
+    else if (b.kind === 'compaction') note(b.steps ? `此前 ${b.steps} 步已压缩为摘要` : '较早的对话已压缩为摘要')
+    else if (b.kind === 'agentcard')
+      note(`角色名片「${b.draft.name || '新角色'}」· ${b.status === 'accepted' ? '已添加' : b.status === 'rejected' ? '已拒绝' : '待确认'}`)
+    else if (b.kind === 'autotaskcard')
+      note(`定时任务「${b.draft.title || '定时任务'}」· ${b.status === 'created' ? '已创建' : b.status === 'dismissed' ? '已忽略' : '待确认'}`)
+    else endText()
+  }
+  endReply(true)
+  return out
+}
+
+/** 列表第二行：最近一条有正文的消息（用户或助手），去掉标记与多余空白。 */
+export function previewOf(s: StoredSession): { text: string; role?: 'user' | 'assistant' } {
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i]
+    const parts: ContentPart[] = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content
+    const text = parts
+      .filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text' && !p.listing)
+      .map((p) => p.text)
+      .join(' ')
+      .replace(/<[^>]{1,80}>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!text) continue
+    return { text: text.length > PREVIEW_CHARS ? `${text.slice(0, PREVIEW_CHARS)}…` : text, role: m.role }
+  }
+  return { text: '' }
+}
+
+type WebMember = { id: string; name: string; avatar?: string; personaId?: string }
+
+/**
+ * 挂载的文件夹名与项目成员（列表的群组头像、对话页标题下的说明），同电脑端 memberPersona：
+ * 已移除的成员不算；用户 @ 加入的角色用角色本身的名字与头像；主智能体创建的成员以成员会话 id 为种子，
+ * 形状用创建时存下的（老成员没存，按旧取法 'auto'）。
+ */
+export function sessionExtras(m: ChatSessionMeta): { folder?: string; members?: WebMember[] } {
+  const folder = typeof m.focusRoot === 'string' && m.focusRoot.trim() ? basename(m.focusRoot.replace(/[\\/]+$/, '')) : undefined
+  const members: WebMember[] = []
+  for (const x of m.members ?? []) {
+    if (x.removed) continue
+    const own = x.origin === 'mention' ? getPersona(x.personaId) : null
+    if (own) members.push({ id: own.id, name: own.name, avatar: own.avatar, personaId: own.id })
+    else members.push({ id: x.sessionId, name: x.name, avatar: JSON.stringify({ shape: isAvatarShape(x.shape) ? x.shape : AUTO_SHAPE }) })
+  }
+  return { folder, members: members.length ? members : undefined }
+}
+
+/** 手机端能看到的角色：已启用的全部角色（手机版是主人自己的设备，不按回复范围过滤）。 */
+export function personaList(): WebPersona[] {
+  return listPersonas(true).map((p) => ({
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    model: p.model,
+    avatar: p.avatar,
+    avatarImage: p.avatarImage,
+    enabled: p.enabled
+  }))
+}
+
+interface ConfigProvider {
+  id?: unknown
+  name?: unknown
+  enabled?: unknown
+  purpose?: unknown
+  models?: unknown
+}
+interface ConfigModel {
+  id?: unknown
+  name?: unknown
+  enabled?: unknown
+}
+
+/** 可在对话里选用的模型：已启用的对话服务商 × 已启用的模型（同电脑端输入框的模型选择器）。 */
+export function modelList(): WebModel[] {
+  const out: WebModel[] = []
+  try {
+    const raw = (getConfig().models ?? {}) as { providers?: unknown }
+    const providers = Array.isArray(raw.providers) ? (raw.providers as ConfigProvider[]) : []
+    for (const p of providers) {
+      if (!p || typeof p.id !== 'string' || p.enabled !== true || (p.purpose ?? 'llm') !== 'llm') continue
+      const provider = typeof p.name === 'string' && p.name ? p.name : p.id
+      for (const m of Array.isArray(p.models) ? (p.models as ConfigModel[]) : []) {
+        if (!m || typeof m.id !== 'string' || !m.id || m.enabled !== true) continue
+        out.push({ ref: `${p.id}:${m.id}`, name: typeof m.name === 'string' && m.name ? m.name : m.id, provider })
+      }
+    }
+  } catch {
+    /* 配置读不出：当作没有可选的模型 */
+  }
+  return out
+}
+
+/** 对话发消息时实际用的模型（同 adapter.sendText 的取法：对话自己的 → 角色的 → 最近使用的）及其显示名。 */
+export function sessionModel(m: ChatSessionMeta, models: WebModel[] = modelList()): { model?: string; modelName?: string } {
+  const persona = m.personaId ? getPersona(m.personaId) : null
+  const r = resolveModelRefOrNull(m.model) ?? resolveModelRefOrNull(persona?.model) ?? resolveDefaultModel()
+  if (!r) return {}
+  const ref = `${r.providerId}:${r.model}`
+  return { model: ref, modelName: models.find((x) => x.ref === ref)?.name ?? r.model }
+}

@@ -125,6 +125,7 @@ import {
   handleMentions
 } from './chat-members'
 import { runAgentLoop } from './agent-loop'
+import { publishStepSaved } from './chat-bus'
 
 /**
  * 回合进行中用户插入、还没交给模型的消息（键 = sessionId，按插入先后）。去向：
@@ -655,7 +656,11 @@ export async function runTurn(
       // 用户在本轮进行中插入的消息：同样随下一步的工具结果交给模型。
       takeInserts: () => takeInserts(sessionId),
       // 逐步落盘：长回合中途崩溃 / 强退，已完成的步骤仍在磁盘上。
-      onStep: () => saveProject(sessionId),
+      // 落盘后通知远程端（手机按对话记录补拉这一轮新写完的回复）。
+      onStep: () => {
+        saveProject(sessionId)
+        publishStepSaved(sessionId)
+      },
       // 轮中压缩：旧读数作废（别让 finally 把压缩前的大数存成下轮触发依据）；轮起点重新定位到本轮请求之后
       // （摘要插在本轮中间，不是轮起点；被并入摘要的步骤都带工具调用，不影响「是否产出可见回复」的判定）。
       compact: midTurnCompactor(turnId, sessionId, session, turnModel, controller, () => {

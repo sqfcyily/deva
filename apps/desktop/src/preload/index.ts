@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { EffortLevel } from '../shared/effort'
 import type { UpdateState } from '../shared/update'
 import type { DeliverableInfo } from '../shared/deliverables'
+import type { PhoneLinkResult, PhoneMode, PhonePairedEvent, PhoneQrResult, PhoneState } from '../shared/phone'
 import type { AgentDraft, AutotaskDraft } from '../shared/drafts'
 import type { BrowserLiveFrame, BrowserUiState } from '../shared/browser'
 import type {
@@ -15,6 +16,7 @@ import type {
   ChatSetEffortRequest,
   ChatSetFocusRequest,
   ChatRenameSessionRequest,
+  ChatRemoteChange,
   AttachmentChip,
   HandoffInfo,
   MemberTask,
@@ -45,6 +47,7 @@ export type {
   ChatSetEffortRequest,
   ChatSetFocusRequest,
   ChatRenameSessionRequest,
+  ChatRemoteChange,
   AttachmentChip,
   HandoffInfo,
   MemberTask,
@@ -575,24 +578,6 @@ export interface BotView {
   replyMode: BotReplyMode
   scope: BotReplyScope
   users: { id: string; name?: string; pairedAt: number }[]
-  /** 手机网页机器人：接入方式与状态（与 services/remote/index.ts 的 WebInfo 对齐）。 */
-  web?: BotWebInfo
-}
-export interface BotWebInfo {
-  port: number
-  lan: boolean
-  relay: { enabled: boolean; url: string }
-  deskId: string
-  /** 内网可访问的页面地址（每个网卡一条）。 */
-  urls: string[]
-  status: {
-    lan: 'off' | 'on' | 'error'
-    lanError?: string
-    relay: 'off' | 'connecting' | 'on' | 'error'
-    relayError?: string
-  }
-  /** 中转托管的页面地址（填了中转地址才有）。 */
-  relayPage: string | null
 }
 export interface RemoteState {
   bots: BotView[]
@@ -910,6 +895,14 @@ const api = {
       const listener = (): void => cb()
       ipcRenderer.on('chat:sessions-changed', listener)
       return () => ipcRenderer.removeListener('chat:sessions-changed', listener)
+    },
+    /** 正在看这个对话：记为已读（与手机共用，手机上的红点随之消掉）。 */
+    markRead: (sessionId: string): Promise<{ ok: true }> => ipcRenderer.invoke('chat:mark-read', sessionId),
+    /** 手机等别的设备改了对话（看过 / 删除 / 归档 / 改模型）；返回取消订阅函数 */
+    onRemoteChange: (cb: (c: ChatRemoteChange) => void): (() => void) => {
+      const listener = (_e: unknown, c: ChatRemoteChange): void => cb(c)
+      ipcRenderer.on('chat:remote-change', listener)
+      return () => ipcRenderer.removeListener('chat:remote-change', listener)
     }
   },
   /** 集成终端：列出已装 shell、建 PTY、写输入、改尺寸、销毁；订阅数据/退出事件。 */
@@ -1178,21 +1171,6 @@ const api = {
     pairCancel: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('remote:pair-cancel', id),
     removeUser: (id: string, userId: string): Promise<{ ok: true }> =>
       ipcRenderer.invoke('remote:remove-user', id, userId),
-    /** 手机网页：添加（无需扫码授权，立即建好并启动）。 */
-    webCreate: (): Promise<{ ok: true; botId: string } | { ok: false; error: string }> =>
-      ipcRenderer.invoke('remote:web-create'),
-    /** 手机网页：生成带一次性配对码的二维码（内网地址或中转地址）。 */
-    webQr: (
-      id: string,
-      via: 'lan' | 'relay',
-      url?: string
-    ): Promise<{ ok: true; url: string; qr: string; code: string; expiresAt: number } | { ok: false; error: string }> =>
-      ipcRenderer.invoke('remote:web-qr', id, via, url),
-    /** 手机网页：改端口 / 内网开关 / 中转设置（启用中的机器人会按新设置重启）。 */
-    webUpdate: (
-      id: string,
-      patch: { port?: number; lan?: boolean; relay?: { enabled?: boolean; url?: string } }
-    ): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('remote:web-update', id, patch),
     onChanged: (cb: (state: RemoteState) => void): (() => void) => {
       const listener = (_e: unknown, state: RemoteState): void => cb(state)
       ipcRenderer.on('remote:changed', listener)
@@ -1202,6 +1180,35 @@ const api = {
       const listener = (_e: unknown, ev: BotScanEvent): void => cb(ev)
       ipcRenderer.on('remote:scan', listener)
       return () => ipcRenderer.removeListener('remote:scan', listener)
+    }
+  },
+  /** Deva 手机版（「手机」面板里，用户添加后才有，最多一个）。 */
+  phone: {
+    getState: (): Promise<PhoneState> => ipcRenderer.invoke('phone:get-state'),
+    /** 添加 Deva 手机版（默认没有，最多一个；已有就返回现状）。 */
+    add: (): Promise<PhoneState> => ipcRenderer.invoke('phone:add'),
+    /** 删除 Deva 手机版：已连接的手机全部断开。 */
+    remove: (): Promise<PhoneState> => ipcRenderer.invoke('phone:remove'),
+    setEnabled: (enabled: boolean): Promise<PhoneState> => ipcRenderer.invoke('phone:set-enabled', enabled),
+    /** 改连接方式 / 自建中转地址 / 局域网端口（启用中会按新设置重连）。 */
+    setMode: (patch: { mode?: PhoneMode; relayUrl?: string; port?: number }): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('phone:set-mode', patch),
+    /** 新的配对二维码（一次性票据，2 分钟有效）。 */
+    qr: (): Promise<PhoneQrResult> => ipcRenderer.invoke('phone:qr'),
+    /** 网页版的一次性链接（在浏览器中打开 / 复制链接；10 分钟内有效）。 */
+    link: (): Promise<PhoneLinkResult> => ipcRenderer.invoke('phone:link'),
+    /** 二维码收起：作废还挂着的配对票据。 */
+    qrCancel: (): Promise<{ ok: true }> => ipcRenderer.invoke('phone:qr-cancel'),
+    removeDevice: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('phone:remove-device', id),
+    onChanged: (cb: (state: PhoneState) => void): (() => void) => {
+      const listener = (_e: unknown, state: PhoneState): void => cb(state)
+      ipcRenderer.on('phone:changed', listener)
+      return () => ipcRenderer.removeListener('phone:changed', listener)
+    },
+    onPaired: (cb: (ev: PhonePairedEvent) => void): (() => void) => {
+      const listener = (_e: unknown, ev: PhonePairedEvent): void => cb(ev)
+      ipcRenderer.on('phone:paired', listener)
+      return () => ipcRenderer.removeListener('phone:paired', listener)
     }
   }
 }

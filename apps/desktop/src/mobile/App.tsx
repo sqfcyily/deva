@@ -1,370 +1,690 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { WebMessage, WebNotice, WebPersona, WebPrompt, WebSession } from '../shared/remote-web'
+import { b64uDecode, parseTicket } from '../shared/remote-crypto'
+import { parseWebPageParams, type WebDelivered, type WebPersona, type WebPrompt, type WebServerFrame, type WebSession } from '../shared/remote-web'
 import type { ActionValue } from '../shared/remote-views'
-import { Link, t, type Hello, type LinkState } from './link'
-import { ChatList, NewChatSheet } from './chats'
-import { Contacts, PersonaProfile } from './contacts'
+import { dropDesk, loadHistory, loadSnapshot, saveHistory, saveSnapshot, type CachedHistory } from './cache'
 import { ChatPage } from './chat'
-import { MeTab } from './me'
+import { Drawer } from './drawer'
+import { FilePage } from './files'
+import { Home, NewChatSheet } from './home'
+import { Link, deviceName, type Auth, type LinkPhase } from './link'
+import { InstallSheet, NotifySheet, Splash, StatePage } from './onboard'
+import { useOutbox, type Outbox, type Outgoing } from './outbox'
+import { currentSub, isStandalone, permission, pushSupport, registerSW, subscribe, unsubscribe } from './push'
+import { Scanner } from './scanner'
+import { SnackBar, useSessionOps, type SessionOps } from './session-ops'
+import { Settings } from './settings'
+import { t } from './strings'
+import { useTheme, type ThemePref } from './theme'
+import { currentDeskId, getDesk, listDesks, patchDesk, prefGet, prefSet, removeDesk, saveDesk, setCurrentDesk, type DeskCred } from './vault'
 
 /**
- * 手机网页端：三个 tab（对话 / 角色 / 我）的 IM 形态。对话与角色列表来自电脑端，按帧增量更新；
- * 打开某个对话时按需拉历史。页面内导航用一层「栈」：列表 → 对话 / 角色资料，配合 history 让系统返回键可用。
+ * Deva 手机版：对话列表做首页 + 左上角抽屉（对比稿 design/mobile-web.html 方案 B）。
+ *
+ * 启动：地址里带配对票据（扫码）→ 配对；带安装票据（主屏幕图标首次打开）→ 换凭证；否则用本机保存的凭证重连。
+ * 先显示本机缓存（秒开），连上后同步。页面内导航用一层「栈」配合 history，系统返回手势可用。
  */
 
-export type Tab = 'chats' | 'contacts' | 'me'
-
-export interface Route {
-  tab: Tab
-  /** 打开的对话。 */
-  chat?: string
-  /** 打开的角色资料。 */
-  profile?: string
-  /** 只看定时任务的对话列表（从通讯录的入口进来）。 */
-  tasks?: boolean
-}
+export type Page = { name: 'home' } | { name: 'chat'; sid: string } | { name: 'settings' } | { name: 'file'; sid: string; file: WebDelivered }
+export type Overlay = null | 'drawer' | 'new' | 'install' | 'notify' | 'scan'
+export type Filter = { kind: 'all' } | { kind: 'tasks' } | { kind: 'persona'; id: string } | { kind: 'archived' }
+export type TextSize = 'sm' | 'md' | 'lg'
+export type NotifyState = 'on' | 'off' | 'denied' | 'need-install' | 'need-https' | 'unsupported'
 
 type Toast = { id: number; text: string; ok: boolean }
 
+/** 正在连的那台电脑：凭证（配对成功前为 null）与这次连接用的鉴权方式。 */
+interface Target {
+  deskId: string
+  computer: string
+  auth: Auth
+  /** 扫码 / 安装：首次连接，显示「正在连接」。 */
+  pairing: boolean
+}
+
 export interface Store {
-  link: Link
+  link: Link | null
+  deskId: string
+  computer: string
+  desks: DeskCred[]
+  phase: LinkPhase
+  ready: boolean
   sessions: Map<string, WebSession>
   personas: Map<string, WebPersona>
   prompts: Map<string, WebPrompt>
+  hist: Map<string, CachedHistory>
   seen: Map<string, number>
-  markSeen(sid: string): void
-  act(key: string, value: ActionValue, form?: Record<string, string | string[]>): Promise<void>
-  open(r: Partial<Route>): void
+  syncedAt: number | null
+  vapid: string | null
+  deviceName: string
+  filter: Filter
+  setFilter(f: Filter): void
+  open(p: Page): void
   back(): void
+  overlay: Overlay
+  setOverlay(o: Overlay): void
   toast(text: string, ok?: boolean): void
+  act(key: string, value: ActionValue, form?: Record<string, string | string[]>): Promise<void>
+  markSeen(sid: string): void
+  switchDesk(deskId: string): void
+  disconnect(): Promise<void>
+  rename(name: string): Promise<void>
+  notify: NotifyState
+  enableNotify(): Promise<void>
+  disableNotify(): Promise<void>
+  textSize: TextSize
+  setTextSize(s: TextSize): void
+  /** 外观：跟随系统 / 浅色 / 深色。 */
+  theme: ThemePref
+  setTheme(p: ThemePref): void
+  /** 安卓 Chrome 的「安装应用」原生弹框（有才给）。 */
+  nativeInstall: (() => Promise<void>) | null
+  /** 已经添加到主屏幕（在浏览器里看也不再提示添加）。 */
+  installed: boolean
+  /** 发出去还没出现在对话记录里的消息（按对话）。 */
+  outbox: Map<string, Outgoing[]>
+  outboxOps: Omit<Outbox, 'outbox' | 'reconcile'>
+  /** 归档 / 删除 / 切换模型。 */
+  ops: SessionOps
 }
 
-const SEEN_KEY = `deva.web.seen:${location.host}`
+const SEEN_KEY = (deskId: string): string => `deva.seen.${deskId}`
+const INSTALLED_KEY = 'installed'
 
-function loadSeen(): Map<string, number> {
+/** 安卓 Chrome 的 beforeinstallprompt 事件（标准库里没有类型）。 */
+interface InstallPrompt {
+  prompt(): Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
+}
+
+function loadSeen(deskId: string): Map<string, number> {
   try {
-    const raw = JSON.parse(localStorage.getItem(SEEN_KEY) ?? '{}') as Record<string, number>
-    return new Map(Object.entries(raw))
+    return new Map(Object.entries(JSON.parse(localStorage.getItem(SEEN_KEY(deskId)) ?? '{}') as Record<string, number>))
   } catch {
     return new Map()
   }
 }
 
+function credAuth(d: DeskCred): Auth | null {
+  const key = b64uDecode(d.key)
+  return key && key.length === 32 ? { kind: 'resume', device: d.device, key } : null
+}
+
+/** 通知点进来要打开的对话（#o=桌面id.对话id，启动时读一次）。 */
+const initialOpen = ((): { deskId: string; sid: string } | null => {
+  const o = parseWebPageParams(location.hash).o
+  const m = o ? /^([^.]+)\.(.+)$/.exec(o) : null
+  return m ? { deskId: decodeURIComponent(m[1]), sid: decodeURIComponent(m[2]) } : null
+})()
+
+/** 启动时决定连哪台电脑、用什么凭证。地址里的票据用过即从地址栏抹掉（截图 / 收藏时不带着它）。 */
+function bootTarget(): Target | null {
+  const p = parseWebPageParams(location.hash)
+  const keep = new URLSearchParams()
+  if (p.d) keep.set('d', p.d)
+  if (p.p || p.i || p.n || p.o) history.replaceState(null, '', `${location.pathname}${location.search}${keep.size ? `#${keep}` : ''}`)
+  if (p.d && p.p) {
+    const tk = parseTicket(p.p)
+    if (tk) return { deskId: p.d, computer: p.n ?? '', auth: { kind: 'pair', id: tk.id, secret: tk.secret }, pairing: true }
+  }
+  if (p.d && p.i && !getDesk(p.d)) {
+    const tk = parseTicket(p.i)
+    if (tk) return { deskId: p.d, computer: p.n ?? '', auth: { kind: 'install', id: tk.id, secret: tk.secret }, pairing: true }
+  }
+  const fromNotice = initialOpen?.deskId ? getDesk(initialOpen.deskId) : null
+  const cred = fromNotice || (p.d && getDesk(p.d)) || (currentDeskId() && getDesk(currentDeskId()!)) || listDesks()[0]
+  if (!cred) return null
+  const auth = credAuth(cred)
+  return auth ? { deskId: cred.deskId, computer: cred.computer, auth, pairing: false } : null
+}
+
+
+function notifyStateNow(subscribed: boolean): NotifyState {
+  const s = pushSupport()
+  if (s !== 'ok') return s
+  if (permission() === 'denied') return 'denied'
+  return subscribed ? 'on' : 'off'
+}
+
 export function App(): React.JSX.Element {
-  const [state, setState] = useState<LinkState>({ kind: 'connecting' })
-  const [hello, setHello] = useState<Hello | null>(null)
+  const [target, setTarget] = useState<Target | null>(bootTarget)
+  /** 电脑名与「首次连接中」：随目标电脑重置，连上后由 ok 帧更新（不改 target，免得重建连接）。 */
+  const [computer, setComputer] = useState(target?.computer ?? '')
+  const [pairing, setPairing] = useState(!!target?.pairing)
+  const [desks, setDesks] = useState<DeskCred[]>(listDesks)
+  const [phase, setPhase] = useState<LinkPhase>({ kind: 'connecting', step: 0 })
   const [sessions, setSessions] = useState<Map<string, WebSession>>(new Map())
   const [personas, setPersonas] = useState<Map<string, WebPersona>>(new Map())
   const [prompts, setPrompts] = useState<Map<string, WebPrompt>>(new Map())
-  const [seen, setSeen] = useState<Map<string, number>>(loadSeen)
-  const [route, setRoute] = useState<Route>({ tab: 'chats' })
-  const [sheet, setSheet] = useState(false)
+  const [hist, setHist] = useState<Map<string, CachedHistory>>(new Map())
+  const [seen, setSeen] = useState<Map<string, number>>(new Map())
+  const [syncedAt, setSyncedAt] = useState<number | null>(null)
+  const [vapid, setVapid] = useState<string | null>(null)
+  const [devName, setDevName] = useState(deviceName())
+  const [stack, setStack] = useState<Page[]>([{ name: 'home' }])
+  const [overlay, setOverlay] = useState<Overlay>(null)
+  const [filter, setFilter] = useState<Filter>({ kind: 'all' })
   const [toasts, setToasts] = useState<Toast[]>([])
-  const [notices, setNotices] = useState<WebNotice[]>([])
-  const [hist, setHist] = useState<Map<string, { messages: WebMessage[]; start: number; total: number }>>(new Map())
-  const linkRef = useRef<Link | null>(null)
-  const routeRef = useRef(route)
-  routeRef.current = route
+  const [notify, setNotify] = useState<NotifyState>(() => notifyStateNow(false))
+  const [textSize, setTextSizeState] = useState<TextSize>(() => (prefGet('textSize') as TextSize) || 'md')
+  const [theme, setTheme] = useTheme()
+  const [installEvt, setInstallEvt] = useState<InstallPrompt | null>(null)
+  const [installed, setInstalled] = useState(() => prefGet(INSTALLED_KEY) === '1')
+  const markInstalled = useCallback(() => {
+    prefSet(INSTALLED_KEY, '1')
+    setInstalled(true)
+    setInstallEvt(null)
+  }, [])
+  const [link, setLink] = useState<Link | null>(null)
   const sessionsRef = useRef(sessions)
   sessionsRef.current = sessions
+  const histRef = useRef(hist)
+  histRef.current = hist
+  const pendingOpen = useRef(initialOpen)
 
   const toast = useCallback((text: string, ok = true) => {
+    if (!text) return
     const id = Date.now() + Math.random()
-    setToasts((l) => [...l, { id, text, ok }])
+    setToasts((l) => [...l.slice(-2), { id, text, ok }])
     window.setTimeout(() => setToasts((l) => l.filter((x) => x.id !== id)), 2600)
   }, [])
 
-  // 系统通知：回复完成 / 需要你决定时，页面不在前台才弹。
-  const notify = useCallback((title: string, body: string) => {
-    try {
-      if (localStorage.getItem('deva.web.notify') !== '1') return
-      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
-      if (document.visibilityState === 'visible') return
-      new Notification(title, { body, tag: title })
-    } catch {
-      /* 不支持通知 */
+  // 文字大小 / 外观：根元素上的属性。
+  useEffect(() => {
+    document.documentElement.dataset.fs = textSize
+  }, [textSize])
+
+  // Service Worker、安卓的安装弹框、通知点进来。
+  useEffect(() => {
+    void registerSW().then(() => currentSub().then((s) => setNotify(notifyStateNow(!!s))))
+    const onPrompt = (e: Event): void => {
+      e.preventDefault()
+      setInstallEvt(e as unknown as InstallPrompt)
     }
+    window.addEventListener('beforeinstallprompt', onPrompt)
+    // 装好了（从系统弹框 / 浏览器菜单装的都算）：收起添加提示，以后在浏览器里打开也不再提示。
+    window.addEventListener('appinstalled', markInstalled)
+    const onMsg = (e: MessageEvent): void => {
+      const d = e.data as { type?: string; deskId?: string; sid?: string }
+      if (d?.type === 'open' && d.sid) {
+        pendingOpen.current = { deskId: d.deskId ?? '', sid: d.sid }
+        setTarget((cur) => (d.deskId && cur?.deskId !== d.deskId ? switchTarget(d.deskId) ?? cur : cur))
+        openPending()
+      }
+    }
+    navigator.serviceWorker?.addEventListener('message', onMsg)
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onPrompt)
+      window.removeEventListener('appinstalled', markInstalled)
+      navigator.serviceWorker?.removeEventListener('message', onMsg)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const openPending = useCallback(() => {
+    const o = pendingOpen.current
+    if (!o || !sessionsRef.current.has(o.sid)) return
+    pendingOpen.current = null
+    setOverlay(null)
+    setStack([{ name: 'home' }, { name: 'chat', sid: o.sid }])
+    history.pushState({ deva: 1 }, '')
+  }, [])
+  // 通知点进来的对话：列表到了就打开。
   useEffect(() => {
-    const link = new Link({
-      onState: setState,
-      onHello: (h) => {
-        setHello(h)
-        setSessions(new Map(h.sessions.map((s) => [s.id, s])))
-        setPrompts(new Map(h.prompts.map((p) => [p.view.key, p])))
+    if (pendingOpen.current) openPending()
+  }, [sessions, openPending])
+
+  // ───────── 连接：目标电脑一变就重建 ─────────
+  useEffect(() => {
+    if (!target) return
+    const deskId = target.deskId
+    let alive = true
+    setComputer(target.computer || getDesk(deskId)?.computer || '')
+    setPairing(target.pairing)
+    setSessions(new Map())
+    setPersonas(new Map())
+    setPrompts(new Map())
+    setHist(new Map())
+    setSyncedAt(null)
+    setSeen(loadSeen(deskId))
+    setPhase({ kind: 'connecting', step: 0 })
+    void loadSnapshot(deskId).then((snap) => {
+      if (!alive || !snap) return
+      setSessions((cur) => (cur.size ? cur : new Map(snap.sessions.map((s) => [s.id, s]))))
+      setPersonas((cur) => (cur.size ? cur : new Map(snap.personas.map((p) => [p.id, p]))))
+      setSyncedAt(snap.syncedAt)
+    })
+
+    const l = new Link(
+      deskId,
+      target.auth,
+      {
+        onPhase: (p) => alive && setPhase(p),
+        onPaired: (device, key) => {
+          const now = Date.now()
+          saveDesk({ deskId, computer: target.computer, device, key, name: deviceName(), addedAt: now, lastUsed: now })
+          setCurrentDesk(deskId)
+          setDesks(listDesks())
+        },
+        onFrame: (f) => alive && onFrame(deskId, f)
       },
-      onSessions: (list) => setSessions(new Map(list.map((s) => [s.id, s]))),
-      onSession: (s) =>
+      deviceName()
+    )
+    setLink(l)
+    l.start()
+    return () => {
+      alive = false
+      l.stop()
+      setLink(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target])
+
+  /** 收到的帧 → 状态（并顺手写缓存）。 */
+  const onFrame = (deskId: string, f: WebServerFrame): void => {
+    switch (f.t) {
+      case 'ok': {
+        // 第一次连上这台电脑：已有的对话都算看过，不然满屏未读红点。
+        if (localStorage.getItem(SEEN_KEY(deskId)) === null) {
+          const base = new Map(f.sessions.map((s) => [s.id, s.updatedAt]))
+          setSeen(base)
+          try {
+            localStorage.setItem(SEEN_KEY(deskId), JSON.stringify(Object.fromEntries(base)))
+          } catch {
+            /* ignore */
+          }
+        }
+        setSessions(new Map(f.sessions.map((s) => [s.id, s])))
+        setPrompts(new Map(f.prompts.map((p) => [p.view.key, p])))
+        setVapid(f.vapid)
+        setDevName(f.device.name)
+        setSyncedAt(Date.now())
+        patchDesk(deskId, { computer: f.desk.computer, lastUsed: Date.now(), name: f.device.name })
+        setCurrentDesk(deskId)
+        setDesks(listDesks())
+        setComputer(f.desk.computer)
+        setPairing(false)
+        // 已开通知：把当前订阅报给电脑（换过电脑 / 订阅被系统刷新过都能对上）。
+        if (f.vapid && permission() === 'granted')
+          void currentSub().then((s) => {
+            setNotify(notifyStateNow(!!s))
+            if (s) void linkRef.current?.setPush(s)
+          })
+        return
+      }
+      case 'sessions':
+        setSessions(new Map(f.list.map((s) => [s.id, s])))
+        setSyncedAt(Date.now())
+        return
+      case 'session':
+        setSessions((m) => new Map(m).set(f.s.id, f.s))
+        return
+      case 'session_gone':
         setSessions((m) => {
-          const prev = m.get(s.id)
           const next = new Map(m)
-          next.set(s.id, s)
-          if (prev?.busy && !s.busy) notify(s.title, s.preview)
-          if (!prev?.waiting && s.waiting) notify(s.title, t('waiting'))
+          next.delete(f.sid)
           return next
-        }),
-      onSessionGone: (sid) =>
-        setSessions((m) => {
-          const next = new Map(m)
-          next.delete(sid)
-          return next
-        }),
-      onPersonas: (list) => setPersonas(new Map(list.map((p) => [p.id, p]))),
-      onHistory: (sid, messages, start, total) =>
-        setHist((m) => {
-          const next = new Map(m)
-          const cur = m.get(sid)
-          // 往前翻页：拼到前面；否则（最新一页）整段覆盖尾部，保留已有的更早部分。
-          if (cur && start + messages.length <= cur.start) next.set(sid, { messages: [...messages, ...cur.messages], start, total })
-          else if (cur && cur.start < start) {
-            const keep = cur.messages.filter((x) => Number(x.id) < start)
-            next.set(sid, { messages: [...keep, ...messages], start: cur.start, total })
-          } else next.set(sid, { messages, start, total })
-          return next
-        }),
-      onPrompt: (p) =>
+        })
+        return
+      case 'personas':
+        setPersonas(new Map(f.list.map((p) => [p.id, p])))
+        return
+      case 'history': {
+        const h = mergeHistory(histRef.current.get(f.sid), f)
+        histRef.current = new Map(histRef.current).set(f.sid, h)
+        setHist((m) => new Map(m).set(f.sid, h))
+        void saveHistory(deskId, f.sid, h)
+        outbox.reconcile(f.sid, h, sessionsRef.current.get(f.sid)?.busy ?? false)
+        return
+      }
+      case 'prompt':
         setPrompts((m) => {
           const next = new Map(m)
-          if (p.view.state === 'open') next.set(p.view.key, p)
-          else {
-            next.set(p.view.key, p)
+          next.set(f.p.view.key, f.p)
+          if (f.p.view.state !== 'open')
             // 已决议的卡片留一会儿让人看到结果，然后收起。
             window.setTimeout(
               () =>
                 setPrompts((m2) => {
-                  if (m2.get(p.view.key)?.view.state === 'open') return m2
+                  if (m2.get(f.p.view.key)?.view.state === 'open') return m2
                   const n2 = new Map(m2)
-                  n2.delete(p.view.key)
+                  n2.delete(f.p.view.key)
                   return n2
                 }),
               4000
             )
-          }
           return next
-        }),
-      onNotice: (n) => {
-        setNotices((l) => [...l.slice(-19), n])
-        notify(n.title ?? 'Deva', n.text)
-        if (!n.sessionId || routeRef.current.chat !== n.sessionId) toast(n.title ? `${n.title}：${n.text}` : n.text, n.tone !== 'error')
-      }
-    })
-    linkRef.current = link
-    link.start()
-    return () => {
-      link.stop()
-      linkRef.current = null
+        })
+        return
+      case 'notice':
+        if (stackTop().name !== 'chat' || (stackTop() as { sid?: string }).sid !== f.n.sessionId)
+          toast(f.n.title ? `${f.n.title}：${f.n.text}` : f.n.text, f.n.tone !== 'error')
+        return
+      case 'err':
+        toast(f.message, false)
+        return
+      default:
+        return
     }
-  }, [notify, toast])
+  }
 
-  // 系统返回键：出栈。
+  const linkRef = useRef<Link | null>(null)
+  linkRef.current = link
+  const outbox = useOutbox(linkRef, histRef, toast)
+  const ops = useSessionOps(linkRef, sessionsRef, setSessions, toast)
+  const { send: outSend, retry: outRetry, discard: outDiscard } = outbox
+  const outboxOps = useMemo(() => ({ send: outSend, retry: outRetry, discard: outDiscard }), [outSend, outRetry, outDiscard])
+  const stackRef = useRef(stack)
+  stackRef.current = stack
+  const stackTop = (): Page => stackRef.current[stackRef.current.length - 1]
+
+  // 列表与角色写进缓存（去抖）。
   useEffect(() => {
-    const onPop = (): void => setRoute((r) => (r.chat || r.profile || r.tasks ? { tab: r.tab } : r))
+    if (!target || !syncedAt || !sessions.size) return
+    const id = window.setTimeout(
+      () =>
+        saveSnapshot(target.deskId, {
+          // 进行中的状态只在连着时有意义：缓存里一律记成空闲，免得电脑不在线时还显示「运行测试…」。
+          sessions: [...sessions.values()].map((s) => ({ ...s, busy: false, status: undefined, since: undefined, rev: undefined, retry: undefined })),
+          personas: [...personas.values()],
+          syncedAt
+        }),
+      800
+    )
+    return () => window.clearTimeout(id)
+  }, [target, sessions, personas, syncedAt])
+
+  // 打开对话时先放上缓存的历史。
+  const top = stack[stack.length - 1]
+  const topSid = top.name === 'chat' ? top.sid : null
+  useEffect(() => {
+    if (!target || !topSid || hist.has(topSid)) return
+    void loadHistory(target.deskId, topSid).then((h) => h && setHist((m) => (m.has(topSid) ? m : new Map(m).set(topSid, h))))
+  }, [target, topSid, hist])
+
+  // ───────── 导航：页面栈 + 系统返回 ─────────
+  useEffect(() => {
+    const onPop = (): void => {
+      setOverlay(null)
+      setStack((s) => (s.length > 1 ? s.slice(0, -1) : s))
+    }
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
   }, [])
 
-  const open = useCallback((r: Partial<Route>) => {
-    setRoute((cur) => {
-      const next: Route = { tab: r.tab ?? cur.tab, chat: r.chat, profile: r.profile, tasks: r.tasks }
-      if (next.chat || next.profile || next.tasks) history.pushState({ deva: 1 }, '')
-      return next
-    })
-    setSheet(false)
+  const open = useCallback((p: Page) => {
+    setOverlay(null)
+    setStack((s) => [...s, p])
+    history.pushState({ deva: 1 }, '')
   }, [])
 
   const back = useCallback(() => {
     if (history.state?.deva) history.back()
-    else setRoute((r) => ({ tab: r.tab }))
+    else setStack((s) => (s.length > 1 ? s.slice(0, -1) : s))
   }, [])
 
-  const markSeen = useCallback((sid: string) => {
-    const s = sessionsRef.current.get(sid)
-    const at = s?.updatedAt ?? Date.now()
-    setSeen((m) => {
-      if ((m.get(sid) ?? 0) >= at) return m
-      const next = new Map(m)
-      next.set(sid, at)
-      try {
-        localStorage.setItem(SEEN_KEY, JSON.stringify(Object.fromEntries(next)))
-      } catch {
-        /* ignore */
-      }
-      return next
-    })
-  }, [])
+  const markSeen = useCallback(
+    (sid: string) => {
+      if (!target) return
+      const s = sessionsRef.current.get(sid)
+      const at = s?.updatedAt ?? Date.now()
+      // 告诉电脑「看过了」（两端共用已读时间，电脑上的红点随之消掉）；电脑那边已记过的不再发。
+      if (s && (s.readAt ?? 0) < s.updatedAt) linkRef.current?.send({ t: 'read', sid })
+      setSeen((m) => {
+        if ((m.get(sid) ?? 0) >= at) return m
+        const next = new Map(m).set(sid, at)
+        try {
+          localStorage.setItem(SEEN_KEY(target.deskId), JSON.stringify(Object.fromEntries(next)))
+        } catch {
+          /* ignore */
+        }
+        return next
+      })
+    },
+    [target]
+  )
 
   const act = useCallback(
     async (key: string, value: ActionValue, form?: Record<string, string | string[]>) => {
-      const link = linkRef.current
-      if (!link) return
-      const r = await link.action(key, value, form)
-      toast(r.message, r.ok)
+      const l = linkRef.current
+      if (!l) return
+      const r = await l.result((rid) => ({ t: 'action', rid, key, value, form }))
+      if (!r.ok || (r.message && !/^已/.test(r.message))) toast(r.message, r.ok)
     },
     [toast]
   )
 
-  const store = useMemo<Store | null>(
-    () =>
-      linkRef.current
-        ? { link: linkRef.current, sessions, personas, prompts, seen, markSeen, act, open, back, toast }
-        : null,
-    [sessions, personas, prompts, seen, markSeen, act, open, back, toast]
+  const switchDesk = useCallback((deskId: string) => {
+    const t2 = switchTarget(deskId)
+    if (!t2) return
+    setOverlay(null)
+    setStack([{ name: 'home' }])
+    setFilter({ kind: 'all' })
+    setTarget(t2)
+  }, [])
+
+  const disconnect = useCallback(async () => {
+    if (!target) return
+    linkRef.current?.send({ t: 'bye' })
+    removeDesk(target.deskId)
+    await dropDesk(target.deskId)
+    const rest = listDesks()
+    setDesks(rest)
+    setStack([{ name: 'home' }])
+    const next = rest[0] ? switchTarget(rest[0].deskId) : null
+    setTarget(next)
+  }, [target])
+
+  const rename = useCallback(
+    async (name: string) => {
+      const l = linkRef.current
+      if (!l || !target) return
+      const r = await l.result((rid) => ({ t: 'rename', rid, name }))
+      if (r.ok) {
+        setDevName(name)
+        patchDesk(target.deskId, { name })
+      } else toast(r.message, false)
+    },
+    [target, toast]
   )
 
-  if (state.kind === 'pair') return <PairScreen message={state.message} onSubmit={(code) => linkRef.current?.pair(code)} />
-  if (!store || !hello)
+  const enableNotify = useCallback(async () => {
+    if (!vapid) return toast(t('notifyUnsupported'), false)
+    const sub = await subscribe(vapid)
+    setNotify(notifyStateNow(!!sub))
+    if (!sub) {
+      if (permission() === 'denied') toast(t('notifyDenied'), false)
+      return
+    }
+    const r = await linkRef.current?.setPush(sub)
+    if (r && !r.ok) toast(r.message, false)
+  }, [vapid, toast])
+
+  const disableNotify = useCallback(async () => {
+    await linkRef.current?.setPush(null)
+    await unsubscribe()
+    setNotify(notifyStateNow(false))
+  }, [])
+
+  // 第一次连上（从主屏幕打开、可以推送、还没问过）：说明用途后再请求通知权限。
+  useEffect(() => {
+    if (phase.kind !== 'ready' || !vapid || notify !== 'off' || prefGet('notifyAsked')) return
+    if (!isStandalone() && /iPhone|iPad/.test(navigator.userAgent)) return
+    prefSet('notifyAsked', '1')
+    setOverlay((o) => o ?? 'notify')
+  }, [phase.kind, vapid, notify])
+
+  const setTextSize = useCallback((s: TextSize) => {
+    prefSet('textSize', s)
+    setTextSizeState(s)
+  }, [])
+
+  const store = useMemo<Store>(
+    () => ({
+      link,
+      deskId: target?.deskId ?? '',
+      computer: computer || t('thisComputer'),
+      desks,
+      phase,
+      ready: phase.kind === 'ready',
+      sessions,
+      personas,
+      prompts,
+      hist,
+      seen,
+      syncedAt,
+      vapid,
+      deviceName: devName,
+      filter,
+      setFilter,
+      open,
+      back,
+      overlay,
+      setOverlay,
+      toast,
+      act,
+      markSeen,
+      switchDesk,
+      disconnect,
+      rename,
+      notify,
+      enableNotify,
+      disableNotify,
+      textSize,
+      setTextSize,
+      theme,
+      setTheme,
+      // 弹框只能用一次：用户点了「安装」就收起提示（appinstalled 要等安装真正完成才来）；取消了提示留着，
+      // 按钮变回「怎么添加」，浏览器以后再给弹框时又变回「添加」。
+      nativeInstall: installEvt
+        ? async () => {
+            await installEvt.prompt()
+            const choice = await installEvt.userChoice.catch(() => null)
+            setInstallEvt(null)
+            if (choice?.outcome === 'accepted') markInstalled()
+          }
+        : null,
+      installed,
+      outbox: outbox.outbox,
+      outboxOps,
+      ops
+    }),
+    [link, target, computer, desks, phase, sessions, personas, prompts, hist, seen, syncedAt, vapid, devName, filter, open, back, overlay, toast, act, markSeen, switchDesk, disconnect, rename, notify, enableNotify, disableNotify, textSize, setTextSize, theme, setTheme, installEvt, installed, markInstalled, outbox.outbox, outboxOps, ops]
+  )
+
+  // ───────── 渲染 ─────────
+
+  const scanned = (url: string): void => {
+    let u: URL
+    try {
+      u = new URL(url)
+    } catch {
+      return toast(t('scanWrong'), false)
+    }
+    const p = parseWebPageParams(u.hash)
+    const tk = parseTicket(p.p)
+    if (!p.d || !tk) return toast(t('scanWrong'), false)
+    // 别的来源（例如局域网地址）：直接打开那个页面。
+    if (u.origin !== location.origin || u.pathname !== location.pathname) {
+      location.href = url
+      return
+    }
+    setOverlay(null)
+    setStack([{ name: 'home' }])
+    setFilter({ kind: 'all' })
+    setTarget({ deskId: p.d, computer: p.n ?? '', auth: { kind: 'pair', id: tk.id, secret: tk.secret }, pairing: true })
+  }
+
+  const scanner = overlay === 'scan' && <Scanner onResult={scanned} onClose={() => setOverlay(null)} />
+
+  if (!target)
     return (
       <div className="app">
-        <div className="splash">
-          <div className="splash__logo">D</div>
-          <div className="muted">{state.kind === 'error' ? state.message : state.kind === 'offline' ? t('offline') : t('connecting')}</div>
-          {state.kind === 'offline' && <div className="muted small">{t('offlineHint')}</div>}
-        </div>
+        <StatePage kind="welcome" onScan={() => setOverlay('scan')} />
+        {scanner}
+        <Toasts list={toasts} />
       </div>
     )
 
-  const banner =
-    state.kind === 'offline' ? (
-      <div className="banner is-offline">
-        <b>{t('offline')}</b>
-        <span>{t('offlineHint')}</span>
+  if (phase.kind === 'auth' || phase.kind === 'version') {
+    const kind = phase.kind === 'version' ? 'version' : phase.removed ? 'removed' : 'expired'
+    return (
+      <div className="app">
+        <StatePage
+          kind={kind}
+          message={phase.message}
+          onScan={() => setOverlay('scan')}
+          others={kind === 'removed' ? desks.filter((d) => d.deskId !== target.deskId) : kind === 'expired' ? desks : []}
+          onSwitch={switchDesk}
+          onForget={() => {
+            removeDesk(target.deskId)
+            void dropDesk(target.deskId)
+            setDesks(listDesks())
+          }}
+        />
+        {scanner}
+        <Toasts list={toasts} />
       </div>
-    ) : state.kind === 'error' ? (
-      <div className="banner is-error">
-        <b>{t('errorTitle')}</b>
-        <span>{state.message}</span>
-      </div>
-    ) : state.kind === 'connecting' ? (
-      <div className="banner">{t('disconnected')}</div>
-    ) : null
-
-  let page: React.JSX.Element
-  if (route.chat) {
-    const s = sessions.get(route.chat)
-    page = (
-      <ChatPage
-        store={store}
-        sid={route.chat}
-        session={s}
-        history={hist.get(route.chat)}
-        ready={state.kind === 'ready'}
-        banner={banner}
-      />
-    )
-  } else if (route.profile) {
-    page = <PersonaProfile store={store} personaId={route.profile} />
-  } else {
-    const body =
-      route.tab === 'chats' || route.tasks ? (
-        <ChatList store={store} tasksOnly={!!route.tasks} onNew={() => setSheet(true)} />
-      ) : route.tab === 'contacts' ? (
-        <Contacts store={store} />
-      ) : (
-        <MeTab store={store} hello={hello} state={state} notices={notices} />
-      )
-    page = (
-      <>
-        {body}
-        {banner}
-        <nav className="tabs">
-          {(['chats', 'contacts', 'me'] as Tab[]).map((tab) => (
-            <button key={tab} className={`tab${route.tab === tab ? ' is-on' : ''}`} onClick={() => setRoute({ tab })}>
-              <TabIcon tab={tab} />
-              {t(tab === 'chats' ? 'tabChats' : tab === 'contacts' ? 'tabContacts' : 'tabMe')}
-              {tab === 'chats' && <Badge sessions={sessions} seen={seen} />}
-            </button>
-          ))}
-        </nav>
-      </>
     )
   }
+
+  if (pairing && phase.kind !== 'ready')
+    return (
+      <div className="app">
+        <Splash computer={computer} phase={phase} />
+        <Toasts list={toasts} />
+      </div>
+    )
+
+  let page: React.JSX.Element
+  if (top.name === 'chat') page = <ChatPage key={top.sid} store={store} sid={top.sid} />
+  else if (top.name === 'settings') page = <Settings store={store} />
+  else if (top.name === 'file') page = <FilePage store={store} sid={top.sid} file={top.file} />
+  else page = <Home store={store} />
 
   return (
     <div className="app">
       {page}
-      {sheet && <NewChatSheet store={store} onClose={() => setSheet(false)} />}
-      <div className="toasts" aria-live="polite">
-        {toasts.map((x) => (
-          <div key={x.id} className={`toast${x.ok ? '' : ' is-error'}`}>
-            {x.text}
-          </div>
-        ))}
-      </div>
+      {overlay === 'drawer' && <Drawer store={store} onClose={() => setOverlay(null)} />}
+      {overlay === 'new' && <NewChatSheet store={store} onClose={() => setOverlay(null)} />}
+      {overlay === 'install' && <InstallSheet store={store} onClose={() => setOverlay(null)} />}
+      {overlay === 'notify' && <NotifySheet store={store} onClose={() => setOverlay(null)} />}
+      {scanner}
+      <SnackBar snack={ops.snack} onDone={ops.dismissSnack} />
+      <Toasts list={toasts} />
     </div>
   )
 }
 
-function Badge({ sessions, seen }: { sessions: Map<string, WebSession>; seen: Map<string, number> }): React.JSX.Element | null {
-  let n = 0
-  for (const s of sessions.values()) if (s.waiting || (s.updatedAt > (seen.get(s.id) ?? 0) && s.previewRole === 'assistant')) n++
-  return n ? <span className="badge">{n > 99 ? '99+' : n}</span> : null
+/**
+ * 收到的一段历史并进已有的：[start, end) 在已有部分之前 = 往前翻页，拼到前面；与已有部分相接或重叠 = 最新一页 /
+ * 补拉，替换 start 之后的部分；接不上（离开太久，中间缺了一段）就整段换掉。
+ */
+function mergeHistory(cur: CachedHistory | undefined, f: Extract<WebServerFrame, { t: 'history' }>): CachedHistory {
+  if (cur && f.end <= cur.start && f.start < cur.start) return { messages: [...f.messages, ...cur.messages], start: f.start, total: cur.total }
+  if (cur && f.start > cur.start && f.start <= cur.total) {
+    const keep = cur.messages.filter((x) => Number(x.id) < f.start)
+    return { messages: [...keep, ...f.messages], start: cur.start, total: f.end }
+  }
+  return { messages: f.messages, start: f.start, total: f.end }
 }
 
-function TabIcon({ tab }: { tab: Tab }): React.JSX.Element {
-  if (tab === 'chats')
-    return (
-      <svg className="ic" viewBox="0 0 24 24">
-        <path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.5-4.5A8 8 0 1 1 21 12z" />
-      </svg>
-    )
-  if (tab === 'contacts')
-    return (
-      <svg className="ic" viewBox="0 0 24 24">
-        <circle cx="9" cy="8" r="4" />
-        <path d="M2 21a7 7 0 0 1 14 0M17 4a4 4 0 0 1 0 8M22 21a7 7 0 0 0-5-6.7" />
-      </svg>
-    )
-  return (
-    <svg className="ic" viewBox="0 0 24 24">
-      <circle cx="12" cy="8" r="4" />
-      <path d="M4 21a8 8 0 0 1 16 0" />
-    </svg>
-  )
+function switchTarget(deskId: string): Target | null {
+  const cred = getDesk(deskId)
+  const auth = cred ? credAuth(cred) : null
+  if (!cred || !auth) return null
+  setCurrentDesk(deskId)
+  return { deskId, computer: cred.computer, auth, pairing: false }
 }
 
-function PairScreen({ message, onSubmit }: { message?: string; onSubmit: (code: string) => void }): React.JSX.Element {
-  const [code, setCode] = useState('')
-  const valid = /^\d{6}$/.test(code)
+function Toasts({ list }: { list: Toast[] }): React.JSX.Element {
   return (
-    <div className="app">
-      <form
-        className="pair"
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (valid) onSubmit(code)
-        }}
-      >
-        <div className="splash__logo">D</div>
-        <h1 className="pair__title">{t('pairTitle')}</h1>
-        <p className="pair__lead">{t('pairLead')}</p>
-        <input
-          id="pair-code"
-          className="pair__input"
-          inputMode="numeric"
-          pattern="\d*"
-          maxLength={6}
-          autoComplete="one-time-code"
-          placeholder={t('pairPlaceholder')}
-          value={code}
-          onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-        />
-        {message && <div className="pair__error">{message}</div>}
-        <button className="btn btn--primary pair__btn" type="submit" disabled={!valid}>
-          {t('pairSubmit')}
-        </button>
-      </form>
+    <div className="toasts" aria-live="polite">
+      {list.map((x) => (
+        <div key={x.id} className={`toast${x.ok ? '' : ' is-error'}`}>
+          {x.text}
+        </div>
+      ))}
     </div>
   )
-}
-
-/** 列表里的时间：今天只显示时分，昨天写「昨天」，更早写月日。 */
-export function fmtListTime(at: number): string {
-  const d = new Date(at)
-  const now = new Date()
-  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-  const y = new Date(now)
-  y.setDate(now.getDate() - 1)
-  if (d.toDateString() === y.toDateString()) return t('yesterday')
-  return d.toLocaleDateString(undefined, { month: 'numeric', day: 'numeric' })
 }

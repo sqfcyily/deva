@@ -1,7 +1,8 @@
 import { DurableObject } from 'cloudflare:workers'
 
 /**
- * Deva 手机网页中转：把手机与电脑上的 Deva 之间的 WebSocket 帧原样互转，不解析内容。
+ * Deva 手机版中转：把手机与电脑上的 Deva 之间的 WebSocket 帧原样互转，不解析内容（帧是端到端加密的密文，
+ * 中转只看得到握手公钥与密文）。
  *
  *  · 桌面端连 /desk/<桌面 id>（Authorization: Bearer <桌面密钥>）。密钥首次连接时登记（存哈希），之后必须一致。
  *  · 手机连 /d/<桌面 id>/ws。每部手机在桌面端那头对应一个连接 id（c），用「open / msg / close」信封转发。
@@ -17,8 +18,8 @@ export interface Env {
 }
 
 const ID = /^[A-Za-z0-9_-]{8,64}$/
-/** 单帧上限（与桌面端 MAX_FRAME_BYTES 一致）。 */
-const MAX_FRAME = 256 * 1024
+/** 单帧上限：Cloudflare WebSocket 单条消息 1 MiB（帧是加密后的密文，分块上传 / 下载每块远小于此）。 */
+const MAX_FRAME = 1024 * 1024
 const OFFLINE = JSON.stringify({ t: 'offline' })
 
 export default {

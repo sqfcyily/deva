@@ -23,7 +23,8 @@ import type {
   ResolveAutotaskResult
 } from '../../shared/chat-protocol'
 import { ipcMain, type BrowserWindow } from 'electron'
-import { onChatEvent, onSessionsChanged, publishSessionsChanged } from './chat-bus'
+import { onChatEvent, onSessionsChanged, publishRemoteChange, publishSessionsChanged } from './chat-bus'
+import { forgetRead } from './read-sync'
 import { statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import {
@@ -57,7 +58,7 @@ import {
   type ChatSessionMeta,
   type StoredSession
 } from './chat-store'
-import { thumbnailDataUrl } from './image-read'
+import { attachmentImage } from './attachment-image'
 import { isEn } from '../locale'
 import { closeSessionPages, setBrowserSessionBusyCheck, setSessionAborter } from './browser'
 import {
@@ -93,7 +94,7 @@ import {
   rewinding,
   historyLocked
 } from './chat-state'
-import { imageRef, loadDisplay, displayOf } from './chat-display'
+import { loadDisplay, displayOf } from './chat-display'
 import { cancelBackground, wakeForNotices } from './background-tasks'
 import { pendingHandoffs } from './chat-task-handoff'
 import { memberDispatches, memberGroupDone, markMemberSetting, setMemberFolder, setOpenTasks } from './chat-members'
@@ -275,6 +276,10 @@ export interface ChatRuntime {
   ): ResolveAutotaskResult
   /** 会话是否正有回合在跑（对话 / 定时任务）。 */
   isBusy(sessionId: string): boolean
+  /** 以下三项由远程端（手机）调用，改完通知渲染层同步（正开着被删 / 归档的对话就离开，改了模型就以对话里存的为准）。 */
+  setModel(sessionId: string, modelRef: string): boolean
+  setArchived(sessionId: string, archived: boolean): boolean
+  deleteSession(sessionId: string): void
 }
 let chatRuntime: ChatRuntime | null = null
 export function getChatRuntime(): ChatRuntime | null {
@@ -341,6 +346,37 @@ function resolveAutotask(
   return { ok: true, status: 'created', taskId: res.task.id }
 }
 
+// 以下改对话属性的操作电脑与手机共用；改完都发 publishSessionsChanged，另一端（渲染层 / 手机）据此刷新列表。
+
+/** 切换对话的模型并落库；任务对话同步改任务的模型。对话还没建档返回 false。 */
+function setSessionModel(sessionId: string, modelRef: string): boolean {
+  const session = getSession(sessionId)
+  if (!session) return false
+  session.model = modelRef
+  saveProject(sessionId)
+  syncTaskModel(sessionId, modelRef)
+  // 成员会话：用户亲自选了模型，此后派任务不再按主对话覆盖。
+  markMemberSetting(session, 'modelSet')
+  publishSessionsChanged()
+  return true
+}
+
+/** 归档 / 取消归档。进行中的对话不能归档（界面上已灰显，这里兜住点下去时回合才开始的情形）。 */
+function setArchived(sessionId: string, archived: boolean): boolean {
+  const ok = !(archived && busySessions.has(sessionId)) && setSessionArchived(sessionId, archived)
+  if (ok) publishSessionsChanged()
+  return ok
+}
+
+/** 删除对话：主对话连同成员会话一并删除；在它里面运行的定时任务改为独立运行（任务与任务对话保留）。 */
+function deleteSessionAll(sessionId: string): void {
+  const members = getSession(sessionId)?.members ?? []
+  purgeSession(sessionId)
+  for (const m of members) purgeSession(m.sessionId)
+  releaseTasksOwnedBy(sessionId)
+  publishSessionsChanged()
+}
+
 /** 删除一个会话的全部痕迹：中止进行中的回合、后台子智能体、网页，删对话文件、检查点与子智能体记录。 */
 function purgeSession(sessionId: string): void {
   // 正在进行的回合先中止（本机发起 / 手机端 / 定时任务一视同仁）：不然它在后台照常调模型、执行工具，
@@ -353,6 +389,7 @@ function purgeSession(sessionId: string): void {
   pendingUndo.delete(sessionId)
   removeSessionCheckpoints(sessionId)
   removeSessionSubagents(sessionId)
+  forgetRead(sessionId)
   memberDispatches.delete(sessionId)
   pendingHandoffs.delete(sessionId)
   for (const [g, rec] of memberGroupDone) if (rec.mainId === sessionId) memberGroupDone.delete(g)
@@ -520,16 +557,9 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
   // 尚未建档的惰性会话查不到 → 不建档，模型仍由覆盖层随首发落库。不改 updatedAt（换模型不算新活动）。
   // ok = 对话已建档、已落库（渲染层据此撤掉本地覆盖层，此后以主进程为准）；惰性未建档的返回 false。
   // 任务对话里切换模型 = 改任务的模型（两边同步，见 tasks.ts syncTaskModel）。
-  ipcMain.handle('chat:set-model', (_e, payload: ChatSetModelRequest): { ok: boolean } => {
-    const session = getSession(payload.sessionId)
-    if (!session) return { ok: false }
-    session.model = payload.modelRef
-    saveProject(payload.sessionId)
-    syncTaskModel(payload.sessionId, payload.modelRef)
-    // 成员会话：用户亲自选了模型，此后派任务不再按主对话覆盖。
-    markMemberSetting(session, 'modelSet')
-    return { ok: true }
-  })
+  ipcMain.handle('chat:set-model', (_e, payload: ChatSetModelRequest): { ok: boolean } => ({
+    ok: setSessionModel(payload.sessionId, payload.modelRef)
+  }))
 
   // 对话输入框切换思考等级：同 set-model——立即落库到本对话，惰性未建档的会话跳过（随首发落库），不改 updatedAt。
   ipcMain.handle('chat:set-effort', (_e, payload: ChatSetEffortRequest): { ok: true } => {
@@ -575,6 +605,7 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
       }
       session.title = title
       saveProject(payload.sessionId)
+      publishSessionsChanged()
       return { title }
     }
   )
@@ -582,9 +613,7 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
   // 归档 / 取消归档：只改这一个标记并落盘，不动 updatedAt（列表顺序不变）。尚未建档的惰性会话回 ok:false。
   // 进行中的对话不能归档（界面上菜单已灰显；这里兜住菜单打开后回合才开始的情形，返回 false 渲染层即按清单复原）。
   ipcMain.handle('chat:set-archived', (_e, payload: ChatSetArchivedRequest): { ok: boolean } => ({
-    ok:
-      !(payload.archived === true && busySessions.has(payload.sessionId)) &&
-      setSessionArchived(payload.sessionId, payload.archived === true)
+    ok: setArchived(payload.sessionId, payload.archived === true)
   }))
 
   // 左侧会话列表：一次列全部（对话无项目/分桶概念）。IPC 仍收 workspaceRoot 以兼容渲染层调用签名，忽略即可。
@@ -611,26 +640,9 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
     (_e, sessionId: string, _workspaceRoot: string | null): DisplayMessage[] => loadDisplay(sessionId)
   )
 
-  // 对话记录里的图片附件：缩略图（full=false）或原图（full=true，点开看大图）。ref 即展示层附件上的
-  // 「消息下标:内容块下标:指纹」（imageRef）——按轮删除 / 回滚 / 压缩后展示层整份重载，ref 随之更新；
-  // 对不上（那里已不是这张图）返回 null，界面显示类型图标占位。
-  ipcMain.handle(
-    'chat:attachment-image',
-    (_e, sessionId: unknown, ref: unknown, full: unknown): string | null => {
-      if (typeof sessionId !== 'string' || typeof ref !== 'string') return null
-      const at = /^(\d+):(\d+):/.exec(ref)
-      const msg = at ? getSession(sessionId)?.messages[Number(at[1])] : undefined
-      if (!at || msg?.role !== 'user' || typeof msg.content === 'string') return null
-      const pi = Number(at[2])
-      const part = msg.content[pi]
-      if (part?.type !== 'image' || imageRef(Number(at[1]), pi, part.data) !== ref) return null
-      if (full === true) return `data:${part.mediaType};base64,${part.data}`
-      try {
-        return thumbnailDataUrl(Buffer.from(part.data, 'base64'), part.mediaType)
-      } catch {
-        return null
-      }
-    }
+  // 对话记录里的图片附件：缩略图或原图（见 attachment-image.ts）。
+  ipcMain.handle('chat:attachment-image', (_e, sessionId: unknown, ref: unknown, full: unknown): string | null =>
+    attachmentImage(sessionId, ref, full)
   )
 
   // 载入历史 + 进行中回合的 turnId（无则 null），同一时刻取出：渲染层据此接上别处发起、仍在跑的一轮——
@@ -673,10 +685,7 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
   ipcMain.handle(
     'chat:delete-session',
     (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
-      const members = getSession(sessionId)?.members ?? []
-      purgeSession(sessionId)
-      for (const m of members) purgeSession(m.sessionId)
-      releaseTasksOwnedBy(sessionId)
+      deleteSessionAll(sessionId)
       return { ok: true }
     }
   )
@@ -950,6 +959,20 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
     answerMount,
     resolveProposal,
     resolveAutotask,
-    isBusy: (sessionId) => busySessions.has(sessionId)
+    isBusy: (sessionId) => busySessions.has(sessionId),
+    setModel: (sessionId, modelRef) => {
+      const ok = setSessionModel(sessionId, modelRef)
+      if (ok) publishRemoteChange({ sessionId, kind: 'model' })
+      return ok
+    },
+    setArchived: (sessionId, archived) => {
+      const ok = setArchived(sessionId, archived)
+      if (ok && archived) publishRemoteChange({ sessionId, kind: 'archived' })
+      return ok
+    },
+    deleteSession: (sessionId) => {
+      deleteSessionAll(sessionId)
+      publishRemoteChange({ sessionId, kind: 'deleted' })
+    }
   }
 }

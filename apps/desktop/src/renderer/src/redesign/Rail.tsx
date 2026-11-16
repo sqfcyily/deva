@@ -18,7 +18,7 @@ import {
   Pencil,
   Plus,
   Search,
-  Bot,
+  Smartphone,
   Trash2,
   Users,
   X
@@ -154,7 +154,7 @@ export function IconRail({
         aria-current={tab === 'bots'}
         onClick={() => onTab('bots')}
       >
-        <Bot size={20} />
+        <Smartphone size={20} />
       </button>
       <button
         className="cf-navbtn"

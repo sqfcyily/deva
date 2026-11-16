@@ -1,169 +1,120 @@
-import { createHash, randomBytes } from 'node:crypto'
+import { BrowserWindow, powerMonitor } from 'electron'
 import { hostname } from 'node:os'
+import { b64uEncode, formatTicket } from '../../../../shared/remote-crypto'
 import {
   WEB_PROTOCOL_VERSION,
   type WebClientFrame,
   type WebMessage,
-  type WebPersona,
+  type WebModel,
   type WebPrompt,
+  type WebPushSub,
   type WebServerFrame,
   type WebSession
 } from '../../../../shared/remote-web'
-import type { DisplayMessage } from '../../../../shared/chat-protocol'
-import type { ContentPart } from '../../../providers/types'
 import { getChatRuntime } from '../../chat'
-import { onChatEvent, onSessionsChanged, type ChatEventPayload } from '../../chat-bus'
+import { onChatEvent, onReadChanged, onSessionsChanged, onStepSaved, type ChatEventPayload } from '../../chat-bus'
+import { markRead, readAtOf } from '../../read-sync'
 import { loadDisplay } from '../../chat-display'
-import { getSession, listSessions, type ChatSessionMeta, type StoredSession } from '../../chat-store'
+import { getSession, listSessions, type ChatSessionMeta } from '../../chat-store'
 import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from '../../model-resolve'
-import { getPersona, listPersonas } from '../../personas'
-import {
-  RETRY_TEXT,
-  TOOL_HINTS,
-  allowedPersonas,
-  allows,
-  createSessionFor,
-  inScope,
-  pickPersona,
-  redeemPairCode,
-  runningTurnOf,
-  sessionWaiting
-} from '../hub'
-import { getBot, updateBot } from '../store'
-import type {
-  AdapterHost,
-  ChannelId,
-  ChatAddress,
-  MessageHandle,
-  NoticeView,
-  PromptView,
-  RemoteAdapter
-} from '../types'
+import { getPersona } from '../../personas'
+import { listTasks, onTasksChanged } from '../../tasks'
+import { RETRY_TEXT, TOOL_HINTS, createSessionFor, removePairedUser, runningTurnOf, sessionWaiting } from '../hub'
+import type { AdapterHost, ChannelId, ChatAddress, MessageHandle, NoticeView, PromptView, RemoteAdapter } from '../types'
 import type { Conn, ConnHandlers, ConnSink } from './conn'
-import { startLanServer, type LanServer } from './server'
-import { startRelayClient, type RelayClient, type RelayState } from './relay'
+import { createDevice, forgetDeviceKey, getDevice, issueTicket, listDevices, patchDevice } from './devices'
+import { sendAttachmentImage, sendDelivered, takeUploads, uploadBegin, uploadCancel, uploadChunk, uploadEnd } from './files'
+import { sendPush, vapidOf, type PushMessage } from './push'
+import { modelList, personaList, previewOf, sessionExtras, sessionModel, toWebMessages } from './views'
 
 /**
- * 手机网页适配器：手机端是桌面 Deva 的 IM 形态——对话列表、角色、任意对话的历史与最终回复。
+ * Deva 手机版的电脑端：手机端是电脑上 Deva 的手机形态——对话列表、角色、任意对话的历史与最终回复、交互卡、交付文件。
  *
- *  · 对话记录的真源是电脑上的对话文件：历史按需拉（loadDisplay 的展示投影，只取正文），进行中只推
- *    「正在做什么」一行状态，回合结束再推一次对话摘要，手机据此刷新。不经 hub 的私聊 ↔ 对话绑定。
- *  · hub 仍负责：配对码、交互卡（提问 / 计划 / 挂载 / 名片）的生成与决议、应用通知。没有私聊绑定时
- *    hub 把它们推到每个配对用户的「私聊」（chatId = 用户 id），这里原样转成帧。
- *  · 两种接入方式可同时开：内网直连（server.ts）与经中转（relay.ts）；连接统一长成 Conn。
- *  · 鉴权：扫码页用一次性配对码换长期 token；token 只存哈希（settings.tokens），用户被移除后失效。
+ *  · 连接由传输层（phone.ts 起的中转客户端 / 局域网服务）经安全层（secure.ts）握手后交到这里，收发的都是明文帧。
+ *  · 对话记录的真源是电脑上的对话文件：历史按需拉（展示投影，只取正文），进行中只推「正在做什么」一行状态，
+ *    回合结束再推一次对话摘要。
+ *  · hub 负责交互卡（提问 / 计划 / 挂载 / 名片）的生成与决议、应用通知：按已配对用户（= 设备）推到 renderPrompt /
+ *    sendNotice，这里转成帧发给该设备的连接；设备不在前台时改发推送。
  */
 
-export interface WebAdapterOptions {
-  port: number
-  lan: boolean
-  relay: { enabled: boolean; url: string; deskId: string; key: string }
-  botName: () => string
-}
-
-export interface WebStatus {
-  lan: 'off' | 'on' | 'error'
-  lanError?: string
-  relay: 'off' | RelayState
-  relayError?: string
-}
-
-interface TokenRecord {
-  user: string
-  at: number
+export interface PhoneAdapterOptions {
+  deskId: string
+  /** 设备增删改（面板刷新）。 */
+  onDevicesChanged(): void
+  /** 有手机扫码配对成功（面板上的二维码原地变成「已连接」）。 */
+  onPaired(did: string): void
 }
 
 /** 进行中的对话：状态行与回合 id。 */
 interface Live {
   turnId: string
   status?: string
+  since: number
+  /** 连接中断 / 自动重试的说明。 */
+  retry?: string
+  /** 手机可补拉的新内容计数（见 WebSession.rev）。 */
+  rev: number
+  /** 上次计数之后又有了要给手机看的内容（正文、插入的消息、交付的文件），等这一步落盘再计数。 */
+  dirty: boolean
 }
 
 const HISTORY_PAGE = 40
-const PREVIEW_CHARS = 80
+/** 补拉最后几条（history.from）最多给这么多条，再多就退回最新一页。 */
+const HISTORY_TAIL_MAX = 200
 /** 同一对话两次状态推送的最小间隔。 */
 const PUSH_MIN_MS = 400
 
-function sha256(s: string): string {
-  return createHash('sha256').update(s).digest('hex')
+/** 电脑这一两分钟没人操作，就算 Deva 窗口还在前台也当作人不在电脑前。 */
+const AWAY_IDLE_SEC = 90
+
+/** 用户正坐在电脑前看着 Deva（窗口在前台且最近有键鼠操作）：不往手机推「回复完成」。 */
+function atDesktop(): boolean {
+  const focused = BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && w.isFocused())
+  if (!focused) return false
+  try {
+    return powerMonitor.getSystemIdleTime() < AWAY_IDLE_SEC
+  } catch {
+    return true
+  }
 }
 
-export class WebAdapter implements RemoteAdapter, ConnSink {
+export class PhoneAdapter implements RemoteAdapter, ConnSink {
   readonly platform = 'web' as const
   readonly minUpdateMs = 300
   readonly pageChars = 20_000
 
   private host: AdapterHost | null = null
   private conns = new Set<Conn>()
-  private lan: LanServer | null = null
-  private relay: RelayClient | null = null
-  private status: WebStatus = { lan: 'off', relay: 'off' }
   private stopped = false
   private unsubscribe: (() => void)[] = []
   private live = new Map<string, Live>()
   private prompts = new Map<string, WebPrompt>()
+  /** 已为哪些「卡片 key|设备」发过推送（同一张卡只推一次）。 */
+  private promptPushed = new Set<string>()
   private previews = new Map<string, { updatedAt: number; text: string; role?: 'user' | 'assistant' }>()
   private pushTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private pushedAt = new Map<string, number>()
   private listTimer: ReturnType<typeof setTimeout> | null = null
   private seq = 0
+  /** 从手机发起的回合（对话 id）：结束时一定推送，不管电脑前有没有人。 */
+  private fromPhone = new Set<string>()
 
   constructor(
     readonly id: ChannelId,
-    private opts: WebAdapterOptions
+    private opts: PhoneAdapterOptions
   ) {}
-
-  getStatus(): WebStatus {
-    return { ...this.status }
-  }
 
   async start(host: AdapterHost): Promise<void> {
     this.host = host
     this.stopped = false
-    host.onState('connecting')
-    if (!this.opts.lan && !this.opts.relay.enabled) {
-      host.onState('error', '内网直连与中转都没有启用，手机无法连接。')
-      return
-    }
     this.unsubscribe.push(
       onChatEvent((p) => this.onEvent(p)),
-      onSessionsChanged(() => this.scheduleList())
+      onSessionsChanged(() => this.scheduleList()),
+      onStepSaved((sid) => this.onStepSaved(sid)),
+      // 在电脑或手机上看过了：手机的未读红点跟着变。
+      onReadChanged((c) => this.pushSession(c.sessionId)),
+      onTasksChanged(() => this.scheduleList())
     )
-    if (this.opts.lan) {
-      try {
-        this.lan = await startLanServer(this.opts.port, this)
-        this.status.lan = 'on'
-        this.status.lanError = undefined
-      } catch (e) {
-        this.status.lan = 'error'
-        this.status.lanError = (e as Error)?.message ?? String(e)
-      }
-    }
-    if (this.opts.relay.enabled) {
-      this.status.relay = 'connecting'
-      this.relay = startRelayClient({
-        url: this.opts.relay.url,
-        deskId: this.opts.relay.deskId,
-        key: this.opts.relay.key,
-        sink: this,
-        onState: (state, error) => {
-          if (this.stopped) return
-          this.status.relay = state
-          this.status.relayError = state === 'error' ? error : undefined
-          this.publishState()
-        }
-      })
-    }
-    this.publishState()
-  }
-
-  /** 任一接入方式可用即「已连接」；都不可用时报错（优先报内网的错，更常见也更好修）。 */
-  private publishState(): void {
-    if (!this.host || this.stopped) return
-    const s = this.status
-    if (s.lan === 'on' || s.relay === 'on') this.host.onState('connected')
-    else if (s.relay === 'connecting') this.host.onState('connecting')
-    else this.host.onState('error', s.lanError ?? s.relayError ?? '没有可用的接入方式。')
   }
 
   async stop(): Promise<void> {
@@ -173,151 +124,175 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
     this.pushTimers.clear()
     if (this.listTimer) clearTimeout(this.listTimer)
     this.listTimer = null
-    this.relay?.close()
-    this.relay = null
-    const lan = this.lan
-    this.lan = null
     for (const c of [...this.conns]) c.close()
     this.conns.clear()
-    this.status = { lan: 'off', relay: 'off' }
-    if (lan) await lan.close()
   }
 
-  // ───────── 连接与鉴权（ConnSink）─────────
+  /** 设备被移除（电脑上点了移除）：断开它的连接。 */
+  dropDevice(did: string): void {
+    for (const c of [...this.conns])
+      if (c.device === did) {
+        c.send({ t: 'removed' })
+        c.close()
+      }
+  }
+
+  /** 在线的设备 id。 */
+  onlineDevices(): Set<string> {
+    return new Set([...this.conns].map((c) => c.device).filter((d): d is string => !!d))
+  }
+
+  // ───────── 连接（ConnSink）─────────
 
   attach(conn: Conn): ConnHandlers {
     this.conns.add(conn)
     return {
       onFrame: (f) => {
-        try {
-          this.onFrame(conn, f)
-        } catch (e) {
+        void this.onFrame(conn, f as WebClientFrame).catch((e) =>
           console.warn('[remote/web] 处理帧失败：', (e as Error)?.message ?? e)
-        }
+        )
       },
       onClose: () => {
         this.conns.delete(conn)
+        if (conn.device) patchDevice(this.id, conn.device, { lastSeen: Date.now() })
       }
     }
   }
 
-  private onFrame(conn: Conn, f: WebClientFrame): void {
-    if (f.t === 'ping') return conn.send({ t: 'pong' })
-    if (f.t === 'hello' || f.t === 'pair') {
-      if (f.v !== WEB_PROTOCOL_VERSION) {
-        conn.send({ t: 'err', code: 'version', message: '手机网页与电脑端 Deva 的版本不匹配，请刷新页面或更新 Deva。' })
-        return conn.close()
-      }
-      if (f.t === 'hello') return this.hello(conn, f.token)
-      return this.pair(conn, f.code, f.name)
-    }
-    const uid = conn.user
-    if (!uid) {
-      conn.send({ t: 'err', code: 'unauthorized', message: '尚未登录。' })
-      return conn.close()
-    }
+  private async onFrame(conn: Conn, f: WebClientFrame): Promise<void> {
+    if (f.t === 'hello') return this.hello(conn, f)
+    const did = conn.device
+    if (!did) return conn.close()
     switch (f.t) {
       case 'refresh':
         conn.send({ t: 'sessions', list: this.sessionList() })
-        conn.send({ t: 'personas', list: this.personaList() })
+        conn.send({ t: 'personas', list: personaList() })
         return
       case 'history':
-        return this.history(conn, f.sid, f.before, f.limit)
+        return this.history(conn, f.sid, f.before, f.from, f.limit)
       case 'send':
-        return void this.sendText(conn, f.sid, f.text, f.cid)
+        return this.sendText(conn, did, f)
       case 'stop':
         return this.stopTurn(f.sid)
       case 'new':
         return this.newSession(conn, f.rid, f.personaId)
       case 'action':
-        return void this.action(conn, uid, f.rid, f.value, f.form)
+        return this.action(conn, did, f.rid, f.value, f.form)
+      case 'up_begin':
+        return uploadBegin(did, f, conn.send)
+      case 'up_chunk':
+        return uploadChunk(did, f, conn.send)
+      case 'up_end':
+        return uploadEnd(did, f.uid, conn.send)
+      case 'up_cancel':
+        return uploadCancel(did, f.uid)
+      case 'file':
+        return sendDelivered(f, conn.send)
+      case 'image':
+        return sendAttachmentImage(f, conn.send)
+      case 'install': {
+        // 添加到主屏幕前：发一张安装票据，主屏幕图标首次打开时用它换自己的设备凭证。
+        if (typeof f.rid !== 'string') return
+        const t = issueTicket('install')
+        return conn.send({ t: 'install', rid: f.rid, ticket: formatTicket(t.id, t.secret) })
+      }
+      case 'push':
+        return this.setPush(conn, did, f.rid, f.sub)
+      case 'visible':
+        conn.visible = f.visible === true
+        return
+      case 'rename':
+        return this.rename(conn, did, f.rid, f.name)
+      case 'read':
+        if (typeof f.sid === 'string') markRead(f.sid, 'remote')
+        return
+      case 'archive':
+        return this.archive(conn, f.rid, f.sid, f.archived)
+      case 'delete':
+        return this.remove(conn, f.rid, f.sid)
+      case 'models':
+        if (typeof f.rid === 'string') conn.send({ t: 'models', rid: f.rid, list: modelList() })
+        return
+      case 'set_model':
+        return this.setModel(conn, f.rid, f.sid, f.ref)
+      case 'bye':
+        return this.bye(did)
     }
   }
 
-  private hello(conn: Conn, token: string): void {
-    const uid = typeof token === 'string' && token ? this.userOfToken(token) : null
-    if (!uid) {
-      conn.send({ t: 'err', code: 'unauthorized', message: '登录已失效，请在电脑端重新扫码。' })
-      return
+  private async hello(conn: Conn, f: Extract<WebClientFrame, { t: 'hello' }>): Promise<void> {
+    if (conn.device) return
+    if (f.v !== WEB_PROTOCOL_VERSION) {
+      conn.send({ t: 'err', code: 'bad_request', message: '手机网页与电脑端 Deva 的版本不匹配，请刷新页面或更新电脑上的 Deva。' })
+      return conn.close()
     }
-    conn.user = uid
-    const me = getBot(this.id)?.users.find((u) => u.id === uid)
+    const kind = f.kind === 'standalone' ? 'standalone' : 'browser'
+    const name = typeof f.name === 'string' && f.name.trim() ? f.name.trim().slice(0, 40) : '手机'
+    let did: string
+    if (conn.auth.kind === 'resume') {
+      if (!getDevice(this.id, conn.auth.id)) {
+        conn.send({ t: 'removed' })
+        return conn.close()
+      }
+      did = conn.auth.id
+      patchDevice(this.id, did, { lastSeen: Date.now(), kind })
+    } else {
+      const made = await createDevice(this.id, name, kind)
+      if (!made) {
+        conn.send({ t: 'err', code: 'bad_request', message: '电脑上的系统密钥存储不可用，无法安全保存这台手机的凭证。' })
+        return conn.close()
+      }
+      did = made.id
+      conn.send({ t: 'paired', device: did, key: b64uEncode(made.key) })
+      if (conn.auth.kind === 'pair') this.opts.onPaired(did)
+    }
+    conn.device = did
+    this.opts.onDevicesChanged()
+    const vapid = await vapidOf(this.id)
     conn.send({
       t: 'ok',
       v: WEB_PROTOCOL_VERSION,
-      user: { id: uid, name: me?.name },
-      bot: { name: this.opts.botName(), computer: hostname() },
-      personas: [],
+      desk: { id: this.opts.deskId, computer: hostname() },
+      device: { id: did, name: getDevice(this.id, did)?.name ?? name },
       sessions: this.sessionList(),
-      prompts: [...this.prompts.values()].filter((p) => p.view.state === 'open')
+      prompts: [...this.prompts.values()].filter((p) => p.view.state === 'open'),
+      vapid: vapid?.pub ?? null
     })
     // 角色带头像图片，体积可能不小：单独一帧，免得首帧太大。
-    conn.send({ t: 'personas', list: this.personaList() })
-  }
-
-  private pair(conn: Conn, code: unknown, name: unknown): void {
-    const c = typeof code === 'string' ? code.trim() : ''
-    const uid = `u_${randomBytes(6).toString('hex')}`
-    const label = typeof name === 'string' && name.trim() ? name.trim().slice(0, 40) : '手机'
-    const r = redeemPairCode(this.id, { id: uid, name: label }, uid, c)
-    if (!r.ok) return conn.send({ t: 'err', code: 'pair', message: r.message })
-    const token = randomBytes(32).toString('base64url')
-    this.storeToken(token, uid)
-    conn.send({ t: 'paired', token })
-  }
-
-  private tokens(): Record<string, TokenRecord> {
-    const raw = getBot(this.id)?.settings.tokens
-    return raw && typeof raw === 'object' ? (raw as Record<string, TokenRecord>) : {}
-  }
-
-  private userOfToken(token: string): string | null {
-    const rec = this.tokens()[sha256(token)]
-    if (!rec || typeof rec.user !== 'string') return null
-    const bot = getBot(this.id)
-    return bot?.users.some((u) => u.id === rec.user) ? rec.user : null
-  }
-
-  private storeToken(token: string, uid: string): void {
-    updateBot(this.id, (b) => {
-      const tokens = { ...this.tokens() }
-      // 顺手清掉已不在白名单的用户留下的 token。
-      for (const [h, rec] of Object.entries(tokens)) if (!b.users.some((u) => u.id === rec.user)) delete tokens[h]
-      tokens[sha256(token)] = { user: uid, at: Date.now() }
-      return { ...b, settings: { ...b.settings, tokens } }
-    })
-  }
-
-  /** 用户被移除：断开他的连接（index.ts 在 remove-user 时调用）。 */
-  dropUser(uid: string): void {
-    for (const c of [...this.conns]) if (c.user === uid) c.close()
+    conn.send({ t: 'personas', list: personaList() })
   }
 
   // ───────── 列表与历史 ─────────
 
-  private personaList(): WebPersona[] {
-    const allowed = new Set(allowedPersonas(this.id).map((p) => p.id))
-    const all = getBot(this.id)?.scope.mode === 'all'
-    return listPersonas(true)
-      .filter((p) => (p.enabled ? allowed.has(p.id) : all))
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        model: p.model,
-        avatar: p.avatar,
-        avatarImage: p.avatarImage,
-        enabled: p.enabled
-      }))
+  /**
+   * 同电脑端的对话列表：「在会话中运行」的定时任务，任务对话不进列表（从所在对话进入），所在对话上打闹钟图标；
+   * 独立运行的任务对话照常列出。
+   */
+  private taskIndex(): { hidden: Set<string>; owned: Map<string, string[]> } {
+    const hidden = new Set<string>()
+    const owned = new Map<string, string[]>()
+    for (const t of listTasks()) {
+      if (!t.ownerSessionId) continue
+      hidden.add(t.sessionId)
+      owned.set(t.ownerSessionId, [...(owned.get(t.ownerSessionId) ?? []), t.title])
+    }
+    return { hidden, owned }
+  }
+
+  /** 列给手机的对话：成员会话与「在会话中运行」的任务对话不列；已归档的带上标记，手机在「已归档」里列出。 */
+  private visible(m: ChatSessionMeta, hidden: Set<string>): boolean {
+    return !m.parentId && !hidden.has(m.id)
   }
 
   private sessionList(): WebSession[] {
+    const { hidden, owned } = this.taskIndex()
+    const models = modelList()
     return listSessions()
-      .filter((s) => !s.archived && !s.parentId && allows(this.id, s))
-      .map((m) => this.sessionView(m))
+      .filter((s) => this.visible(s, hidden))
+      .map((m) => this.sessionView(m, owned.get(m.id), models))
   }
 
-  private sessionView(m: ChatSessionMeta): WebSession {
+  private sessionView(m: ChatSessionMeta, tasks?: string[], models?: WebModel[]): WebSession {
     const live = this.live.get(m.id)
     const pv = this.preview(m.id, m.updatedAt)
     return {
@@ -331,8 +306,15 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
       busy: !!live || (getChatRuntime()?.isBusy(m.id) ?? false),
       waiting: sessionWaiting(m.id),
       status: live?.status,
+      since: live?.since,
+      rev: live?.rev,
+      retry: live?.retry,
+      readAt: readAtOf(m.id),
+      archived: m.archived || undefined,
       kind: m.id.startsWith('task-') ? 'task' : 'chat',
-      focusRoot: m.focusRoot
+      tasks: tasks?.length ? tasks : undefined,
+      ...sessionExtras(m),
+      ...sessionModel(m, models)
     }
   }
 
@@ -345,44 +327,54 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
     return pv
   }
 
-  private history(conn: Conn, sid: unknown, before: unknown, limit: unknown): void {
-    if (typeof sid !== 'string' || !getSession(sid) || !inScope(this.id, sid))
-      return conn.send({ t: 'err', code: 'bad_request', message: '这个对话不存在或不在机器人的回复范围内。' })
+  /**
+   * 历史：before = 往前翻一页；from = 补拉从 from 到最后（进行中写完一条就补拉，多数时候只有一两条），
+   * 太多时退回最新一页；都没有 = 最新一页。
+   */
+  private history(conn: Conn, sid: unknown, before: unknown, from: unknown, limit: unknown): void {
+    if (typeof sid !== 'string' || !getSession(sid))
+      return conn.send({ t: 'err', code: 'gone', message: '这个对话不存在或已被删除。' })
     const all = loadDisplay(sid)
-    const end = typeof before === 'number' && before >= 0 ? Math.min(before, all.length) : all.length
     const n = typeof limit === 'number' && limit > 0 ? Math.min(limit, 200) : HISTORY_PAGE
-    const start = Math.max(0, end - n)
-    const messages: WebMessage[] = []
-    for (let i = start; i < end; i++) {
-      const m = toWebMessage(all[i], String(i))
-      if (m) messages.push(m)
+    let start: number
+    let end = all.length
+    if (typeof from === 'number' && from >= 0 && from <= all.length && all.length - from <= HISTORY_TAIL_MAX) start = from
+    else {
+      if (typeof before === 'number' && before >= 0) end = Math.min(before, all.length)
+      start = Math.max(0, end - n)
     }
-    conn.send({ t: 'history', sid, messages, start, total: all.length })
+    const messages: WebMessage[] = []
+    for (let i = start; i < end; i++) messages.push(...toWebMessages(all[i], i))
+    conn.send({ t: 'history', sid, messages, start, end, total: all.length })
   }
 
   // ───────── 发送 / 停止 / 新建 / 卡片动作 ─────────
 
-  private async sendText(conn: Conn, sid: unknown, text: unknown, cid: unknown): Promise<void> {
-    const id = typeof sid === 'string' ? sid : ''
+  private async sendText(conn: Conn, did: string, f: Extract<WebClientFrame, { t: 'send' }>): Promise<void> {
+    const id = typeof f.sid === 'string' ? f.sid : ''
     const reply = (ok: boolean, message?: string): void => {
-      if (typeof cid === 'string') conn.send({ t: 'sent', cid, sid: id, ok, message })
+      if (typeof f.cid === 'string') conn.send({ t: 'sent', cid: f.cid, sid: id, ok, message })
     }
-    const body = typeof text === 'string' ? text.trim() : ''
-    if (!body) return reply(false, '消息为空。')
+    const body = typeof f.text === 'string' ? f.text.trim() : ''
     const rt = getChatRuntime()
     if (!rt) return reply(false, 'Deva 还没准备好，请稍后再试。')
     const session = getSession(id)
-    if (!session || !inScope(this.id, id)) return reply(false, '这个对话不存在或不在机器人的回复范围内。')
+    if (!session) return reply(false, '这个对话不存在或已被删除。')
     if (sessionWaiting(id)) return reply(false, '对话正在等你在卡片上决定，请先处理卡片。')
+    const busy = rt.isBusy(id)
+    if (busy && f.files?.length) return reply(false, '这一轮还在进行中，带附件的消息请等这一轮结束后再发。')
+    const files = takeUploads(did, f.files)
+    if (!files) return reply(false, '附件已失效，请重新添加。')
+    if (!body && !files.length) return reply(false, '消息为空。')
     const persona = session.personaId ? getPersona(session.personaId) : null
     const model =
       resolveModelRefOrNull(session.model) ?? resolveModelRefOrNull(persona?.model) ?? resolveDefaultModel()
     if (!model) return reply(false, '还没有可用的模型，请先在电脑端的设置里配置并选定模型。')
 
-    // 对话正在进行：与桌面一样插入当前这一轮，当前步骤结束后交给模型。
-    if (rt.isBusy(id)) {
+    // 对话正在进行：与电脑上一样插入当前这一轮，当前步骤结束后交给模型。
+    if (busy) {
       const r = rt.insert({ sessionId: id, text: body, model })
-      if (r.ok) return reply(true, '已插入进行中的任务，当前步骤结束后送达。')
+      if (r.ok) return reply(true, '已插入进行中的这一轮。')
       return reply(false, r.reason === 'busy' ? '上一轮还在进行中，稍后再试。' : '没能插入这条消息。')
     }
     try {
@@ -392,8 +384,10 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
         model,
         workspaceRoot: null,
         modelRef: `${model.providerId}:${model.model}`,
-        effort: session.effort ?? resolveDefaultEffort()
+        effort: session.effort ?? resolveDefaultEffort(),
+        attachments: files.length ? files : undefined
       })
+      this.fromPhone.add(id)
       reply(true)
     } catch (e) {
       reply(false, (e as Error)?.message ?? String(e))
@@ -407,41 +401,28 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
   }
 
   private newSession(conn: Conn, rid: unknown, personaId: unknown): void {
-    const reply = (sid?: string, error?: string): void => {
-      if (typeof rid === 'string') conn.send({ t: 'created', rid, sid, error })
-    }
+    if (typeof rid !== 'string') return
     let pid: string | undefined
     if (typeof personaId === 'string' && personaId) {
-      if (!allowedPersonas(this.id).some((p) => p.id === personaId)) return reply(undefined, '这个角色已不可用。')
+      const p = getPersona(personaId)
+      if (!p || !p.enabled) return conn.send({ t: 'created', rid, error: '这个角色已不可用。' })
       pid = personaId
-    } else {
-      const def = pickPersona(this.id, '')
-      if (!def && getBot(this.id)?.scope.mode === 'personas')
-        return reply(undefined, '回复范围内没有可用的角色，请在电脑端「机器人」里调整回复范围。')
-      pid = def?.id
     }
     const sid = createSessionFor(this.id, pid)
-    reply(sid)
+    conn.send({ t: 'created', rid, sid })
     this.scheduleList()
   }
 
-  private async action(
-    conn: Conn,
-    uid: string,
-    rid: unknown,
-    value: unknown,
-    form: unknown
-  ): Promise<void> {
+  private async action(conn: Conn, did: string, rid: unknown, value: unknown, form: unknown): Promise<void> {
     const reply = (ok: boolean, message: string): void => {
       if (typeof rid === 'string') conn.send({ t: 'result', rid, ok, message })
     }
     if (!value || typeof value !== 'object' || typeof (value as { k?: unknown }).k !== 'string')
       return reply(false, '无效的操作。')
-    const me = getBot(this.id)?.users.find((u) => u.id === uid)
     try {
       const r = await this.host!.onAction({
-        chat: this.chat(uid),
-        user: { id: uid, name: me?.name },
+        chat: this.chat(did),
+        user: { id: did, name: getDevice(this.id, did)?.name },
         value: value as Parameters<AdapterHost['onAction']>[0]['value'],
         form: form && typeof form === 'object' ? (form as Record<string, string | string[]>) : undefined
       })
@@ -451,49 +432,166 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
     }
   }
 
+  // ───────── 对话：归档 / 删除 / 切换模型 ─────────
+
+  private archive(conn: Conn, rid: unknown, sid: unknown, archived: unknown): void {
+    if (typeof rid !== 'string' || typeof sid !== 'string') return
+    const rt = getChatRuntime()
+    const on = archived === true
+    if (on && rt?.isBusy(sid)) return conn.send({ t: 'result', rid, ok: false, message: '进行中的对话不能归档。' })
+    const ok = !!rt?.setArchived(sid, on)
+    conn.send({ t: 'result', rid, ok, message: ok ? '' : '没能归档这个对话，请稍后再试。' })
+  }
+
+  private remove(conn: Conn, rid: unknown, sid: unknown): void {
+    if (typeof rid !== 'string' || typeof sid !== 'string') return
+    const rt = getChatRuntime()
+    if (!rt || !getSession(sid)) return conn.send({ t: 'result', rid, ok: false, message: '这个对话不存在或已被删除。' })
+    rt.deleteSession(sid)
+    this.live.delete(sid)
+    conn.send({ t: 'result', rid, ok: true, message: '' })
+  }
+
+  private setModel(conn: Conn, rid: unknown, sid: unknown, ref: unknown): void {
+    if (typeof rid !== 'string' || typeof sid !== 'string') return
+    const reply = (ok: boolean, message = ''): void => conn.send({ t: 'result', rid, ok, message })
+    if (typeof ref !== 'string' || !modelList().some((m) => m.ref === ref)) return reply(false, '这个模型已不可用。')
+    if (!getChatRuntime()?.setModel(sid, ref)) return reply(false, '这个对话不存在或已被删除。')
+    reply(true)
+    this.pushSession(sid, true)
+  }
+
+  // ───────── 设备：推送订阅 / 改名 / 断开 ─────────
+
+  private setPush(conn: Conn, did: string, rid: unknown, sub: unknown): void {
+    const reply = (ok: boolean, message = ''): void => {
+      if (typeof rid === 'string') conn.send({ t: 'result', rid, ok, message })
+    }
+    if (sub === null) {
+      patchDevice(this.id, did, { push: undefined })
+      return reply(true)
+    }
+    const s = sub as WebPushSub
+    if (!s || typeof s.endpoint !== 'string' || !s.keys || typeof s.keys.p256dh !== 'string' || typeof s.keys.auth !== 'string')
+      return reply(false, '推送订阅无效。')
+    if (!/^https:\/\//.test(s.endpoint) || s.endpoint.length > 1000) return reply(false, '推送订阅无效。')
+    patchDevice(this.id, did, { push: { endpoint: s.endpoint, keys: { p256dh: s.keys.p256dh, auth: s.keys.auth } } })
+    reply(true)
+  }
+
+  private rename(conn: Conn, did: string, rid: unknown, name: unknown): void {
+    const n = typeof name === 'string' ? name.trim().slice(0, 40) : ''
+    if (typeof rid !== 'string') return
+    if (!n) return conn.send({ t: 'result', rid, ok: false, message: '名字不能为空。' })
+    patchDevice(this.id, did, { name: n })
+    this.opts.onDevicesChanged()
+    conn.send({ t: 'result', rid, ok: true, message: '' })
+  }
+
+  private async bye(did: string): Promise<void> {
+    await removeDevice(this.id, did)
+    this.dropDevice(did)
+    this.opts.onDevicesChanged()
+  }
+
+  // ───────── 推送 ─────────
+
+  /** 给不在前台的设备推通知（电脑前有人时 skipIfDesk 的不推）。 */
+  private notifyDevices(msg: Omit<PushMessage, 'deskId'>, opts: { only?: string; skipIfDesk?: boolean } = {}): void {
+    if (opts.skipIfDesk && atDesktop()) return
+    for (const d of listDevices(this.id)) {
+      const dev = d as { id: string; push?: WebPushSub }
+      if (!dev.push || (opts.only && dev.id !== opts.only)) continue
+      if ([...this.conns].some((c) => c.device === dev.id && c.visible)) continue
+      void sendPush(this.id, dev.push, { ...msg, deskId: this.opts.deskId }).then((r) => {
+        if (r === 'gone') patchDevice(this.id, dev.id, { push: undefined })
+      })
+    }
+  }
+
   // ───────── 会话总线：进行中的状态与结束 ─────────
 
   private onEvent({ turnId, sessionId, event }: ChatEventPayload): void {
-    if (this.stopped || this.conns.size === 0 || !inScope(this.id, sessionId)) return
-    const set = (status?: string): void => {
-      const cur = this.live.get(sessionId)
-      if (cur && cur.status === status) return
-      this.live.set(sessionId, { turnId, status })
-      this.pushSession(sessionId)
+    if (this.stopped) return
+    const cur = this.live.get(sessionId)
+    const mine = cur?.turnId === turnId ? cur : undefined
+    /** 改这一轮的进行中状态；有变化就推给手机（now = 不等限频）。 */
+    const touch = (patch: Partial<Live>, now = false): void => {
+      const base: Live = mine ?? { turnId, since: Date.now(), rev: cur?.rev ?? 0, dirty: false }
+      const next = { ...base, ...patch }
+      this.live.set(sessionId, next)
+      if (!mine || next.status !== base.status || next.retry !== base.retry || next.rev !== base.rev)
+        this.pushSession(sessionId, now)
     }
     switch (event.type) {
       case 'turn_start':
-        return set('正在处理…')
+        // 本轮的用户消息已在对话记录里：计一次，手机马上补拉（别处发起的一轮也立刻看到这条消息）。
+        return touch({ status: '正在处理…', retry: undefined, rev: (cur?.rev ?? 0) + 1, dirty: false }, true)
+      case 'text_delta':
+        if (mine) {
+          mine.dirty = true
+          if (mine.retry) touch({ retry: undefined })
+        }
+        return
+      case 'insert':
+        if (mine) mine.dirty = true
+        return
       case 'tool_call':
         if (event.depth || event.bg) return
-        return set(`${TOOL_HINTS[event.name] ?? '正在调用工具'}…`)
+        if (mine && event.name === 'present_files') mine.dirty = true
+        return touch({ status: `${TOOL_HINTS[event.name] ?? '正在调用工具'}…`, retry: undefined })
       case 'ask_user':
       case 'plan_review':
       case 'mount_request':
-        return set('等待你的决定')
+        return touch({ status: '等待你的决定', retry: undefined })
       case 'interaction_resolved':
-        return set('正在处理…')
+        return touch({ status: '正在处理…', retry: undefined })
       case 'reconnecting':
-        return set(`连接中断，正在重连（${event.attempt}/${event.max}）`)
+        return touch({ retry: `连接中断，正在重连（${event.attempt}/${event.max}）` })
       case 'auto_retry':
-        return set(`${RETRY_TEXT[event.reason] ?? '正在重试'}（${event.attempt}/${event.max}）`)
+        return touch({ retry: `${RETRY_TEXT[event.reason] ?? '正在重试'}（${event.attempt}/${event.max}）` })
       case 'error':
-        return set(undefined)
+        return touch({ status: undefined, retry: undefined })
       case 'done':
         this.live.delete(sessionId)
         this.previews.delete(sessionId)
         this.pushSession(sessionId, true)
-        // 落盘与标题更新可能晚于 done 事件：稍后再推一次。
-        setTimeout(() => this.pushSession(sessionId, true), 600)
+        // 落盘与标题更新可能晚于 done 事件：稍后再推一次，并据此发「回复完成」推送。
+        setTimeout(() => {
+          this.pushSession(sessionId, true)
+          this.notifyDone(sessionId)
+        }, 600)
         return
       default:
         return
     }
   }
 
+  /** 这一步已落进对话记录：上一步以来有新的正文 / 插入的消息 / 交付的文件，就计一次让手机补拉。 */
+  private onStepSaved(sid: string): void {
+    const l = this.live.get(sid)
+    if (this.stopped || !l?.dirty) return
+    l.dirty = false
+    l.rev++
+    this.pushSession(sid, true)
+  }
+
+  private notifyDone(sid: string): void {
+    const phoneTurn = this.fromPhone.delete(sid)
+    const m = listSessions().find((s) => s.id === sid)
+    if (!m || m.parentId || m.archived) return
+    const pv = this.preview(sid, m.updatedAt)
+    if (pv.role !== 'assistant' || !pv.text) return
+    const persona = m.personaId ? getPersona(m.personaId) : null
+    this.notifyDevices(
+      { title: m.title || '新对话', body: `${persona?.name ?? 'Deva'}：${pv.text}`, sid, tag: sid },
+      { skipIfDesk: !phoneTurn }
+    )
+  }
+
   /** 推某对话的最新摘要（限频；immediate 跳过限频）。 */
   private pushSession(sid: string, immediate = false): void {
-    if (this.stopped) return
+    if (this.stopped || !this.conns.size) return
     const wait = immediate ? 0 : Math.max(0, (this.pushedAt.get(sid) ?? 0) + PUSH_MIN_MS - Date.now())
     const cur = this.pushTimers.get(sid)
     if (cur) {
@@ -506,8 +604,9 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
         this.pushTimers.delete(sid)
         this.pushedAt.set(sid, Date.now())
         const m = listSessions().find((s) => s.id === sid)
-        if (!m || m.archived || m.parentId || !allows(this.id, m)) return this.broadcast({ t: 'session_gone', sid })
-        this.broadcast({ t: 'session', s: this.sessionView(m) })
+        const { hidden, owned } = this.taskIndex()
+        if (!m || !this.visible(m, hidden)) return this.broadcast({ t: 'session_gone', sid })
+        this.broadcast({ t: 'session', s: this.sessionView(m, owned.get(m.id)) })
       }, wait)
     )
   }
@@ -522,20 +621,20 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
   }
 
   private broadcast(frame: WebServerFrame): void {
-    for (const c of this.conns) if (c.user) c.send(frame)
+    for (const c of this.conns) if (c.device) c.send(frame)
   }
 
-  private emit(uid: string, frame: WebServerFrame): void {
-    for (const c of this.conns) if (c.user === uid) c.send(frame)
+  private emit(did: string, frame: WebServerFrame): void {
+    for (const c of this.conns) if (c.device === did) c.send(frame)
   }
 
-  private chat(uid: string): ChatAddress {
-    return { channel: this.id, chatId: uid }
+  private chat(did: string): ChatAddress {
+    return { channel: this.id, chatId: did }
   }
 
   // ───────── RemoteAdapter：hub 推来的交互卡与通知 ─────────
 
-  /** 回合卡片 / 聊天式回复 / 正在输入 / 删消息：网页端不经 hub 的私聊绑定，这些永远不会被调用。 */
+  /** 回合卡片 / 聊天式回复 / 正在输入 / 删消息：手机版不经 hub 的私聊绑定，这些永远不会被调用。 */
   async renderTurn(): Promise<MessageHandle | undefined> {
     return undefined
   }
@@ -547,11 +646,21 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
   async deleteMessage(): Promise<void> {}
 
   async renderPrompt(chat: ChatAddress, view: PromptView): Promise<MessageHandle | undefined> {
-    const p: WebPrompt = { view, at: this.prompts.get(view.key)?.at ?? Date.now() }
+    const prev = this.prompts.get(view.key)
+    const p: WebPrompt = { view, at: prev?.at ?? Date.now() }
     if (view.state === 'open') this.prompts.set(view.key, p)
     else this.prompts.delete(view.key)
     this.emit(chat.chatId, { t: 'prompt', p })
     this.pushSession(view.sessionId)
+    const mark = `${view.key}|${chat.chatId}`
+    if (view.state !== 'open') this.promptPushed.delete(mark)
+    else if (!this.promptPushed.has(mark)) {
+      this.promptPushed.add(mark)
+      this.notifyDevices(
+        { title: view.sessionTitle || 'Deva', body: promptText(view), sid: view.sessionId, tag: view.sessionId },
+        { only: chat.chatId, skipIfDesk: !this.fromPhone.has(view.sessionId) }
+      )
+    }
     return view.key
   }
 
@@ -561,74 +670,38 @@ export class WebAdapter implements RemoteAdapter, ConnSink {
       t: 'notice',
       n: { id, at: Date.now(), title: view.title, text: view.text, tone: view.tone, sessionId: view.sessionId }
     })
+    this.notifyDevices(
+      { title: view.title || 'Deva', body: view.text, sid: view.sessionId, tag: view.sessionId ?? id },
+      { only: chat.chatId }
+    )
     return id
   }
 
-  /** 网页端的「私聊」就是用户本身。 */
+  /** 手机版的「私聊」就是设备本身。 */
   async openDirect(userId: string, view: NoticeView): Promise<string | undefined> {
     await this.sendNotice(this.chat(userId), view)
     return userId
   }
 }
 
-// ───────── 消息归约 ─────────
-
-const NOTICE_TEXT: Record<string, string> = {
-  truncated: '回复达到长度上限被截断',
-  empty: '本轮没有产生回复',
-  refused: '模型拒绝回答或被内容策略拦截',
-  restored: '已回滚了代码改动',
-  aborted: '已停止',
-  step_limit: '达到单次运行的步数上限',
-  repeated: '相同的工具调用连续多次没有进展，已停止',
-  degenerate: '模型输出陷入重复，已停止'
+/** 交互卡的推送正文。 */
+function promptText(view: PromptView): string {
+  switch (view.kind) {
+    case 'ask':
+      return `想问你：${view.questions[0]?.question ?? '有问题需要你回答'}`
+    case 'plan':
+      return '计划写好了，等你批准'
+    case 'mount':
+      return '需要你选一个文件夹'
+    case 'autotask':
+      return `请确认定时任务「${view.title}」`
+    case 'agent':
+      return `请确认新角色「${view.name}」`
+  }
 }
 
-/** 展示投影 → 手机端消息：只保留正文与提示，工具卡丢掉；什么都不剩的消息返回 null。 */
-function toWebMessage(m: DisplayMessage, id: string): WebMessage | null {
-  if (m.role === 'user') {
-    if (m.quiet) return null
-    const text = m.task ? [m.task.title, m.task.quote].filter(Boolean).join('\n') || m.text : m.text
-    if (!text.trim() && !m.attachments.length) return null
-    return {
-      id,
-      role: 'user',
-      text,
-      attachments: m.attachments.length ? m.attachments.map((a) => a.name) : undefined,
-      notify: m.notify
-    }
-  }
-  const texts: string[] = []
-  const notes: string[] = []
-  for (const b of m.blocks) {
-    if (b.kind === 'text') texts.push(b.text)
-    else if (b.kind === 'notice') notes.push(NOTICE_TEXT[b.code] ?? b.code)
-    else if (b.kind === 'error') notes.push(`出错：${b.message}`)
-    else if (b.kind === 'compaction') notes.push(b.steps ? `此前 ${b.steps} 步已压缩为摘要` : '较早的对话已压缩为摘要')
-    else if (b.kind === 'agentcard')
-      notes.push(`角色名片「${b.draft.name || '新角色'}」· ${b.status === 'accepted' ? '已添加' : b.status === 'rejected' ? '已拒绝' : '待确认'}`)
-    else if (b.kind === 'autotaskcard')
-      notes.push(`定时任务「${b.draft.title || '定时任务'}」· ${b.status === 'created' ? '已创建' : b.status === 'dismissed' ? '已忽略' : '待确认'}`)
-  }
-  const text = texts.join('\n\n').trim()
-  if (!text && !notes.length) return null
-  return { id, role: 'assistant', text, notes: notes.length ? notes : undefined, durationMs: m.durationMs }
-}
-
-/** 列表第二行：最近一条有正文的消息（用户或助手），去掉标记与多余空白。 */
-function previewOf(s: StoredSession): { text: string; role?: 'user' | 'assistant' } {
-  for (let i = s.messages.length - 1; i >= 0; i--) {
-    const m = s.messages[i]
-    const parts: ContentPart[] = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content
-    const text = parts
-      .filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text' && !p.listing)
-      .map((p) => p.text)
-      .join(' ')
-      .replace(/<[^>]{1,80}>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-    if (!text) continue
-    return { text: text.length > PREVIEW_CHARS ? `${text.slice(0, PREVIEW_CHARS)}…` : text, role: m.role }
-  }
-  return { text: '' }
+/** 移除设备：hub 删白名单与绑定，再删设备密钥。 */
+export async function removeDevice(botId: ChannelId, did: string): Promise<void> {
+  removePairedUser(botId, did)
+  await forgetDeviceKey(botId, did)
 }

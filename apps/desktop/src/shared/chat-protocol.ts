@@ -199,6 +199,16 @@ export interface ChatSetArchivedRequest {
 }
 
 /**
+ * 手机等别的设备对对话做的改动，主进程转给渲染层同步（chat:remote-change）：
+ * read = 已在别处看过（清掉未读红点）；deleted / archived = 已删除 / 归档（正开着就离开）；
+ * model = 模型已改（撤掉本地记的模型，以对话里存的为准）。
+ */
+export interface ChatRemoteChange {
+  sessionId: string
+  kind: 'read' | 'deleted' | 'archived' | 'model'
+}
+
+/**
  * chat:resolve-autotask 的返回：create 成功带已建任务 id；dismiss 成功；失败带稳定错误码（渲染层本地化）。
  * 错误码含 createTask 的全部码 + 编排层的 no-session / no-input。
  */

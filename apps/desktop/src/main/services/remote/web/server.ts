@@ -3,7 +3,8 @@ import { createReadStream, existsSync, statSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import { extname, join, normalize, resolve, sep } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
-import { MAX_FRAME_BYTES, parseClientFrame, type Conn, type ConnSink } from './conn'
+import { MAX_FRAME_CHARS } from '../../../../shared/remote-web'
+import type { RawConn, RawSink } from './conn'
 
 /**
  * 内网直连：桌面端自带的 HTTP 服务。托管手机网页（构建产物 out/mobile）并在 /ws 上接 WebSocket。
@@ -15,8 +16,6 @@ export interface LanServer {
   close(): Promise<void>
 }
 
-/** 鉴权前的连接最多保留这么久（第一帧必须是 hello / pair）。 */
-const AUTH_TIMEOUT_MS = 10_000
 const PING_EVERY_MS = 30_000
 
 const MIME: Record<string, string> = {
@@ -53,14 +52,15 @@ export function lanAddresses(): string[] {
   return [...new Set(out)].sort((a, b) => rank(a) - rank(b))
 }
 
-export function startLanServer(port: number, sink: ConnSink): Promise<LanServer> {
+export function startLanServer(port: number, sink: RawSink): Promise<LanServer> {
   const root = mobileRoot()
   const server: Server = createServer((req, res) => serveStatic(root, req, res))
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES })
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_CHARS * 3 })
 
   server.on('upgrade', (req, socket, head) => {
     const path = (req.url ?? '').split('?')[0]
-    if (path !== '/ws') {
+    // 页面与经中转时一样连 /d/<桌面 id>/ws（局域网只有这一台电脑，不看 id）；/ws 是旧地址。
+    if (path !== '/ws' && !/^\/d\/[\w-]{1,64}\/ws$/.test(path)) {
       socket.destroy()
       return
     }
@@ -97,20 +97,17 @@ export function startLanServer(port: number, sink: ConnSink): Promise<LanServer>
   })
 }
 
-function accept(ws: WebSocket, req: IncomingMessage, sink: ConnSink): void {
+function accept(ws: WebSocket, req: IncomingMessage, sink: RawSink): void {
   const remote = req.socket.remoteAddress ?? '?'
-  const conn: Conn = {
+  const conn: RawConn = {
     via: 'lan',
     remote,
-    send: (frame) => {
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame))
+    sendText: (text) => {
+      if (ws.readyState === ws.OPEN) ws.send(text)
     },
-    close: () => ws.close()
+    close: (code) => ws.close(code ?? 1000)
   }
   const h = sink.attach(conn)
-  const authTimer = setTimeout(() => {
-    if (!conn.user) ws.close(4401, 'auth timeout')
-  }, AUTH_TIMEOUT_MS)
   let alive = true
   const ping = setInterval(() => {
     if (!alive) return ws.terminate()
@@ -120,11 +117,9 @@ function accept(ws: WebSocket, req: IncomingMessage, sink: ConnSink): void {
   ws.on('pong', () => (alive = true))
   ws.on('message', (data, isBinary) => {
     if (isBinary) return ws.close(4400, 'binary not allowed')
-    const f = parseClientFrame(data.toString())
-    if (f) h.onFrame(f)
+    h.onText(data.toString())
   })
   ws.on('close', () => {
-    clearTimeout(authTimer)
     clearInterval(ping)
     h.onClose()
   })

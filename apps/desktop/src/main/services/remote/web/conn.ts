@@ -1,37 +1,53 @@
-import type { WebClientFrame, WebServerFrame } from '../../../../shared/remote-web'
+import type { WebServerFrame } from '../../../../shared/remote-web'
 
 /**
- * 一条手机端连接（来自内网 WebSocket 或中转转发），适配器只认这个形状，不关心它从哪条路来。
+ * 手机端连接的两层形状：
+ *  · RawConn：传输层（内网 WebSocket / 中转转发）给出的「收发文本」连接，不关心内容；
+ *  · Conn：加密握手完成后（secure.ts）交给适配器的连接，收发的是明文帧对象，发出时自动加密。
  */
-export interface Conn {
+
+export interface RawConn {
   readonly via: 'lan' | 'relay'
   /** 来源描述（日志用：内网 ip / 中转连接 id）。 */
   readonly remote: string
-  /** 鉴权通过后由适配器填上。 */
-  user?: string
+  sendText(text: string): void
+  close(code?: number): void
+}
+
+export interface RawHandlers {
+  onText(text: string): void
+  onClose(): void
+}
+
+export interface RawSink {
+  attach(conn: RawConn): RawHandlers
+}
+
+/** 握手用的是哪种凭据：pair = 扫码配对票据；install = 添加到主屏幕的安装票据；resume = 设备密钥。 */
+export interface ConnAuth {
+  kind: 'pair' | 'install' | 'resume'
+  /** 票据 id 或设备 id。 */
+  id: string
+}
+
+export interface Conn {
+  readonly via: 'lan' | 'relay'
+  readonly remote: string
+  readonly auth: ConnAuth
+  /** hello 之后由适配器填上：这条连接所属的设备 id。 */
+  device?: string
+  /** 页面是否在前台（visible 帧）。 */
+  visible: boolean
   send(frame: WebServerFrame): void
   close(): void
 }
 
-/** 传输层把连接交给适配器时拿到的回调。 */
+/** 适配器从安全层拿到的回调。 */
 export interface ConnHandlers {
-  onFrame(frame: WebClientFrame): void
+  onFrame(frame: { t: string } & Record<string, unknown>): void
   onClose(): void
 }
 
 export interface ConnSink {
   attach(conn: Conn): ConnHandlers
-}
-
-/** 单帧大小上限（手机端只发文本与表单，远用不到这么大；防止异常客户端撑爆内存）。 */
-export const MAX_FRAME_BYTES = 256 * 1024
-
-export function parseClientFrame(raw: unknown): WebClientFrame | null {
-  if (typeof raw !== 'string' || raw.length > MAX_FRAME_BYTES) return null
-  try {
-    const f = JSON.parse(raw) as WebClientFrame
-    return f && typeof f === 'object' && typeof f.t === 'string' ? f : null
-  } catch {
-    return null
-  }
 }

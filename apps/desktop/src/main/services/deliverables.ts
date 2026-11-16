@@ -56,7 +56,7 @@ function deliveredPaths(sessionId: unknown, toolUseId: unknown): string[] {
   return []
 }
 
-function deliveredPath(sessionId: unknown, toolUseId: unknown, index: unknown): string | null {
+export function deliveredPath(sessionId: unknown, toolUseId: unknown, index: unknown): string | null {
   if (typeof index !== 'number' || !Number.isInteger(index)) return null
   return deliveredPaths(sessionId, toolUseId)[index] ?? null
 }

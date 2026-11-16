@@ -348,6 +348,14 @@ pnpm package:mac      # macOS
 pnpm package:linux    # Linux
 ```
 
+Deploy the phone relay (Cloudflare Workers; for a self-hosted relay or to publish the official one, see [apps/relay](apps/relay/README.md)):
+
+```bash
+pnpm relay:login      # first time: sign in to Cloudflare (confirm the code shown in the terminal)
+pnpm relay:deploy     # build the phone web app and deploy the relay
+pnpm relay:dev        # run the relay locally (http://127.0.0.1:8787)
+```
+
 ```
 apps/desktop/src/
 ├── main/        main process: agent loop, tools, MCP, members, scheduler, IM integration

@@ -339,6 +339,14 @@ pnpm package:mac      # macOS
 pnpm package:linux    # Linux
 ```
 
+部署手机版中转（Cloudflare Workers，自建中转或发布官方中转时使用，详见 [apps/relay](apps/relay/README.md)）：
+
+```bash
+pnpm relay:login      # 首次：登录 Cloudflare（在浏览器里确认终端显示的验证码）
+pnpm relay:deploy     # 构建手机网页并部署中转
+pnpm relay:dev        # 本地调试中转（http://127.0.0.1:8787）
+```
+
 ## 许可
 
 [MIT](LICENSE)

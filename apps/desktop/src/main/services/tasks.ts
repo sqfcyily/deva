@@ -90,7 +90,22 @@ function persist(): void {
   emitChanged()
 }
 
+const changeListeners = new Set<() => void>()
+
+/** 主进程内订阅任务增删改（手机版据此刷新对话列表：绑定 / 解绑会话会改变哪些对话可见）。 */
+export function onTasksChanged(l: () => void): () => void {
+  changeListeners.add(l)
+  return () => changeListeners.delete(l)
+}
+
 function emitChanged(): void {
+  for (const l of changeListeners) {
+    try {
+      l()
+    } catch {
+      /* 监听方出错不影响落盘与广播 */
+    }
+  }
   try {
     getWin?.()?.webContents.send('tasks:changed', listTasks())
   } catch {

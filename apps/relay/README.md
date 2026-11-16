@@ -1,37 +1,38 @@
-# Deva 手机网页中转
+# Deva 手机版中转
 
-把手机与电脑上的 Deva 之间的 WebSocket 帧原样互转，让手机在任何网络下都能连到家里 / 办公室那台没有公网 IP 的电脑。中转不解析内容，只按「桌面 id」路由。
+把手机与电脑上的 Deva 之间的 WebSocket 帧原样互转，让手机在任何网络下都能连到家里或办公室那台没有公网 IP 的电脑。手机网页本身也由中转托管。
 
-- 运行在 Cloudflare Workers + Durable Objects（免费套餐即可；SQLite 后端的 DO）。
-- 同一套中转逻辑以后也可以用 Node 自建（协议见 `apps/desktop/src/shared/remote-web.ts`）。
+- 中转只按「桌面 id」路由，不解析内容。手机与电脑之间是**端到端加密**的（X25519 + ChaCha20-Poly1305，见 `apps/desktop/src/shared/remote-crypto.ts`），中转只看得到握手公钥和密文。
+- 运行在 Cloudflare Workers + Durable Objects 上，免费套餐即可（使用 SQLite 后端的 DO）。
+- 电脑端「连接方式」选「中转」时，地址留空就用官方中转（`apps/desktop/src/shared/remote-web.ts` 的 `OFFICIAL_RELAY_URL`）；用户也可以部署自己的中转，点「更改」填上自己的地址。
 
 ## 部署
 
-```bash
-# 1. 构建手机网页（产物 apps/desktop/out/mobile）
-cd apps/desktop && pnpm build:mobile
+在项目根目录执行：
 
-# 2. 登录 Cloudflare 并部署（deploy 前会自动把网页复制到 public/）
-cd ../relay
-pnpm wrangler login
-pnpm deploy
+```bash
+pnpm relay:login      # 首次：登录 Cloudflare（浏览器里确认终端显示的验证码）
+pnpm relay:deploy     # 构建手机网页、复制到中转的静态资源并部署
 ```
 
-部署完成后会得到一个 `https://deva-relay.<你的子域>.workers.dev` 地址（也可以在 Cloudflare 控制台绑定自己的域名）。
+登录用的是设备码方式（`wrangler login --device`）：终端会显示一个网址和验证码，浏览器打开后核对验证码并授权即可，不依赖本机的 `localhost:8976` 回调（开着代理或 VPN 时那个回调常常连不上）。
 
-## 在 Deva 里使用
+部署完成后会得到 `https://deva-relay.<你的子域>.workers.dev`，也可以在 Cloudflare 控制台绑定自己的域名。注意：workers.dev 在中国大陆通常无法访问，面向国内用户请绑定自己的域名。
 
-1. 电脑端 Deva →「机器人」→ 添加「手机网页」。
-2. 在「经中转访问」里填上面的地址并开启；状态变为「可用」即表示桌面端已连上中转。
-3. 点「显示二维码」，用手机扫码即可。
+- **官方中转**：把这个地址写进 `OFFICIAL_RELAY_URL`，再发布新版 Deva。
+- **自建中转**：在电脑端左下角「手机」→「Deva 手机版」→「连接方式」→「中转」里点「更改」，填上这个地址。
+
+手机网页随中转一起部署。手机网页与电脑端的协议版本（`WEB_PROTOCOL_VERSION`）不一致时，手机会提示刷新页面或更新 Deva，所以协议升级时要同时重新部署中转。
 
 ## 工作方式
 
-- 桌面端连 `wss://<中转>/desk/<桌面 id>`，带 `Authorization: Bearer <桌面密钥>`。密钥在桌面 id 首次连接时登记（只存哈希），之后必须一致——别的电脑拿不到密钥就冒充不了这个桌面 id。
-- 手机连 `wss://<中转>/d/<桌面 id>/ws`，页面从中转的静态资源加载（`https://<中转>/#d=<桌面 id>`）。
-- 每个桌面 id 一个 Durable Object，两头都是可休眠的 WebSocket：没有消息经过时不计费。
+- 电脑端连 `wss://<中转>/desk/<桌面 id>`，带 `Authorization: Bearer <桌面密钥>`。密钥在桌面 id 首次连接时登记（只存哈希），之后必须一致，别的电脑拿不到密钥就冒充不了这个桌面 id。
+- 手机连 `wss://<中转>/d/<桌面 id>/ws`，页面从中转的静态资源加载。扫码地址形如 `https://<中转>/#d=<桌面 id>&p=<一次性配对票据>`，# 后面的内容不会发给中转。
+- 每个桌面 id 对应一个 Durable Object，两头都用可休眠的 WebSocket，没有消息经过时不计费。
+- 推送通知由电脑端直接发给手机浏览器的推送服务（Web Push），不经过中转。
 
-## 注意
+## 本地调试
 
-- TLS 在 Cloudflare 终止，中转理论上能看到明文；桌面端与手机之间目前没有端到端加密。自用或小范围分享足够，公开运营前请评估。
-- 本地调试：`pnpm dev` 起 `http://127.0.0.1:8787`，Deva 里中转地址填它即可（桌面端会自动换成 ws://）。
+在项目根目录执行 `pnpm relay:dev`，会起 `http://127.0.0.1:8787`。在电脑端「连接方式」→「中转」里点「更改」填这个地址，电脑端会自动换成 ws://。
+
+在 `apps/relay` 目录里直接执行时要写 `pnpm run deploy`：`pnpm deploy` 是 pnpm 自带的命令，不会执行这里的部署脚本。

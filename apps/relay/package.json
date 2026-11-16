@@ -2,13 +2,12 @@
   "name": "@deva/relay",
   "version": "0.1.0",
   "private": true,
-  "description": "Deva 手机网页中转（Cloudflare Workers + Durable Objects）",
+  "description": "Deva 手机版中转（Cloudflare Workers + Durable Objects）",
   "type": "module",
   "scripts": {
     "sync-page": "node scripts/sync-page.mjs",
-    "dev": "wrangler dev",
-    "predeploy": "node scripts/sync-page.mjs",
-    "deploy": "wrangler deploy",
+    "dev": "node scripts/sync-page.mjs && wrangler dev",
+    "deploy": "node scripts/sync-page.mjs && wrangler deploy",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

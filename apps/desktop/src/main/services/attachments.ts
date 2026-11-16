@@ -146,6 +146,14 @@ function pasteName(raw: string, mime: string): string {
   return `粘贴-${ts}${ext}`
 }
 
+/**
+ * 手机上传来的文件（remote/web/files.ts 已写到 DEVA_HOME 的上传目录）：按选择框同样的规则登记白名单，
+ * 读得进消息的照常读，读不进的只交位置。只有主进程自己写下的文件会走到这里，手机给不出任意路径。
+ */
+export function stageUploadedFile(abs: string, size: number): PickedAttachment {
+  return inspect(abs, size, true)
+}
+
 export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): void {
   void fs.rm(PASTE_DIR, { recursive: true, force: true }).catch(() => {})
 

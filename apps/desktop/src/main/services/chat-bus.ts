@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import type { ChatRemoteChange } from '../../shared/chat-protocol'
 import type { ChatStreamEvent } from './chat'
 
 /**
@@ -66,4 +67,40 @@ export function publishSessionsChanged(): void {
 
 export function onSessionsChanged(listener: () => void): () => void {
   return subscribe<void>('sessions', listener)
+}
+
+/**
+ * 一轮进行中又有一步落进了对话记录（助手这一步的正文与工具调用、工具结果，随即落盘）。
+ * 流事件先于落盘发出，远程端要按对话记录补拉最新内容时，以这里为准。
+ */
+export function publishStepSaved(sessionId: string): void {
+  bus.emit('step', sessionId)
+}
+
+export function onStepSaved(listener: (sessionId: string) => void): () => void {
+  return subscribe<string>('step', listener)
+}
+
+/** 某对话被看过了（电脑或手机）：手机端据此刷新未读红点。source = 在哪一端看的。 */
+export interface ReadChange {
+  sessionId: string
+  at: number
+  source: 'desktop' | 'remote'
+}
+
+export function publishReadChanged(c: ReadChange): void {
+  bus.emit('read', c)
+}
+
+export function onReadChanged(listener: (c: ReadChange) => void): () => void {
+  return subscribe<ReadChange>('read', listener)
+}
+
+/** 手机等别的设备改了对话（看过 / 删除 / 归档 / 改模型）：转给渲染层同步（见 read-sync.ts）。 */
+export function publishRemoteChange(c: ChatRemoteChange): void {
+  bus.emit('remote', c)
+}
+
+export function onRemoteChange(listener: (c: ChatRemoteChange) => void): () => void {
+  return subscribe<ChatRemoteChange>('remote', listener)
 }

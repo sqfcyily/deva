@@ -1,6 +1,6 @@
 import WebSocket from 'ws'
 import type { DeskToRelay, RelayToDesk } from '../../../../shared/remote-web'
-import { parseClientFrame, type Conn, type ConnHandlers, type ConnSink } from './conn'
+import type { RawConn, RawHandlers, RawSink } from './conn'
 
 /**
  * 经中转访问：桌面端主动外连中转（apps/relay，部署在 Cloudflare Workers 或自己的服务器上），
@@ -19,7 +19,7 @@ export interface RelayOptions {
   url: string
   deskId: string
   key: string
-  sink: ConnSink
+  sink: RawSink
   onState(state: RelayState, error?: string): void
 }
 
@@ -52,7 +52,7 @@ export function startRelayClient(opts: RelayOptions): RelayClient {
   let ws: WebSocket | null = null
   let timer: ReturnType<typeof setTimeout> | null = null
   let attempt = 0
-  const conns = new Map<string, { conn: Conn; h: ConnHandlers }>()
+  const conns = new Map<string, { conn: RawConn; h: RawHandlers }>()
 
   if (!base) {
     opts.onState('error', '中转地址无效，应形如 https://relay.example.com')
@@ -110,10 +110,10 @@ export function startRelayClient(opts: RelayOptions): RelayClient {
       if (env.t === 'open') {
         if (conns.has(env.c)) return
         const c = env.c
-        const conn: Conn = {
+        const conn: RawConn = {
           via: 'relay',
           remote: `relay:${c}`,
-          send: (frame) => sendEnvelope({ t: 'msg', c, d: JSON.stringify(frame) }),
+          sendText: (text) => sendEnvelope({ t: 'msg', c, d: text }),
           close: () => {
             sendEnvelope({ t: 'close', c })
             const cur = conns.get(c)
@@ -127,8 +127,7 @@ export function startRelayClient(opts: RelayOptions): RelayClient {
       } else if (env.t === 'msg') {
         const cur = conns.get(env.c)
         if (!cur) return
-        const f = parseClientFrame(env.d)
-        if (f) cur.h.onFrame(f)
+        if (typeof env.d === 'string') cur.h.onText(env.d)
       } else if (env.t === 'close') {
         const cur = conns.get(env.c)
         if (!cur) return

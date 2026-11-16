@@ -1,111 +1,99 @@
+import { b64uDecode, b64uEncode, phoneFinish, phoneHello, type PhoneHi, type SecureChannel } from '../shared/remote-crypto'
 import {
+  FILE_CHUNK_BYTES,
   WEB_PROTOCOL_VERSION,
-  parseWebPageParams,
   type WebClientFrame,
-  type WebMessage,
-  type WebNotice,
-  type WebPersona,
-  type WebPrompt,
-  type WebServerFrame,
-  type WebSession
+  type WebFileKind,
+  type WebModel,
+  type WebPlainServerFrame,
+  type WebPushSub,
+  type WebServerFrame
 } from '../shared/remote-web'
-import type { ActionValue } from '../shared/remote-views'
+import { isEn, t } from './strings'
 
 /**
- * 与桌面端的连接（WebSocket）。内网直连时连本页所在主机的 /ws；经中转时（地址 # 里带 d=桌面 id）连中转的
- * /d/<桌面 id>/ws。token 存在 localStorage（按主机 + 桌面 id 区分），首次打开用 # 里的一次性配对码换 token。
- * 断线自动重连；每次连上都重新 hello，拿到完整的对话 / 角色列表。
+ * 与电脑的连接（WebSocket，经中转或局域网都连 /d/<桌面 id>/ws）。
+ *
+ * 每次连上先做端到端加密握手（shared/remote-crypto.ts）：
+ *   pair = 扫码带来的一次性配对票据；install = 添加到主屏幕时带来的安装票据；resume = 已保存的设备密钥。
+ * 握手后发 hello；配对 / 安装成功时电脑先回 paired（设备 id + 密钥，交给上层存好，之后改用 resume），再回 ok。
+ * 断线自动重连；回到前台或网络恢复时立即重连。
  */
 
-export type LinkState =
-  | { kind: 'connecting' }
+export type Auth = { kind: 'resume'; device: string; key: Uint8Array } | { kind: 'pair' | 'install'; id: string; secret: Uint8Array }
+
+export type LinkPhase =
+  | { kind: 'connecting'; step: 0 | 1 | 2 }
   | { kind: 'ready' }
-  /** 需要配对码（没有 token / token 失效 / 配对码错误）。 */
-  | { kind: 'pair'; message?: string }
   /** 中转说这台电脑的 Deva 不在线。 */
   | { kind: 'offline' }
-  | { kind: 'error'; message: string }
-
-export interface Hello {
-  user: { id: string; name?: string }
-  bot: { name: string; computer: string }
-  sessions: WebSession[]
-  prompts: WebPrompt[]
-}
+  /** 票据过期 / 已用过（pairing），或设备已被移除（removed）。不再自动重连。 */
+  | { kind: 'auth'; message: string; removed: boolean; pairing: boolean }
+  | { kind: 'version'; message: string }
 
 export interface LinkEvents {
-  onState(state: LinkState): void
-  onHello(h: Hello): void
-  onSessions(list: WebSession[]): void
-  onSession(s: WebSession): void
-  onSessionGone(sid: string): void
-  onPersonas(list: WebPersona[]): void
-  onHistory(sid: string, messages: WebMessage[], start: number, total: number): void
-  onPrompt(p: WebPrompt): void
-  onNotice(n: WebNotice): void
+  onPhase(p: LinkPhase): void
+  onFrame(f: WebServerFrame): void
+  /** 配对 / 安装成功：设备凭证（上层存进 vault）。 */
+  onPaired(device: string, key: string): void
 }
 
 const RECONNECT_MIN_MS = 1000
 const RECONNECT_MAX_MS = 15_000
+const OFFLINE_RETRY_MS = 5000
 const REQUEST_TIMEOUT_MS = 20_000
 const PING_EVERY_MS = 25_000
+/** WebSocket 发送缓冲超过这么多时先等一等（上传大文件时）。 */
+const BUFFER_HIGH = 1024 * 1024
 
-type Pending = { resolve: (v: unknown) => void; timer: number }
+type Waiter = { match: (f: WebServerFrame) => boolean; resolve: (f: WebServerFrame | null) => void; timer: number }
+
+export interface FileResult {
+  ok: boolean
+  message?: string
+  name?: string
+  size?: number
+  mime?: string
+  kind?: WebFileKind
+  text?: string
+  truncated?: boolean
+  blob?: Blob
+}
 
 export class Link {
-  readonly deskId: string | null
-  private pairCode: string | null
   private ws: WebSocket | null = null
   private closed = false
   private attempt = 0
   private timer: number | null = null
   private ping: number | null = null
   private seq = 0
-  private pending = new Map<string, Pending>()
-  private offline = false
+  private waiters = new Set<Waiter>()
+  private channel: SecureChannel | null = null
+  private hi: { hi: PhoneHi; priv: Uint8Array } | null = null
+  private phase: LinkPhase = { kind: 'connecting', step: 0 }
+  private chunks = new Map<string, { parts: Uint8Array[]; total: number; got: number; onProgress?: (p: number) => void }>()
 
-  constructor(private ev: LinkEvents) {
-    const p = parseWebPageParams(location.hash)
-    this.deskId = p.d ?? null
-    this.pairCode = p.c ?? null
-    // 配对码用过一次就该从地址栏消失（分享截图 / 收藏时不带着它）。
-    if (p.c) history.replaceState(null, '', location.pathname + location.search + (p.d ? `#d=${encodeURIComponent(p.d)}` : ''))
+  constructor(
+    readonly deskId: string,
+    private auth: Auth,
+    private ev: LinkEvents,
+    private deviceName: string
+  ) {}
+
+  get ready(): boolean {
+    return this.phase.kind === 'ready'
   }
 
-  get viaRelay(): boolean {
-    return this.deskId !== null
-  }
-
-  private get tokenKey(): string {
-    return `deva.web.token:${location.host}:${this.deskId ?? ''}`
-  }
-
-  private get token(): string | null {
-    try {
-      return localStorage.getItem(this.tokenKey)
-    } catch {
-      return null
-    }
-  }
-
-  private set token(v: string | null) {
-    try {
-      if (v) localStorage.setItem(this.tokenKey, v)
-      else localStorage.removeItem(this.tokenKey)
-    } catch {
-      /* 隐私模式等：本次会话内仍可用，刷新后要重新扫码 */
-    }
-  }
-
-  /** 断开这台手机：丢掉 token（电脑端的白名单里仍有记录，要在电脑上移除）。 */
-  forget(): void {
-    this.token = null
+  private setPhase(p: LinkPhase): void {
+    this.phase = p
+    this.ev.onPhase(p)
   }
 
   private url(): string {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const path = this.deskId ? `/d/${encodeURIComponent(this.deskId)}/ws` : '/ws'
-    return `${proto}//${location.host}${path}`
+    // 页面放在中转 / 局域网服务的根目录或子目录下：WebSocket 地址与页面同目录。
+    const base = location.pathname.replace(/[^/]*$/, '')
+    return `${proto}//${location.host}${base}d/${encodeURIComponent(this.deskId)}/ws`
   }
 
   start(): void {
@@ -122,91 +110,21 @@ export class Link {
     this.clearTimers()
     this.ws?.close()
     this.ws = null
+    for (const w of [...this.waiters]) this.settle(w, null)
   }
 
-  /** 回到前台 / 网络恢复：不等退避，立刻重连。 */
+  /** 回到前台 / 网络恢复：不等退避，立刻重连；在线时告诉电脑页面是否在前台。 */
   private onVisible = (): void => {
-    if (document.visibilityState !== 'visible' || this.closed) return
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return
+    if (this.closed) return
+    const visible = document.visibilityState === 'visible'
+    if (this.ready) this.send({ t: 'visible', visible })
+    if (!visible) return
+    if (this.ws && this.ws.readyState <= WebSocket.OPEN) return
+    if (this.phase.kind === 'auth' || this.phase.kind === 'version') return
     this.attempt = 0
     this.clearTimers()
     this.connect()
   }
-
-  /** 用户手动输入配对码。 */
-  pair(code: string): void {
-    this.pairCode = code.trim()
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.sendPair()
-    else {
-      this.attempt = 0
-      this.clearTimers()
-      this.connect()
-    }
-  }
-
-  private sendPair(): void {
-    if (this.pairCode) this.send({ t: 'pair', v: WEB_PROTOCOL_VERSION, code: this.pairCode, name: deviceName() })
-  }
-
-  // ───────── 请求 ─────────
-
-  refresh(): void {
-    this.send({ t: 'refresh' })
-  }
-
-  history(sid: string, before?: number): void {
-    this.send({ t: 'history', sid, before })
-  }
-
-  stopTurn(sid: string): void {
-    this.send({ t: 'stop', sid })
-  }
-
-  sendText(sid: string, text: string): Promise<{ ok: boolean; message?: string }> {
-    const cid = `c${++this.seq}`
-    return this.request(cid, { t: 'send', sid, text, cid }) as Promise<{ ok: boolean; message?: string }>
-  }
-
-  newSession(personaId?: string): Promise<{ sid?: string; error?: string }> {
-    const rid = `r${++this.seq}`
-    return this.request(rid, { t: 'new', rid, personaId }) as Promise<{ sid?: string; error?: string }>
-  }
-
-  action(key: string, value: ActionValue, form?: Record<string, string | string[]>): Promise<{ ok: boolean; message: string }> {
-    const rid = `a${++this.seq}`
-    return this.request(rid, { t: 'action', rid, key, value, form }) as Promise<{ ok: boolean; message: string }>
-  }
-
-  private request(id: string, frame: WebClientFrame): Promise<unknown> {
-    return new Promise((resolve) => {
-      const timer = window.setTimeout(() => {
-        this.pending.delete(id)
-        resolve({ ok: false, error: t('timeout'), message: t('timeout') })
-      }, REQUEST_TIMEOUT_MS)
-      this.pending.set(id, { resolve, timer })
-      if (!this.send(frame)) {
-        window.clearTimeout(timer)
-        this.pending.delete(id)
-        resolve({ ok: false, error: t('notConnected'), message: t('notConnected') })
-      }
-    })
-  }
-
-  private settle(id: string, value: unknown): void {
-    const p = this.pending.get(id)
-    if (!p) return
-    this.pending.delete(id)
-    window.clearTimeout(p.timer)
-    p.resolve(value)
-  }
-
-  private send(f: WebClientFrame): boolean {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false
-    this.ws.send(JSON.stringify(f))
-    return true
-  }
-
-  // ───────── 连接 ─────────
 
   private clearTimers(): void {
     if (this.timer !== null) window.clearTimeout(this.timer)
@@ -218,40 +136,40 @@ export class Link {
   private connect(): void {
     if (this.closed) return
     this.ws?.close()
-    this.ev.onState({ kind: 'connecting' })
+    this.channel = null
+    if (this.phase.kind !== 'offline') this.setPhase({ kind: 'connecting', step: 0 })
     let ws: WebSocket
     try {
       ws = new WebSocket(this.url())
-    } catch (e) {
-      this.ev.onState({ kind: 'error', message: (e as Error).message })
+    } catch {
       return this.scheduleReconnect()
     }
     this.ws = ws
     ws.onopen = () => {
       if (this.ws !== ws) return
-      this.attempt = 0
-      const token = this.token
-      if (token) this.send({ t: 'hello', v: WEB_PROTOCOL_VERSION, token })
-      else if (this.pairCode) this.sendPair()
-      else this.ev.onState({ kind: 'pair' })
-      this.ping = window.setInterval(() => this.send({ t: 'ping' }), PING_EVERY_MS)
+      const a = this.auth
+      this.hi = phoneHello(a.kind, a.kind === 'resume' ? a.device : a.id)
+      ws.send(JSON.stringify(this.hi.hi))
+      this.ping = window.setInterval(() => ws.readyState === WebSocket.OPEN && ws.send('{"t":"ping"}'), PING_EVERY_MS)
     }
     ws.onmessage = (e) => {
       if (this.ws !== ws || typeof e.data !== 'string') return
-      let f: WebServerFrame
+      let f: WebPlainServerFrame
       try {
-        f = JSON.parse(e.data) as WebServerFrame
+        f = JSON.parse(e.data) as WebPlainServerFrame
       } catch {
         return
       }
-      this.onFrame(f)
+      this.onPlain(f)
     }
     ws.onclose = () => {
       if (this.ws !== ws) return
       this.ws = null
+      this.channel = null
       if (this.ping !== null) window.clearInterval(this.ping)
       this.ping = null
-      if (this.closed) return
+      for (const w of [...this.waiters]) this.settle(w, null)
+      if (this.closed || this.phase.kind === 'auth' || this.phase.kind === 'version') return
       this.scheduleReconnect()
     }
     ws.onerror = () => undefined
@@ -259,10 +177,9 @@ export class Link {
 
   private scheduleReconnect(): void {
     if (this.closed || this.timer !== null) return
-    // 没有 token 又没有配对码：等用户输入，不空转重连。
-    if (!this.token && !this.pairCode) return
-    if (!this.offline) this.ev.onState({ kind: 'connecting' })
-    const delay = this.offline ? 5000 : Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** Math.min(this.attempt, 4))
+    const offline = this.phase.kind === 'offline'
+    if (!offline) this.setPhase({ kind: 'connecting', step: 0 })
+    const delay = offline ? OFFLINE_RETRY_MS : Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** Math.min(this.attempt, 4))
     this.attempt++
     this.timer = window.setTimeout(() => {
       this.timer = null
@@ -270,151 +187,264 @@ export class Link {
     }, delay)
   }
 
-  private onFrame(f: WebServerFrame): void {
+  private onPlain(f: WebPlainServerFrame): void {
     switch (f.t) {
-      case 'ok':
-        this.offline = false
-        this.pairCode = null
-        this.ev.onHello({ user: f.user, bot: f.bot, sessions: f.sessions, prompts: f.prompts })
-        if (f.personas.length) this.ev.onPersonas(f.personas)
-        this.ev.onState({ kind: 'ready' })
-        return
-      case 'paired':
-        this.token = f.token
-        this.pairCode = null
-        this.send({ t: 'hello', v: WEB_PROTOCOL_VERSION, token: f.token })
-        return
-      case 'err':
-        if (f.code === 'unauthorized') {
-          this.token = null
-          if (this.pairCode) this.sendPair()
-          else this.ev.onState({ kind: 'pair' })
-        } else if (f.code === 'pair') {
-          this.pairCode = null
-          this.ev.onState({ kind: 'pair', message: f.message })
-        } else if (f.code === 'version') this.ev.onState({ kind: 'error', message: f.message })
-        return
-      case 'offline':
-        this.offline = true
-        this.ev.onState({ kind: 'offline' })
-        return
-      case 'sessions':
-        return this.ev.onSessions(f.list)
-      case 'session':
-        return this.ev.onSession(f.s)
-      case 'session_gone':
-        return this.ev.onSessionGone(f.sid)
-      case 'personas':
-        return this.ev.onPersonas(f.list)
-      case 'history':
-        return this.ev.onHistory(f.sid, f.messages, f.start, f.total)
-      case 'prompt':
-        return this.ev.onPrompt(f.p)
-      case 'notice':
-        return this.ev.onNotice(f.n)
-      case 'sent':
-        return this.settle(f.cid, { ok: f.ok, message: f.message })
-      case 'created':
-        return this.settle(f.rid, { sid: f.sid, error: f.error })
-      case 'result':
-        return this.settle(f.rid, { ok: f.ok, message: f.message })
       case 'pong':
         return
+      case 'offline':
+        return this.setPhase({ kind: 'offline' })
+      case 'err':
+        if (f.code === 'version') return this.setPhase({ kind: 'version', message: f.message })
+        if (f.code === 'auth')
+          return this.setPhase({ kind: 'auth', message: f.message, removed: !!f.removed, pairing: this.auth.kind !== 'resume' })
+        return
+      case 'hi': {
+        if (!this.hi || this.channel) return this.ws?.close()
+        const a = this.auth
+        const secret = a.kind === 'resume' ? a.key : a.secret
+        const ch = phoneFinish(this.hi.hi, this.hi.priv, secret, f)
+        if (!ch) {
+          // 对面不知道密钥：不是我们的电脑（或中转在捣乱）。按凭证失效处理。
+          return this.setPhase({
+            kind: 'auth',
+            message: a.kind === 'resume' ? t('removedLead') : t('welcomeLead'),
+            removed: a.kind === 'resume',
+            pairing: a.kind !== 'resume'
+          })
+        }
+        this.channel = ch
+        this.setPhase({ kind: 'connecting', step: 1 })
+        const standalone =
+          window.matchMedia?.('(display-mode: standalone)').matches || (navigator as { standalone?: boolean }).standalone === true
+        this.send({ t: 'hello', v: WEB_PROTOCOL_VERSION, name: this.deviceName, kind: standalone ? 'standalone' : 'browser' })
+        return
+      }
+      case 'x': {
+        const payload = this.channel?.open(f) as WebServerFrame | undefined
+        if (!payload) return this.ws?.close()
+        this.onFrame(payload)
+        return
+      }
     }
+  }
+
+  private onFrame(f: WebServerFrame): void {
+    switch (f.t) {
+      case 'paired':
+        // 之后的重连改用设备密钥。
+        {
+          const key = b64uDecode(f.key)
+          if (key) this.auth = { kind: 'resume', device: f.device, key }
+          this.ev.onPaired(f.device, f.key)
+        }
+        return
+      case 'ok':
+        this.attempt = 0
+        this.setPhase({ kind: 'connecting', step: 2 })
+        this.ev.onFrame(f)
+        this.setPhase({ kind: 'ready' })
+        if (document.visibilityState !== 'visible') this.send({ t: 'visible', visible: false })
+        return
+      case 'removed':
+        this.setPhase({ kind: 'auth', message: t('removedLead'), removed: true, pairing: false })
+        this.ws?.close()
+        return
+      case 'file_chunk': {
+        const c = this.chunks.get(f.rid)
+        if (!c) return
+        const bytes = b64uDecode(f.data)
+        if (!bytes || f.seq !== c.parts.length) {
+          this.chunks.delete(f.rid)
+          return
+        }
+        c.parts.push(bytes)
+        c.got += bytes.length
+        c.onProgress?.(c.total ? c.got / c.total : 0)
+        break
+      }
+      default:
+        break
+    }
+    for (const w of [...this.waiters]) if (w.match(f)) this.settle(w, f)
+    this.ev.onFrame(f)
+  }
+
+  private settle(w: Waiter, f: WebServerFrame | null): void {
+    if (!this.waiters.delete(w)) return
+    window.clearTimeout(w.timer)
+    w.resolve(f)
+  }
+
+  /** 等一帧（超时 / 断线返回 null）。 */
+  private wait(match: (f: WebServerFrame) => boolean, ms = REQUEST_TIMEOUT_MS): Promise<WebServerFrame | null> {
+    return new Promise((resolve) => {
+      const w: Waiter = { match, resolve, timer: 0 }
+      w.timer = window.setTimeout(() => this.settle(w, null), ms)
+      this.waiters.add(w)
+    })
+  }
+
+  send(f: WebClientFrame): boolean {
+    const ws = this.ws
+    const ch = this.channel
+    if (!ws || ws.readyState !== WebSocket.OPEN || !ch) return false
+    ws.send(JSON.stringify(ch.seal(f)))
+    return true
+  }
+
+  private id(prefix: string): string {
+    return `${prefix}${Date.now().toString(36)}${(++this.seq).toString(36)}`
+  }
+
+  // ───────── 请求 ─────────
+
+  refresh(): void {
+    this.send({ t: 'refresh' })
+  }
+
+  /** 历史：缺省取最新一页；before = 往前翻一页；from = 补拉从这条到最后。 */
+  history(sid: string, opts: { before?: number; from?: number } = {}): void {
+    this.send({ t: 'history', sid, before: opts.before, from: opts.from })
+  }
+
+  /** 可选的模型列表（取不到返回 null）。 */
+  async models(): Promise<WebModel[] | null> {
+    const rid = this.id('m')
+    const r = this.wait((f) => f.t === 'models' && f.rid === rid)
+    if (!this.send({ t: 'models', rid })) return null
+    const f = await r
+    return f && f.t === 'models' ? f.list : null
+  }
+
+  stopTurn(sid: string): void {
+    this.send({ t: 'stop', sid })
+  }
+
+  async sendText(sid: string, text: string, files?: string[]): Promise<{ ok: boolean; message?: string }> {
+    const cid = this.id('c')
+    const r = this.wait((f) => f.t === 'sent' && f.cid === cid)
+    if (!this.send({ t: 'send', sid, text, cid, files: files?.length ? files : undefined })) return { ok: false, message: t('notConnected') }
+    const f = await r
+    return f && f.t === 'sent' ? { ok: f.ok, message: f.message } : { ok: false, message: t('timeout') }
+  }
+
+  async newSession(personaId?: string): Promise<{ sid?: string; error?: string }> {
+    const rid = this.id('r')
+    const r = this.wait((f) => f.t === 'created' && f.rid === rid)
+    if (!this.send({ t: 'new', rid, personaId })) return { error: t('notConnected') }
+    const f = await r
+    return f && f.t === 'created' ? { sid: f.sid, error: f.error } : { error: t('timeout') }
+  }
+
+  async result(frame: (rid: string) => WebClientFrame): Promise<{ ok: boolean; message: string }> {
+    const rid = this.id('a')
+    const r = this.wait((f) => f.t === 'result' && f.rid === rid)
+    if (!this.send(frame(rid))) return { ok: false, message: t('notConnected') }
+    const f = await r
+    return f && f.t === 'result' ? { ok: f.ok, message: f.message } : { ok: false, message: t('timeout') }
+  }
+
+  async installTicket(): Promise<string | null> {
+    const rid = this.id('i')
+    const r = this.wait((f) => f.t === 'install' && f.rid === rid)
+    if (!this.send({ t: 'install', rid })) return null
+    const f = await r
+    return f && f.t === 'install' ? f.ticket : null
+  }
+
+  setPush(sub: WebPushSub | null): Promise<{ ok: boolean; message: string }> {
+    return this.result((rid) => ({ t: 'push', rid, sub }))
+  }
+
+  async image(sid: string, ref: string): Promise<string | null> {
+    const rid = this.id('g')
+    const r = this.wait((f) => f.t === 'image' && f.rid === rid)
+    if (!this.send({ t: 'image', rid, sid, ref })) return null
+    const f = await r
+    return f && f.t === 'image' ? f.uri : null
+  }
+
+  /** 取交付文件：文字直接返回；字节分块收齐后拼成 Blob。 */
+  async file(sid: string, tool: string, index: number, onProgress?: (p: number) => void): Promise<FileResult> {
+    const rid = this.id('f')
+    const head = this.wait((f) => f.t === 'file' && f.rid === rid, 30_000)
+    this.chunks.set(rid, { parts: [], total: 0, got: 0, onProgress })
+    if (!this.send({ t: 'file', rid, sid, tool, index })) {
+      this.chunks.delete(rid)
+      return { ok: false, message: t('notConnected') }
+    }
+    const h = await head
+    if (!h || h.t !== 'file') {
+      this.chunks.delete(rid)
+      return { ok: false, message: t('timeout') }
+    }
+    if (!h.ok || !h.chunks) {
+      this.chunks.delete(rid)
+      return { ok: h.ok, message: h.message, name: h.name, size: h.size, mime: h.mime, kind: h.kind, text: h.text, truncated: h.truncated }
+    }
+    const c = this.chunks.get(rid)!
+    c.total = h.size ?? 0
+    // 块之间留足时间（慢网络上 30 MB 也能取完），超过 30 秒没有新块算失败。
+    while (c.parts.length < h.chunks) {
+      const before = c.parts.length
+      await this.wait((f) => f.t === 'file_chunk' && f.rid === rid, 30_000)
+      if (c.parts.length === before) {
+        this.chunks.delete(rid)
+        return { ok: false, message: t('timeout') }
+      }
+    }
+    this.chunks.delete(rid)
+    return {
+      ok: true,
+      name: h.name,
+      size: h.size,
+      mime: h.mime,
+      kind: h.kind,
+      blob: new Blob(c.parts as BlobPart[], { type: h.mime || 'application/octet-stream' })
+    }
+  }
+
+  /** 上传：begin → 等 ready → 分块（按发送缓冲节流）→ end → 等 done。成功返回上传 id。 */
+  async upload(blob: Blob, name: string, onProgress: (p: number) => void, signal?: AbortSignal): Promise<{ uid?: string; message?: string }> {
+    const uid = this.id('u')
+    const ready = this.wait((f) => f.t === 'upload' && f.uid === uid)
+    if (!this.send({ t: 'up_begin', uid, name, size: blob.size, mime: blob.type })) return { message: t('notConnected') }
+    const r = await ready
+    if (!r || r.t !== 'upload' || r.state !== 'ready') return { message: r && r.t === 'upload' ? r.message : t('timeout') }
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    let seq = 0
+    for (let off = 0; off < bytes.length; off += FILE_CHUNK_BYTES) {
+      if (signal?.aborted) {
+        this.send({ t: 'up_cancel', uid })
+        return { message: t('cancel') }
+      }
+      while (this.ws && this.ws.bufferedAmount > BUFFER_HIGH) await new Promise((res) => setTimeout(res, 50))
+      if (!this.send({ t: 'up_chunk', uid, seq: seq++, data: b64uEncode(bytes.subarray(off, off + FILE_CHUNK_BYTES)) }))
+        return { message: t('notConnected') }
+      onProgress(Math.min(1, (off + FILE_CHUNK_BYTES) / Math.max(1, bytes.length)))
+      // 让出主线程：加密与 base64 都在这里做，大文件别把界面卡住。
+      await new Promise((res) => setTimeout(res, 0))
+    }
+    const done = this.wait((f) => f.t === 'upload' && f.uid === uid && f.state !== 'ready', 60_000)
+    if (!this.send({ t: 'up_end', uid })) return { message: t('notConnected') }
+    const d = await done
+    if (d && d.t === 'upload' && d.state === 'done') return { uid }
+    return { message: d && d.t === 'upload' ? d.message : t('timeout') }
   }
 }
 
-/** 配对时报给电脑端的设备名（面板「可以使用的账号」里显示）。 */
+/** 配对时报给电脑端的设备名（电脑上「已连接的手机」里显示）。 */
 export function deviceName(): string {
   const ua = navigator.userAgent
   if (/iPhone/.test(ua)) return 'iPhone'
   if (/iPad/.test(ua)) return 'iPad'
-  if (/Android/.test(ua)) return 'Android'
-  if (/Macintosh/.test(ua)) return 'Mac'
-  if (/Windows/.test(ua)) return 'Windows'
+  if (/Android/.test(ua)) {
+    // 例：Mozilla/5.0 (Linux; Android 14; 23013RK75C Build/…) → 23013RK75C 不好认，统一叫 Android 手机。
+    return 'Android'
+  }
+  // 电脑上用浏览器打开网页版（不方便扫码时的「在浏览器中打开」）。
+  if (/Macintosh/.test(ua)) return isEn ? 'Mac browser' : 'Mac 浏览器'
+  if (/Windows/.test(ua)) return isEn ? 'Windows browser' : 'Windows 浏览器'
+  if (/Linux/.test(ua)) return isEn ? 'Linux browser' : 'Linux 浏览器'
   return t('phone')
-}
-
-// ───────── 极简文案（界面壳子两种语言；对话内容由电脑端生成，与其界面语言一致）─────────
-
-const EN = /^en\b/i.test(navigator.language)
-
-const STR = {
-  phone: ['手机', 'Phone'],
-  timeout: ['操作超时，请重试。', 'Timed out, please try again.'],
-  notConnected: ['尚未连接到电脑。', 'Not connected to the computer.'],
-  connecting: ['连接中…', 'Connecting…'],
-  ready: ['已连接', 'Connected'],
-  offline: ['电脑上的 Deva 不在线', 'Deva on the computer is offline'],
-  offlineHint: ['请确认电脑上的 Deva 正在运行并已连上中转，连上后这里会自动恢复。', 'Make sure Deva is running on the computer and connected to the relay. This page reconnects automatically.'],
-  disconnected: ['连接断开，正在重连…', 'Disconnected, reconnecting…'],
-  pairTitle: ['连接到电脑上的 Deva', 'Connect to Deva on your computer'],
-  pairLead: ['在电脑端 Deva 的「机器人」面板里点「显示二维码」，用手机扫码；或把二维码下方的配对码输入在这里。', 'Open the Bots panel in Deva on your computer, tap “Show QR code” and scan it, or type the pairing code shown under it here.'],
-  pairPlaceholder: ['6 位配对码', '6-digit code'],
-  pairSubmit: ['连接', 'Connect'],
-  tabChats: ['对话', 'Chats'],
-  tabContacts: ['角色', 'Personas'],
-  tabMe: ['我', 'Me'],
-  search: ['搜索', 'Search'],
-  newChat: ['新对话', 'New chat'],
-  pickPersona: ['选一个角色', 'Pick a persona'],
-  chatsEmpty: ['还没有对话。点右上角 + 开始。', 'No chats yet. Tap + to start one.'],
-  noResult: ['没有匹配的结果', 'No matches'],
-  busy: ['处理中', 'Working'],
-  waiting: ['等你决定', 'Needs you'],
-  me: ['我：', 'Me: '],
-  task: ['定时任务', 'Scheduled task'],
-  tasks: ['定时任务', 'Scheduled tasks'],
-  disabled: ['已停用', 'Disabled'],
-  model: ['模型', 'Model'],
-  followDefault: ['跟随默认', 'Default'],
-  workspace: ['工作区', 'Workspace'],
-  noWorkspace: ['未挂载', 'Not mounted'],
-  recentChats: ['最近对话', 'Recent chats'],
-  allChats: ['全部对话', 'All chats'],
-  message: ['发消息', 'Message'],
-  continueLast: ['继续上一个', 'Continue last'],
-  avatarCustom: ['头像：你上传的图片', 'Avatar: your uploaded image'],
-  avatarAuto: ['头像：自动生成', 'Avatar: generated'],
-  composer: ['发消息…', 'Message…'],
-  composerBusy: ['发消息，会插到这一轮里…', 'Message (inserted into this turn)…'],
-  send: ['发送', 'Send'],
-  stop: ['停止', 'Stop'],
-  loadMore: ['查看更早的消息', 'Load earlier messages'],
-  chatEmpty: ['还没有消息，发一条开始吧。', 'No messages yet. Say something.'],
-  idle: ['空闲', 'Idle'],
-  submit: ['提交', 'Submit'],
-  other: ['其他 / 补充说明', 'Other / notes'],
-  freeText: ['在此输入答案', 'Type your answer'],
-  required: ['必答', 'Required'],
-  optional: ['可跳过', 'Optional'],
-  multi: ['可多选', 'Multiple'],
-  expand: ['展开', 'Expand'],
-  collapse: ['收起', 'Collapse'],
-  errorTitle: ['出错了', 'Something went wrong'],
-  computer: ['电脑', 'Computer'],
-  viaLan: ['内网直连', 'Local network'],
-  viaRelay: ['经中转', 'Via relay'],
-  thisPhone: ['这台手机', 'This phone'],
-  pairedAs: ['在电脑上显示为', 'Shown on the computer as'],
-  notifications: ['通知', 'Notifications'],
-  notifHint: ['回复完成、需要你决定时提醒', 'Alert when a reply finishes or needs you'],
-  notifNeedHttps: ['浏览器要求 HTTPS 才能通知；经中转访问时可用', 'Browser notifications need HTTPS; available via relay'],
-  notifDenied: ['已被浏览器拒绝，请在浏览器设置里允许', 'Blocked by the browser; allow it in browser settings'],
-  addToHome: ['添加到主屏幕', 'Add to home screen'],
-  addToHomeHint: ['像 App 一样打开', 'Open it like an app'],
-  addToHomeIos: ['Safari 分享菜单 → 添加到主屏幕', 'Safari share menu → Add to Home Screen'],
-  addToHomeAndroid: ['浏览器菜单 → 添加到主屏幕 / 安装应用', 'Browser menu → Add to Home screen / Install app'],
-  disconnect: ['断开这台手机', 'Disconnect this phone'],
-  disconnectHint: ['需要重新扫码才能再连', 'Scan again to reconnect'],
-  version: ['协议版本', 'Protocol'],
-  yesterday: ['昨天', 'Yesterday'],
-  inserted: ['已插入', 'Inserted'],
-  noticeOpen: ['查看', 'Open']
-} as const
-
-export type StrKey = keyof typeof STR
-
-export function t(key: StrKey): string {
-  return STR[key][EN ? 1 : 0]
 }

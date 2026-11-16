@@ -14,7 +14,10 @@
     "typecheck": "pnpm --filter @deva/desktop typecheck",
     "package:win": "pnpm --filter @deva/desktop build:win",
     "package:mac": "pnpm --filter @deva/desktop build:mac",
-    "package:linux": "pnpm --filter @deva/desktop build:linux"
+    "package:linux": "pnpm --filter @deva/desktop build:linux",
+    "relay:login": "pnpm --filter @deva/relay exec wrangler login --device",
+    "relay:deploy": "pnpm --filter @deva/desktop build:mobile && pnpm --filter @deva/relay run deploy",
+    "relay:dev": "pnpm --filter @deva/desktop build:mobile && pnpm --filter @deva/relay run dev"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
