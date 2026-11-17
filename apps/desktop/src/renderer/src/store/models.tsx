@@ -51,7 +51,7 @@ interface ModelsContextValue {
    * 不改 kind（保持自定义）与 enabled（是否启用交由用户），也不动密钥。
    */
   applyPreset: (providerId: string, preset: Provider) => void
-  /** 删除服务商（含其密钥、悬空默认模型的清理）。 */
+  /** 删除服务商（含其密钥、悬空默认模型的清理）；官方预置恢复为初始状态而不移出清单。 */
   removeProvider: (id: string) => void
   // 密钥（安全存储，不回显明文）
   hasKey: (providerId: string) => boolean
@@ -111,10 +111,13 @@ function normalizeProvider(raw: unknown): Provider | null {
   } as Provider
 }
 
+/** 种子服务商的独立副本（模型深拷贝、purpose 落定）：初始清单与删除官方服务商时的复位共用。 */
+function freshSeed(p: Provider): Provider {
+  return { ...p, purpose: p.purpose ?? 'llm', models: p.models.map((mm) => ({ ...mm })) }
+}
+
 export function ModelsProvider({ children }: { children: ReactNode }): React.JSX.Element {
-  const [providers, setProviders] = useState<Provider[]>(() =>
-    seedProviders.map((p) => ({ ...p, purpose: p.purpose ?? 'llm', models: p.models.map((mm) => ({ ...mm })) }))
-  )
+  const [providers, setProviders] = useState<Provider[]>(() => seedProviders.map(freshSeed))
   const [selectedProviderId, setSelectedProviderId] = useState<string>(seedProviders[0].id)
   // 不内置默认模型，也不设显式「默认」入口：新用户首次在对话输入框选择模型后即记为「最近使用」，
   // 之后新对话默认沿用它（在此之前对话顶部显示「选择模型」）。
@@ -262,12 +265,19 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
       removeProvider: (id) => {
         // 一并清理密钥、选中项与悬空默认模型；密钥删除交主进程（明文不经渲染层）
         void window.deva.secrets.delete(id)
-        setProviders((list) => list.filter((p) => p.id !== id))
-        setSelectedProviderId((cur) => {
-          if (cur !== id) return cur
-          const remaining = providers.filter((p) => p.id !== id)
-          return remaining[0]?.id ?? ''
-        })
+        // 官方预置不移出清单，而是恢复为初始状态（未启用、预置模型）：没了密钥又未启用，设置页列表即不再显示，
+        // 对话区的接入引导仍能再选它。移出清单的话，引导卡里要到重启、载入时从种子补回才有它。
+        const seed = seedProviders.find((p) => p.id === id)
+        if (seed) {
+          setProviders((list) => list.map((p) => (p.id === id ? freshSeed(seed) : p)))
+        } else {
+          setProviders((list) => list.filter((p) => p.id !== id))
+          setSelectedProviderId((cur) => {
+            if (cur !== id) return cur
+            const remaining = providers.filter((p) => p.id !== id)
+            return remaining[0]?.id ?? ''
+          })
+        }
         setActiveModelId((cur) => (cur && cur.split(':')[0] === id ? null : cur))
         setKeyStatus((s) => {
           const next = { ...s }
