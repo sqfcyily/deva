@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, Download, FileText, ImageIcon } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, FileText, Folder } from 'lucide-react'
 import type { WebDelivered } from '../shared/remote-web'
 import type { Store } from './App'
 import { Markdown } from './cards'
@@ -41,6 +41,25 @@ export function FileTile({ name }: { name: string }): React.JSX.Element {
   return (
     <span className="file__ic" style={{ background: EXT_COLOR[ext] ?? 'var(--ft-text)' }} aria-hidden>
       {ext ? ext.toUpperCase().slice(0, 4) : <FileText size={18} />}
+    </span>
+  )
+}
+
+/**
+ * 你发的消息里的文件附件：文件类型图标 + 文件名，图标同输入框上方待发送的附件。
+ * 图片附件另有缩略图（AttachmentThumb），不走这里。
+ */
+export function AttachmentCard({ name, kind }: { name: string; kind?: string }): React.JSX.Element {
+  return (
+    <span className="att">
+      {kind === 'folder' ? (
+        <span className="file__ic att__folder" aria-hidden>
+          <Folder size={17} />
+        </span>
+      ) : (
+        <FileTile name={name} />
+      )}
+      <b className="att__k">{name}</b>
     </span>
   )
 }
@@ -193,13 +212,7 @@ export function AttachmentThumb({ store, sid, refId, name }: { store: Store; sid
       alive = false
     }
   }, [uri, store.link, store.ready, sid, refId, key])
-  if (!uri)
-    return (
-      <span className="att att--img">
-        <ImageIcon size={16} />
-        {name}
-      </span>
-    )
+  if (!uri) return <AttachmentCard name={name} />
   return (
     <>
       <button className="thumb" onClick={() => setBig(true)}>

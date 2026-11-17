@@ -62,6 +62,9 @@ const HANDSHAKE_TIMEOUT_MS = 15_000
 const PROBE_MS = 6000
 /** WebSocket 发送缓冲超过这么多时先等一等（上传大文件时）。 */
 const BUFFER_HIGH = 1024 * 1024
+/** 上传：等连上电脑最多这么久；连接断了最多从头传这么多次。 */
+const UPLOAD_WAIT_MS = 20_000
+const UPLOAD_TRIES = 3
 
 type Waiter = { match: (f: WebServerFrame) => boolean; resolve: (f: WebServerFrame | null) => void; timer: number }
 
@@ -501,13 +504,45 @@ export class Link {
     }
   }
 
-  /** 上传：begin → 等 ready → 分块（按发送缓冲节流）→ end → 等 done。成功返回上传 id。 */
+  /** 等连上电脑（已连上立即返回）。等不到、凭证失效、已停止或被取消返回 false。 */
+  private async whenReady(ms: number, signal?: AbortSignal): Promise<boolean> {
+    const until = Date.now() + ms
+    while (!this.ready) {
+      if (this.closed || signal?.aborted || this.phase.kind === 'auth' || this.phase.kind === 'version' || Date.now() > until) return false
+      await new Promise((res) => setTimeout(res, 150))
+    }
+    return true
+  }
+
+  /**
+   * 上传。选文件 / 拍照时页面被系统的选择器盖住、退到后台，回来时连接常常已断或正在重连：先等连上再传，
+   * 传到一半断了就等重连后从头再传一次（电脑端按 uid 记，每次用新的 uid），不直接报「还没连上电脑」。
+   */
   async upload(blob: Blob, name: string, onProgress: (p: number) => void, signal?: AbortSignal): Promise<{ uid?: string; message?: string }> {
+    let last: { uid?: string; message?: string } = { message: t('notConnected') }
+    for (let i = 0; i < UPLOAD_TRIES; i++) {
+      if (!(await this.whenReady(UPLOAD_WAIT_MS, signal))) return signal?.aborted ? { message: t('cancel') } : last
+      onProgress(0)
+      const r = await this.uploadOnce(blob, name, onProgress, signal)
+      if (!r.lost || signal?.aborted) return r
+      last = r
+    }
+    return last
+  }
+
+  /** 传一次：begin → 等 ready → 分块（按发送缓冲节流）→ end → 等 done。成功返回上传 id；lost = 连接断了（可重传）。 */
+  private async uploadOnce(
+    blob: Blob,
+    name: string,
+    onProgress: (p: number) => void,
+    signal?: AbortSignal
+  ): Promise<{ uid?: string; message?: string; lost?: boolean }> {
     const uid = this.id('u')
     const ready = this.wait((f) => f.t === 'upload' && f.uid === uid)
-    if (!this.send({ t: 'up_begin', uid, name, size: blob.size, mime: blob.type })) return { message: t('notConnected') }
+    if (!this.send({ t: 'up_begin', uid, name, size: blob.size, mime: blob.type })) return { message: t('notConnected'), lost: true }
     const r = await ready
-    if (!r || r.t !== 'upload' || r.state !== 'ready') return { message: r && r.t === 'upload' ? r.message : t('timeout') }
+    if (!r || r.t !== 'upload') return { message: t('timeout'), lost: true }
+    if (r.state !== 'ready') return { message: r.message }
     const bytes = new Uint8Array(await blob.arrayBuffer())
     let seq = 0
     for (let off = 0; off < bytes.length; off += FILE_CHUNK_BYTES) {
@@ -517,16 +552,16 @@ export class Link {
       }
       while (this.ws && this.ws.bufferedAmount > BUFFER_HIGH) await new Promise((res) => setTimeout(res, 50))
       if (!this.send({ t: 'up_chunk', uid, seq: seq++, data: b64uEncode(bytes.subarray(off, off + FILE_CHUNK_BYTES)) }))
-        return { message: t('notConnected') }
+        return { message: t('notConnected'), lost: true }
       onProgress(Math.min(1, (off + FILE_CHUNK_BYTES) / Math.max(1, bytes.length)))
       // 让出主线程：加密与 base64 都在这里做，大文件别把界面卡住。
       await new Promise((res) => setTimeout(res, 0))
     }
     const done = this.wait((f) => f.t === 'upload' && f.uid === uid && f.state !== 'ready', 60_000)
-    if (!this.send({ t: 'up_end', uid })) return { message: t('notConnected') }
+    if (!this.send({ t: 'up_end', uid })) return { message: t('notConnected'), lost: true }
     const d = await done
     if (d && d.t === 'upload' && d.state === 'done') return { uid }
-    return { message: d && d.t === 'upload' ? d.message : t('timeout') }
+    return d && d.t === 'upload' ? { message: d.message } : { message: t('timeout'), lost: true }
   }
 }
 

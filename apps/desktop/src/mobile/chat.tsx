@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlarmClock, ChevronLeft, MoreHorizontal } from 'lucide-react'
 import type { WebDelivered, WebMessage, WebPart, WebPersona } from '../shared/remote-web'
 import type { Store } from './App'
@@ -6,7 +6,7 @@ import { Avatar, MemberFace, SessionFace } from './avatar'
 import { Markdown } from './cards'
 import { ChatMenu } from './chat-menu'
 import { Composer } from './composer'
-import { AttachmentThumb, FileCard } from './files'
+import { AttachmentCard, AttachmentThumb, FileCard } from './files'
 import { MemberAsks } from './member-asks'
 import { LinkStatus } from './onboard'
 import type { Outgoing } from './outbox'
@@ -77,7 +77,8 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
   }, [enterFrom, history, last])
 
   // 往前翻页后保持视线位置；在底部时新内容到达跟到底（刚进来、或落下超过一屏时直接到底）。
-  useEffect(() => {
+  // 在画出来之前就调好位置：不然刚进来会先画出最上面那几条、下一帧才跳到底。
+  useLayoutEffect(() => {
     const el = listRef.current
     if (!el) return
     const p = prevTop.current
@@ -144,6 +145,14 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
       <div className="scroll msgs" ref={listRef} onScroll={onScroll} onTouchStart={takeOver} onWheel={takeOver}>
         {history && history.start > 0 && <div className="msgs__more">{ready ? <span className="spin" /> : t('loadMore')}</div>}
         {empty && <div className="empty">{t('chatEmpty')}</div>}
+        {/* 本机没有缓存、电脑的那一页还没到：三个跳动的点占位（稍等片刻才出现，缓存秒到时不闪）；连不上电脑时点停下。 */}
+        {!history && !outgoing.length && (
+          <div className={`msgs__wait${ready ? '' : ' is-stalled'}`} aria-hidden>
+            <i />
+            <i />
+            <i />
+          </div>
+        )}
         {messages.map((m) => {
           if (m.role === 'user') return <UserMessage key={m.id} m={m} store={store} sid={sid} />
           const here = dotsInLast && m === last
@@ -254,9 +263,7 @@ const UserMessage = memo(
         {others.length > 0 && (
           <div className="atts">
             {others.map((a, i) => (
-              <span key={i} className="att">
-                {a.name}
-              </span>
+              <AttachmentCard key={i} name={a.name} kind={a.kind} />
             ))}
           </div>
         )}
@@ -286,9 +293,7 @@ function OutgoingMessage({ o, store }: { o: Outgoing; store: Store }): React.JSX
       {others.length > 0 && (
         <div className="atts">
           {others.map((f) => (
-            <span key={f.uid} className="att">
-              {f.name}
-            </span>
+            <AttachmentCard key={f.uid} name={f.name} />
           ))}
         </div>
       )}

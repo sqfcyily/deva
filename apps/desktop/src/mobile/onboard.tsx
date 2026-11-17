@@ -107,7 +107,7 @@ export function StatePage({
       {lead && <p>{lead}</p>}
       {kind === 'welcome' && (
         <div className="guide">
-          {(['guide1', 'guide2', 'guide3'] as const).map((k, i) => (
+          {(['guide1', 'guide2', canScan ? 'guide3' : 'guide3Sys'] as const).map((k, i) => (
             <div key={k} className="guide__row">
               <span className="guide__n">{i + 1}</span>
               <span>{emphasize(t(k))}</span>
@@ -127,11 +127,14 @@ export function StatePage({
             {t('ok')}
           </button>
         ) : (
-          canScan && (
+          canScan ? (
             <button className="btn btn--primary btn--wide" onClick={onScan}>
               <QrCode size={19} />
               {t('scanNow')}
             </button>
+          ) : (
+            // 二维码失效 / 被移除：说明里只写了去哪扫，这里补一句用什么扫（初始页的第 3 步已经写了）。
+            kind !== 'welcome' && <span className="state__e2e">{t('scanSysHint')}</span>
           )
         )}
         {kind === 'welcome' && (

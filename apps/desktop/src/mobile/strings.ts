@@ -36,6 +36,9 @@ const STR = {
   guide1: ['打开电脑上的 Deva，点左下角的「手机」', 'Open Deva on your computer and click Phone at the bottom left'],
   guide2: ['点 +，添加「Deva 手机版」', 'Click + and add Deva Mobile'],
   guide3: ['用这台手机扫描出现的二维码', 'Scan the QR code that appears with this phone'],
+  // 这个页面调不了相机（局域网地址不是 https、浏览器不支持）：没有「扫码连接」按钮，写明用什么扫。
+  guide3Sys: ['用手机的「相机」或浏览器的「扫一扫」扫描出现的二维码', 'Scan the QR code that appears with your phone’s camera app or your browser’s scanner'],
+  scanSysHint: ['这个页面不能直接扫码，请用手机的相机或浏览器的扫一扫。', 'This page can’t scan directly. Use your phone’s camera app or your browser’s scanner.'],
   e2eNote: ['端到端加密，只有你的手机和电脑能看到对话内容', 'End-to-end encrypted: only your phone and computer can read your chats'],
   connectingTo: ['正在连接 {pc}', 'Connecting to {pc}'],
   expiredTitle: ['二维码已失效', 'This QR code has expired'],
