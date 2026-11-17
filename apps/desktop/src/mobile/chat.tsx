@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, MoreHorizontal } from 'lucide-react'
+import { AlarmClock, ChevronLeft, MoreHorizontal } from 'lucide-react'
 import type { WebDelivered, WebMessage, WebPart, WebPersona } from '../shared/remote-web'
 import type { Store } from './App'
-import { Avatar, SessionFace } from './avatar'
+import { Avatar, MemberFace, SessionFace } from './avatar'
 import { Markdown } from './cards'
 import { ChatMenu } from './chat-menu'
 import { Composer } from './composer'
@@ -120,7 +120,8 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
 
   // 进行中的点接在最后一组回复下面；最后是你发的消息时另起一组；刚处理完的交互卡（末尾的回执）之后接在回执下面。
   // 交互卡还开着时在等你，不显示。
-  const lastIsReply = !outgoing.length && last?.role === 'assistant'
+  // 最后一条是成员 / 定时任务说的话时不算：主角色的点和卡另起一组，不接在别人的头像下面。
+  const lastIsReply = !outgoing.length && last?.role === 'assistant' && !last.from
   const cardOpen = prompts.some((p) => p.view.state === 'open')
   const dotsInLast = typing && lastIsReply && !prompts.length
   const empty = history && history.total === 0 && !busy && !prompts.length && !memberAsks.length && !outgoing.length
@@ -151,6 +152,7 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
               key={m.id}
               m={m}
               persona={persona}
+              personas={store.personas}
               seed={session?.personaId}
               enter={enterFrom !== null && Number(m.id) >= enterFrom}
               onOpen={openFile}
@@ -314,6 +316,7 @@ function OutgoingMessage({ o, store }: { o: Outgoing; store: Store }): React.JSX
 const Reply = memo(function Reply({
   m,
   persona,
+  personas,
   seed,
   enter,
   onOpen,
@@ -323,6 +326,7 @@ const Reply = memo(function Reply({
 }: {
   m: Extract<WebMessage, { role: 'assistant' }>
   persona?: WebPersona
+  personas: Map<string, WebPersona>
   seed?: string
   /** 现在新挂上的气泡要淡入。 */
   enter: boolean
@@ -332,10 +336,24 @@ const Reply = memo(function Reply({
   stalled: boolean
   retry?: string
 }): React.JSX.Element {
+  // 成员交差 / 定时任务告知的那条：是它在说话，画它的头像，气泡上面写它的名字（同电脑端）。
+  const from = m.from
   return (
     <div className="ga">
-      <Avatar persona={persona} seed={seed} size={34} />
+      {!from ? (
+        <Avatar persona={persona} seed={seed} size={34} />
+      ) : from.task ? (
+        <Avatar persona={personas.get(from.personaId ?? 'general')} seed={from.personaId} size={34} />
+      ) : (
+        <MemberFace m={from} personas={personas} size={34} />
+      )}
       <div className="ga__col">
+        {from && (
+          <div className="ga__who">
+            {from.task && <AlarmClock size={12} />}
+            {from.name}
+          </div>
+        )}
         {m.parts.map((p, i) => (
           <Part key={i} p={p} enter={enter} onOpen={onOpen} />
         ))}

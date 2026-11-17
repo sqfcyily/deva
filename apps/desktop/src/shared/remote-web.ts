@@ -145,7 +145,19 @@ export type WebPart = { k: 'text'; text: string } | { k: 'file'; file: WebDelive
  */
 export type WebMessage =
   | { id: string; role: 'user'; text: string; attachments?: WebAttachment[]; notify?: boolean }
-  | { id: string; role: 'assistant'; parts: WebPart[]; durationMs?: number }
+  | { id: string; role: 'assistant'; parts: WebPart[]; durationMs?: number; from?: WebSpeaker }
+
+/**
+ * 这条回复不是主角色说的：成员交差的结论（以成员的身份显示，同电脑端），或绑定的定时任务告知的结果（task）。
+ * id / avatar / personaId 同 WebSession.members（画头像）；任务的 personaId = 任务所用的角色。
+ */
+export interface WebSpeaker {
+  name: string
+  id?: string
+  avatar?: string
+  personaId?: string
+  task?: true
+}
 
 /** 可选的模型（对话页「更多」里切换）。ref = 「服务商 id:模型 id」。 */
 export interface WebModel {

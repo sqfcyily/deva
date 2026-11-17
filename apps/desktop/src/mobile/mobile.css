@@ -334,13 +334,15 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 .ga > .ava { margin-top: 1px; }
 .ga__col { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding-right: 22px; }
 .bb { max-width: 100%; min-width: 0; padding: 9px 13px; border-radius: 18px; background: var(--a-bubble); line-height: 1.6; word-break: break-word; }
-.ga__col > .bb:first-child { border-top-left-radius: 6px; }
+.ga__col > .bb:first-child, .ga__who + .bb { border-top-left-radius: 6px; }
 .bb .md pre { background: var(--bg); }
 .bb .md code { background: color-mix(in srgb, var(--fg) 7%, transparent); }
 .bb .md pre code { background: none; }
 .bb .md th { background: var(--bg); }
 .ga__col .file { width: auto; max-width: 100%; min-width: 240px; margin-top: 0; }
 .ga__meta { padding-left: 4px; font-size: 12px; color: var(--fg-subtle); }
+/* 成员交差 / 定时任务告知的回复：气泡上面写是谁说的。 */
+.ga__who { display: flex; align-items: center; gap: 4px; padding-left: 4px; margin-bottom: -2px; font-size: 12px; color: var(--fg-subtle); }
 .note { font-size: 12.5px; color: var(--fg-subtle); padding-left: 4px; }
 /* 接在一组回复后面（同一列、不出头像）：头像位留空，间距同列内的 6px。 */
 .ga__sp { flex: none; width: 34px; }

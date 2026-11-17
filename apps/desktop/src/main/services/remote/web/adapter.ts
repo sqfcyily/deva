@@ -361,7 +361,7 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     if (!older) conn.viewing = sid
     const end = older ? Math.min(before, all.length) : all.length
     const start = Math.max(0, end - n)
-    const messages = toWebRange(all, start, end, getChatRuntime()?.isBusy(sid) ?? false)
+    const messages = toWebRange(all, start, end, getChatRuntime()?.isBusy(sid) ?? false, sid)
     conn.send({ t: 'history', sid, messages, start, end, total: all.length })
   }
 
@@ -374,7 +374,7 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     if (!to.length) return
     const all = loadDisplay(sid)
     const start = turnStartIndex(all)
-    const messages = toWebRange(all, start, all.length, getChatRuntime()?.isBusy(sid) ?? false)
+    const messages = toWebRange(all, start, all.length, getChatRuntime()?.isBusy(sid) ?? false, sid)
     const frame: WebServerFrame = { t: 'history', sid, messages, start, end: all.length, total: all.length, live: true }
     for (const c of to) c.send(frame)
   }

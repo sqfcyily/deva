@@ -9,8 +9,10 @@ import type {
   WebPart,
   WebPersona,
   WebPromptMember,
-  WebReceipt
+  WebReceipt,
+  WebSpeaker
 } from '../../../../shared/remote-web'
+import { listTasks } from '../../tasks'
 import type { ContentPart } from '../../../providers/types'
 import { getSession, type ChatSessionMeta, type StoredSession } from '../../chat-store'
 import type { MemberRef } from '../../members'
@@ -106,10 +108,50 @@ export function toWebMessages(m: DisplayMessage, index: number, running = false)
 }
 
 /** 展示投影 [start, end) → 手机端消息。running = 对话正在进行（投影的最后一条就是进行中的那一轮）。 */
-export function toWebRange(all: DisplayMessage[], start: number, end: number, running: boolean): WebMessage[] {
+export function toWebRange(all: DisplayMessage[], start: number, end: number, running: boolean, sid?: string): WebMessage[] {
   const out: WebMessage[] = []
-  for (let i = start; i < end; i++) out.push(...toWebMessages(all[i], i, running && i === all.length - 1))
+  for (let i = start; i < end; i++) {
+    const report = sid ? reportOf(all, i, sid) : undefined
+    const list = toWebMessages(report?.msg ?? all[i], i, running && i === all.length - 1)
+    if (report) for (const m of list) if (m.role === 'assistant') m.from = report.from
+    out.push(...list)
+  }
   return out
+}
+
+/**
+ * 成员交差的回复（同电脑端 Conversation reportOf）：前一条是不显示的成员通知、本条正文以通知的标题（「前端已完成：任务」）
+ * 开头。手机上画成该成员说的话——去掉标题行，带上成员的名字和头像；成员按标题开头的名字认（名单里最长的那个前缀，
+ * 含已移除的）。绑定的定时任务只是告知的那条同理，以任务的身份显示。认不出是谁、或其后是主角色自己写的回复
+ * （开头对不上标题）时返回 undefined，照常显示。成员对话里不这样处理（那里的通知不是成员交差）。
+ */
+function reportOf(all: DisplayMessage[], i: number, sid: string): { msg: DisplayMessage; from: WebSpeaker } | undefined {
+  const m = all[i]
+  const prev = all[i - 1]
+  if (m?.role !== 'assistant' || prev?.role !== 'user' || !prev.quiet) return undefined
+  const headline = prev.text.trim()
+  const first = m.blocks[0]
+  if (!headline || first?.kind !== 'text' || !first.text.startsWith(headline)) return undefined
+  const s = getSession(sid)
+  if (!s || s.parentId) return undefined
+  let from: WebSpeaker | undefined
+  if (prev.handoff && !prev.handoff.needsAction) {
+    const title = prev.handoff.title.trim()
+    const tasks = listTasks()
+    const task = tasks.find((x) => x.ownerSessionId === sid && x.title === title) ?? tasks.find((x) => x.title === title)
+    from = { name: title, personaId: task?.auth.personaId || 'general', task: true }
+  } else {
+    const lower = headline.toLowerCase()
+    const who = (s.members ?? [])
+      .filter((x) => lower.startsWith(x.name.toLowerCase()))
+      .sort((a, b) => b.name.length - a.name.length)[0]
+    if (who) from = memberFace(who)
+  }
+  if (!from) return undefined
+  const text = first.text.slice(headline.length).replace(/^\s+/, '')
+  // 只有标题、没有结论：留着标题那句，不出一条空回复。
+  if (!text && m.blocks.length === 1) return { msg: m, from }
+  return { msg: { ...m, blocks: text ? [{ ...first, text }, ...m.blocks.slice(1)] : m.blocks.slice(1) }, from }
 }
 
 /**
