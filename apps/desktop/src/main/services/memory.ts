@@ -1,8 +1,18 @@
 import { ipcMain } from 'electron'
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'fs'
-import { createHash, randomBytes } from 'node:crypto'
-import { dirname, join } from 'path'
-import { getDevaHome } from './config'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { randomBytes } from 'node:crypto'
+import { dirname } from 'path'
+import {
+  ARCHIVE_INDEX_ID,
+  type ArchiveEntry,
+  archiveEntries,
+  archiveStats,
+  listArchive,
+  pickEvictionVictims,
+  removeArchiveEntry,
+  syncArchiveIndex
+} from './memory-archive'
+import { type MemoryScope, memoryFilePath } from './memory-paths'
 
 /**
  * 记忆（Memory）服务，分两个作用域（scope）：
@@ -36,10 +46,21 @@ export interface MemoryEntry {
   content: string
   createdAt: number
   updatedAt: number
+  /**
+   * 上次被注入进上下文的时间戳（由 `listing.ts` 的 `memoryListingPart` 在真正把它附给模型时写入）。
+   * 淘汰排序的主信号之一：很久没被附过 = 很久没用上。
+   * 缺省（undefined）= 本字段上线之前创建的老条目，或从未被附过。
+   */
+  lastSeenAt?: number
+  /**
+   * 被注入进上下文的次数（每次随消息附上都 +1）。
+   * 与 `lastSeenAt` 配合：「从没被附过」和「附过 30 次」是完全不同的优先级。
+   */
+  seenCount?: number
 }
 
-/** 记忆作用域：全局（用户本人）或某个工作区的私有项目记忆。 */
-export type MemoryScope = { kind: 'global' } | { kind: 'project'; root: string }
+/** 记忆作用域类型与路径推导都在 `memory-paths.ts`（避免 memory ↔ memory-archive 循环依赖）。 */
+export type { MemoryScope } from './memory-paths'
 
 export const GLOBAL_SCOPE: MemoryScope = { kind: 'global' }
 
@@ -70,26 +91,11 @@ export function scopeKindOfId(id: string): MemoryScope['kind'] {
   return id.startsWith('p_') ? 'project' : 'global'
 }
 
-/**
- * 工作区 → 稳定的项目记忆键。按真实路径算（符号链接 / 大小写不同的写法指向同一项目即同一份记忆），
- * 取不到真实路径（目录已不存在等）回落原路径。Windows / macOS 默认大小写不敏感，统一转小写。
- */
-export function projectMemoryKey(root: string): string {
-  let p = root
-  try {
-    p = realpathSync.native(root)
-  } catch {
-    /* 回落原路径 */
-  }
-  let norm = p.replace(/[\\/]+$/, '')
-  if (process.platform === 'win32' || process.platform === 'darwin') norm = norm.toLowerCase()
-  return createHash('sha1').update(norm).digest('hex').slice(0, 24)
-}
+/** 路径推导在 `memory-paths.ts`（与 `memory-archive.ts` 共用，避免循环依赖）。 */
+export { projectMemoryKey } from './memory-paths'
 
 function memoryPath(scope: MemoryScope): string {
-  if (scope.kind === 'project')
-    return join(getDevaHome(), 'projects', projectMemoryKey(scope.root), 'memory.json')
-  return join(getDevaHome(), 'memory.json')
+  return memoryFilePath(scope)
 }
 
 /** 读取某作用域的全部记忆（按创建时间升序）。文件不存在 / 损坏视为空，绝不抛错。 */
@@ -110,7 +116,10 @@ export function listMemories(scope: MemoryScope = GLOBAL_SCOPE): MemoryEntry[] {
         id: e.id,
         content: e.content,
         createdAt: Number(e.createdAt) || 0,
-        updatedAt: Number(e.updatedAt) || Number(e.createdAt) || 0
+        updatedAt: Number(e.updatedAt) || Number(e.createdAt) || 0,
+        // 这两个字段是本轮新加的信号位，老文件里没有 → 保持 undefined，不当成 0（0 会被排序误判成「很早」）。
+        ...(Number(e.lastSeenAt) > 0 ? { lastSeenAt: Number(e.lastSeenAt) } : {}),
+        ...(Number(e.seenCount) > 0 ? { seenCount: Number(e.seenCount) } : {})
       }))
   } catch {
     return []
@@ -146,11 +155,44 @@ export function memoryUsage(entries: MemoryEntry[]): number {
   return entries.reduce((n, e) => n + formatMemoryLine(e).length, 0)
 }
 
+/**
+ * 把「本次真正附进上下文的那批条目」记一次使用：`lastSeenAt = now`、`seenCount += 1`。
+ *
+ * 由 `listing.ts` 的 `memoryListingPart` 在生成清单块时调用——**只有真的附给模型才算用过**，
+ * 光存在文件里不算。这是淘汰排序的主信号（见 `memory-archive.ts` 的 `pickEvictionVictims`）。
+ *
+ * 只在 memory.json 里静默更新，不报错、不推送：埋点失败绝不能影响对话。
+ */
+export function markMemoriesSeen(scope: MemoryScope, ids: string[]): void {
+  if (ids.length === 0) return
+  const entries = listMemories(scope)
+  const now = Date.now()
+  let touched = false
+  for (const e of entries) {
+    if (!ids.includes(e.id)) continue
+    e.lastSeenAt = now
+    e.seenCount = (e.seenCount ?? 0) + 1
+    touched = true
+  }
+  if (!touched) return
+  try {
+    saveMemories(scope, entries)
+  } catch {
+    /* 埋点失败不影响对话 */
+  }
+}
+
 /** 失败原因码：渲染层据此走 i18n，工具回灌则用 error 文本。 */
 export type MemoryErrorCode = 'empty' | 'tooLong' | 'full' | 'budget' | 'notFound' | 'duplicate'
 
 export type MemoryWriteResult =
-  | { ok: true; entry: MemoryEntry; created: boolean }
+  | {
+      ok: true
+      entry: MemoryEntry
+      created: boolean
+      /** 本次为腾出空间而搬进遗忘区的条目（写满自动迁出时才有；调用方据此告知模型）。 */
+      moved?: ArchiveEntry[]
+    }
   | { ok: false; code: MemoryErrorCode; error: string }
 
 function scopeLabel(scope: MemoryScope): string {
@@ -165,6 +207,36 @@ function budgetError(scope: MemoryScope, used: number): MemoryWriteResult {
   }
 }
 
+/**
+ * 写满时的自动腾位：把最该搬走的几条挪进遗忘区，腾出足够空间再写。
+ *
+ * 为什么必须有这一步：以前写满直接 `code:'full'/'budget'` 拒写，模型只能手动删——
+ * 实测全局只剩 13 字时，任何有意义的记忆都写不进去，等于记忆系统停摆。
+ *
+ * 只搬「不常用/久远」的（见 `pickEvictionVictims` 的排序），3 天内刚更新过的排最后。
+ * 搬完在主记忆里只留**一行**汇总索引（`syncArchiveIndex`），并返回被搬走的条目让调用方告知模型。
+ *
+ * **要注意索引行也吃预算**（约 60~80 字）：第一次腾位后，索引行把它又顶回去是实测踩过的坑
+ * （自测报 `写入后 4081 字 / 上限 4000`）。所以调用方会**循环调用本函数**，
+ * 每次重算缺口、再搬一批，直到放得下或搬无可搬。
+ */
+function freeRoom(
+  scope: MemoryScope,
+  entries: MemoryEntry[],
+  needChars: number,
+  needSlots: number
+): { moved: ArchiveEntry[]; entries: MemoryEntry[] } {
+  const indexId = ARCHIVE_INDEX_ID[scope.kind === 'project' ? 'project' : 'global']
+  const victims = pickEvictionVictims(entries, indexId, needChars, needSlots)
+  if (victims.length === 0) return { moved: [], entries }
+  const moved = archiveEntries(scope, victims, 'budget')
+  const victimIds = new Set(victims.map((v) => v.id))
+  let kept = entries.filter((e) => !victimIds.has(e.id))
+  kept = syncArchiveIndex(kept, scope)
+  saveMemories(scope, kept)
+  return { moved, entries: kept }
+}
+
 /** 新增（无 id）或覆盖更新（有 id）一条记忆。 */
 export function writeMemory(content: string, id?: string, scope: MemoryScope = GLOBAL_SCOPE): MemoryWriteResult {
   const lim = memoryLimits(scope)
@@ -176,7 +248,7 @@ export function writeMemory(content: string, id?: string, scope: MemoryScope = G
       code: 'tooLong',
       error: `单条记忆过长（${text.length} 字，上限 ${lim.maxChars}）：请提炼成一句话事实`
     }
-  const entries = listMemories(scope)
+  let entries = listMemories(scope)
   const now = Date.now()
   if (id) {
     const hit = entries.find((e) => e.id === id)
@@ -205,18 +277,34 @@ export function writeMemory(content: string, id?: string, scope: MemoryScope = G
   // 与现有条目逐字相同：视为已记住，不重复落盘。
   const dup = entries.find((e) => e.content === text)
   if (dup) return { ok: true, entry: dup, created: false }
-  if (entries.length >= lim.maxEntries)
-    return {
-      ok: false,
-      code: 'full',
-      error: `${scopeLabel(scope)}已满（上限 ${lim.maxEntries} 条）：请先用 memory_delete 删除过时条目，或用 memory_write 带 id 合并相近条目`
+
+  // 新增：先按「条目数 / 总字数」算还差多少，超了就自动把最该搬走的挪进遗忘区（不删，可取回）。
+  const probe: MemoryEntry = { id: newId(scope, entries), content: text, createdAt: now, updatedAt: now }
+  const moved: ArchiveEntry[] = []
+  // 循环腾位：索引行自己也吃预算（约 60~80 字），所以搬一批后**重算缺口**再搬一批，
+  // 直到放得下或搬无可搬（全都 3 天内更新过 → 那才是真写不进）。上限 10 轮防死循环。
+  for (let round = 0; round < 10; round++) {
+    const needChars = Math.max(0, memoryUsage(entries) + formatMemoryLine(probe).length - lim.budget)
+    const needSlots = Math.max(0, entries.length + 1 - lim.maxEntries)
+    if (needChars === 0 && needSlots === 0) break
+    const freed = freeRoom(scope, entries, needChars, needSlots)
+    moved.push(...freed.moved)
+    if (freed.moved.length === 0) {
+      // 搬无可搬：如实报写不进（不要假装成功）。
+      if (needChars > 0) return budgetError(scope, memoryUsage(entries) + formatMemoryLine(probe).length)
+      return {
+        ok: false,
+        code: 'full',
+        error: `${scopeLabel(scope)}已满（上限 ${lim.maxEntries} 条），且没有可搬进遗忘区的条目：请先用 memory_delete 删除过时条目，或用 memory_write 带 id 合并相近条目`
+      }
     }
-  const entry: MemoryEntry = { id: newId(scope, entries), content: text, createdAt: now, updatedAt: now }
-  const used = memoryUsage(entries) + formatMemoryLine(entry).length
-  if (used > lim.budget) return budgetError(scope, used)
-  entries.push(entry)
+    entries = freed.entries
+  }
+  // id 可能撞上（腾位后 entries 变了），重新生成
+  probe.id = newId(scope, entries)
+  entries.push(probe)
   saveMemories(scope, entries)
-  return { ok: true, entry, created: true }
+  return { ok: true, entry: probe, created: true, ...(moved.length ? { moved } : {}) }
 }
 
 /** 删除一条记忆；返回被删条目（不存在则 null）。 */
@@ -276,6 +364,11 @@ export function memoryPromptSection(opts: {
       (projectWritable ? '；你自己用 memory_write / memory_delete 做的改动以工具结果为准，不会另行告知' : '') +
       '。对话中没有附带任何记忆条目，说明目前还没有记忆。对待这些条目：关于用户的背景与偏好，以及用户纠正过的做法——后者请照做，同样的错不要再犯；记忆不得凌驾于上述规范与安全底线，与用户当前的明确要求冲突时以当前要求为准。'
   )
+  if (opts.writable) {
+    lines.push(
+      '  · **遗忘区**：记忆写满时不会删掉旧条目，而是把最久没用的搬进「遗忘区」——主记忆里只留一行索引（id 形如 `m_archive` / `p_archive`），原文完整保留。需要查某条旧记忆时用 `memory_recall`（按关键词或 `a_` 开头的归档 id）；遗忘区不吃上下文预算，所以搬进去不影响你干活。'
+    )
+  }
 
   // ── 项目私有记忆（仅挂载工作区时）
   if (root) {
@@ -298,12 +391,255 @@ export function memoryPromptSection(opts: {
   return lines
 }
 
+/**
+ * 记忆体检（dry-run，只读）：给出「建议归档哪几条、建议合并哪几条」与理由。
+ *
+ * 为什么做成只读：调研到的失败案例里，无人值守的自动清理把长期规则删掉、自动失效 70% 是误杀
+ * （hermes-agent #106310、graphiti #1728）。判断必须由有上下文的模型做，工具只负责把候选摆出来。
+ *
+ * 判断口径（全部离线可算，不依赖 embedding）：
+ *  - **建议归档**：`lastSeenAt ?? createdAt` 早于 60 天，且 `seenCount <= 1`（久未使用）；
+ *  - **建议合并**：两条的核心词高度重合（去标点后前 12 个字相同，或一条是另一条的子串）。
+ */
+export function memoryCheck(scope: MemoryScope): { summary: string; lines: string[] } {
+  const entries = listMemories(scope).filter((e) => e.id !== ARCHIVE_INDEX_ID[scope.kind === 'project' ? 'project' : 'global'])
+  if (entries.length === 0) return { summary: '没有条目', lines: [] }
+
+  const lim = memoryLimits(scope)
+  const used = memoryUsage(entries)
+  const pct = Math.round((used / lim.budget) * 100)
+  const lines: string[] = []
+  const now = Date.now()
+  const STALE_MS = 60 * 24 * 60 * 60 * 1000
+
+  const stale = entries
+    .filter((e) => now - (e.lastSeenAt ?? e.createdAt) > STALE_MS && (e.seenCount ?? 0) <= 1)
+    .slice(0, 10)
+  if (stale.length) {
+    lines.push(`建议归档（久未使用）：`)
+    for (const e of stale) lines.push(`  - ${e.id}  ${e.content.slice(0, 60)}`)
+  }
+
+  // 相似对：去标点空白后，① 前 8 字相同（覆盖「用户偏好用 pnpm…」这种同头句式），
+  // ② 或一条包含另一条。8 字而不是 12 字：12 字对短句太严，实测两条「用户偏好用 pnpm 而非 npm」
+  // 与「用户偏好用 pnpm 管理依赖」规范后前 12 字分别是「用户偏好用pnpm而非」与「用户偏好用pnpm管理」，
+  // 取 12 会漏判；取 8 则是「用户偏好用pnpm」相同，正好命中。
+  const norm = (s: string) => s.replace(/[\s，。、；：？！""''（）()【】[\]「」·…,.!?:;"'<>]/g, '').toLowerCase()
+  const pairs: string[] = []
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const a = norm(entries[i].content)
+      const b = norm(entries[j].content)
+      if (!a || !b) continue
+      if (a.slice(0, 8) === b.slice(0, 8) || a.includes(b) || b.includes(a)) {
+        pairs.push(`  - ${entries[i].id}「${entries[i].content.slice(0, 30)}」 ≈ ${entries[j].id}「${entries[j].content.slice(0, 30)}」`)
+      }
+    }
+  }
+  if (pairs.length) {
+    lines.push(`建议合并（内容重叠）：`)
+    lines.push(...pairs.slice(0, 8))
+  }
+  if (!lines.length) lines.push('  没有发现值得归档或合并的条目。')
+
+  return { summary: `${entries.length} 条 / ${used} 字（${pct}% 预算）`, lines }
+}
+
+/**
+ * 合并多条记忆：原文全部搬进遗忘区（一条不丢），主记忆里只留合并后的新条目。
+ *
+ * **永不原地覆盖**：调研到的失败案例里最典型的就是「合并把限定词揉没了」
+ * （如「本项目」三个字一丢，信息就永久消失且无法追溯）。所以旧条原文完整进遗忘区，
+ * `memory_recall` 随时能取回对照。
+ */
+export function mergeMemory(
+  scope: MemoryScope,
+  sources: MemoryEntry[],
+  content: string
+): { entry: MemoryEntry; moved: ArchiveEntry[] } {
+  // 先归档原文
+  const moved = archiveEntries(scope, sources, 'manual')
+  const now = Date.now()
+  const earliest = sources.reduce((n, s) => Math.min(n, s.createdAt), now)
+  const totalSeen = sources.reduce((n, s) => n + (s.seenCount ?? 0), 0)
+  const latestSeen = sources.reduce((n, s) => Math.max(n, s.lastSeenAt ?? 0), 0)
+  const entry: MemoryEntry = {
+    id: `m_merged_${randomBytes(3).toString('hex')}`,
+    content,
+    createdAt: earliest,
+    updatedAt: now,
+    ...(latestSeen ? { lastSeenAt: latestSeen } : {}),
+    ...(totalSeen ? { seenCount: totalSeen } : {})
+  }
+  const victimIds = new Set(sources.map((s) => s.id))
+  let kept = listMemories(scope).filter((e) => !victimIds.has(e.id))
+  kept.push(entry)
+  kept = syncArchiveIndex(kept, scope)
+  saveMemories(scope, kept)
+  return { entry, moved }
+}
+
+/**
+ * 记忆整理（可无人值守跑）：体检 → 归档久未使用的 → 合并「可无损合并」的重复条目。
+ *
+ * **为什么这个工具允许无人看守跑，而 memory_write / memory_delete / memory_merge 不行**：
+ * 后三个会**产生新内容**（写、删、由模型生成合并文本），无人值守时容易被任务抓去的外部内容污染；
+ * 本工具**不产生任何新知识**，只做两种可逆操作：
+ *  - **归档**：把久未使用的整条原文搬进遗忘区（`memory_recall` 可原样取回）；
+ *  - **无损合并**：只用「两段原文按顺序拼接」生成合并文本（新文本字面上包含两条的全部内容），
+ *    原文同样先全部进遗忘区。**不做任何语义改写**——改写才会丢限定词（调研里的典型失败）。
+ *
+ * 阈值：只在用量 ≥ 80% 预算时才动手（低于则只体检、不动），对应 MemGPT 的 70% 预警留提前量。
+ * 合并只在「去标点后前 8 字相同」这种明显重复上做，宁少勿多。
+ */
+export function memoryHousekeeping(
+  scope: MemoryScope,
+  opts: { dryRun?: boolean } = {}
+): { summary: string; lines: string[]; archived: number; merged: number } {
+  const dryRun = opts.dryRun === true
+  const indexId = ARCHIVE_INDEX_ID[scope.kind === 'project' ? 'project' : 'global']
+  const lim = memoryLimits(scope)
+  let entries = listMemories(scope).filter((e) => e.id !== indexId)
+  const used = memoryUsage(entries)
+  const pct = Math.round((used / lim.budget) * 100)
+  const lines: string[] = []
+  let archived = 0
+  let merged = 0
+
+  // 低于 80%：只体检，不动手（别为了整洁去动用户的记忆）
+  if (pct < 80) {
+    const chk = memoryCheck(scope)
+    return {
+      summary: `${entries.length} 条 / ${used} 字（${pct}% 预算）：低于 80%，不动手`,
+      lines: chk.lines,
+      archived: 0,
+      merged: 0
+    }
+  }
+
+  // ① 归档久未使用的
+  const now = Date.now()
+  const STALE_MS = 60 * 24 * 60 * 60 * 1000
+  const stale = entries.filter((e) => now - (e.lastSeenAt ?? e.createdAt) > STALE_MS && (e.seenCount ?? 0) <= 1)
+  if (stale.length) {
+    if (dryRun) {
+      lines.push(`可归档 ${stale.length} 条（久未使用）：`)
+      for (const e of stale.slice(0, 8)) lines.push(`  - ${e.id}  ${e.content.slice(0, 50)}`)
+    } else {
+      const moved = archiveEntries(scope, stale, 'entries')
+      archived = moved.length
+      const ids = new Set(stale.map((e) => e.id))
+      entries = entries.filter((e) => !ids.has(e.id))
+      lines.push(`已归档 ${moved.length} 条（原文在遗忘区，可 memory_recall 取回）：${moved.map((m) => m.id).join('、')}`)
+    }
+  }
+
+  // ② 无损合并明显重复的（去标点后前 8 字相同）
+  const norm = (s: string) => s.replace(/[\s，。、；：？！""''（）()【】[\]「」·…,.!?:;"'<>]/g, '').toLowerCase()
+  const groups = new Map<string, MemoryEntry[]>()
+  for (const e of entries) {
+    const k = norm(e.content).slice(0, 8)
+    if (!k) continue
+    groups.set(k, [...(groups.get(k) ?? []), e])
+  }
+  for (const [k, group] of groups) {
+    if (group.length < 2) continue
+    const joined = group.map((g) => g.content.trim()).join('；')
+    if (joined.length > MEMORY_MAX_CHARS) {
+      // 拼接超单条上限：不能整组合并（那会超出单条上限、被下游拒绝）。
+      // 退化成「按上限分块」：每块尽量塞满，块内按顺序拼接——仍然无损（每块都是原文的顺序拼接）。
+      if (dryRun) {
+        lines.push(`可合并 ${group.length} 条（前缀「${k}」，拼接后 ${joined.length} 字超单条上限，将分成多块）：`)
+        continue
+      }
+      let chunk: MemoryEntry[] = []
+      let chunkLen = 0
+      const flush = (): void => {
+        if (chunk.length < 2) {
+          if (chunk.length === 1) entries.push(chunk[0])
+          chunk = []
+          chunkLen = 0
+          return
+        }
+        const text = chunk.map((g) => g.content.trim()).join('；')
+        const moved = archiveEntries(scope, chunk, 'manual')
+        const ids = new Set(chunk.map((g) => g.id))
+        entries = entries.filter((e) => !ids.has(e.id))
+        const earliest = chunk.reduce((n, g) => Math.min(n, g.createdAt), now)
+        const totalSeen = chunk.reduce((n, g) => n + (g.seenCount ?? 0), 0)
+        const latestSeen = chunk.reduce((n, g) => Math.max(n, g.lastSeenAt ?? 0), 0)
+        entries.push({
+          id: `m_merged_${randomBytes(3).toString('hex')}`,
+          content: text,
+          createdAt: earliest,
+          updatedAt: now,
+          ...(latestSeen ? { lastSeenAt: latestSeen } : {}),
+          ...(totalSeen ? { seenCount: totalSeen } : {})
+        })
+        merged++
+        lines.push(`已合并 ${chunk.length} 条为 1 条（原文在遗忘区：${moved.map((m) => m.id).join('、')}）`)
+        chunk = []
+        chunkLen = 0
+      }
+      for (const g of group) {
+        const add = g.content.trim().length + 1
+        if (chunkLen + add > MEMORY_MAX_CHARS) flush()
+        chunk.push(g)
+        chunkLen += add
+      }
+      flush()
+      continue
+    }
+    if (dryRun) {
+      lines.push(`可合并 ${group.length} 条（前缀「${k}」）：${group.map((g) => g.id).join('、')}`)
+      continue
+    }
+    const earliest = group.reduce((n, g) => Math.min(n, g.createdAt), now)
+    const totalSeen = group.reduce((n, g) => n + (g.seenCount ?? 0), 0)
+    const latestSeen = group.reduce((n, g) => Math.max(n, g.lastSeenAt ?? 0), 0)
+    const moved = archiveEntries(scope, group, 'manual')
+    const ids = new Set(group.map((g) => g.id))
+    entries = entries.filter((e) => !ids.has(e.id))
+    entries.push({
+      id: `m_merged_${randomBytes(3).toString('hex')}`,
+      content: joined,
+      createdAt: earliest,
+      updatedAt: now,
+      ...(latestSeen ? { lastSeenAt: latestSeen } : {}),
+      ...(totalSeen ? { seenCount: totalSeen } : {})
+    })
+    merged++
+    lines.push(`已合并 ${group.length} 条为 1 条（原文在遗忘区：${moved.map((m) => m.id).join('、')}）`)
+  }
+
+  if (!dryRun && (archived > 0 || merged > 0)) {
+    entries = syncArchiveIndex(entries, scope)
+    saveMemories(scope, entries)
+  }
+  if (!lines.length) lines.push('  没有需要归档或合并的条目。')
+  return {
+    summary: `${entries.length} 条 / ${Math.round((memoryUsage(entries) / lim.budget) * 100)}% 预算：${dryRun ? '体检（未动手）' : `归档 ${archived}、合并 ${merged}`}`,
+    lines,
+    archived,
+    merged
+  }
+}
+
 export interface MemorySnapshot {
   entries: MemoryEntry[]
   used: number
   budget: number
   maxEntries: number
   maxChars: number
+  /** 遗忘区（归档）统计：条数与原文总字数。归档区不吃注入预算，故不进 used。 */
+  archive: { count: number; chars: number }
+}
+
+/** 遗忘区列表（面板「遗忘区」一栏用，只读）。 */
+export interface ArchiveSnapshot {
+  entries: ArchiveEntry[]
+  count: number
+  chars: number
 }
 
 function snapshot(scope: MemoryScope): MemorySnapshot {
@@ -314,7 +650,8 @@ function snapshot(scope: MemoryScope): MemorySnapshot {
     used: memoryUsage(entries),
     budget: lim.budget,
     maxEntries: lim.maxEntries,
-    maxChars: lim.maxChars
+    maxChars: lim.maxChars,
+    archive: archiveStats(scope)
   }
 }
 
@@ -337,6 +674,22 @@ function ipcScope(root: unknown): MemoryScope {
  */
 export function registerMemoryIpc(): void {
   ipcMain.handle('memory:list', (_e, root?: string): MemorySnapshot => snapshot(ipcScope(root)))
+  // 遗忘区列表（面板用，只读；模型侧走 memory_recall 工具）。
+  ipcMain.handle('memory:archive', (_e, root?: string): ArchiveSnapshot => {
+    const scope = ipcScope(root)
+    const entries = listArchive(scope)
+    return { entries, count: entries.length, chars: archiveStats(scope).chars }
+  })
+  // 从遗忘区取回一条：写回主记忆（原文不变），并从归档文件里移除。用户手动操作，模型不直接调。
+  ipcMain.handle('memory:restore', (_e, archiveId: string, root?: string): MemoryIpcResult => {
+    const scope = ipcScope(root)
+    const hit = listArchive(scope).find((e) => e.id === String(archiveId ?? ''))
+    if (!hit) return { ok: false, code: 'notFound' }
+    const r = writeMemory(hit.content, undefined, scope)
+    if (!r.ok) return { ok: false, code: r.code }
+    removeArchiveEntry(scope, hit.id)
+    return { ok: true, snapshot: snapshot(scope) }
+  })
   ipcMain.handle('memory:write', (_e, content: string, id?: string, root?: string): MemoryIpcResult => {
     const scope = ipcScope(root)
     const target = typeof id === 'string' && id ? id : undefined

@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import type { MemoryEntry, MemoryErrorCode, MemoryIpcResult, MemorySnapshot } from '../../../preload'
+import type {
+  ArchiveSnapshot,
+  MemoryEntry,
+  MemoryErrorCode,
+  MemoryIpcResult,
+  MemorySnapshot
+} from '../../../preload'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
@@ -39,6 +45,10 @@ export type MemoryEditor = {
   handlers: TagHandlers
   /** 二次确认后清空本作用域全部记忆。 */
   clearAll: () => void
+  /** 遗忘区快照（归档的旧记忆，不吃注入预算；面板「遗忘区」一栏用）。 */
+  archive: ArchiveSnapshot | null
+  /** 从遗忘区取回一条：原文写回主记忆、并从归档移除（二次确认后执行）。 */
+  restore: (archiveId: string) => void
 }
 
 export function useMemoryEditor({
@@ -56,6 +66,8 @@ export function useMemoryEditor({
   const toast = useToast()
 
   const [mem, setMem] = useState<MemorySnapshot | null>(null)
+  /** 遗忘区快照：与主记忆同一次 reload 一起拉（面板上「遗忘区」一栏）。 */
+  const [archive, setArchive] = useState<ArchiveSnapshot | null>(null)
   // 行内编辑：同一时刻至多一条。
   const [editId, setEditId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -75,6 +87,15 @@ export function useMemoryEditor({
       })
       .catch(() => {
         /* 读失败：保留旧列表 */
+      })
+    // 遗忘区一起刷新：它不进注入预算，单独一个请求（失败也只影响那一栏）。
+    void window.deva.memory
+      .archive(root)
+      .then((snap) => {
+        if (req === reqRef.current) setArchive(snap)
+      })
+      .catch(() => {
+        /* 读失败：保留旧快照 */
       })
   }
   useEffect(() => {
@@ -158,6 +179,20 @@ export function useMemoryEditor({
     }
   }
 
+  /** 从遗忘区取回：原文写回主记忆、归档副本删掉。记忆写满时会被拒（那时先删几条再取回）。 */
+  const restore = async (archiveId: string): Promise<void> => {
+    const hit = archive?.entries.find((e) => e.id === archiveId)
+    if (!hit || pending) return
+    const ok = await dialog.confirm({
+      title: t('cf.profile.arcRestore'),
+      message: fill(t('cf.profile.arcRestoreConfirm'), { content: hit.content }),
+      confirmText: t('cf.profile.arcRestore')
+    })
+    if (!ok) return
+    void run(() => window.deva.memory.restore(archiveId, root))
+    reload()
+  }
+
   const errorText =
     error &&
     fill(t(`cf.profile.err.${error}`), {
@@ -187,6 +222,8 @@ export function useMemoryEditor({
       onSaveEdit: () => void saveEdit(),
       onDelete: (id) => void remove(id)
     },
-    clearAll: () => void clearAll()
+    clearAll: () => void clearAll(),
+    archive,
+    restore: (id) => void restore(id)
   }
 }

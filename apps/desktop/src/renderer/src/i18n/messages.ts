@@ -1387,6 +1387,12 @@ const zhCN: MessageTree = {
       memDeleteConfirm: '确定删除这条记忆吗？\n「{content}」',
       memClear: '清空全部记忆',
       memClearConfirm: '确定清空全部记忆吗？Deva 将忘记关于你的所有习惯与偏好，此操作不可撤销。',
+      arcTitle: '遗忘区',
+      arcCount: '已归档 {n} 条 · {chars} 字',
+      arcRestore: '取回',
+      arcRestoreConfirm: '把这条从遗忘区取回主记忆吗？\n「{content}」',
+      arcMore: '另有 {n} 条更早的（最早的在前，这里只显示最近 12 条）',
+      arcHint: '遗忘区不占上下文预算；取回后会重新占用记忆额度。',
       err: {
         empty: '内容不能为空',
         tooLong: '单条最多 {max} 字，请精简成一句话',
@@ -2862,6 +2868,12 @@ const en: MessageTree = {
       memClear: 'Clear all memories',
       memClearConfirm:
         'Clear all memories? Deva will forget all your habits and preferences. This cannot be undone.',
+      arcTitle: 'Archive',
+      arcCount: '{n} archived · {chars} chars',
+      arcRestore: 'Restore',
+      arcRestoreConfirm: 'Restore this entry from the archive back into memory?\n“{content}”',
+      arcMore: '{n} older entries (oldest first — only the latest 12 are shown)',
+      arcHint: 'The archive does not count against the context budget; restoring puts it back on the quota.',
       err: {
         empty: 'Content cannot be empty',
         tooLong: 'Each entry is limited to {max} characters — keep it to one sentence',

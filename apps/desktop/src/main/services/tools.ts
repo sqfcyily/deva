@@ -18,8 +18,12 @@ import {
   MEMORY_BUDGET_CHARS,
   MEMORY_MAX_CHARS,
   PROJECT_MEMORY_BUDGET_CHARS,
+  memoryCheck,
+  memoryHousekeeping,
+  mergeMemory,
   type MemoryScope
 } from './memory'
+import { searchArchive } from './memory-archive'
 import { memoryDeletedRecord, memoryWrittenRecord } from './listing'
 import { upsertServer, type McpValue } from './mcp-config'
 import {
@@ -299,7 +303,7 @@ const fullToolSpecs: ToolSpec[] = [
       '两者都不是用来记通用知识或代码里能直接看出的内容的；团队共享的项目约定应写进 AGENTS.md（仅当用户要求时）。' +
       '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增），更新时可省略 scope，按 id 前缀自动定位（m_ 为全局，p_ 为项目）。' +
       `内容须是一句话（≤${MEMORY_MAX_CHARS} 字）：偏好与背景写成事实陈述，纠正与踩坑写成「做法 + 原因」；不得记录密码/密钥等敏感信息或一次性任务细节。` +
-      `总量上限：全局 ${MEMORY_BUDGET_CHARS} 字、项目 ${PROJECT_MEMORY_BUDGET_CHARS} 字，写满会被拒绝：此时请带 id 合并/精简相近条目或先 memory_delete 过时条目。` +
+      `总量上限：全局 ${MEMORY_BUDGET_CHARS} 字、项目 ${PROJECT_MEMORY_BUDGET_CHARS} 字。**写满不再拒写**：会自动把最久未用的旧条目搬进「遗忘区」（原文完整保留、可用 memory_recall 取回），主记忆里只留一行 \`m_archive\`/\`p_archive\` 索引，并在回执里告诉你搬了哪几条。` +
       '请始终用本工具写入记忆（会做去重与总量校验），不要用 write_file 等直接改记忆文件。',
     inputSchema: {
       type: 'object',
@@ -317,6 +321,95 @@ const fullToolSpecs: ToolSpec[] = [
         }
       },
       required: ['content']
+    }
+  },
+  {
+    name: 'memory_recall',
+    description:
+      '在「遗忘区」里查已归档的旧记忆，返回完整原文。记忆写满时不会删掉旧条目，而是把最久没用的搬进遗忘区（主记忆里只留一行 `m_archive` / `p_archive` 索引，不吃上下文预算）。' +
+      '什么时候用：你需要一条明确记得「以前记过但现在看不到」的经验/偏好时；或者看到主记忆里有那行索引、想看看里面还有什么。' +
+      '按关键词（不区分大小写，匹配原文内容）或归档 id（`a_` 开头）查。查到的原文是历史快照，**可能已过时**——与代码现状不符时以代码为准，需要恢复就把它 memory_write 回主记忆。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: '关键词或归档 id 前缀（如 `a_1a2b`、`pnpm`、`代理`）。'
+        },
+        scope: {
+          type: 'string',
+          enum: ['global', 'project'],
+          description: '查哪个作用域的遗忘区。省略 = 先查全局，再查当前工作区的项目遗忘区。'
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'memory_merge',
+    description:
+      '把多条相近记忆合并成一条。**原文不会丢**：旧条目全部以原文完整搬进遗忘区（`memory_recall` 可随时取回对照），只有合并后的新条目留在主记忆里。' +
+      '什么时候用：主记忆里有多条说同一件事的（例如三条都在讲 pnpm 习惯）、或者写满后想一次腾出较多空间。' +
+      '要点：合并后的 content 必须**保留各条各自的适用范围**（「本项目」「该用户」「某台机器」这类限定词不能丢，丢了就等于信息永久消失）；' +
+      '合并文本应比各条之和更短但信息不减少。ids 传 2~5 个；少于 2 个会报参数错误。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '要合并的条目 id（2~5 个）。可混用全局与项目条目——但都必须在同一作用域内。'
+        },
+        content: {
+          type: 'string',
+          description: '合并后的一句话（≤300 字）。写清各自适用范围，不要丢掉限定词。'
+        },
+        scope: {
+          type: 'string',
+          enum: ['global', 'project'],
+          description: '作用域：省略则按第一个 id 的前缀自动判断。'
+        }
+      },
+      required: ['ids', 'content']
+    }
+  },
+  {
+    name: 'memory_check',
+    description:
+      '记忆体检（dry-run）：只看不改，返回「建议归档哪几条、建议合并哪几条」的清单与理由。' +
+      '什么时候用：你想整理记忆时（尤其写满之后）；或定时任务的「记忆整理」跑起来时先看一眼有没有值得动的。' +
+      '它是**只读**的：不搬、不删、不合并。真要执行，用 memory_write 带 id 精简、memory_merge 合并，或者直接告诉用户。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: {
+          type: 'string',
+          enum: ['global', 'project'],
+          description: '体检哪个作用域：global（用户本人的长期偏好）或 project（当前工作区）。省略 = 两个都查。'
+        }
+      }
+    }
+  },
+  {
+    name: 'memory_tidy',
+    description:
+      '整理记忆：把久未使用的条目**搬进遗忘区**（原文完整保留）、把明显重复的条目**无损合并**（两段原文按顺序拼接，不做任何语义改写）。' +
+      '只在用量 ≥ 80% 预算时才动手；低于 80% 只体检不动手。' +
+      '**它不产生任何新知识**：不改写、不概括、不删原文（原文一律先进遗忘区，可 memory_recall 取回），因此可以在无人值守的定时任务里跑。' +
+      '什么时候用：定时任务的「记忆整理」；或你发现记忆快满了想先瘦身。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scope: {
+          type: 'string',
+          enum: ['global', 'project'],
+          description: '整理哪个作用域。省略 = 两个都整理。'
+        },
+        dry_run: {
+          type: 'boolean',
+          description: 'true = 只看不动（默认 false）。先看一眼建议更稳妥。'
+        }
+      }
     }
   },
   {
@@ -1919,10 +2012,132 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     const r = writeMemory(content, id, scope)
     if (!r.ok) return { content: r.error, summary: '未写入', isError: true }
     // 本结果即告知：挂上记录，记忆清单折叠时视这条为已告知，不再随后重复附带。
+    const movedNote =
+      r.moved && r.moved.length > 0
+        ? `\n（为腾出空间，已把 ${r.moved.length} 条最久未用的旧记忆移入遗忘区：${r.moved
+            .map((m) => `${m.id}「${m.content.slice(0, 12)}…」`)
+            .join('、')}。原文完整保留，需要时用 memory_recall 按 id 或关键词查回。）`
+        : ''
     return {
-      content: `${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}`,
+      content: `${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}${movedNote}`,
       summary: r.created ? '已记住' : id ? '已更新' : '已存在',
       listing: memoryWrittenRecord(r.entry)
+    }
+  },
+  memory_recall: async (a, ctx) => {
+    const query = typeof a.query === 'string' ? a.query.trim() : ''
+    if (!query) return { content: '缺少查询关键词或归档 id', summary: '参数无效', isError: true }
+    const want = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
+    const scopes: { label: string; scope: MemoryScope }[] = []
+    if (want !== 'project') scopes.push({ label: '全局遗忘区', scope: GLOBAL_SCOPE })
+    if (want !== 'global' && ctx.workspaceRoot)
+      scopes.push({ label: `项目遗忘区（${ctx.workspaceRoot}）`, scope: { kind: 'project', root: ctx.workspaceRoot } })
+
+    const hits: { label: string; id: string; content: string; archivedAt: number; seenCount?: number }[] = []
+    for (const s of scopes) {
+      for (const e of searchArchive(s.scope, query)) {
+        hits.push({
+          label: s.label,
+          id: e.id,
+          content: e.content,
+          archivedAt: e.archivedAt,
+          ...(e.seenCount ? { seenCount: e.seenCount } : {})
+        })
+      }
+    }
+    if (hits.length === 0)
+      return {
+        content: `遗忘区里没有匹配「${query}」的条目。可以换个关键词，或先用 memory_read 看主记忆里那行 \`m_archive\` / \`p_archive\` 索引。`,
+        summary: '未命中',
+        isError: true
+      }
+
+    // 回灌上限：单条原文可能很长，这里按总量截断（保留前若干条，其余只报数量）。
+    const CAP = 6000
+    const lines: string[] = [`在遗忘区找到 ${hits.length} 条匹配「${query}」：`]
+    let used = 0
+    let shown = 0
+    for (const h of hits) {
+      const when = new Date(h.archivedAt).toISOString().slice(0, 10)
+      const line = `- [${h.id}]（${h.label}，${when} 归档${h.seenCount ? `，归档前注入过 ${h.seenCount} 次` : ''}）${h.content}`
+      if (used + line.length > CAP) break
+      lines.push(line)
+      used += line.length
+      shown++
+    }
+    if (shown < hits.length) lines.push(`（另有 ${hits.length - shown} 条超出回灌上限未列出，可用更精确的关键词或归档 id 再查。）`)
+    lines.push('（以上是历史快照，可能已过时；与代码现状不符时以代码为准。需要长期使用时用 memory_write 写回主记忆。）')
+    return { content: lines.join('\n'), summary: `命中 ${hits.length} 条` }
+  },
+  memory_check: async (a, ctx) => {
+    const want = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
+    const scopes: { label: string; scope: MemoryScope }[] = []
+    if (want !== 'project') scopes.push({ label: '全局', scope: GLOBAL_SCOPE })
+    if (want !== 'global' && ctx.workspaceRoot)
+      scopes.push({ label: '项目', scope: { kind: 'project', root: ctx.workspaceRoot } })
+
+    const out: string[] = []
+    for (const s of scopes) {
+      const plan = memoryCheck(s.scope)
+      out.push(`【${s.label}记忆】${plan.summary}`)
+      for (const line of plan.lines) out.push(`  ${line}`)
+      out.push('')
+    }
+    if (out.length === 0) return { content: '没有可体检的作用域（未挂载工作区且只查项目）', summary: '无作用域', isError: true }
+    out.push('（以上只是建议，我没有改动任何东西。要执行请用 memory_write 带 id 精简、memory_merge 合并，或告诉用户。）')
+    return { content: out.join('\n').trim(), summary: '体检完成' }
+  },
+  memory_merge: async (a, ctx) => {
+    const ids = Array.isArray(a.ids) ? a.ids.filter((x): x is string => typeof x === 'string') : []
+    const content = typeof a.content === 'string' ? a.content.trim() : ''
+    if (ids.length < 2) return { content: 'memory_merge 至少要给 2 个 id', summary: '参数无效', isError: true }
+    if (ids.length > 5) return { content: 'memory_merge 一次最多合并 5 条', summary: '参数无效', isError: true }
+    if (!content) return { content: '缺少合并后的 content', summary: '参数无效', isError: true }
+    if (content.length > MEMORY_MAX_CHARS)
+      return { content: `合并后的内容 ${content.length} 字，超过单条上限 ${MEMORY_MAX_CHARS} 字`, summary: '过长', isError: true }
+
+    // 作用域：显式给了就用，否则按第一个 id 前缀判断
+    let scope: MemoryScope
+    if (a.scope === 'project' && ctx.workspaceRoot) scope = { kind: 'project', root: ctx.workspaceRoot }
+    else if (a.scope === 'global') scope = GLOBAL_SCOPE
+    else if (ids[0].startsWith('p_') && ctx.workspaceRoot) scope = { kind: 'project', root: ctx.workspaceRoot }
+    else scope = GLOBAL_SCOPE
+
+    const existing = listMemories(scope)
+    const sources = existing.filter((e) => ids.includes(e.id))
+    if (sources.length !== ids.length) {
+      const missing = ids.filter((id) => !existing.some((e) => e.id === id))
+      return { content: `这些 id 在${scope.kind === 'project' ? '项目' : '全局'}记忆里不存在：${missing.join('、')}`, summary: '找不到', isError: true }
+    }
+
+    const r = mergeMemory(scope, sources, content)
+    return {
+      content:
+        `已合并 ${sources.length} 条为 1 条：${formatMemoryLine(r.entry)}\n` +
+        `原文已全部搬进遗忘区（${r.moved.map((m) => m.id).join('、')}），随时可用 memory_recall 取回对照。`,
+      summary: `合并 ${sources.length} → 1`
+    }
+  },
+  memory_tidy: async (a, ctx) => {
+    const want = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
+    const dryRun = a.dry_run === true
+    const scopes: { label: string; scope: MemoryScope }[] = []
+    if (want !== 'project') scopes.push({ label: '全局', scope: GLOBAL_SCOPE })
+    if (want !== 'global' && ctx.workspaceRoot)
+      scopes.push({ label: '项目', scope: { kind: 'project', root: ctx.workspaceRoot } })
+    if (!scopes.length) return { content: '没有可整理的作用域（未挂载工作区且只整理了项目）', summary: '无作用域', isError: true }
+
+    const out: string[] = []
+    for (const s of scopes) {
+      const r = memoryHousekeeping(s.scope, { dryRun })
+      out.push(`【${s.label}】${r.summary}`)
+      for (const line of r.lines) out.push(`  ${line}`)
+      out.push('')
+    }
+    if (dryRun) out.push('（dry_run=true：以上只是建议，我没有改动任何东西。）')
+    return {
+      content: out.join('\n').trim(),
+      summary: dryRun ? '体检完成' : '整理完成'
     }
   },
   memory_delete: async (a, ctx) => {
