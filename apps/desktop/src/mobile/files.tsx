@@ -7,7 +7,7 @@ import type { FileResult } from './link'
 import { fmtBytes, t } from './strings'
 
 /**
- * 文件：交付文件卡片（点开在应用内预览：Markdown、文本、Office 文档的文字、图片；其他格式保存 / 分享）
+ * 文件：交付文件卡片（点开在应用内预览：Markdown、文本、网页（隔离渲染）、Office 文档的文字、图片；其他格式保存 / 分享）
  * 与对话里图片附件的缩略图。
  */
 
@@ -108,6 +108,9 @@ export function FilePage({ store, sid, file }: { store: Store; sid: string; file
     window.setTimeout(() => URL.revokeObjectURL(u), 10_000)
   }
 
+  // 网页文件：电脑按文本给内容，这里按扩展名改成渲染（源码仍可用右上角保存 / 分享拿到）。
+  const html = !!res?.ok && res.kind === 'text' && /^html?$/.test(extOf(res.name ?? file.name))
+
   return (
     <div className="page">
       <header className="tb tb--sub">
@@ -124,7 +127,7 @@ export function FilePage({ store, sid, file }: { store: Store; sid: string; file
           </button>
         )}
       </header>
-      <div className="scroll fileview">
+      <div className={`scroll fileview${html ? ' fileview--frame' : ''}`}>
         {!res ? (
           <div className="fileview__wait">
             <span className="spin spin--lg" />
@@ -141,6 +144,10 @@ export function FilePage({ store, sid, file }: { store: Store; sid: string; file
           <div className="fileview__doc">
             <Markdown text={res.text ?? ''} />
           </div>
+        ) : html ? (
+          // 网页交给浏览器渲染。sandbox 不带 allow-same-origin：页面里的脚本跑在独立的空来源里，
+          // 碰不到本应用的存储（配对密钥）、Cookie 和 Service Worker，也不能把外层页面带走。
+          <iframe className="fileview__frame" title={file.name} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={res.text ?? ''} />
         ) : res.kind === 'text' ? (
           <pre className="fileview__text">{res.text}</pre>
         ) : res.kind === 'image' && url ? (

@@ -425,6 +425,9 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 .fileview__doc .md h1 { font-size: 1.4em; margin-top: .2em; }
 .fileview__doc .md h2 { font-size: 1.18em; }
 .fileview__text { margin: 0; padding: 14px 16px calc(30px + env(safe-area-inset-bottom)); font-size: calc(13px * var(--fs)); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+/* 网页预览：框架占满整页、自己滚动；底色固定白（网页默认按白底写，深色外观下不能透出深色背景）。 */
+.fileview--frame { display: flex; flex-direction: column; overflow: hidden; }
+.fileview__frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; color-scheme: light; }
 .fileview__img { padding: 12px; display: flex; justify-content: center; }
 .fileview__img img { max-width: 100%; border-radius: 10px; }
 .fileview__wait { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 80px 30px; color: var(--fg-subtle); font-size: 14px; text-align: center; }
