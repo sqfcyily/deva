@@ -68,6 +68,8 @@ export interface Store {
   markSeen(sid: string): void
   switchDesk(deskId: string): void
   disconnect(): Promise<void>
+  /** 设置里「管理」删除一台电脑（当前这台 = 断开这台手机）。 */
+  removeComputer(deskId: string): Promise<void>
   rename(name: string): Promise<void>
   notify: NotifyState
   enableNotify(): Promise<void>
@@ -89,6 +91,8 @@ export interface Store {
 }
 
 const SEEN_KEY = (deskId: string): string => `deva.seen.${deskId}`
+/** 删除另一台电脑时临时连过去告别：最多等这么久。 */
+const BYE_TIMEOUT_MS = 10_000
 const INSTALLED_KEY = 'installed'
 
 /** 安卓 Chrome 的 beforeinstallprompt 事件（标准库里没有类型）。 */
@@ -241,6 +245,7 @@ export function App(): React.JSX.Element {
     let alive = true
     setComputer(target.computer || getDesk(deskId)?.computer || '')
     setPairing(target.pairing)
+    ops.reset()
     setSessions(new Map())
     setPersonas(new Map())
     setPrompts(new Map())
@@ -294,7 +299,7 @@ export function App(): React.JSX.Element {
             /* ignore */
           }
         }
-        setSessions(new Map(f.sessions.map((s) => [s.id, s])))
+        setSessions(ops.fromServer(f.sessions))
         setPrompts(new Map(f.prompts.map((p) => [p.view.key, p])))
         setVapid(f.vapid)
         setDevName(f.device.name)
@@ -313,13 +318,14 @@ export function App(): React.JSX.Element {
         return
       }
       case 'sessions':
-        setSessions(new Map(f.list.map((s) => [s.id, s])))
+        setSessions(ops.fromServer(f.list))
         setSyncedAt(Date.now())
         return
       case 'session':
         setSessions((m) => new Map(m).set(f.s.id, f.s))
         return
       case 'session_gone':
+        ops.gone(f.sid)
         setSessions((m) => {
           const next = new Map(m)
           next.delete(f.sid)
@@ -475,6 +481,42 @@ export function App(): React.JSX.Element {
     setTarget(next)
   }, [target])
 
+  // 删除另一台电脑：先从本机删掉凭证和缓存，再临时连一下告诉它移除这台手机。
+  // 连不上（电脑不在线等）就算了，那台电脑的「手机」里仍会列着，可以在电脑上移除。
+  const removeComputer = useCallback(
+    async (deskId: string) => {
+      if (deskId === target?.deskId) return disconnect()
+      const cred = getDesk(deskId)
+      removeDesk(deskId)
+      setDesks(listDesks())
+      await dropDesk(deskId)
+      const auth = cred ? credAuth(cred) : null
+      if (!auth) return
+      const done = (): void => {
+        window.clearTimeout(timer)
+        l.stop()
+      }
+      const l = new Link(
+        deskId,
+        auth,
+        {
+          onPhase: (p) => {
+            if (p.kind === 'ready') {
+              l.send({ t: 'bye' })
+              done()
+            } else if (p.kind === 'auth' || p.kind === 'version') done()
+          },
+          onFrame: () => undefined,
+          onPaired: () => undefined
+        },
+        deviceName()
+      )
+      const timer = window.setTimeout(done, BYE_TIMEOUT_MS)
+      l.start()
+    },
+    [target, disconnect]
+  )
+
   const rename = useCallback(
     async (name: string) => {
       const l = linkRef.current
@@ -546,6 +588,7 @@ export function App(): React.JSX.Element {
       markSeen,
       switchDesk,
       disconnect,
+      removeComputer,
       rename,
       notify,
       enableNotify,
@@ -569,7 +612,7 @@ export function App(): React.JSX.Element {
       outboxOps,
       ops
     }),
-    [link, target, computer, desks, phase, sessions, personas, prompts, hist, seen, syncedAt, vapid, devName, filter, open, back, overlay, toast, act, markSeen, switchDesk, disconnect, rename, notify, enableNotify, disableNotify, textSize, setTextSize, theme, setTheme, installEvt, installed, markInstalled, outbox.outbox, outboxOps, ops]
+    [link, target, computer, desks, phase, sessions, personas, prompts, hist, seen, syncedAt, vapid, devName, filter, open, back, overlay, toast, act, markSeen, switchDesk, disconnect, removeComputer, rename, notify, enableNotify, disableNotify, textSize, setTextSize, theme, setTheme, installEvt, installed, markInstalled, outbox.outbox, outboxOps, ops]
   )
 
   // ───────── 渲染 ─────────

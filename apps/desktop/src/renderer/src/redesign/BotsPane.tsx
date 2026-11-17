@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Bot, ExternalLink, KeyRound, Loader2, Plus, QrCode, RefreshCw, Search, Smartphone, Trash2, UserMinus, X } from 'lucide-react'
+import { ExternalLink, KeyRound, Loader2, Plus, QrCode, RefreshCw, Search, Trash2, UserMinus, X } from 'lucide-react'
 import QRCode from 'qrcode'
 import { useI18n } from '../i18n/i18n'
 import { PhoneDetail, PhoneRow, usePhoneState } from './PhonePane'
+import { PlatformLogo } from './PlatformLogo'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
 import { PersonaFace, parseAvatarSpec } from '../components/humation'
 import { type SessionMeta, useChatState } from '../store/chat'
 import { useExtensions } from '../store/extensions'
-import feishuLogo from '../assets/platforms/feishu.svg'
-import telegramLogo from '../assets/platforms/telegram.svg'
 
 type RemoteState = Awaited<ReturnType<typeof window.deva.remote.getState>>
 type BotView = RemoteState['bots'][number]
@@ -237,20 +236,6 @@ function BotAddMenu({ onPick, phoneAdded }: { onPick: (p: Platform) => void; pho
         </div>
       )}
     </div>
-  )
-}
-
-/** 平台标志：有内置品牌图标的用图标，其余用通用机器人图标。 */
-const PLATFORM_ICONS: Record<string, string> = { feishu: feishuLogo, telegram: telegramLogo }
-
-function PlatformLogo({ platform, size }: { platform: string; size: number }): React.JSX.Element {
-  const icon = PLATFORM_ICONS[platform]
-  if (icon)
-    return <img className="bots-logo bots-logo--img" src={icon} width={size} height={size} alt="" aria-hidden />
-  return (
-    <span className={`bots-logo bots-logo--${platform}`} style={{ width: size, height: size }} aria-hidden>
-      {platform === 'web' ? <Smartphone size={size * 0.6} /> : <Bot size={size * 0.55} />}
-    </span>
   )
 }
 

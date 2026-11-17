@@ -1,26 +1,5 @@
 /* 「手机」面板：顶部固定的「Deva 手机版」（PhonePane.tsx，对比稿 design/mobile-web.html 第 3 节）。 */
 
-.phone-row__ic {
-  flex: none;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--accent);
-  color: var(--accent-fg);
-}
-.bots-logo--web {
-  background: var(--accent);
-  color: var(--accent-fg);
-}
-.phone-row__ic--lg {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-}
-
 /* 二维码框：大小位置始终不变，未开启 / 连接中 / 连不上都盖在上面（参考微信扫码登录）。 */
 .phone-qr {
   position: relative;
@@ -257,117 +236,22 @@
   color: var(--success);
 }
 
-/* 连接方式 */
-/* 连接设置（展开在二维码卡片下半部分）：中转 | 局域网 分段 + 说明；地址 / 端口一行输入 + 保存；下面一行补充说明与链接。 */
-.phone-conn {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 18px 16px;
-  border-top: 1px solid var(--border);
-}
-.phone-conn__row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.phone-conn__row .cf-seg {
-  margin-left: 0;
-}
-.phone-conn__hint {
-  font-size: 12px;
-  color: var(--fg-subtle);
-}
-.phone-field {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.phone-field__label {
-  flex: none;
-  font-size: 12px;
-  color: var(--fg-subtle);
-}
-.phone-field__input {
-  flex: 1;
-  min-width: 0;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
-  color: var(--fg);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  outline: none;
-}
-.phone-field__input::placeholder {
-  color: var(--fg-subtle);
-}
-.phone-field__input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-tint);
-}
-.phone-field__input--port {
-  flex: none;
-  width: 96px;
-}
-.phone-field .bots-btn {
-  flex: none;
-  height: 32px;
-}
-.phone-conn__foot {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--fg-subtle);
-}
-.phone-conn__docs {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  text-decoration: none;
-}
-
-/* ── 方案 C：还没有手机时的大二维码 ── */
-.phone-first {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 28px 0 22px;
-  text-align: center;
-}
-.phone-first h5 {
-  margin: 10px 0 0;
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--fg);
-}
-.phone-first p {
-  margin: 0;
-  font-size: 13px;
-  color: var(--fg-muted);
-}
-.phone-first__line {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.phone-qr.is-lg {
-  width: 224px;
-  height: 224px;
-  padding: 10px;
-  border-radius: 16px;
+/* 扫码时：二维码单独在左；右栏顶对齐，末尾「x 后刷新」一行 +「复制链接」按钮（对比稿 design/phone-connect-panel.html 方案 B 的调整版）。 */
+.phone-panel.is-qr {
+  align-items: flex-start;
 }
 .phone-copy {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 4px;
+}
+.phone-copy .phone-hero__meta {
+  transition: opacity 0.15s ease;
+}
+.phone-copy .phone-hero__meta.is-hidden {
+  opacity: 0;
 }
 
 /* 二维码收着时的连接问题横幅 */
@@ -438,21 +322,12 @@
   margin-top: 6px;
 }
 
-/* 「官方中转 · 端到端加密  连接设置」一行与展开的设置 */
-.phone-via {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 0 2px 12px;
-  font-size: 12px;
-  color: var(--fg-subtle);
+/* 二维码旁「中转 | 局域网」：扫码后手机走哪条路。靠左放在文字列顶部，避开右上角的关闭按钮；
+   .cf-seg 自带 margin-left: auto，且 redesign.css 比本文件后加载，这里要加一级才压得住。 */
+.cf-seg.phone-seg {
+  margin-left: 0;
+  align-self: flex-start;
 }
-.phone-first .phone-via {
-  margin: 2px 0 0;
-}
-.phone-settings {
-  padding: 0;
-}
-.phone-settings .phone-conn {
-  border-top: 0;
+.phone-seg .cf-seg__opt {
+  min-width: 64px;
 }

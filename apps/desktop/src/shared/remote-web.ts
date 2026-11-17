@@ -13,14 +13,22 @@ import type { ActionValue, PromptView } from './remote-views'
  * WebClientFrame / WebServerFrame 是密文里的内容。明文只有握手、心跳与中转发的「电脑不在线」。
  */
 
-export const WEB_PROTOCOL_VERSION = 4
+export const WEB_PROTOCOL_VERSION = 5
+
+/**
+ * 手机新建对话时先定好的对话 id（同电脑端 sess_<时间>_<随机>）：手机不等回执直接进入对话页。
+ * 电脑端只收这个格式（id 会用作对话文件名）。
+ */
+export const PHONE_SID_RE = /^sess_[0-9a-z]{1,12}_[0-9a-z]{1,8}$/
 
 /**
  * Deva 官方中转（Cloudflare Workers）。连接方式选「中转」且没填自己的地址时用它，用户不用做任何设置。
- * 部署见 apps/relay/README.md。目前是测试用的 workers.dev 地址（国内不可达），正式域名定了再换——
+ * 部署见 apps/relay/README.md；域名 m.deva.chat 是在 Cloudflare 控制台绑到 deva-relay 上的（Custom domain），
+ * 不写进 wrangler.toml，免得自建中转的人照着部署时因为没有这个域名而失败。
+ * 必须是 https：手机网页的端到端加密（WebCrypto）、添加到主屏幕与推送都只在安全上下文里可用。
  * 配置里不存这个地址（留空 = 官方），换了以后没自定义的用户自动跟着换；但手机上的凭证按网页域名保存，换域名后手机要重新扫码。
  */
-export const OFFICIAL_RELAY_URL = 'https://deva-relay.devabot.workers.dev'
+export const OFFICIAL_RELAY_URL = 'https://m.deva.chat'
 
 /** 角色（抽屉里的一行）。avatar = Humation 参数（JSON 串，空 = 按 id 生成）；avatarImage = 上传的图片 data URI。 */
 export interface WebPersona {
@@ -148,8 +156,11 @@ export type WebClientFrame =
   /** cid = 客户端临时 id，服务端用 sent 帧回结果。files = 已上传完的文件 id。进行中的对话会作为插入送达。 */
   | { t: 'send'; sid: string; text: string; cid: string; files?: string[] }
   | { t: 'stop'; sid: string }
-  /** 新建对话（按角色）；rid 用 created 帧回。 */
-  | { t: 'new'; rid: string; personaId?: string }
+  /**
+   * 新建对话（按角色）；rid 用 created 帧回。sid 由手机先定好（PHONE_SID_RE），手机不等回执就进入对话页、
+   * 可以接着发消息——帧按顺序到达，电脑先建好对话再处理后面的。
+   */
+  | { t: 'new'; rid: string; personaId?: string; sid: string }
   /** 交互卡上的动作（key = 卡片 key；rid 用 result 帧回）。 */
   | { t: 'action'; rid: string; key: string; value: ActionValue; form?: Record<string, string | string[]> }
   /** 上传：begin → chunk × N（base64url，按 seq 顺序）→ end；电脑端用 upload 帧回。 */

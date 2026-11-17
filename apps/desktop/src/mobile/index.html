@@ -14,9 +14,19 @@
         } catch (e) {}
         var dark = p === 'dark' || (p !== 'light' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches)
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
-        document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#1e1e20' : '#ffffff')
+        // 从主屏幕打开：启动底层（#boot）在时状态栏同启动画面的紫色，页面渲染好后由 theme.ts 改回。
+        var standalone = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', standalone ? '#6540e9' : dark ? '#1e1e20' : '#ffffff')
       })()
     </script>
+    <style>
+      /* 启动底层：与安卓启动画面（manifest 的 background_color + icon-maskable-512.png）同色、标志同大小，
+         从主屏幕打开时接住启动画面，页面渲染好后淡出（splash.ts）。浏览器标签页里不显示。 */
+      #boot { display: none; position: fixed; inset: 0; z-index: 1000; align-items: center; justify-content: center; background: #6540e9; transition: opacity 0.22s ease; }
+      #boot svg { width: min(33vw, 200px); height: auto; }
+      #boot.is-out { opacity: 0; pointer-events: none; }
+      @media (display-mode: standalone) { #boot { display: flex; } }
+    </style>
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Deva" />
@@ -30,6 +40,16 @@
     <title>Deva</title>
   </head>
   <body>
+    <!-- 标志「!D」同 apps/desktop/build/icon.svg；viewBox 只框住标志本身（1024 坐标里的外接框）。 -->
+    <div id="boot" aria-hidden="true">
+      <svg viewBox="285 246 454 532" fill="#fff">
+        <g transform="translate(-27 -26)">
+          <rect x="312" y="272" width="96" height="380" rx="48" />
+          <circle cx="360" cy="756" r="48" />
+          <path d="M468 320 H500 A218 218 0 0 1 500 756 H468" fill="none" stroke="#fff" stroke-width="96" stroke-linejoin="round" />
+        </g>
+      </svg>
+    </div>
     <div id="root"></div>
     <script type="module" src="./main.tsx"></script>
   </body>

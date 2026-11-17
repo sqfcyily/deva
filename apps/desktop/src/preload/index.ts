@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { EffortLevel } from '../shared/effort'
 import type { UpdateState } from '../shared/update'
 import type { DeliverableInfo } from '../shared/deliverables'
-import type { PhoneLinkResult, PhoneMode, PhonePairedEvent, PhoneQrResult, PhoneState } from '../shared/phone'
+import type { PhoneLinkResult, PhonePairedEvent, PhoneQrResult, PhoneState, PhoneVia } from '../shared/phone'
 import type { AgentDraft, AutotaskDraft } from '../shared/drafts'
 import type { BrowserLiveFrame, BrowserUiState } from '../shared/browser'
 import type {
@@ -1190,13 +1190,12 @@ const api = {
     /** 删除 Deva 手机版：已连接的手机全部断开。 */
     remove: (): Promise<PhoneState> => ipcRenderer.invoke('phone:remove'),
     setEnabled: (enabled: boolean): Promise<PhoneState> => ipcRenderer.invoke('phone:set-enabled', enabled),
-    /** 改连接方式 / 自建中转地址 / 局域网端口（启用中会按新设置重连）。 */
-    setMode: (patch: { mode?: PhoneMode; relayUrl?: string; port?: number }): Promise<{ ok: boolean; error?: string }> =>
-      ipcRenderer.invoke('phone:set-mode', patch),
-    /** 新的配对二维码（一次性票据，2 分钟有效）。 */
-    qr: (): Promise<PhoneQrResult> => ipcRenderer.invoke('phone:qr'),
-    /** 网页版的一次性链接（在浏览器中打开 / 复制链接；10 分钟内有效）。 */
-    link: (): Promise<PhoneLinkResult> => ipcRenderer.invoke('phone:link'),
+    /** 重连出错的通道（不等自动重试）。 */
+    retry: (): Promise<{ ok: true }> => ipcRenderer.invoke('phone:retry'),
+    /** 新的配对二维码（一次性票据，2 分钟有效）：via = 扫码后手机走哪条路，对应的通道随之开启。 */
+    qr: (via: PhoneVia): Promise<PhoneQrResult> => ipcRenderer.invoke('phone:qr', via),
+    /** 网页版的一次性链接（复制链接；10 分钟内有效）。 */
+    link: (via: PhoneVia): Promise<PhoneLinkResult> => ipcRenderer.invoke('phone:link', via),
     /** 二维码收起：作废还挂着的配对票据。 */
     qrCancel: (): Promise<{ ok: true }> => ipcRenderer.invoke('phone:qr-cancel'),
     removeDevice: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('phone:remove-device', id),

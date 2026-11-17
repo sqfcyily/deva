@@ -5,8 +5,12 @@ import type { Store, TextSize } from './App'
 import { Dialog } from './dialog'
 import { t } from './strings'
 import type { ThemePref } from './theme'
+import type { DeskCred } from './vault'
 
-/** 设置（抽屉底部进入）：电脑（可连多台）· 提醒与显示 · 这台手机。 */
+/**
+ * 设置（抽屉底部进入）：电脑（可连多台）· 提醒与显示 · 这台手机。
+ * 电脑分组右上「管理」：每行右侧出现「删除」（微信式），点「完成」收起；管理时点行不切换。
+ */
 export function Settings({ store }: { store: Store }): React.JSX.Element {
   const via = location.protocol === 'https:' ? t('viaRelay') : t('viaLan')
   const notifyHint =
@@ -21,6 +25,10 @@ export function Settings({ store }: { store: Store }): React.JSX.Element {
             : t('notifyHint')
   const canToggle = store.notify === 'on' || store.notify === 'off'
   const [dialog, setDialog] = useState<'rename' | 'disconnect' | null>(null)
+  const [managing, setManaging] = useState(false)
+  const [removing, setRemoving] = useState<DeskCred | null>(null)
+  const manage = managing && store.desks.length > 0
+  const pcName = (d: DeskCred): string => d.computer || t('thisComputer')
 
   return (
     <div className="page">
@@ -31,7 +39,14 @@ export function Settings({ store }: { store: Store }): React.JSX.Element {
         <h1 className="tb__t">{t('settings')}</h1>
       </header>
       <div className="scroll set">
-        <div className="set__cap">{t('computers')}</div>
+        <div className="set__cap set__cap--row">
+          {t('computers')}
+          {store.desks.length > 0 && (
+            <button className="set__act" onClick={() => setManaging(!manage)}>
+              {manage ? t('done') : t('manage')}
+            </button>
+          )}
+        </div>
         <div className="group">
           {store.desks.length === 0 && (
             <div className="cell">
@@ -45,13 +60,13 @@ export function Settings({ store }: { store: Store }): React.JSX.Element {
           )}
           {store.desks.map((d) => {
             const cur = d.deskId === store.deskId
-            return (
-              <button key={d.deskId} className="cell" disabled={cur} onClick={() => store.switchDesk(d.deskId)}>
+            const body = (
+              <>
                 <span className={`tile${cur ? '' : ' is-grey'}`}>
                   <Monitor size={19} />
                 </span>
                 <span className="cell__k">
-                  <b>{d.computer || t('thisComputer')}</b>
+                  <b>{pcName(d)}</b>
                   {cur && (
                     <span>
                       <span className={`okdot${store.ready ? '' : ' is-wait'}`} />
@@ -60,11 +75,23 @@ export function Settings({ store }: { store: Store }): React.JSX.Element {
                     </span>
                   )}
                 </span>
+              </>
+            )
+            return manage ? (
+              <div key={d.deskId} className="cell">
+                {body}
+                <button className="cell__del" onClick={() => setRemoving(d)}>
+                  {t('delete')}
+                </button>
+              </div>
+            ) : (
+              <button key={d.deskId} className="cell" disabled={cur} onClick={() => store.switchDesk(d.deskId)}>
+                {body}
                 {cur ? <Check size={18} className="cell__v" /> : <ChevronRight size={17} className="cell__v" />}
               </button>
             )
           })}
-          {window.isSecureContext && !!navigator.mediaDevices?.getUserMedia && (
+          {!manage && window.isSecureContext && !!navigator.mediaDevices?.getUserMedia && (
             <button className="cell" onClick={() => store.setOverlay('scan')}>
               <span className="tile is-grey">
                 <Plus size={19} />
@@ -147,6 +174,20 @@ export function Settings({ store }: { store: Store }): React.JSX.Element {
           onConfirm={(name) => {
             setDialog(null)
             if (name !== store.deviceName) void store.rename(name)
+          }}
+        />
+      )}
+      {removing && (
+        <Dialog
+          title={t('removePcTitle', { pc: pcName(removing) })}
+          message={t('disconnectConfirm', { pc: pcName(removing) })}
+          confirmLabel={t('delete')}
+          danger
+          onCancel={() => setRemoving(null)}
+          onConfirm={() => {
+            const id = removing.deskId
+            setRemoving(null)
+            void store.removeComputer(id)
           }}
         />
       )}

@@ -2,7 +2,7 @@ import { AlarmClock, Archive, ChevronRight, MessageCircle, Monitor, Settings2 } 
 import type { Filter, Store } from './App'
 import { Avatar } from './avatar'
 import { matchFilter } from './home'
-import { t } from './strings'
+import { fmtListTime, t } from './strings'
 
 /**
  * 抽屉（左上角按钮打开，点遮罩关闭；网页版不做边缘滑动打开——Safari 后退与安卓返回手势占着屏幕边缘）。
@@ -36,6 +36,8 @@ export function Drawer({ store, onClose }: { store: Store; onClose: () => void }
               <span>
                 <span className={`okdot${ok ? '' : store.phase.kind === 'offline' ? ' is-off' : ' is-wait'}`} />
                 {ok ? t('connected') : store.phase.kind === 'offline' ? t('offlineShort') : t('connectingTitle')}
+                {/* 不在线时看到的是缓存：注明什么时候同步的。 */}
+                {store.phase.kind === 'offline' && store.syncedAt ? ` · ${t('syncedAt', { t: fmtListTime(store.syncedAt) })}` : ''}
               </span>
             </span>
           </button>

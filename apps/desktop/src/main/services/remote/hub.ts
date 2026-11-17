@@ -1113,9 +1113,11 @@ function genSessionId(): string {
   return `sess_${Date.now().toString(36)}_${randomInt(0, 36 ** 4).toString(36)}`
 }
 
-/** 按角色新建一个对话（不绑定到任何私聊；手机网页端直接用，IM 的 createSession 再绑定）。 */
-export function createSessionFor(channel: ChannelId, personaId?: string): string {
-  const sid = genSessionId()
+/**
+ * 按角色新建一个对话（不绑定到任何私聊；手机网页端直接用，IM 的 createSession 再绑定）。
+ * sid：手机网页端先定好的 id（调用方已校验格式、确认不存在）；缺省现生成。
+ */
+export function createSessionFor(channel: ChannelId, personaId?: string, sid = genSessionId()): string {
   const persona = personaId ? getPersona(personaId) : null
   // 与桌面「新建对话」同形：立即建档（左侧列表可见），模型快照角色偏好（空 = 跟随默认）。
   ensureSession(sid, { personaId, focusRoot: null, model: persona?.model || undefined })

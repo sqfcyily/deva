@@ -1,0 +1,21 @@
+<!-- Deva 手机版：电脑块（靛紫）+ 放在电脑前的手机块（粉，白色星芒），手机外圈从电脑块里挖出间隙。
+     对比稿 design/phone-logo-v2.html 方案 ④，手机上移 80（design/phone-logo-v3.html ②）；电脑上不放标志「!D」（放在左侧不好看，用户否了）。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="34 31 900 900" fill="none">
+  <defs>
+    <linearGradient id="pc" gradientUnits="userSpaceOnUse" x1="96" y1="150" x2="760" y2="720">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#6D3FE8"/>
+    </linearGradient>
+    <linearGradient id="ph" gradientUnits="userSpaceOnUse" x1="610" y1="300" x2="910" y2="830">
+      <stop offset="0" stop-color="#F472B6"/>
+      <stop offset="1" stop-color="#E0479E"/>
+    </linearGradient>
+    <mask id="gap" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="#fff"/>
+      <rect x="560" y="260" width="384" height="600" rx="128" fill="#000"/>
+    </mask>
+  </defs>
+  <rect x="72" y="150" width="712" height="540" rx="132" fill="url(#pc)" mask="url(#gap)"/>
+  <rect x="608" y="308" width="288" height="504" rx="88" fill="url(#ph)"/>
+  <path d="M752 456C769.68 542.32 769.68 542.32 856 560C769.68 577.68 769.68 577.68 752 664C734.32 577.68 734.32 577.68 648 560C734.32 542.32 734.32 542.32 752 456Z" fill="#fff"/>
+</svg>

@@ -42,11 +42,27 @@ const RECONNECT_MIN_MS = 1000
 const RECONNECT_MAX_MS = 15_000
 const OFFLINE_RETRY_MS = 5000
 const REQUEST_TIMEOUT_MS = 20_000
-const PING_EVERY_MS = 25_000
+/**
+ * 连接是否还通：ping 一路经中转到电脑再回 pong（电脑不在线时中转直接回 offline）。
+ * 切到后台、网络切换后，WebSocket 可能还显示「已打开」，实际早就不通了（半开）；只看 readyState 会一直等下去。
+ */
+const PING_EVERY_MS = 20_000
+/** 这么久什么都没收到：当作已断，重连。 */
+const DEAD_AFTER_MS = 50_000
+/** 连上后到收到电脑的 ok（握手 + hello）最多等这么久，等不到就重连（电脑那头的连接可能已断）。 */
+const HANDSHAKE_TIMEOUT_MS = 15_000
+/** 回到前台 / 网络恢复时探一下：发 ping 后这么久没收到任何东西就重连。 */
+const PROBE_MS = 6000
 /** WebSocket 发送缓冲超过这么多时先等一等（上传大文件时）。 */
 const BUFFER_HIGH = 1024 * 1024
 
 type Waiter = { match: (f: WebServerFrame) => boolean; resolve: (f: WebServerFrame | null) => void; timer: number }
+
+/** 手机新建对话的 id（格式见 PHONE_SID_RE）。getRandomValues 在局域网的 http 页面里也能用。 */
+function newSessionId(): string {
+  const r = crypto.getRandomValues(new Uint32Array(1))[0]
+  return `sess_${Date.now().toString(36)}_${r.toString(36)}`
+}
 
 export interface FileResult {
   ok: boolean
@@ -66,6 +82,9 @@ export class Link {
   private attempt = 0
   private timer: number | null = null
   private ping: number | null = null
+  private handshake: number | null = null
+  /** 最近一次收到任何东西的时间。 */
+  private lastRx = 0
   private seq = 0
   private waiters = new Set<Waiter>()
   private channel: SecureChannel | null = null
@@ -113,29 +132,66 @@ export class Link {
     for (const w of [...this.waiters]) this.settle(w, null)
   }
 
-  /** 回到前台 / 网络恢复：不等退避，立刻重连；在线时告诉电脑页面是否在前台。 */
+  /**
+   * 回到前台 / 网络恢复：断着就不等退避立刻重连；看着连着的探一下是不是真的通（后台久了常是半开）；
+   * 在线时告诉电脑页面是否在前台。
+   */
   private onVisible = (): void => {
     if (this.closed) return
     const visible = document.visibilityState === 'visible'
     if (this.ready) this.send({ t: 'visible', visible })
     if (!visible) return
-    if (this.ws && this.ws.readyState <= WebSocket.OPEN) return
     if (this.phase.kind === 'auth' || this.phase.kind === 'version') return
+    const ws = this.ws
+    if (ws?.readyState === WebSocket.OPEN) return this.probe(ws)
+    if (ws?.readyState === WebSocket.CONNECTING) return
     this.attempt = 0
     this.clearTimers()
     this.connect()
   }
 
+  /** 发一个 ping，PROBE_MS 内什么都没收到就当已断、立刻重连。 */
+  private probe(ws: WebSocket): void {
+    const at = Date.now()
+    ws.send('{"t":"ping"}')
+    window.setTimeout(() => {
+      if (this.ws === ws && this.lastRx < at) {
+        this.attempt = 0
+        this.abandon(ws)
+      }
+    }, PROBE_MS)
+  }
+
+  /** 不等浏览器的关闭握手（半开的连接上可能要等很久），直接丢开这条连接，按断线处理。 */
+  private abandon(ws: WebSocket): void {
+    if (this.ws !== ws) return
+    ws.onopen = ws.onmessage = ws.onclose = null
+    try {
+      ws.close()
+    } catch {
+      /* 已断 */
+    }
+    this.onClosed(ws)
+  }
+
   private clearTimers(): void {
     if (this.timer !== null) window.clearTimeout(this.timer)
     this.timer = null
+    this.clearLive()
+  }
+
+  /** 这条连接上的心跳与握手计时。 */
+  private clearLive(): void {
     if (this.ping !== null) window.clearInterval(this.ping)
     this.ping = null
+    if (this.handshake !== null) window.clearTimeout(this.handshake)
+    this.handshake = null
   }
 
   private connect(): void {
     if (this.closed) return
     this.ws?.close()
+    this.clearLive()
     this.channel = null
     if (this.phase.kind !== 'offline') this.setPhase({ kind: 'connecting', step: 0 })
     let ws: WebSocket
@@ -150,10 +206,21 @@ export class Link {
       const a = this.auth
       this.hi = phoneHello(a.kind, a.kind === 'resume' ? a.device : a.id)
       ws.send(JSON.stringify(this.hi.hi))
-      this.ping = window.setInterval(() => ws.readyState === WebSocket.OPEN && ws.send('{"t":"ping"}'), PING_EVERY_MS)
+      this.lastRx = Date.now()
+      this.ping = window.setInterval(() => {
+        if (Date.now() - this.lastRx > DEAD_AFTER_MS) return this.abandon(ws)
+        if (ws.readyState === WebSocket.OPEN) ws.send('{"t":"ping"}')
+      }, PING_EVERY_MS)
+      // 电脑那头的连接不通时中转照样接受手机，只是没人回话：等不到 ok 就重连。
+      this.handshake = window.setTimeout(() => {
+        this.handshake = null
+        if (this.ws === ws && !this.ready) this.abandon(ws)
+      }, HANDSHAKE_TIMEOUT_MS)
     }
     ws.onmessage = (e) => {
-      if (this.ws !== ws || typeof e.data !== 'string') return
+      if (this.ws !== ws) return
+      this.lastRx = Date.now()
+      if (typeof e.data !== 'string') return
       let f: WebPlainServerFrame
       try {
         f = JSON.parse(e.data) as WebPlainServerFrame
@@ -162,17 +229,18 @@ export class Link {
       }
       this.onPlain(f)
     }
-    ws.onclose = () => {
-      if (this.ws !== ws) return
-      this.ws = null
-      this.channel = null
-      if (this.ping !== null) window.clearInterval(this.ping)
-      this.ping = null
-      for (const w of [...this.waiters]) this.settle(w, null)
-      if (this.closed || this.phase.kind === 'auth' || this.phase.kind === 'version') return
-      this.scheduleReconnect()
-    }
+    ws.onclose = () => this.onClosed(ws)
     ws.onerror = () => undefined
+  }
+
+  private onClosed(ws: WebSocket): void {
+    if (this.ws !== ws) return
+    this.ws = null
+    this.channel = null
+    this.clearLive()
+    for (const w of [...this.waiters]) this.settle(w, null)
+    if (this.closed || this.phase.kind === 'auth' || this.phase.kind === 'version') return
+    this.scheduleReconnect()
   }
 
   private scheduleReconnect(): void {
@@ -191,8 +259,14 @@ export class Link {
     switch (f.t) {
       case 'pong':
         return
-      case 'offline':
-        return this.setPhase({ kind: 'offline' })
+      case 'offline': {
+        this.setPhase({ kind: 'offline' })
+        // 中转发完 offline 会断开，但这个关闭不一定送得到（刚接入就断的那种），只等 onclose 会一直卡在「不在线」：
+        // 自己丢开，按「不在线」的间隔重试。
+        const ws = this.ws
+        if (ws) this.abandon(ws)
+        return
+      }
       case 'err':
         if (f.code === 'version') return this.setPhase({ kind: 'version', message: f.message })
         if (f.code === 'auth')
@@ -207,7 +281,7 @@ export class Link {
           // 对面不知道密钥：不是我们的电脑（或中转在捣乱）。按凭证失效处理。
           return this.setPhase({
             kind: 'auth',
-            message: a.kind === 'resume' ? t('removedLead') : t('welcomeLead'),
+            message: a.kind === 'resume' ? t('removedLead') : t('expiredLead'),
             removed: a.kind === 'resume',
             pairing: a.kind !== 'resume'
           })
@@ -240,6 +314,8 @@ export class Link {
         return
       case 'ok':
         this.attempt = 0
+        if (this.handshake !== null) window.clearTimeout(this.handshake)
+        this.handshake = null
         this.setPhase({ kind: 'connecting', step: 2 })
         this.ev.onFrame(f)
         this.setPhase({ kind: 'ready' })
@@ -328,12 +404,16 @@ export class Link {
     return f && f.t === 'sent' ? { ok: f.ok, message: f.message } : { ok: false, message: t('timeout') }
   }
 
-  async newSession(personaId?: string): Promise<{ sid?: string; error?: string }> {
+  /**
+   * 新建对话：对话 id 在手机上先定好，不等电脑回执就能进入对话页、接着发消息（帧按顺序到达，电脑先建好再处理后面的）。
+   * done = 电脑的回执：null = 建好了，否则是出错原因。没连上返回 null。
+   */
+  createSession(personaId?: string): { sid: string; done: Promise<string | null> } | null {
+    const sid = newSessionId()
     const rid = this.id('r')
     const r = this.wait((f) => f.t === 'created' && f.rid === rid)
-    if (!this.send({ t: 'new', rid, personaId })) return { error: t('notConnected') }
-    const f = await r
-    return f && f.t === 'created' ? { sid: f.sid, error: f.error } : { error: t('timeout') }
+    if (!this.send({ t: 'new', rid, personaId, sid })) return null
+    return { sid, done: r.then((f) => (f && f.t === 'created' ? (f.error ?? null) : t('timeout'))) }
   }
 
   async result(frame: (rid: string) => WebClientFrame): Promise<{ ok: boolean; message: string }> {

@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import { b64uDecode, b64uEncode, randomKey } from '../../../../shared/remote-crypto'
+import type { PhoneVia } from '../../../../shared/phone'
 import type { WebPushSub } from '../../../../shared/remote-web'
 import { deleteSecret, getSecret, setSecret } from '../../secrets'
 import { getBot, updateBot, type PairedUser } from '../store'
@@ -17,6 +18,8 @@ import type { ChannelId } from '../types'
 
 export interface PhoneDevice extends PairedUser {
   kind?: 'browser' | 'standalone'
+  /** 走哪条路连的（扫码时定下；每次连上按实际连接更新）。旧数据没有时按迁移前的连接方式补上。 */
+  via?: PhoneVia
   lastSeen?: number
   push?: WebPushSub
 }
@@ -35,7 +38,8 @@ export function getDevice(botId: ChannelId, did: string): PhoneDevice | null {
 export async function createDevice(
   botId: ChannelId,
   name: string,
-  kind: 'browser' | 'standalone'
+  kind: 'browser' | 'standalone',
+  via: PhoneVia
 ): Promise<{ id: string; key: Uint8Array } | null> {
   const id = `d_${randomBytes(8).toString('hex')}`
   const key = randomKey()
@@ -44,7 +48,7 @@ export async function createDevice(
   const now = Date.now()
   updateBot(botId, (b) => ({
     ...b,
-    users: [...b.users, { id, name: name.slice(0, 40) || '手机', chatId: id, pairedAt: now, kind, lastSeen: now } as PhoneDevice]
+    users: [...b.users, { id, name: name.slice(0, 40) || '手机', chatId: id, pairedAt: now, kind, via, lastSeen: now } as PhoneDevice]
   }))
   return { id, key }
 }
@@ -112,7 +116,7 @@ export function issueTicket(kind: TicketKind | 'link'): { id: string; secret: Ui
 
 /**
  * 二维码收起时：二维码的配对票据作废（看不到的码不该继续有效）；复制出去的链接还留着。
- * all = 停用 / 删除 / 换连接方式：链接也一并作废。
+ * all = 停用 / 删除 / 改中转地址或端口：链接也一并作废。
  */
 export function cancelPairTickets(all = false): void {
   for (const [id, t] of tickets) if (t.kind === 'pair' && (all || !t.sticky)) tickets.delete(id)

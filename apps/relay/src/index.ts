@@ -21,6 +21,12 @@ const ID = /^[A-Za-z0-9_-]{8,64}$/
 /** 单帧上限：Cloudflare WebSocket 单条消息 1 MiB（帧是加密后的密文，分块上传 / 下载每块远小于此）。 */
 const MAX_FRAME = 1024 * 1024
 const OFFLINE = JSON.stringify({ t: 'offline' })
+/**
+ * 桌面端心跳：桌面每 20 秒发一条 'ping'，由运行时直接回 'pong'（自动应答，不唤醒 DO、不计费）。
+ * 这么久没 ping 的桌面连接按已断处理：网络切换、电脑睡眠、代理 / 路由器静默丢掉空闲连接时，TCP 是半开的，
+ * 两头都收不到关闭，不检查的话手机会一直等一个不会回话的桌面（一直「连接中」）。
+ */
+const DESK_STALE_MS = 60_000
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -48,7 +54,17 @@ interface PhoneAttachment {
   c: string
 }
 
+/** 桌面连接接入的时间（还没 ping 过时按它算活着）。 */
+interface DeskAttachment {
+  at: number
+}
+
 export class Desk extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env)
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'))
+  }
+
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url)
     const pair = new WebSocketPair()
@@ -62,8 +78,9 @@ export class Desk extends DurableObject<Env> {
       if (!stored) await this.ctx.storage.put('keyHash', hash)
       else if (stored !== hash) return new Response('forbidden', { status: 403 })
       // 同一桌面只保留最新的一条连接（Deva 重启 / 网络切换后的新连接顶掉旧的）。
-      for (const ws of this.ctx.getWebSockets('desk')) ws.close(4000, 'replaced')
+      for (const ws of this.ctx.getWebSockets('desk')) closeQuietly(ws, 4000, 'replaced')
       this.ctx.acceptWebSocket(server, ['desk'])
+      server.serializeAttachment({ at: Date.now() } satisfies DeskAttachment)
       // 已经在等的手机：补发 open，桌面端据此建立连接对象。
       for (const ws of this.ctx.getWebSockets('phone')) {
         const a = ws.deserializeAttachment() as PhoneAttachment | null
@@ -85,8 +102,30 @@ export class Desk extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client })
   }
 
-  private desk(): WebSocket | undefined {
-    return this.ctx.getWebSockets('desk')[0]
+  /**
+   * 在线的桌面连接：心跳正常的里面最新接入的一条（except = 正在关的那条，不算）。
+   *
+   * 同一桌面可能挂着不止一条：旧连接断在半路（半开）时，「顶掉旧连接」的关闭送不到对面，旧连接会一直留在列表里。
+   * 不能只取第一条——那多半正是最老、早就不通的那条：以前手机的帧被转进去没人回（一直「连接中」），
+   * 加了心跳判断后又会把明明在线的电脑说成不在线。心跳停了的顺手关掉。
+   */
+  private desk(except?: WebSocket): WebSocket | undefined {
+    let best: WebSocket | undefined
+    let bestAt = -1
+    for (const ws of this.ctx.getWebSockets('desk')) {
+      if (ws === except) continue
+      const at = (ws.deserializeAttachment() as DeskAttachment | null)?.at ?? 0
+      const pinged = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0
+      if (ws.readyState !== WebSocket.OPEN || Date.now() - Math.max(at, pinged) > DESK_STALE_MS) {
+        closeQuietly(ws, 4001, 'stale')
+        continue
+      }
+      if (at > bestAt) {
+        best = ws
+        bestAt = at
+      }
+    }
+    return best
   }
 
   async webSocketMessage(ws: WebSocket, msg: string | ArrayBuffer): Promise<void> {
@@ -129,8 +168,9 @@ export class Desk extends DurableObject<Env> {
   private gone(ws: WebSocket): void {
     const tags = this.ctx.getTags(ws)
     if (tags.includes('desk')) {
-      // 被新连接顶掉的旧桌面连接：手机仍挂在新连接上，不打扰。（关闭回调期间正在关的这条可能仍在列表里，要排除。）
-      if (this.ctx.getWebSockets('desk').some((s) => s !== ws)) return
+      // 被新连接顶掉的旧桌面连接：手机仍挂在新连接上，不打扰。（关闭回调期间正在关的这条可能仍在列表里，要排除；
+      // 列表里残留的半开旧连接不算在线。）
+      if (this.desk(ws)) return
       for (const p of this.ctx.getWebSockets('phone')) {
         try {
           p.send(OFFLINE)
@@ -143,5 +183,14 @@ export class Desk extends DurableObject<Env> {
     }
     const a = ws.deserializeAttachment() as PhoneAttachment | null
     if (a) this.desk()?.send(JSON.stringify({ t: 'close', c: a.c }))
+  }
+}
+
+/** 关掉一条连接；已经在关 / 已断的会抛错，忽略。 */
+function closeQuietly(ws: WebSocket, code: number, reason: string): void {
+  try {
+    ws.close(code, reason)
+  } catch {
+    /* 已断 */
   }
 }

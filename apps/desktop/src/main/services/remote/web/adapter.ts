@@ -2,6 +2,7 @@ import { BrowserWindow, powerMonitor } from 'electron'
 import { hostname } from 'node:os'
 import { b64uEncode, formatTicket } from '../../../../shared/remote-crypto'
 import {
+  PHONE_SID_RE,
   WEB_PROTOCOL_VERSION,
   type WebClientFrame,
   type WebMessage,
@@ -137,6 +138,11 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
       }
   }
 
+  /** 设备增删改：通知面板（子类可在此做别的，如按设备启停通道）。 */
+  protected devicesChanged(): void {
+    this.opts.onDevicesChanged()
+  }
+
   /** 在线的设备 id。 */
   onlineDevices(): Set<string> {
     return new Set([...this.conns].map((c) => c.device).filter((d): d is string => !!d))
@@ -175,7 +181,7 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
       case 'stop':
         return this.stopTurn(f.sid)
       case 'new':
-        return this.newSession(conn, f.rid, f.personaId)
+        return this.newSession(conn, f.rid, f.personaId, f.sid)
       case 'action':
         return this.action(conn, did, f.rid, f.value, f.form)
       case 'up_begin':
@@ -235,9 +241,9 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
         return conn.close()
       }
       did = conn.auth.id
-      patchDevice(this.id, did, { lastSeen: Date.now(), kind })
+      patchDevice(this.id, did, { lastSeen: Date.now(), kind, via: conn.via })
     } else {
-      const made = await createDevice(this.id, name, kind)
+      const made = await createDevice(this.id, name, kind, conn.via)
       if (!made) {
         conn.send({ t: 'err', code: 'bad_request', message: '电脑上的系统密钥存储不可用，无法安全保存这台手机的凭证。' })
         return conn.close()
@@ -247,7 +253,7 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
       if (conn.auth.kind === 'pair') this.opts.onPaired(did)
     }
     conn.device = did
-    this.opts.onDevicesChanged()
+    this.devicesChanged()
     const vapid = await vapidOf(this.id)
     conn.send({
       t: 'ok',
@@ -400,15 +406,19 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     if (turnId) getChatRuntime()?.abort(turnId)
   }
 
-  private newSession(conn: Conn, rid: unknown, personaId: unknown): void {
+  private newSession(conn: Conn, rid: unknown, personaId: unknown, sid: unknown): void {
     if (typeof rid !== 'string') return
+    // 对话 id 由手机先定好（手机不等回执就进入对话页）。id 会用作对话文件名：格式不对的一律不收。
+    if (typeof sid !== 'string' || !PHONE_SID_RE.test(sid)) return conn.send({ t: 'created', rid, error: '无效的对话编号。' })
+    // 已经建过（同一请求重发）：直接回成功。
+    if (getSession(sid)) return conn.send({ t: 'created', rid, sid })
     let pid: string | undefined
     if (typeof personaId === 'string' && personaId) {
       const p = getPersona(personaId)
       if (!p || !p.enabled) return conn.send({ t: 'created', rid, error: '这个角色已不可用。' })
       pid = personaId
     }
-    const sid = createSessionFor(this.id, pid)
+    createSessionFor(this.id, pid, sid)
     conn.send({ t: 'created', rid, sid })
     this.scheduleList()
   }
@@ -484,14 +494,14 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     if (typeof rid !== 'string') return
     if (!n) return conn.send({ t: 'result', rid, ok: false, message: '名字不能为空。' })
     patchDevice(this.id, did, { name: n })
-    this.opts.onDevicesChanged()
+    this.devicesChanged()
     conn.send({ t: 'result', rid, ok: true, message: '' })
   }
 
   private async bye(did: string): Promise<void> {
     await removeDevice(this.id, did)
     this.dropDevice(did)
-    this.opts.onDevicesChanged()
+    this.devicesChanged()
   }
 
   // ───────── 推送 ─────────

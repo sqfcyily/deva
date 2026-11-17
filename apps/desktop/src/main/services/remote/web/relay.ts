@@ -7,7 +7,15 @@ import type { RawConn, RawHandlers, RawSink } from './conn'
  * 中转把每部手机的连接包成「open / msg / close」信封转过来，这里拆成与内网直连同形的 Conn 交给适配器。
  *
  * 断线自动重连（1s 起指数退避到 30s）；中转拒绝密钥（401 / 403）时放慢到 60s 一次，状态标为错误。
+ *
+ * 心跳：每 20 秒发 'ping'（中转由运行时直接回 'pong'，见 apps/relay），45 秒没收到任何东西就当连接已断、
+ * 断开重连。网络切换、电脑睡眠、代理 / 路由器静默丢掉空闲连接时 TCP 是半开的，两头都收不到关闭：
+ * 不检查的话这边一直显示「已启用」，中转却把手机转给一条不通的连接，手机一直「连接中」。
  */
+
+const PING_EVERY_MS = 20_000
+const DEAD_AFTER_MS = 45_000
+const LOST = '与中转的连接没有响应，正在重连'
 
 export interface RelayClient {
   close(): void
@@ -82,6 +90,8 @@ export function startRelayClient(opts: RelayOptions): RelayClient {
     if (stopped) return
     opts.onState('connecting')
     let rejected = ''
+    let lastRx = Date.now()
+    let beat: ReturnType<typeof setInterval> | null = null
     const sock = new WebSocket(target, {
       headers: { authorization: `Bearer ${opts.key}` },
       handshakeTimeout: 15_000
@@ -96,13 +106,26 @@ export function startRelayClient(opts: RelayOptions): RelayClient {
     })
     sock.on('open', () => {
       attempt = 0
+      lastRx = Date.now()
       opts.onState('on')
+      // 电脑睡眠时定时器停走，醒来后第一跳就会发现很久没收到东西，立刻重连。
+      beat = setInterval(() => {
+        if (Date.now() - lastRx > DEAD_AFTER_MS) {
+          rejected = LOST
+          sock.terminate()
+          return
+        }
+        if (sock.readyState === WebSocket.OPEN) sock.send('ping')
+      }, PING_EVERY_MS)
     })
     sock.on('message', (data, isBinary) => {
+      lastRx = Date.now()
       if (isBinary) return
+      const text = data.toString()
+      if (text === 'pong') return
       let env: RelayToDesk
       try {
-        env = JSON.parse(data.toString()) as RelayToDesk
+        env = JSON.parse(text) as RelayToDesk
       } catch {
         return
       }
@@ -139,11 +162,15 @@ export function startRelayClient(opts: RelayOptions): RelayClient {
       if (!rejected) rejected = `连不上中转：${e.message}`
     })
     sock.on('close', () => {
+      if (beat) clearInterval(beat)
+      beat = null
       if (ws === sock) ws = null
       dropAll()
       if (stopped) return
       const auth = /密钥/.test(rejected)
-      opts.onState('error', rejected || '与中转的连接断开，正在重连')
+      // 心跳发现的断线：多半一重连就好，按「连接中」显示，不闪「连接失败」。
+      if (rejected === LOST) opts.onState('connecting')
+      else opts.onState('error', rejected || '与中转的连接断开，正在重连')
       attempt++
       schedule(auth ? 60_000 : Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5)))
     })

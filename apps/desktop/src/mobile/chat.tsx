@@ -7,7 +7,7 @@ import { Markdown, PromptCard } from './cards'
 import { ChatMenu } from './chat-menu'
 import { Composer } from './composer'
 import { AttachmentThumb, FileCard } from './files'
-import { Banner } from './onboard'
+import { LinkStatus } from './onboard'
 import type { Outgoing } from './outbox'
 import { fmtDuration, t } from './strings'
 
@@ -108,12 +108,14 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
           <ChevronLeft size={26} strokeWidth={1.8} />
         </button>
         {session && <SessionFace s={session} personas={store.personas} size={36} still />}
-        <b className="tb__title">{session?.title ?? ''}</b>
+        <div className="tb__tw">
+          <b className="tb__title">{session?.title ?? ''}</b>
+          <LinkStatus store={store} />
+        </div>
         <button className="ib" aria-label={t('more')} disabled={!session} onClick={() => setMenu(true)}>
           <MoreHorizontal size={23} strokeWidth={1.8} />
         </button>
       </header>
-      <Banner store={store} />
       <div className="scroll msgs" ref={listRef} onScroll={onScroll}>
         {history && history.start > 0 && <div className="msgs__more">{ready ? <span className="spin" /> : t('loadMore')}</div>}
         {empty && <div className="empty">{t('chatEmpty')}</div>}

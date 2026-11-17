@@ -4,49 +4,69 @@ import { hostname } from 'node:os'
 import QRCode from 'qrcode'
 import { formatTicket } from '../../../../shared/remote-crypto'
 import { OFFICIAL_RELAY_URL } from '../../../../shared/remote-web'
-import type { PhoneDeviceView, PhoneLinkResult, PhoneMode, PhoneQrResult, PhoneState } from '../../../../shared/phone'
+import type { PhoneDeviceView, PhoneLinkResult, PhoneLinkStatus, PhoneQrResult, PhoneState, PhoneVia } from '../../../../shared/phone'
 import { isEn } from '../../../locale'
 import { deleteSecretsByPrefix, getSecret, setSecret } from '../../secrets'
 import { onHubChange, startChannel, stopChannel } from '../hub'
-import { DEFAULT_SCOPE, addBot, deleteBot, listBots, updateBot, type BotConfig } from '../store'
+import { DEFAULT_SCOPE, addBot, deleteBot, getBot, listBots, updateBot, type BotConfig } from '../store'
 import type { AdapterHost, ChannelId } from '../types'
 import { PhoneAdapter, removeDevice } from './adapter'
+import type { RawSink } from './conn'
 import { cancelPairTickets, consumeTicket, deviceKey, failTicket, issueTicket, listDevices, ticketSecret, type PhoneDevice } from './devices'
 import { createSecureGate, type SecretResult } from './secure'
-import { relayPageUrl, relayWsBase, startRelayClient, type RelayClient } from './relay'
+import { relayPageUrl, startRelayClient, type RelayClient } from './relay'
 import { lanAddresses, startLanServer, type LanServer } from './server'
 
 /**
- * Deva 手机版的电脑端入口（单例）：「手机」面板（图标栏左下角）顶部固定的「Deva 手机版」。
+ * Deva 手机版的电脑端入口（单例）：「手机」面板（图标栏左下角）里的「Deva 手机版」。
  *
- * 存为一个 platform = 'web' 的机器人（hub 往它推交互卡与通知，已配对用户 = 设备），不在机器人列表里显示，
- * 不能添加也不能删除。连接方式三选一：官方中转（默认）/ 自建中转 / 仅局域网。
+ * 存为一个 platform = 'web' 的机器人（hub 往它推交互卡与通知，已配对用户 = 设备），用户在面板的 + 里添加后才有，最多一个。
  *
- * 配对：面板上的二维码 = 中转页面（或局域网地址）+ 桌面 id + 一次性配对票据，手机扫码打开即自动连接（不用输任何东西）。
+ * 连接方式在扫码时选（对比稿 design/phone-conn.html 方案 D）：中转（地址留空 = Deva 官方中转）或局域网直连。
+ * 手机网页从哪个地址打开就只走那一路，所以「走哪条路」是设备的属性（PhoneDevice.via），不是全局开关。
+ * 两条通道按需运行：有手机走它、或正在显示它的二维码 / 复制的链接还没过期时才开；最后一台局域网手机移除后端口自动关闭。
+ *
+ * 配对：二维码 = 中转页面（或局域网地址）+ 桌面 id + 一次性配对票据，手机扫码打开即自动连接（不用输任何东西）。
  */
 
 const WEB_PORT_DEFAULT = 17800
+/** 二维码 / 链接到期后通道再开这么久：刚扫上的手机可能还在加载页面。 */
+const HOLD_GRACE_MS = 30_000
+/** 二维码收起后通道再留这么久才关。 */
+const RELEASE_DELAY_MS = 5_000
 const SECRET_KEY = (id: ChannelId, field: string): string => `remote:${id}:${field}`
 
 interface PhoneSettings {
-  mode: PhoneMode
   relayUrl: string
   port: number
   deskId: string
+  /** 扫码默认选的方式（上次选的）。 */
+  lastVia: PhoneVia
 }
 
 function settingsOf(bot: BotConfig): PhoneSettings {
   const s = bot.settings
   const legacyRelay = s.relay && typeof s.relay === 'object' ? (s.relay as Record<string, unknown>) : null
-  const relayUrl = typeof s.relayUrl === 'string' ? s.relayUrl : typeof legacyRelay?.url === 'string' ? legacyRelay.url : ''
-  // 旧设置：official = 官方中转（不带自定义地址）；custom = 自建中转；更早的「手机网页」开了中转的算自建中转。
-  const mode: PhoneMode = s.mode === 'lan' ? 'lan' : 'relay'
+  // 旧版：mode = official / custom / relay / lan（二选一）；更早的「手机网页」开了中转的算自建中转。
+  const relayUrl =
+    s.mode === 'official'
+      ? ''
+      : typeof s.relayUrl === 'string'
+        ? s.relayUrl
+        : legacyRelay?.enabled === true && typeof legacyRelay.url === 'string'
+          ? legacyRelay.url
+          : ''
   return {
-    mode,
-    relayUrl: s.mode === 'official' ? '' : s.mode === 'custom' || s.mode === 'relay' || legacyRelay?.enabled === true ? relayUrl : '',
+    relayUrl,
     port: typeof s.port === 'number' && s.port >= 1024 && s.port <= 65535 ? Math.floor(s.port) : WEB_PORT_DEFAULT,
-    deskId: typeof s.deskId === 'string' && s.deskId ? s.deskId : randomBytes(8).toString('hex')
+    deskId: typeof s.deskId === 'string' && s.deskId ? s.deskId : randomBytes(8).toString('hex'),
+    lastVia: s.lastVia === 'lan' || s.lastVia === 'relay' ? s.lastVia : s.mode === 'lan' ? 'lan' : 'relay'
   }
+}
+
+/** 设备走哪条路（旧数据迁移时已补上，缺省按中转）。 */
+function viaOf(d: PhoneDevice): PhoneVia {
+  return d.via === 'lan' ? 'lan' : 'relay'
 }
 
 /**
@@ -61,10 +81,18 @@ function phoneBot(): BotConfig | null {
   const cur = webs[0]
   if (!cur) return null
   const s = settingsOf(cur)
-  // 规范化：写回新版设置项，去掉旧版的 relay / lan / tokens。
-  if (cur.settings.mode !== s.mode || cur.settings.relayUrl !== s.relayUrl || cur.settings.deskId !== s.deskId || 'tokens' in cur.settings) {
-    updateBot(cur.id, (b) => ({ ...b, scope: DEFAULT_SCOPE, settings: { ...s } }))
-    return { ...cur, settings: { ...s } }
+  const old = cur.settings
+  const legacy = 'mode' in old || 'relay' in old || 'lan' in old || 'tokens' in old
+  if (legacy || old.relayUrl !== s.relayUrl || old.port !== s.port || old.deskId !== s.deskId || old.lastVia !== s.lastVia) {
+    // 旧版只运行一种连接方式：已连接的手机都走它，补上 via。
+    const oldVia: PhoneVia = old.mode === 'lan' ? 'lan' : 'relay'
+    updateBot(cur.id, (b) => ({
+      ...b,
+      scope: DEFAULT_SCOPE,
+      settings: { ...s },
+      users: b.users.map((u) => ((u as PhoneDevice).via ? u : ({ ...u, via: oldVia } as PhoneDevice)))
+    }))
+    return getBot(cur.id) ?? cur
   }
   return cur
 }
@@ -89,19 +117,25 @@ function addPhoneBot(): BotConfig {
   return bot
 }
 
-function relayUrlOf(s: PhoneSettings): string {
-  return s.mode === 'relay' ? s.relayUrl || OFFICIAL_RELAY_URL : ''
-}
-
 // ───────── 运行时 ─────────
 
-type Status = PhoneState['status']
+const OFF: PhoneLinkStatus = { state: 'off' }
 
-/** 正在运行的手机通道（启用时才有）。 */
+/** 正在运行的手机通道（启用时才有）：中转、局域网两条通道按需启停。 */
 class PhoneChannel extends PhoneAdapter {
-  status: Status = { state: 'connecting' }
+  links: Record<PhoneVia, PhoneLinkStatus> = { relay: OFF, lan: OFF }
+  private hub: AdapterHost | null = null
+  private gate: RawSink | null = null
   private relay: RelayClient | null = null
+  /** 每开一次中转加一：旧客户端关掉后（或同步回调早于赋值时）的状态回调据此认出来。 */
+  private relayGen = 0
   private lan: LanServer | null = null
+  private closed = false
+  /** 扫码（qr）/ 复制的链接（link）要求通道开到什么时候。 */
+  private holds: Record<PhoneVia, { qr: number; link: number }> = { relay: { qr: 0, link: 0 }, lan: { qr: 0, link: 0 } }
+  private holdTimer: ReturnType<typeof setTimeout> | null = null
+  /** 启停一律串行，免得两次调整交错。 */
+  private queue: Promise<void> = Promise.resolve()
 
   constructor(
     id: ChannelId,
@@ -113,16 +147,12 @@ class PhoneChannel extends PhoneAdapter {
     super(id, { deskId: settings.deskId, onDevicesChanged, onPaired })
   }
 
-  private setStatus(state: Status['state'], error?: string, host?: AdapterHost): void {
-    this.status = { state, error }
-    if (host) host.onState(state === 'on' ? 'connected' : state === 'off' ? 'off' : state, error)
-    this.onStatus()
-  }
-
   async start(host: AdapterHost): Promise<void> {
     await super.start(host)
+    this.hub = host
+    this.closed = false
     const id = this.id
-    const gate = createSecureGate({
+    this.gate = createSecureGate({
       sink: this,
       lookup: async (auth): Promise<SecretResult> => {
         if (auth.kind === 'resume') {
@@ -145,37 +175,157 @@ class PhoneChannel extends PhoneAdapter {
         if (auth.kind !== 'resume') failTicket(auth.id)
       }
     })
-    const s = this.settings
-    if (s.mode === 'lan') {
-      try {
-        this.lan = await startLanServer(s.port, gate)
-        this.setStatus('on', undefined, host)
-      } catch (e) {
-        this.setStatus('error', (e as Error)?.message ?? String(e), host)
-      }
-      return
-    }
-    const url = relayUrlOf(s)
-    if (!url) return this.setStatus('error', '还没有可用的中转地址，请在「连接方式」里填写，或改用仅局域网。', host)
-    const key = await deskKey(id)
-    if (!key) return this.setStatus('error', '系统密钥存储不可用，无法安全保存中转密钥。', host)
-    this.setStatus('connecting', undefined, host)
-    this.relay = startRelayClient({
-      url,
-      deskId: s.deskId,
-      key,
-      sink: gate,
-      onState: (state, error) => this.setStatus(state, state === 'error' ? error : undefined, host)
-    })
+    this.report()
+    await this.sync()
   }
 
   async stop(): Promise<void> {
+    this.closed = true
+    if (this.holdTimer) clearTimeout(this.holdTimer)
+    this.holdTimer = null
+    await this.queue
+    this.relayGen++
     this.relay?.close()
     this.relay = null
     const lan = this.lan
     this.lan = null
     await super.stop()
     if (lan) await lan.close()
+  }
+
+  /** 设备增删（扫码配对、移除、手机自己断开）：顺带按设备启停通道。 */
+  protected override devicesChanged(): void {
+    super.devicesChanged()
+    void this.sync()
+  }
+
+  /** 扫码 / 复制链接：让这条通道开到票据过期之后。扫码换了方式时，另一条不再为扫码开着。 */
+  hold(via: PhoneVia, kind: 'qr' | 'link', until: number): Promise<void> {
+    if (kind === 'qr') {
+      this.holds.relay.qr = 0
+      this.holds.lan.qr = 0
+      this.holds[via].qr = until + HOLD_GRACE_MS
+    } else this.holds[via].link = Math.max(this.holds[via].link, until + HOLD_GRACE_MS)
+    return this.sync()
+  }
+
+  /**
+   * 二维码收起：通道不再为扫码开着（复制出去的链接照旧）。留几秒再关：
+   * 「再连一台」、切回这个页面等马上又要出码的情况不必重连一遍。
+   */
+  releaseQr(): Promise<void> {
+    const soon = Date.now() + RELEASE_DELAY_MS
+    this.holds.relay.qr = Math.min(this.holds.relay.qr, soon)
+    this.holds.lan.qr = Math.min(this.holds.lan.qr, soon)
+    return this.sync()
+  }
+
+  /** 重试：只重启出错的通道。 */
+  retry(): Promise<void> {
+    return this.serial(async () => {
+      if (this.links.relay.state === 'error') await this.closeLink('relay')
+      if (this.links.lan.state === 'error') await this.closeLink('lan')
+      await this.reconcile()
+    })
+  }
+
+  /** 按「有没有手机在用 / 是否在扫码」启停两条通道。 */
+  sync(): Promise<void> {
+    return this.serial(() => this.reconcile())
+  }
+
+  private serial(fn: () => Promise<void>): Promise<void> {
+    this.queue = this.queue.then(fn).catch((e) => console.warn('[remote/web] 手机通道调整失败：', (e as Error)?.message ?? e))
+    return this.queue
+  }
+
+  private wanted(via: PhoneVia): boolean {
+    const now = Date.now()
+    const h = this.holds[via]
+    return h.qr > now || h.link > now || listDevices(this.id).some((d) => viaOf(d) === via)
+  }
+
+  private async reconcile(): Promise<void> {
+    if (this.closed || !this.gate) return
+    for (const via of ['relay', 'lan'] as const) {
+      const running = via === 'relay' ? !!this.relay : !!this.lan
+      if (!this.wanted(via)) {
+        if (running || this.links[via].state !== 'off') await this.closeLink(via)
+      } else if (!running && this.links[via].state !== 'error') {
+        // 出错的（端口被占用、密钥库不可用）不自动反复重试，等用户点重试或改设置。
+        await (via === 'relay' ? this.openRelay() : this.openLan())
+      }
+    }
+    this.scheduleHoldExpiry()
+  }
+
+  private async openRelay(): Promise<void> {
+    const url = this.settings.relayUrl || OFFICIAL_RELAY_URL
+    if (!url) return this.setLink('relay', 'error', '还没有可用的中转地址，请填写自己部署的中转地址，或改用局域网连接。')
+    const key = await deskKey(this.id)
+    if (!key) return this.setLink('relay', 'error', '系统密钥存储不可用，无法安全保存中转密钥。')
+    if (this.closed || !this.gate) return
+    this.setLink('relay', 'connecting')
+    const gen = ++this.relayGen
+    this.relay = startRelayClient({
+      url,
+      deskId: this.settings.deskId,
+      key,
+      sink: this.gate,
+      onState: (state, error) => {
+        if (gen === this.relayGen) this.setLink('relay', state, state === 'error' ? error : undefined)
+      }
+    })
+  }
+
+  private async openLan(): Promise<void> {
+    if (!this.gate) return
+    this.setLink('lan', 'connecting')
+    try {
+      this.lan = await startLanServer(this.settings.port, this.gate)
+      this.setLink('lan', 'on')
+    } catch (e) {
+      this.setLink('lan', 'error', (e as Error)?.message ?? String(e))
+    }
+  }
+
+  private async closeLink(via: PhoneVia): Promise<void> {
+    if (via === 'relay') {
+      const relay = this.relay
+      this.relay = null
+      this.relayGen++
+      relay?.close()
+    } else {
+      const lan = this.lan
+      this.lan = null
+      if (lan) await lan.close()
+    }
+    this.setLink(via, 'off')
+  }
+
+  /** 扫码 / 链接的保留期到了就再调整一次（通道可能该关了）。 */
+  private scheduleHoldExpiry(): void {
+    if (this.holdTimer) clearTimeout(this.holdTimer)
+    this.holdTimer = null
+    const now = Date.now()
+    const next = Math.min(
+      ...(['relay', 'lan'] as const).flatMap((v) => [this.holds[v].qr, this.holds[v].link]).filter((t) => t > now),
+      Infinity
+    )
+    if (next !== Infinity) this.holdTimer = setTimeout(() => void this.sync(), next - now + 50)
+  }
+
+  private setLink(via: PhoneVia, state: PhoneLinkStatus['state'], error?: string): void {
+    this.links = { ...this.links, [via]: { state, error } }
+    this.report()
+    this.onStatus()
+  }
+
+  /** 报给 hub 的总状态：有通道出错算出错，有通道在连算连接中。 */
+  private report(): void {
+    const ls = [this.links.relay, this.links.lan]
+    const err = ls.find((l) => l.state === 'error')
+    this.hub?.onState(err ? 'error' : ls.some((l) => l.state === 'connecting') ? 'connecting' : 'connected', err?.error)
   }
 }
 
@@ -245,63 +395,46 @@ export function registerPhoneIpc(getWindow: () => BrowserWindow | null): void {
     return publicState()
   })
 
-  ipcMain.handle(
-    'phone:set-mode',
-    async (_e, patch: { mode?: unknown; relayUrl?: unknown; port?: unknown }): Promise<{ ok: boolean; error?: string }> => {
-      const bot = phoneBot()
-      if (!bot) return { ok: false, error: '请先添加 Deva 手机版。' }
-      const cur = settingsOf(bot)
-      const next: PhoneSettings = { ...cur }
-      if (patch.mode === 'relay' || patch.mode === 'lan') next.mode = patch.mode
-      if (typeof patch.relayUrl === 'string') {
-        const url = patch.relayUrl.trim()
-        if (url && !relayWsBase(url)) return { ok: false, error: '中转地址无效，应形如 https://relay.example.com' }
-        // 填的就是官方地址：按「用官方」存（留空），官方以后换地址也跟着换。
-        next.relayUrl = relayWsBase(url) === relayWsBase(OFFICIAL_RELAY_URL) ? '' : url
-      }
-      if (typeof patch.port === 'number') {
-        if (!Number.isInteger(patch.port) || patch.port < 1024 || patch.port > 65535)
-          return { ok: false, error: '端口须在 1024–65535 之间。' }
-        next.port = patch.port
-      }
-      updateBot(bot.id, (b) => ({ ...b, settings: { ...next } }))
-      // 换了连接方式：旧二维码指向的地址已不对，作废。
-      if (next.mode !== cur.mode || next.relayUrl !== cur.relayUrl || next.port !== cur.port) cancelPairTickets(true)
-      await launch()
-      return { ok: true }
-    }
-  )
+  ipcMain.handle('phone:retry', async (): Promise<{ ok: true }> => {
+    await channel?.retry()
+    return { ok: true }
+  })
 
-  /** 带一次性配对票据的网页地址（二维码与「在浏览器中打开 / 复制链接」共用）。 */
-  const pairLink = (kind: 'pair' | 'link'): PhoneLinkResult => {
+  /** 带一次性配对票据的网页地址（二维码与「复制链接」共用）：按所选方式给中转页面或局域网地址。 */
+  const pairLink = async (kind: 'pair' | 'link', viaArg: unknown): Promise<PhoneLinkResult> => {
     const bot = phoneBot()
     if (!bot || !bot.enabled || !channel) return { ok: false, error: '请先启用 Deva 手机版。' }
+    const via: PhoneVia = viaArg === 'lan' ? 'lan' : 'relay'
     const s = settingsOf(bot)
     let base: string | null
-    if (s.mode === 'lan') {
+    if (via === 'lan') {
       const ip = lanAddresses()[0]
       base = ip ? `http://${ip}:${s.port}/` : null
       if (!base) return { ok: false, error: '没有找到可用的局域网地址，请检查网络连接。' }
     } else {
-      base = relayPageUrl(relayUrlOf(s))
+      base = relayPageUrl(s.relayUrl || OFFICIAL_RELAY_URL)
       if (!base) return { ok: false, error: '中转地址无效。' }
     }
+    // 记下这次选的方式：下次扫码默认还用它。
+    if (s.lastVia !== via) updateBot(bot.id, (b) => ({ ...b, settings: { ...b.settings, lastVia: via } }))
     const t = issueTicket(kind)
+    await channel.hold(via, kind === 'pair' ? 'qr' : 'link', t.expiresAt)
     const q = new URLSearchParams({ d: s.deskId, p: formatTicket(t.id, t.secret), n: hostname().slice(0, 40) })
     return { ok: true, url: `${base}#${q.toString()}`, expiresAt: t.expiresAt }
   }
 
-  ipcMain.handle('phone:qr', async (): Promise<PhoneQrResult> => {
-    const r = pairLink('pair')
+  ipcMain.handle('phone:qr', async (_e, via: unknown): Promise<PhoneQrResult> => {
+    const r = await pairLink('pair', via)
     if (!r.ok) return r
     return { ...r, qr: await QRCode.toDataURL(r.url, { margin: 1, width: 440, errorCorrectionLevel: 'M' }) }
   })
 
-  // 不方便扫码时：直接在浏览器里打开网页版（本机或把链接发到手机上），链接 10 分钟内有效、只能用一次。
-  ipcMain.handle('phone:link', (): PhoneLinkResult => pairLink('link'))
+  // 不方便扫码时：复制一次性链接（发到手机上点开，或在别的设备的浏览器里打开），10 分钟内有效、只能用一次。
+  ipcMain.handle('phone:link', (_e, via: unknown): Promise<PhoneLinkResult> => pairLink('link', via))
 
-  ipcMain.handle('phone:qr-cancel', (): { ok: true } => {
+  ipcMain.handle('phone:qr-cancel', async (): Promise<{ ok: true }> => {
     cancelPairTickets()
+    await channel?.releaseQr()
     return { ok: true }
   })
 
@@ -310,6 +443,7 @@ export function registerPhoneIpc(getWindow: () => BrowserWindow | null): void {
     if (typeof did === 'string' && bot) {
       channel?.dropDevice(did)
       await removeDevice(bot.id, did)
+      await channel?.sync()
       push()
     }
     return { ok: true }
@@ -323,23 +457,16 @@ export function registerPhoneIpc(getWindow: () => BrowserWindow | null): void {
 export function publicState(): PhoneState {
   const bot = phoneBot()
   const s = settingsOf(bot ?? ({ settings: {} } as BotConfig))
-  if (!bot)
-    return {
-      added: false,
-      enabled: false,
-      mode: s.mode,
-      relayUrl: s.relayUrl,
-      port: s.port,
-      officialUrl: OFFICIAL_RELAY_URL,
-      status: { state: 'off' },
-      devices: []
-    }
+  // 中转地址、局域网端口不在界面上显示和修改，只在配置文件里改（apps/relay/README.md）。
+  const base = { lastVia: s.lastVia }
+  if (!bot) return { added: false, enabled: false, ...base, links: { relay: OFF, lan: OFF }, devices: [] }
   const online = channel?.onlineDevices() ?? new Set<string>()
   const devices: PhoneDeviceView[] = listDevices(bot.id)
     .map((d: PhoneDevice) => ({
       id: d.id,
       name: d.name || '手机',
       kind: d.kind,
+      via: viaOf(d),
       pairedAt: d.pairedAt,
       lastSeen: d.lastSeen,
       online: online.has(d.id),
@@ -349,11 +476,8 @@ export function publicState(): PhoneState {
   return {
     added: true,
     enabled: bot.enabled,
-    mode: s.mode,
-    relayUrl: s.relayUrl,
-    port: s.port,
-    officialUrl: OFFICIAL_RELAY_URL,
-    status: bot.enabled ? (channel?.status ?? { state: 'connecting' }) : { state: 'off' },
+    ...base,
+    links: bot.enabled && channel ? { ...channel.links } : { relay: OFF, lan: OFF },
     devices
   }
 }

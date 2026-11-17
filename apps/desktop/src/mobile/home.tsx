@@ -3,7 +3,7 @@ import { AlarmClock, Archive, ArchiveRestore, ChevronLeft, Menu, Search, SquareP
 import type { WebSession } from '../shared/remote-web'
 import type { Filter, Store } from './App'
 import { Avatar, SessionFace } from './avatar'
-import { Banner, InstallTip } from './onboard'
+import { InstallTip, LinkStatus } from './onboard'
 import { SessionSheet } from './session-ops'
 import { fmtListTime, t } from './strings'
 import { SwipeRow } from './swipe'
@@ -50,7 +50,6 @@ const ACT_W = 78
 export function Home({ store }: { store: Store }): React.JSX.Element {
   const [searching, setSearching] = useState(false)
   const [query, setQuery] = useState('')
-  const [creating, setCreating] = useState(false)
   /** 左滑打开着的那一行（同时只开一行）与它是否已点过一次删除。 */
   const [swiped, setSwiped] = useState<{ id: string; confirm: boolean } | null>(null)
   const [sheet, setSheet] = useState<string | null>(null)
@@ -65,15 +64,11 @@ export function Home({ store }: { store: Store }): React.JSX.Element {
     return q ? all.filter((s) => s.title.toLowerCase().includes(q) || s.preview.toLowerCase().includes(q)) : all
   }, [store.sessions, filter, q])
 
-  const compose = async (): Promise<void> => {
-    // 在某个角色的列表里：直接用这个角色新建。
-    if (filter.kind === 'persona' && store.link) {
-      if (creating) return
-      setCreating(true)
-      const r = await store.link.newSession(filter.id)
-      setCreating(false)
-      if (r.sid) store.open({ name: 'chat', sid: r.sid })
-      else store.toast(r.error ?? t('errorTitle'), false)
+  const compose = (): void => {
+    // 在某个角色的列表里：直接用这个角色新建（不等电脑回执，立刻进入对话页）。
+    if (filter.kind === 'persona') {
+      const sid = store.ops.create(filter.id)
+      if (sid) store.open({ name: 'chat', sid })
       return
     }
     store.setOverlay('new')
@@ -103,7 +98,10 @@ export function Home({ store }: { store: Store }): React.JSX.Element {
             />
           </div>
         ) : (
-          <h1 className="tb__t">{filterTitle(store, filter)}</h1>
+          <div className="tb__tw">
+            <h1 className="tb__t">{filterTitle(store, filter)}</h1>
+            <LinkStatus store={store} />
+          </div>
         )}
         <button
           className="ib"
@@ -121,12 +119,11 @@ export function Home({ store }: { store: Store }): React.JSX.Element {
           {searching ? <X size={22} strokeWidth={1.8} /> : <Search size={22} strokeWidth={1.8} />}
         </button>
         {!searching && filter.kind !== 'archived' && (
-          <button className="ib" aria-label={t('newChat')} disabled={!store.ready || creating} onClick={() => void compose()}>
+          <button className="ib" aria-label={t('newChat')} disabled={!store.ready} onClick={compose}>
             <SquarePen size={22} strokeWidth={1.8} />
           </button>
         )}
       </header>
-      <Banner store={store} />
       <div className="scroll" onScroll={() => swiped && setSwiped(null)}>
         <InstallTip store={store} />
         {list.length === 0 ? (
@@ -250,20 +247,13 @@ function SessionRow({
   )
 }
 
-/** 新对话：选一个角色，直接进入。 */
+/** 新对话：选一个角色，直接进入（不等电脑回执）。 */
 export function NewChatSheet({ store, onClose }: { store: Store; onClose: () => void }): React.JSX.Element {
-  const [busy, setBusy] = useState(false)
   const personas = [...store.personas.values()].filter((p) => p.enabled)
-  const pick = async (pid: string): Promise<void> => {
-    if (!store.link || busy) return
-    setBusy(true)
-    const r = await store.link.newSession(pid)
-    setBusy(false)
-    if (r.sid) store.open({ name: 'chat', sid: r.sid })
-    else {
-      store.toast(r.error ?? t('errorTitle'), false)
-      onClose()
-    }
+  const pick = (pid: string): void => {
+    const sid = store.ops.create(pid)
+    if (sid) store.open({ name: 'chat', sid })
+    else onClose()
   }
   return (
     <div className="dim" onClick={onClose}>
@@ -274,7 +264,7 @@ export function NewChatSheet({ store, onClose }: { store: Store; onClose: () => 
         </div>
         <div className="sheet__list">
           {personas.map((p) => (
-            <button key={p.id} className="prow" disabled={busy} onClick={() => void pick(p.id)}>
+            <button key={p.id} className="prow" onClick={() => pick(p.id)}>
               <Avatar persona={p} size={44} />
               <span className="prow__k">
                 <b>{p.name}</b>

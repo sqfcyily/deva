@@ -8,8 +8,8 @@ import type { Link } from './link'
 import { fmtListTime, t } from './strings'
 
 /**
- * 对话操作：归档 / 取消归档、删除、切换模型，以及归档后的「撤销」提示条与长按弹出的操作面板。
- * 归档、删除先改本地列表再等电脑回执，失败了改回来并提示。
+ * 对话操作：新建、归档 / 取消归档、删除、切换模型，以及归档后的「撤销」提示条与长按弹出的操作面板。
+ * 新建、归档、删除都先改本地列表再等电脑回执，失败了改回来并提示。
  */
 
 export interface Snack {
@@ -20,6 +20,14 @@ export interface Snack {
 }
 
 export interface SessionOps {
+  /** 新建对话：立刻放上占位、返回对话 id（直接进入对话页），不等电脑回执；没连上返回 null。 */
+  create(personaId: string): string | null
+  /** 电脑发来的完整对话列表 → 本地列表：刚新建、电脑列表里还没有的对话保留占位。 */
+  fromServer(list: WebSession[]): Map<string, WebSession>
+  /** 电脑说某个对话没了：不再为它保留占位。 */
+  gone(sid: string): void
+  /** 换了电脑：清掉所有占位。 */
+  reset(): void
   archive(sid: string, archived: boolean): Promise<void>
   remove(sid: string): Promise<void>
   setModel(sid: string, ref: string): Promise<boolean>
@@ -38,6 +46,8 @@ export function useSessionOps(
 ): SessionOps {
   const [snack, setSnack] = useState<Snack | null>(null)
   const models = useRef<WebModel[] | null>(null)
+  /** 手机刚新建、电脑列表里还没出现的对话（占位）。不留着的话，先到的旧列表会把它冲掉，对话页以为对话被删了而退回列表。 */
+  const pending = useRef(new Map<string, WebSession>())
 
   useEffect(() => {
     if (!snack) return
@@ -55,6 +65,42 @@ export function useSessionOps(
       }),
     [setSessions]
   )
+
+  const create = useCallback(
+    (personaId: string): string | null => {
+      const c = linkRef.current?.createSession(personaId)
+      if (!c) {
+        toast(t('notConnected'), false)
+        return null
+      }
+      const now = Date.now()
+      // 同电脑端空对话的样子（标题「新对话」），电脑列表到了就换成真的那条。
+      const draft: WebSession = { id: c.sid, title: t('newChat'), personaId, createdAt: now, updatedAt: now, preview: '', busy: false, waiting: false, kind: 'chat' }
+      pending.current.set(c.sid, draft)
+      put(draft, c.sid)
+      void c.done.then((err) => {
+        if (!err) return
+        // 没建成：撤掉占位（停在这个对话页的会自动回到列表）。
+        pending.current.delete(c.sid)
+        put(undefined, c.sid)
+        toast(err, false)
+      })
+      return c.sid
+    },
+    [linkRef, put, toast]
+  )
+
+  const fromServer = useCallback((list: WebSession[]): Map<string, WebSession> => {
+    const m = new Map(list.map((s) => [s.id, s]))
+    for (const [id, s] of pending.current) {
+      if (m.has(id)) pending.current.delete(id)
+      else m.set(id, s)
+    }
+    return m
+  }, [])
+
+  const gone = useCallback((sid: string) => void pending.current.delete(sid), [])
+  const reset = useCallback(() => pending.current.clear(), [])
 
   const archive = useCallback(
     async (sid: string, archived: boolean): Promise<void> => {
@@ -79,6 +125,7 @@ export function useSessionOps(
       const l = linkRef.current
       const prev = sessionsRef.current.get(sid)
       if (!l) return
+      pending.current.delete(sid)
       put(undefined, sid)
       const r = await l.result((rid) => ({ t: 'delete', rid, sid }))
       if (!r.ok) {
@@ -108,7 +155,7 @@ export function useSessionOps(
 
   const dismissSnack = useCallback(() => setSnack(null), [])
 
-  return { archive, remove, setModel, loadModels, snack, dismissSnack }
+  return { create, fromServer, gone, reset, archive, remove, setModel, loadModels, snack, dismissSnack }
 }
 
 /** 底部的撤销提示条（归档后 4 秒）。 */
@@ -126,6 +173,23 @@ export function SnackBar({ snack, onDone }: { snack: Snack | null; onDone: () =>
         {snack.action}
       </button>
     </div>
+  )
+}
+
+/** 删除对话的二次确认（长按面板、对话页「更多」共用）：说明 + 「取消 | 删除对话」同一排，取消在左（同 Dialog）。 */
+export function DeleteConfirm({ onCancel, onDelete }: { onCancel: () => void; onDelete: () => void }): React.JSX.Element {
+  return (
+    <>
+      <p className="sheet__warn">{t('deleteWarn')}</p>
+      <div className="sheet__pair">
+        <button className="btn" onClick={onCancel}>
+          {t('cancel')}
+        </button>
+        <button className="btn btn--danger" onClick={onDelete}>
+          {t('deleteChat')}
+        </button>
+      </div>
+    </>
   )
 }
 
@@ -151,17 +215,7 @@ export function SessionSheet({ store, s, onClose }: { store: Store; s: WebSessio
           </span>
         </div>
         {confirm ? (
-          <>
-            <p className="sheet__warn">{t('deleteWarn')}</p>
-            <button className="act is-danger" onClick={() => run(() => void store.ops.remove(s.id))}>
-              <Trash2 size={22} strokeWidth={1.8} />
-              {t('deleteChat')}
-            </button>
-            <button className="act" onClick={onClose}>
-              <span className="act__pad" />
-              {t('cancel')}
-            </button>
-          </>
+          <DeleteConfirm onCancel={onClose} onDelete={() => run(() => void store.ops.remove(s.id))} />
         ) : (
           <>
             {s.archived ? (

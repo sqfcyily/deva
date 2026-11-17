@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Bell, Check, CloudOff, QrCode, SquarePlus, Share, Unlink, RefreshCw } from 'lucide-react'
+import { Bell, Check, Lock, QrCode, SquarePlus, Share, RefreshCw } from 'lucide-react'
+import { ConnectArt } from './connect-art'
 import type { LinkPhase } from './link'
 import type { Store } from './App'
 import { isIOS, isStandalone } from './push'
-import { fmtListTime, t } from './strings'
+import { t } from './strings'
 import { prefGet, prefSet, type DeskCred } from './vault'
 
 /** Deva 标志（apps/desktop/build/icon.svg）。 */
@@ -26,17 +27,21 @@ export function Logo({ size = 72 }: { size?: number }): React.JSX.Element {
   )
 }
 
-/** 首次连接（扫码 / 主屏幕图标首次打开）：电脑名 + 三步。正常一两秒就结束。 */
+/**
+ * 首次连接（扫码 / 主屏幕图标首次打开）：连接插图 + 三步。正常一两秒就结束。
+ * 初始页与连接过程的样式见对比稿 design/mobile-welcome.html 方案 B。
+ */
 export function Splash({ computer, phase }: { computer: string; phase: LinkPhase }): React.JSX.Element {
   // 握手回应到达 = 二维码有效且加密已建立（前两项同时完成）；收到 ok = 同步完成。
   const done = phase.kind === 'ready' ? 3 : phase.kind === 'connecting' ? (phase.step === 0 ? 0 : 2) : 0
   const offline = phase.kind === 'offline'
   const items = [t('stepTicket'), t('stepSecure'), t('stepSync')]
   return (
-    <div className="state">
-      <Logo size={76} />
-      <h2>{offline ? t('offlineTitle', { pc: computer || t('thisComputer') }) : t('connectingTitle')}</h2>
-      {computer && !offline && <span className="state__pc">{computer}</span>}
+    <div className="state state--art">
+      <ConnectArt state={offline ? 'broken' : 'flow'} />
+      <h2>
+        {offline ? t('offlineTitle', { pc: computer || t('thisComputer') }) : computer ? t('connectingTo', { pc: computer }) : t('connectingTitle')}
+      </h2>
       {offline ? (
         <p>{t('offlineHintNoCache')}</p>
       ) : (
@@ -88,26 +93,34 @@ export function StatePage({
   const canScan = window.isSecureContext && !!navigator.mediaDevices?.getUserMedia
   const title =
     kind === 'welcome' ? t('welcomeTitle') : kind === 'expired' ? t('expiredTitle') : kind === 'removed' ? t('removedTitle') : t('versionTitle')
-  const lead = kind === 'welcome' ? t('welcomeLead') : kind === 'removed' ? t('removedLead') : kind === 'expired' ? t('expiredLead') : message
+  const lead = kind === 'removed' ? t('removedLead') : kind === 'expired' ? t('expiredLead') : kind === 'version' ? message : undefined
   return (
-    <div className="state">
-      {kind === 'welcome' ? (
-        <Logo size={76} />
+    <div className={`state${kind === 'version' ? '' : ' state--art'}`}>
+      {kind === 'version' ? (
+        <span className="illus">
+          <RefreshCw size={42} strokeWidth={1.5} />
+        </span>
       ) : (
-        <span className="illus">{kind === 'removed' ? <Unlink size={42} strokeWidth={1.5} /> : kind === 'version' ? <RefreshCw size={42} strokeWidth={1.5} /> : <QrCode size={42} strokeWidth={1.5} />}</span>
+        <ConnectArt state={kind === 'welcome' ? 'idle' : 'broken'} />
       )}
       <h2>{title}</h2>
       {lead && <p>{lead}</p>}
-      {others.length > 0 && (
-        <div className="state__list">
-          {others.map((d) => (
-            <button key={d.deskId} className="btn btn--wide" onClick={() => onSwitch?.(d.deskId)}>
-              {t('continueWith', { pc: d.computer || t('thisComputer') })}
-            </button>
+      {kind === 'welcome' && (
+        <div className="guide">
+          {(['guide1', 'guide2', 'guide3'] as const).map((k, i) => (
+            <div key={k} className="guide__row">
+              <span className="guide__n">{i + 1}</span>
+              <span>{emphasize(t(k))}</span>
+            </div>
           ))}
         </div>
       )}
       <div className="state__foot">
+        {others.map((d) => (
+          <button key={d.deskId} className="btn btn--line btn--wide" onClick={() => onSwitch?.(d.deskId)}>
+            {t('continueWith', { pc: d.computer || t('thisComputer') })}
+          </button>
+        ))}
         {kind === 'version' ? (
           <button className="btn btn--primary btn--wide" onClick={() => location.reload()}>
             <RefreshCw size={18} />
@@ -121,13 +134,28 @@ export function StatePage({
             </button>
           )
         )}
+        {kind === 'welcome' && (
+          <span className="state__e2e">
+            <Lock size={13} />
+            {t('e2eNote')}
+          </span>
+        )}
       </div>
     </div>
   )
 }
 
-/** 列表上方的连接提示：电脑不在线（显示缓存）/ 断线重连中。连接正常时什么都不显示。 */
-export function Banner({ store }: { store: Store }): React.JSX.Element | null {
+/** 文案里「」括起来的词加粗（界面上的入口名）。 */
+function emphasize(text: string): React.ReactNode {
+  return text.split(/(「[^」]*」)/).map((part, i) => (part.startsWith('「') ? <b key={i}>{part}</b> : part))
+}
+
+/**
+ * 标题后面的连接状态：断线重连中 / 电脑不在线，连接正常时什么都不显示。
+ * 只占标题行、不插在内容上方：切到别的应用再回来会断线重连，插进来的提示会让列表和消息上下跳。
+ * 同步时间在抽屉里（drawer.tsx）。
+ */
+export function LinkStatus({ store }: { store: Store }): React.JSX.Element | null {
   const [late, setLate] = useState(false)
   const connecting = store.phase.kind === 'connecting'
   // 断线重连：两秒内恢复的不打扰。
@@ -136,22 +164,13 @@ export function Banner({ store }: { store: Store }): React.JSX.Element | null {
     const id = window.setTimeout(() => setLate(true), 2000)
     return () => window.clearTimeout(id)
   }, [connecting])
-  if (store.phase.kind === 'offline')
-    return (
-      <div className="banner">
-        <CloudOff size={19} strokeWidth={1.8} />
-        <span className="banner__k">
-          <b>{t('offlineTitle', { pc: store.computer })}</b>
-          {store.syncedAt ? t('offlineHint', { t: fmtListTime(store.syncedAt) }) : t('offlineHintNoCache')}
-        </span>
-      </div>
-    )
+  if (store.phase.kind === 'offline') return <span className="tb__st">· {t('pcOffline')}</span>
   if (connecting && late && store.syncedAt)
     return (
-      <div className="banner banner--thin">
+      <span className="tb__st">
         <span className="spin" />
-        {t('reconnecting')}
-      </div>
+        {t('reconnectingShort')}
+      </span>
     )
   return null
 }

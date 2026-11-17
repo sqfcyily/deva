@@ -3,6 +3,7 @@ import { AlarmClock, Archive, ArchiveRestore, Check, ChevronLeft, ChevronRight, 
 import type { WebModel, WebSession } from '../shared/remote-web'
 import type { Store } from './App'
 import { Avatar, SessionFace } from './avatar'
+import { DeleteConfirm } from './session-ops'
 import { t } from './strings'
 
 /**
@@ -31,25 +32,15 @@ export function ChatMenu({ store, s, onClose }: { store: Store; s: WebSession; o
               </span>
             </div>
             {view === 'delete' ? (
-              <>
-                <p className="sheet__warn">{t('deleteWarn')}</p>
-                <button
-                  className="act is-danger"
-                  onClick={() =>
-                    run(() => {
-                      store.back()
-                      void store.ops.remove(s.id)
-                    })
-                  }
-                >
-                  <Trash2 size={22} strokeWidth={1.8} />
-                  {t('deleteChat')}
-                </button>
-                <button className="act" onClick={() => setView('main')}>
-                  <span className="act__pad" />
-                  {t('cancel')}
-                </button>
-              </>
+              <DeleteConfirm
+                onCancel={() => setView('main')}
+                onDelete={() =>
+                  run(() => {
+                    store.back()
+                    void store.ops.remove(s.id)
+                  })
+                }
+              />
             ) : (
               <div className="sheet__list">
                 <div className="info">

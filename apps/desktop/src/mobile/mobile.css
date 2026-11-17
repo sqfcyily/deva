@@ -48,6 +48,11 @@ code, pre { font-family: var(--font-mono); }
 
 /* ───────── 外壳 ───────── */
 .app { position: relative; height: 100dvh; max-width: 760px; margin: 0 auto; overflow: hidden; background: var(--bg); }
+/* 同原生应用：界面文字默认不可选中、长按不弹系统菜单。只在局部禁选不够——iOS 长按到不可选中的地方时，
+   会把外层容器（整个对话列表）的文字一片选中。只放开要复制的内容：消息正文、文件预览、输入框
+   （输入框必须放开，否则 iOS 上可能点不进去）。 */
+.app { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.u, .bb, .md, .note, .fileview__text, input, textarea { user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
 .page { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
 .scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 /* 电脑浏览器里打开时滚动条细一些（手机上本来就是浮动滚动条）。 */
@@ -58,6 +63,12 @@ code, pre { font-family: var(--font-mono); }
 .tb--sub { gap: 6px; border-bottom: 1px solid var(--border); padding-left: 2px; padding-right: 6px; }
 .tb__title { flex: 1; min-width: 0; font-size: 16.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb__t { flex: 1; min-width: 0; margin: 0; padding: 0 6px; font-size: 18px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 标题 + 连接状态（onboard.tsx LinkStatus）：只占标题行，不挤动下面的内容；标题过长时先省略标题。 */
+.tb__tw { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.tb__tw > .tb__t, .tb__tw > .tb__title { flex: 0 1 auto; }
+.tb__tw > .tb__t { padding-right: 0; }
+.tb__st { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--fg-subtle); white-space: nowrap; }
+.tb__st .spin { width: 12px; height: 12px; border-width: 1.5px; border-top-color: var(--fg-subtle); }
 .tb__who { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
 .tb__who b { font-size: 16px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tb__who span { font-size: 12.5px; color: var(--fg-subtle); display: flex; align-items: center; gap: 3px; white-space: nowrap; overflow: hidden; }
@@ -91,7 +102,7 @@ code, pre { font-family: var(--font-mono); }
 .swipe__act.is-arch.is-off { opacity: .55; }
 .swipe__act.is-del { background: var(--danger); }
 .swipe__act.is-wide { font-size: 15px; }
-.swipe__row { position: relative; display: block; background: var(--bg); touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: transform .22s cubic-bezier(.2,.8,.2,1); cursor: pointer; outline: 0; }
+.swipe__row { position: relative; display: block; background: var(--bg); touch-action: pan-y; transition: transform .22s cubic-bezier(.2,.8,.2,1); cursor: pointer; outline: 0; }
 .swipe__row.is-drag { transition: none; }
 .swipe__row:active .row { background: var(--bg-hover); }
 .row__main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
@@ -102,12 +113,6 @@ code, pre { font-family: var(--font-mono); }
 .row__pv { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row__pv .flag { color: var(--danger); }
 .row__task { flex: none; color: var(--fg-subtle); }
-
-.banner { flex: none; display: flex; gap: 10px; align-items: flex-start; margin: 2px 12px 6px; padding: 10px 12px; border-radius: 14px; background: var(--bg-panel); color: var(--fg-muted); }
-.banner > svg { flex: none; margin-top: 1px; }
-.banner__k { display: flex; flex-direction: column; gap: 2px; font-size: 13px; line-height: 1.5; color: var(--fg-subtle); }
-.banner__k b { font-size: 14.5px; font-weight: 600; color: var(--fg); }
-.banner--thin { align-items: center; padding: 8px 12px; font-size: 13px; color: var(--fg-subtle); }
 
 .tip { margin: 4px 12px 8px; padding: 14px; border-radius: 18px; background: var(--accent-tint); display: flex; flex-direction: column; gap: 12px; }
 .tip__t { display: flex; gap: 12px; align-items: center; }
@@ -177,6 +182,9 @@ code, pre { font-family: var(--font-mono); }
 .sheet__whok b { font-size: 16px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sheet__whok span { font-size: 13px; color: var(--fg-subtle); }
 .sheet__warn { margin: 0; padding: 14px 22px 6px; font-size: 14px; line-height: 1.6; color: var(--fg-muted); }
+/* 删除确认：「取消 | 删除对话」同一排、等宽（session-ops.tsx DeleteConfirm）。 */
+.sheet__pair { display: flex; gap: 10px; padding: 12px 20px 4px; }
+.sheet__pair .btn { flex: 1; height: 48px; border-radius: 14px; font-size: 16px; }
 .sheet__nav { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 12px 6px 6px; }
 .sheet__nav b { font-size: 17px; font-weight: 650; }
 .sheet__sec { padding: 12px 22px 4px; font-size: 12.5px; color: var(--fg-subtle); }
@@ -220,6 +228,9 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 .btn:disabled { opacity: .45; }
 .btn--primary { background: var(--accent); color: var(--accent-fg); }
 .btn--ghost { background: transparent; color: var(--fg-muted); }
+.btn--line { background: transparent; border: 1px solid var(--border-strong); font-weight: 500; }
+/* 浅红底红字：深色下 --danger 偏亮，白字压在上面看不清。 */
+.btn--danger { background: color-mix(in srgb, var(--danger) 13%, transparent); color: var(--danger); }
 .btn--wide { width: 100%; height: 50px; border-radius: 15px; font-size: 16px; }
 .linkbtn { color: var(--accent); font-size: 13.5px; padding: 4px 0; }
 
@@ -227,9 +238,24 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 .state { flex: 1; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: calc(24px + env(safe-area-inset-top)) 34px calc(140px + env(safe-area-inset-bottom)); text-align: center; }
 .state h2 { margin: 8px 0 0; font-size: 22px; font-weight: 700; }
 .state p { margin: 0; max-width: 340px; font-size: 15px; line-height: 1.65; color: var(--fg-muted); }
-.state__pc { font-size: 15px; color: var(--fg-muted); }
-.state__list { display: flex; flex-direction: column; gap: 8px; align-self: stretch; margin-top: 8px; }
 .state__foot { position: absolute; left: 24px; right: 24px; bottom: calc(40px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 8px; }
+.state__e2e { display: inline-flex; align-items: center; justify-content: center; gap: 5px; margin-top: 4px; font-size: 12.5px; color: var(--fg-subtle); }
+.state__e2e svg { flex: none; }
+/* 初始页 / 连接过程：顶部一张电脑连手机的插图（connect-art.tsx），内容从上往下排。对比稿 design/mobile-welcome.html 方案 B。 */
+.state--art { justify-content: flex-start; padding-top: calc(64px + env(safe-area-inset-top)); }
+.state--art h2 { margin-top: 14px; }
+.art { flex: none; width: 230px; height: 130px; }
+.art__dot { fill: var(--fg-subtle); }
+.art__dot.is-off { fill: var(--border-strong); }
+.art__x { stroke: var(--warning); stroke-width: 3; stroke-linecap: round; fill: none; }
+.art__flow .art__dot { animation: art-flow 1.4s linear infinite; }
+.art__flow .art__dot:nth-child(2) { animation-delay: .47s; }
+.art__flow .art__dot:nth-child(3) { animation-delay: .94s; }
+@keyframes art-flow { 0% { opacity: .15; } 30% { opacity: 1; } 60%, 100% { opacity: .15; } }
+.guide { align-self: stretch; margin-top: 14px; padding: 16px; border-radius: 16px; background: var(--bg-panel); display: flex; flex-direction: column; gap: 14px; text-align: left; }
+.guide__row { display: flex; align-items: flex-start; gap: 12px; font-size: 14.5px; line-height: 1.5; }
+.guide__row b { font-weight: 600; white-space: nowrap; }
+.guide__n { flex: none; width: 24px; height: 24px; margin-top: -1px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); display: inline-flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
 .state--sheet { height: auto; padding: 8px 28px 4px; }
 .illus { width: 96px; height: 96px; border-radius: 28px; background: var(--bg-panel); color: var(--fg-subtle); display: inline-flex; align-items: center; justify-content: center; }
 .illus--accent { background: var(--accent-tint); color: var(--accent); }
@@ -381,6 +407,12 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 /* ───────── 设置 ───────── */
 .set { padding: 0 16px calc(24px + env(safe-area-inset-bottom)); background: var(--bg); }
 .set__cap { padding: 16px 6px 6px; font-size: 13px; color: var(--fg-subtle); }
+/* 分组标题右侧的文字按钮（电脑分组的「管理 / 完成」）：负边距放大点按区域，不撑高标题。 */
+.set__cap--row { display: flex; align-items: baseline; justify-content: space-between; }
+.set__act { margin: -8px -6px; padding: 8px 6px; font-size: 14px; color: var(--accent); }
+/* 管理时每行右侧的「删除」（浅红底红字，同删除对话）。 */
+.cell__del { flex: none; height: 30px; padding: 0 13px; border-radius: 15px; font-size: 13.5px; font-weight: 600; background: color-mix(in srgb, var(--danger) 13%, transparent); color: var(--danger); }
+.cell__del:active { opacity: .75; }
 .group { border-radius: 16px; background: var(--bg-panel); overflow: hidden; }
 .cell { width: 100%; display: flex; align-items: center; gap: 12px; min-height: 54px; padding: 11px 14px; }
 button.cell:active:not(:disabled) { background: var(--bg-hover); }
