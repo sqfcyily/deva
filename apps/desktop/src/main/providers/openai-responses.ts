@@ -1,4 +1,5 @@
-import { describeNetError, httpFetch } from '../http'
+import { describeNetError } from '../http'
+import { fetchModel } from './request'
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
@@ -140,7 +141,7 @@ export async function* streamResponses(
 
   let res: Response
   try {
-    res = await httpFetch(url, {
+    res = await fetchModel(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

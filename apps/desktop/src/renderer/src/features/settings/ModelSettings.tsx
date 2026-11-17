@@ -385,15 +385,14 @@ export function ModelSettings(): React.JSX.Element {
               {t('common.back')}
             </button>
             <div className="provider-detail__spacer" />
-            {selectedProvider.kind === 'custom' && (
-              <button
-                className="icon-btn provider-detail__del"
-                title={t('models.deleteProvider')}
-                onClick={() => void onDeleteProvider()}
-              >
-                <Trash2 size={15} />
-              </button>
-            )}
+            {/* 官方服务商同样可删（恢复为初始状态，见 store/models.tsx removeProvider） */}
+            <button
+              className="icon-btn provider-detail__del"
+              title={t('models.deleteProvider')}
+              onClick={() => void onDeleteProvider()}
+            >
+              <Trash2 size={15} />
+            </button>
             <span className="provider-detail__enable">{t('models.enableProvider')}</span>
             <Switch
               checked={selectedProvider.enabled}
