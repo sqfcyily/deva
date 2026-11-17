@@ -435,7 +435,11 @@ export function MemberAsks({
               </button>
             )}
             {/* 卡片常驻（收起只是折叠），收起再展开时作答到一半的选择还在。 */}
-            <Fold className="cf-mask__fold" open={isOpen} instant={instant}>
+            <Fold
+              className={`cf-mask__fold${card.kind === 'plan' ? ' cf-mask__fold--plan' : ''}`}
+              open={isOpen}
+              instant={instant}
+            >
               <div className="cf-mask__card">
                 <BlockView
                   block={card}
