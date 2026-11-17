@@ -38,6 +38,8 @@ export interface Conn {
   device?: string
   /** 页面是否在前台（visible 帧）。 */
   visible: boolean
+  /** 正看着的对话（最近要过它的最新一页）：进行中有新内容直接推过去（见 adapter pushTurn）。 */
+  viewing?: string
   send(frame: WebServerFrame): void
   close(): void
 }

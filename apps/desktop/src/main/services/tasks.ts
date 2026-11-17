@@ -486,6 +486,19 @@ export function setTaskRunner(fn: TaskRunner | null): void {
   runNowImpl = fn
 }
 
+export type RunNowResult = { ok: boolean; reason?: string; already?: 'running' | 'queued' }
+
+/**
+ * 立即运行：委托 scheduler 的串行队列（未装载则优雅降级）。电脑端界面（IPC）与手机版共用。
+ * 同一任务已在运行 / 排队时不重复入队，经 already 告知（仍 ok:true——不是错误，只是无需再跑）。
+ */
+export function runTaskNow(id: string): RunNowResult {
+  if (!runNowImpl) return { ok: false, reason: 'scheduler-not-ready' }
+  if (!getTask(id)) return { ok: false, reason: 'not-found' }
+  const r = runNowImpl(id)
+  return r === 'enqueued' ? { ok: true } : { ok: true, already: r }
+}
+
 // ── IPC ──────────────────────────────────────────────────────────────────────
 
 /** 任务读写 IPC（全局；持久化于 ~/.deva/tasks.json）。 */
@@ -514,16 +527,5 @@ export function registerTasksIpc(getWindow: () => BrowserWindow | null): void {
     (_e, schedule: TaskSchedule, locale: 'zh-CN' | 'en', allowPast?: boolean): PreviewScheduleResult =>
       previewSchedule(schedule, locale === 'en' ? 'en' : 'zh-CN', allowPast === true)
   )
-  // 立即运行：委托 scheduler 的串行队列（未装载则优雅降级）。
-  // 同一任务已在运行 / 排队时不重复入队，经 already 告知渲染层（仍 ok:true——不是错误，只是无需再跑）。
-  ipcMain.handle(
-    'tasks:run-now',
-    (_e, id: string): { ok: boolean; reason?: string; already?: 'running' | 'queued' } => {
-      if (!runNowImpl) return { ok: false, reason: 'scheduler-not-ready' }
-      const t = getTask(id)
-      if (!t) return { ok: false, reason: 'not-found' }
-      const r = runNowImpl(id)
-      return r === 'enqueued' ? { ok: true } : { ok: true, already: r }
-    }
-  )
+  ipcMain.handle('tasks:run-now', (_e, id: string): RunNowResult => runTaskNow(id))
 }

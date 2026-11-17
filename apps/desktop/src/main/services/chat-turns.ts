@@ -55,6 +55,7 @@ import {
   type StoredSession
 } from './chat-store'
 import {
+  ATTACHMENTS_ONLY_QUESTION,
   buildAttachmentPart
 } from './attachments'
 import { isEn } from '../locale'
@@ -948,7 +949,7 @@ async function startTurn(
   }
   // 读附件期间另一端可能抢先起了一轮：落历史前再确认一次。
   if (historyLocked(sessionId)) throw busyError()
-  const question = effectiveText.trim() || (parts.length ? '请理解并处理上述附件。' : '')
+  const question = effectiveText.trim() || (parts.length ? ATTACHMENTS_ONLY_QUESTION : '')
   const withNotes = (s: string): string => (notes.length ? `${s}\n（${notes.join('；')}）` : s)
   const questionText = withNotes(question)
   // 技能展开改写了正文：气泡仍显示用户的原话（重开对话、手机端、成员读主对话都按它），技能全文只给模型。

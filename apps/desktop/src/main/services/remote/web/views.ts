@@ -1,9 +1,11 @@
 import { basename } from 'node:path'
 import type { DisplayMessage } from '../../../../shared/chat-protocol'
-import type { WebAttachment, WebMessage, WebModel, WebPart, WebPersona } from '../../../../shared/remote-web'
+import { agentReceipt, askReceipt, autotaskReceipt, planReceipt } from '../../../../shared/remote-receipts'
+import type { WebAttachment, WebMessage, WebModel, WebPart, WebPersona, WebReceipt } from '../../../../shared/remote-web'
 import type { ContentPart } from '../../../providers/types'
 import type { ChatSessionMeta, StoredSession } from '../../chat-store'
 import { AUTO_SHAPE, isAvatarShape } from '../../../../shared/avatar-shape'
+import { ATTACHMENTS_ONLY_QUESTION } from '../../attachments'
 import { getConfig } from '../../config'
 import { resolveDefaultModel, resolveModelRefOrNull } from '../../model-resolve'
 import { getPersona, listPersonas } from '../../personas'
@@ -26,15 +28,18 @@ const NOTICE_TEXT: Record<string, string> = {
 }
 
 /**
- * 展示投影 → 手机端消息。助手的一轮按段拆开：两次工具调用之间写的话是一段（一个气泡），交付的文件、提示跟在
- * 它出现的位置；进行中插入的消息拆成一条用户消息排在中间。什么都不剩的返回空数组。
+ * 展示投影 → 手机端消息。助手的一轮按段拆开：两次工具调用之间写的话是一段（一个气泡），交付的文件、提示、处理过的
+ * 交互卡的回执跟在它出现的位置；进行中插入的消息拆成一条用户消息排在中间。什么都不剩的返回空数组。
+ * running = 这是进行中的那一轮：还没处理的计划在投影里和「审阅已结束」长得一样（都没有决定），这时不出回执。
  */
-export function toWebMessages(m: DisplayMessage, index: number): WebMessage[] {
+export function toWebMessages(m: DisplayMessage, index: number, running = false): WebMessage[] {
   const out: WebMessage[] = []
   const id = (): string => (out.length ? `${index}.${out.length}` : String(index))
   if (m.role === 'user') {
     if (m.quiet) return out
-    const text = m.task ? [m.task.title, m.task.quote].filter(Boolean).join('\n') || m.text : m.text
+    let text = m.task ? [m.task.title, m.task.quote].filter(Boolean).join('\n') || m.text : m.text
+    // 只发了附件：代填的那句提问不是用户说的，不显示（同手机上发出时的样子）。
+    if (m.attachments.length && text === ATTACHMENTS_ONLY_QUESTION) text = ''
     if (!text.trim() && !m.attachments.length) return out
     const attachments: WebAttachment[] = m.attachments.map((a) => ({ name: a.name, kind: a.kind, ref: a.ref }))
     out.push({ id: id(), role: 'user', text, attachments: attachments.length ? attachments : undefined, notify: m.notify })
@@ -56,6 +61,11 @@ export function toWebMessages(m: DisplayMessage, index: number): WebMessage[] {
     endText()
     parts.push({ k: 'note', text })
   }
+  // 还没处理的卡片不出回执：手机上显示的是那张卡本身（对话末尾）。
+  const receipt = (r: WebReceipt | null): void => {
+    endText()
+    if (r) parts.push(r)
+  }
   for (const b of m.blocks) {
     if (b.kind === 'text') texts.push(b.text)
     else if (b.kind === 'insert') {
@@ -73,14 +83,41 @@ export function toWebMessages(m: DisplayMessage, index: number): WebMessage[] {
     } else if (b.kind === 'notice') note(NOTICE_TEXT[b.code] ?? b.code)
     else if (b.kind === 'error') note(`出错：${b.message}`)
     else if (b.kind === 'compaction') note(b.steps ? `此前 ${b.steps} 步已压缩为摘要` : '较早的对话已压缩为摘要')
-    else if (b.kind === 'agentcard')
-      note(`角色名片「${b.draft.name || '新角色'}」· ${b.status === 'accepted' ? '已添加' : b.status === 'rejected' ? '已拒绝' : '待确认'}`)
+    else if (b.kind === 'agentcard') receipt(b.status === 'pending' ? null : agentReceipt(b.draft.name, b.status === 'accepted'))
     else if (b.kind === 'autotaskcard')
-      note(`定时任务「${b.draft.title || '定时任务'}」· ${b.status === 'created' ? '已创建' : b.status === 'dismissed' ? '已忽略' : '待确认'}`)
+      receipt(b.status === 'pending' ? null : autotaskReceipt(b.draft.title, b.status === 'created'))
+    // answers 缺省 = 还没回答（进行中）或从没回答过（旧记录），都不出回执。
+    else if (b.kind === 'ask') receipt(b.answers === undefined ? null : askReceipt(b.questions, b.answers))
+    else if (b.kind === 'plan') receipt(running && b.decision === 'cancelled' ? null : planReceipt(b.plan, b.decision))
     else endText()
   }
   endReply(true)
   return out
+}
+
+/** 展示投影 [start, end) → 手机端消息。running = 对话正在进行（投影的最后一条就是进行中的那一轮）。 */
+export function toWebRange(all: DisplayMessage[], start: number, end: number, running: boolean): WebMessage[] {
+  const out: WebMessage[] = []
+  for (let i = start; i < end; i++) out.push(...toWebMessages(all[i], i, running && i === all.length - 1))
+  return out
+}
+
+/**
+ * 刚发出的那条用户消息在手机端消息里的 id（发送回执带给手机，手机按它把先显示出来的那条换成真的，不按内容去猜）。
+ * 刚起的这一轮，展示投影里最后一条用户消息就是它；用户消息不拆分，id 就是它的序号。
+ */
+export function lastUserMessageId(all: DisplayMessage[]): string | undefined {
+  for (let i = all.length - 1; i >= 0; i--) {
+    const m = all[i]
+    if (m.role === 'user' && !m.notify && !m.quiet) return String(i)
+  }
+  return undefined
+}
+
+/** 进行中这一轮在展示投影里从哪条起：最后一条用户消息（含后台通知起的一轮）。 */
+export function turnStartIndex(all: DisplayMessage[]): number {
+  for (let i = all.length - 1; i >= 0; i--) if (all[i].role === 'user') return i
+  return Math.max(0, all.length - 1)
 }
 
 /** 列表第二行：最近一条有正文的消息（用户或助手），去掉标记与多余空白。 */

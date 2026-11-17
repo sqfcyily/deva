@@ -39,6 +39,9 @@ export const ATTACH_FOLDER_PREFIX = '[附件文件夹] '
 /** 只给位置的文件附件注入模型时的前缀标记：其后是绝对路径（首行），供历史重建识别为「文件」。 */
 export const ATTACH_PATH_PREFIX = '[附件文件路径] '
 
+/** 只发了附件、没写字时代填的提问正文（模型需要一句话；手机端不把它当用户的话显示）。 */
+export const ATTACHMENTS_ONLY_QUESTION = '请理解并处理上述附件。'
+
 /** 拖入 / 粘贴的条目里认出的文件夹。 */
 export interface DroppedFolder {
   path: string

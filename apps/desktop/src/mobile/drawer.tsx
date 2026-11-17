@@ -17,7 +17,7 @@ export function Drawer({ store, onClose }: { store: Store; onClose: () => void }
   }
   const is = (f: Filter): boolean =>
     store.filter.kind === f.kind && (f.kind !== 'persona' || (store.filter.kind === 'persona' && store.filter.id === f.id))
-  const tasks = count({ kind: 'tasks' })
+  const tasks = store.tasks.length
   const all = count({ kind: 'all' })
   const archived = count({ kind: 'archived' })
   const personas = [...store.personas.values()].filter((p) => p.enabled || count({ kind: 'persona', id: p.id }) > 0)

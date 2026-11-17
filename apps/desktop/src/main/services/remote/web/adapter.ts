@@ -5,7 +5,6 @@ import {
   PHONE_SID_RE,
   WEB_PROTOCOL_VERSION,
   type WebClientFrame,
-  type WebMessage,
   type WebModel,
   type WebPrompt,
   type WebPushSub,
@@ -26,7 +25,17 @@ import type { Conn, ConnHandlers, ConnSink } from './conn'
 import { createDevice, forgetDeviceKey, getDevice, issueTicket, listDevices, patchDevice } from './devices'
 import { sendAttachmentImage, sendDelivered, takeUploads, uploadBegin, uploadCancel, uploadChunk, uploadEnd } from './files'
 import { sendPush, vapidOf, type PushMessage } from './push'
-import { modelList, personaList, previewOf, sessionExtras, sessionModel, toWebMessages } from './views'
+import { taskAction, taskList } from './tasks'
+import {
+  lastUserMessageId,
+  modelList,
+  personaList,
+  previewOf,
+  sessionExtras,
+  sessionModel,
+  toWebRange,
+  turnStartIndex
+} from './views'
 
 /**
  * Deva 手机版的电脑端：手机端是电脑上 Deva 的手机形态——对话列表、角色、任意对话的历史与最终回复、交互卡、交付文件。
@@ -53,15 +62,11 @@ interface Live {
   since: number
   /** 连接中断 / 自动重试的说明。 */
   retry?: string
-  /** 手机可补拉的新内容计数（见 WebSession.rev）。 */
-  rev: number
-  /** 上次计数之后又有了要给手机看的内容（正文、插入的消息、交付的文件），等这一步落盘再计数。 */
+  /** 上次推送之后又有了要给手机看的内容（正文、插入的消息、交付的文件），等这一步落盘再推（见 pushTurn）。 */
   dirty: boolean
 }
 
 const HISTORY_PAGE = 40
-/** 补拉最后几条（history.from）最多给这么多条，再多就退回最新一页。 */
-const HISTORY_TAIL_MAX = 200
 /** 同一对话两次状态推送的最小间隔。 */
 const PUSH_MIN_MS = 400
 
@@ -173,9 +178,10 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
       case 'refresh':
         conn.send({ t: 'sessions', list: this.sessionList() })
         conn.send({ t: 'personas', list: personaList() })
+        conn.send({ t: 'tasks', list: taskList() })
         return
       case 'history':
-        return this.history(conn, f.sid, f.before, f.from, f.limit)
+        return this.history(conn, f.sid, f.before, f.limit)
       case 'send':
         return this.sendText(conn, did, f)
       case 'stop':
@@ -221,6 +227,9 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
         return
       case 'set_model':
         return this.setModel(conn, f.rid, f.sid, f.ref)
+      case 'task':
+        if (typeof f.rid === 'string') conn.send({ t: 'result', rid: f.rid, ...taskAction(f.id, f.action) })
+        return
       case 'bye':
         return this.bye(did)
     }
@@ -266,6 +275,7 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     })
     // 角色带头像图片，体积可能不小：单独一帧，免得首帧太大。
     conn.send({ t: 'personas', list: personaList() })
+    conn.send({ t: 'tasks', list: taskList() })
   }
 
   // ───────── 列表与历史 ─────────
@@ -285,20 +295,23 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     return { hidden, owned }
   }
 
-  /** 列给手机的对话：成员会话与「在会话中运行」的任务对话不列；已归档的带上标记，手机在「已归档」里列出。 */
-  private visible(m: ChatSessionMeta, hidden: Set<string>): boolean {
-    return !m.parentId && !hidden.has(m.id)
+  /**
+   * 发给手机的对话：成员会话不发。「在会话中运行」的任务对话照发但标 hidden——不进列表，从任务详情「查看对话」进入
+   * （同电脑端）；已归档的带上标记，手机在「已归档」里列出。
+   */
+  private visible(m: ChatSessionMeta): boolean {
+    return !m.parentId
   }
 
   private sessionList(): WebSession[] {
     const { hidden, owned } = this.taskIndex()
     const models = modelList()
     return listSessions()
-      .filter((s) => this.visible(s, hidden))
-      .map((m) => this.sessionView(m, owned.get(m.id), models))
+      .filter((s) => this.visible(s))
+      .map((m) => this.sessionView(m, owned.get(m.id), models, hidden.has(m.id)))
   }
 
-  private sessionView(m: ChatSessionMeta, tasks?: string[], models?: WebModel[]): WebSession {
+  private sessionView(m: ChatSessionMeta, tasks?: string[], models?: WebModel[], hidden = false): WebSession {
     const live = this.live.get(m.id)
     const pv = this.preview(m.id, m.updatedAt)
     return {
@@ -313,10 +326,10 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
       waiting: sessionWaiting(m.id),
       status: live?.status,
       since: live?.since,
-      rev: live?.rev,
       retry: live?.retry,
       readAt: readAtOf(m.id),
       archived: m.archived || undefined,
+      hidden: hidden || undefined,
       kind: m.id.startsWith('task-') ? 'task' : 'chat',
       tasks: tasks?.length ? tasks : undefined,
       ...sessionExtras(m),
@@ -334,32 +347,42 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
   }
 
   /**
-   * 历史：before = 往前翻一页；from = 补拉从 from 到最后（进行中写完一条就补拉，多数时候只有一两条），
-   * 太多时退回最新一页；都没有 = 最新一页。
+   * 历史：before = 往前翻一页；没有 = 最新一页。要最新一页说明手机正看着这个对话：记在连接上，
+   * 进行中有了新内容直接推给它（见 pushTurn）。
    */
-  private history(conn: Conn, sid: unknown, before: unknown, from: unknown, limit: unknown): void {
+  private history(conn: Conn, sid: unknown, before: unknown, limit: unknown): void {
     if (typeof sid !== 'string' || !getSession(sid))
       return conn.send({ t: 'err', code: 'gone', message: '这个对话不存在或已被删除。' })
     const all = loadDisplay(sid)
     const n = typeof limit === 'number' && limit > 0 ? Math.min(limit, 200) : HISTORY_PAGE
-    let start: number
-    let end = all.length
-    if (typeof from === 'number' && from >= 0 && from <= all.length && all.length - from <= HISTORY_TAIL_MAX) start = from
-    else {
-      if (typeof before === 'number' && before >= 0) end = Math.min(before, all.length)
-      start = Math.max(0, end - n)
-    }
-    const messages: WebMessage[] = []
-    for (let i = start; i < end; i++) messages.push(...toWebMessages(all[i], i))
+    const older = typeof before === 'number' && before >= 0
+    if (!older) conn.viewing = sid
+    const end = older ? Math.min(before, all.length) : all.length
+    const start = Math.max(0, end - n)
+    const messages = toWebRange(all, start, end, getChatRuntime()?.isBusy(sid) ?? false)
     conn.send({ t: 'history', sid, messages, start, end, total: all.length })
+  }
+
+  /**
+   * 进行中这一轮有了新内容（用户消息已落进记录、又写完一段、插入的消息已送达、交付了文件）：把这一轮（从它的
+   * 用户消息起）直接推给正看着这个对话的手机，不让手机收到通知再来拉一趟。
+   */
+  private pushTurn(sid: string): void {
+    const to = [...this.conns].filter((c) => c.device && c.viewing === sid)
+    if (!to.length) return
+    const all = loadDisplay(sid)
+    const start = turnStartIndex(all)
+    const messages = toWebRange(all, start, all.length, getChatRuntime()?.isBusy(sid) ?? false)
+    const frame: WebServerFrame = { t: 'history', sid, messages, start, end: all.length, total: all.length, live: true }
+    for (const c of to) c.send(frame)
   }
 
   // ───────── 发送 / 停止 / 新建 / 卡片动作 ─────────
 
   private async sendText(conn: Conn, did: string, f: Extract<WebClientFrame, { t: 'send' }>): Promise<void> {
     const id = typeof f.sid === 'string' ? f.sid : ''
-    const reply = (ok: boolean, message?: string): void => {
-      if (typeof f.cid === 'string') conn.send({ t: 'sent', cid: f.cid, sid: id, ok, message })
+    const reply = (ok: boolean, message?: string, at?: string): void => {
+      if (typeof f.cid === 'string') conn.send({ t: 'sent', cid: f.cid, sid: id, ok, message, at })
     }
     const body = typeof f.text === 'string' ? f.text.trim() : ''
     const rt = getChatRuntime()
@@ -394,7 +417,7 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
         attachments: files.length ? files : undefined
       })
       this.fromPhone.add(id)
-      reply(true)
+      reply(true, undefined, lastUserMessageId(loadDisplay(id)))
     } catch (e) {
       reply(false, (e as Error)?.message ?? String(e))
     }
@@ -527,16 +550,16 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     const mine = cur?.turnId === turnId ? cur : undefined
     /** 改这一轮的进行中状态；有变化就推给手机（now = 不等限频）。 */
     const touch = (patch: Partial<Live>, now = false): void => {
-      const base: Live = mine ?? { turnId, since: Date.now(), rev: cur?.rev ?? 0, dirty: false }
+      const base: Live = mine ?? { turnId, since: Date.now(), dirty: false }
       const next = { ...base, ...patch }
       this.live.set(sessionId, next)
-      if (!mine || next.status !== base.status || next.retry !== base.retry || next.rev !== base.rev)
-        this.pushSession(sessionId, now)
+      if (!mine || next.status !== base.status || next.retry !== base.retry) this.pushSession(sessionId, now)
     }
     switch (event.type) {
       case 'turn_start':
-        // 本轮的用户消息已在对话记录里：计一次，手机马上补拉（别处发起的一轮也立刻看到这条消息）。
-        return touch({ status: '正在处理…', retry: undefined, rev: (cur?.rev ?? 0) + 1, dirty: false }, true)
+        // 本轮的用户消息已在对话记录里：马上推给正看着的手机（别处发起的一轮也立刻看到这条消息）。
+        touch({ status: '正在处理…', retry: undefined, dirty: false }, true)
+        return this.pushTurn(sessionId)
       case 'text_delta':
         if (mine) {
           mine.dirty = true
@@ -577,13 +600,12 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     }
   }
 
-  /** 这一步已落进对话记录：上一步以来有新的正文 / 插入的消息 / 交付的文件，就计一次让手机补拉。 */
+  /** 这一步已落进对话记录：上一步以来有新的正文 / 插入的消息 / 交付的文件，就推给正看着的手机。 */
   private onStepSaved(sid: string): void {
     const l = this.live.get(sid)
     if (this.stopped || !l?.dirty) return
     l.dirty = false
-    l.rev++
-    this.pushSession(sid, true)
+    this.pushTurn(sid)
   }
 
   private notifyDone(sid: string): void {
@@ -615,8 +637,8 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
         this.pushedAt.set(sid, Date.now())
         const m = listSessions().find((s) => s.id === sid)
         const { hidden, owned } = this.taskIndex()
-        if (!m || !this.visible(m, hidden)) return this.broadcast({ t: 'session_gone', sid })
-        this.broadcast({ t: 'session', s: this.sessionView(m, owned.get(m.id)) })
+        if (!m || !this.visible(m)) return this.broadcast({ t: 'session_gone', sid })
+        this.broadcast({ t: 'session', s: this.sessionView(m, owned.get(m.id), undefined, hidden.has(m.id)) })
       }, wait)
     )
   }
@@ -626,7 +648,10 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
     if (this.stopped || this.listTimer) return
     this.listTimer = setTimeout(() => {
       this.listTimer = null
-      if (this.conns.size) this.broadcast({ t: 'sessions', list: this.sessionList() })
+      if (!this.conns.size) return
+      this.broadcast({ t: 'sessions', list: this.sessionList() })
+      // 任务的状态、所在对话的标题、任务对话在不在都会跟着变：一并重发（很小）。
+      this.broadcast({ t: 'tasks', list: taskList() })
     }, 300)
   }
 

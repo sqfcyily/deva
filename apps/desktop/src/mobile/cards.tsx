@@ -1,16 +1,15 @@
-import { useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { memo, useRef, useState } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ActionValue, PromptView } from '../shared/remote-views'
 import type { WebPersona } from '../shared/remote-web'
 import { Avatar } from './avatar'
+import type { Act } from './prompts'
 import { t } from './strings'
 
 /**
  * 交互卡（提问、计划、挂载、定时任务名片、角色名片），出现在对话末尾。按钮的 value 由电脑端 hub 生成，这里原样回传。
  */
-
-export type Act = (key: string, value: ActionValue, form?: Record<string, string | string[]>) => Promise<void>
 
 /**
  * 卡片里的文案是电脑端按「一行一项」拼的纯文本（单个换行），按 Markdown 规则会被并成一段：
@@ -21,15 +20,18 @@ function hardBreaks(text: string): string {
   return parts.map((p, i) => (i % 2 ? p : p.replace(/([^\n])\n(?!\n)/g, '$1  \n'))).join('')
 }
 
-export function Markdown({ text, breaks }: { text: string; breaks?: boolean }): React.JSX.Element {
+const MD_COMPONENTS: Components = { a: (p) => <a {...p} target="_blank" rel="noreferrer" /> }
+
+/** 正文没变就不重新解析（对话里每来一段新内容整页都会重新渲染，长对话里逐条重解析 Markdown 会卡）。 */
+export const Markdown = memo(function Markdown({ text, breaks }: { text: string; breaks?: boolean }): React.JSX.Element {
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: (p) => <a {...p} target="_blank" rel="noreferrer" /> }}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
         {breaks ? hardBreaks(text) : text}
       </ReactMarkdown>
     </div>
   )
-}
+})
 
 function Buttons({
   k,
@@ -90,81 +92,50 @@ function From({ who, label }: { who?: WebPersona; label: string }): React.JSX.El
   )
 }
 
+/** 一张还没处理的交互卡（处理之后收成一行回执，见 receipt.tsx）。 */
 export function PromptCard({ view, onAction, who }: { view: PromptView; onAction: Act; who?: WebPersona }): React.JSX.Element {
   const name = who?.name ?? 'Deva'
-  const done = view.state !== 'open'
   switch (view.kind) {
     case 'ask':
       return <AskCard view={view} onAction={onAction} who={who} />
     case 'plan':
       return (
-        <div className={`card${done ? ' is-done' : ''}`}>
-          <From
-            who={who}
-            label={
-              view.state === 'open'
-                ? `${name} · 请审阅计划`
-                : view.state === 'approve'
-                  ? '计划已批准'
-                  : view.state === 'keep'
-                    ? '继续完善计划'
-                    : view.state === 'ignore'
-                      ? '计划已忽略'
-                      : '计划审阅已结束'
-            }
+        <div className="card">
+          <From who={who} label={`${name} · 请审阅计划`} />
+          <Fold text={view.plan} limit={1500} />
+          <Buttons
+            k={view.key}
+            buttons={[
+              { label: '继续完善', value: { k: 'plan', key: view.key, d: 'keep' } },
+              { label: '忽略', value: { k: 'plan', key: view.key, d: 'ignore' } },
+              { label: '批准并执行', value: { k: 'plan', key: view.key, d: 'approve' }, primary: true }
+            ]}
+            onAction={onAction}
           />
-          <Fold text={view.plan} limit={view.state === 'open' ? 1500 : 300} />
-          {view.state === 'open' && (
-            <Buttons
-              k={view.key}
-              buttons={[
-                { label: '继续完善', value: { k: 'plan', key: view.key, d: 'keep' } },
-                { label: '忽略', value: { k: 'plan', key: view.key, d: 'ignore' } },
-                { label: '批准并执行', value: { k: 'plan', key: view.key, d: 'approve' }, primary: true }
-              ]}
-              onAction={onAction}
-            />
-          )}
         </div>
       )
     case 'mount':
       return (
-        <div className={`card${done ? ' is-done' : ''}`}>
-          <From who={who} label={view.state === 'open' ? `${name} · 需要一个文件夹` : '文件夹'} />
-          {view.state === 'open' ? (
-            <>
-              <p>
-                这一步（<b>{view.tool}</b>
-                {view.path && (
-                  <>
-                    {' '}
-                    <code>{view.path}</code>
-                  </>
-                )}
-                ）需要先挂载一个文件夹。
-              </p>
-              <p className="muted">选择文件夹要在电脑上操作；也可以先跳过，让它改用完整路径。</p>
-              <Buttons k={view.key} buttons={[{ label: '暂不挂载', value: { k: 'mount', key: view.key } }]} onAction={onAction} />
-            </>
-          ) : (
-            <p className="muted">
-              {view.state === 'mounted' ? (
-                <>
-                  已挂载：<code>{view.root}</code>
-                </>
-              ) : view.state === 'skipped' ? (
-                '已跳过挂载。'
-              ) : (
-                '请求已结束。'
-              )}
-            </p>
-          )}
+        <div className="card">
+          <From who={who} label={`${name} · 需要一个文件夹`} />
+          <p>
+            这一步（<b>{view.tool}</b>
+            {view.path && (
+              <>
+                {' '}
+                <code>{view.path}</code>
+              </>
+            )}
+            ）需要先挂载一个文件夹。
+          </p>
+          <p className="muted">选择文件夹要在电脑上操作；也可以先跳过，让它改用完整路径。</p>
+          <Buttons k={view.key} buttons={[{ label: '暂不挂载', value: { k: 'mount', key: view.key } }]} onAction={onAction} />
         </div>
       )
     case 'autotask':
       return (
-        <div className={`card${done ? ' is-done' : ''}`}>
-          <From who={who} label={!done ? `${name} · 确认定时任务` : view.state === 'created' ? '定时任务已创建' : '已忽略这个定时任务'} />
+        <div className="card">
+          <From who={who} label={`${name} · 确认定时任务`} />
           <div className="kv">
             <b className="kv__title">{view.title}</b>
             <div>
@@ -188,37 +159,33 @@ export function PromptCard({ view, onAction, who }: { view: PromptView; onAction
             </div>
             <Fold text={view.prompt || '（空）'} limit={300} />
           </div>
-          {!done && (
-            <Buttons
-              k={view.key}
-              buttons={[
-                { label: '忽略', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'dismiss' } },
-                { label: '创建任务', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'create' }, primary: true }
-              ]}
-              onAction={onAction}
-            />
-          )}
+          <Buttons
+            k={view.key}
+            buttons={[
+              { label: '忽略', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'dismiss' } },
+              { label: '创建任务', value: { k: 'autotask', sid: view.sessionId, tool: view.key, a: 'create' }, primary: true }
+            ]}
+            onAction={onAction}
+          />
         </div>
       )
     case 'agent':
       return (
-        <div className={`card${done ? ' is-done' : ''}`}>
-          <From who={who} label={!done ? `${name} · 新角色名片` : view.state === 'accepted' ? '角色已添加' : '已拒绝这个角色'} />
+        <div className="card">
+          <From who={who} label={`${name} · 新角色名片`} />
           <div className="kv">
             <b className="kv__title">{view.name}</b>
             {view.desc && <div className="muted">{view.desc}</div>}
             <Fold text={view.prompt || '（空）'} limit={300} />
           </div>
-          {!done && (
-            <Buttons
-              k={view.key}
-              buttons={[
-                { label: '不要', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'reject' } },
-                { label: '添加角色', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'accept' }, primary: true }
-              ]}
-              onAction={onAction}
-            />
-          )}
+          <Buttons
+            k={view.key}
+            buttons={[
+              { label: '不要', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'reject' } },
+              { label: '添加角色', value: { k: 'agent', sid: view.sessionId, tool: view.key, a: 'accept' }, primary: true }
+            ]}
+            onAction={onAction}
+          />
         </div>
       )
   }
@@ -236,19 +203,6 @@ function AskCard({ view, onAction, who }: { view: AskView; onAction: Act; who?: 
   const [editing, setEditing] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const inputs = useRef<(HTMLTextAreaElement | null)[]>([])
-
-  if (view.state !== 'open')
-    return (
-      <div className="card is-done">
-        <From who={who} label={view.state === 'answered' ? '已回答' : '问题已结束'} />
-        {view.questions.map((q, n) => (
-          <div key={n} className="ask__done">
-            <span>{q.question}</span>
-            <b className={view.answers?.[n] ? '' : 'muted'}>{view.answers?.[n] || '未作答'}</b>
-          </div>
-        ))}
-      </div>
-    )
 
   const toggle = (n: number, label: string, multi: boolean): void =>
     setPicks((p) => {

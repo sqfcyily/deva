@@ -37,6 +37,9 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body, #root { height: 100%; margin: 0; }
+/* 不要浏览器的下拉刷新 / 回弹：要设在 html 上（视口的滚动由根元素决定，只设 body 不生效）。列表与对话的滚动区域
+   各自 contain；遮罩层、标题栏这类不滚动的地方往下拉会一路传到视口，只靠 body 挡不住，安卓 Chrome 照样下拉刷新。 */
+html { overscroll-behavior: none; }
 body { background: var(--bg); color: var(--fg); font: 15px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; overscroll-behavior: none; }
 button, input, textarea { font: inherit; color: inherit; }
 button { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; }
@@ -267,6 +270,44 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 .step__ok { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--success); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
 .step__todo { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border-strong); }
 
+/* ───────── 定时任务（tasks.tsx；对比稿 design/mobile-tasks.html 方案 A） ───────── */
+.trow.is-dim .row__title { color: var(--fg-muted); }
+/* 任务图标与状态颜色同电脑端（redesign.css .cf-trow__icon / .cf-tdetail__icon / .cf-tdetail__status）：
+   进行中主题色 · 出错红 · 已完成绿 · 已暂停灰。列表图标底色一律浅灰，详情大图标底色按状态。 */
+.ttile { flex: none; width: 46px; height: 46px; border-radius: 14px; display: inline-flex; align-items: center; justify-content: center; background: var(--bg-inset); color: var(--fg-muted); }
+.ttile.is-active { color: var(--accent); }
+.ttile.is-error { color: var(--danger); }
+.ttile.is-completed { color: var(--success); }
+.ttile--lg { width: 64px; height: 64px; border-radius: 20px; }
+.ttile--lg.is-active { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.ttile--lg.is-error { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+.ttile--lg.is-completed { background: color-mix(in srgb, var(--success) 12%, transparent); }
+.tst { flex: none; font-size: 12.5px; color: var(--fg-subtle); }
+.tst--error { color: var(--danger); }
+.tst--completed { color: var(--success); }
+.task__hero { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 4px 20px 18px; text-align: center; }
+.task__hero b { font-size: 20px; font-weight: 700; line-height: 1.35; word-break: break-word; }
+.tchip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 600; background: var(--bg-inset); color: var(--fg-muted); }
+.tchip i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.tchip.is-active { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.tchip.is-error { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
+.tchip.is-completed { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.task__acts { display: flex; justify-content: center; gap: 26px; padding: 0 16px 14px; }
+.task__act { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 56px; font-size: 13px; color: var(--fg-muted); text-align: center; }
+.task__actc { width: 50px; height: 50px; border-radius: 50%; background: var(--bg-panel); color: var(--accent); display: inline-flex; align-items: center; justify-content: center; }
+.task__act:active:not(:disabled) .task__actc { background: var(--bg-active); }
+.task__act:disabled:not(.is-busy) { opacity: .45; }
+.task__act.is-danger .task__actc { color: var(--danger); }
+.task__v { justify-content: flex-end; text-align: right; }
+.task__chatic { flex: none; color: var(--accent); }
+.task__del { padding: 8px 22px 0; text-align: center; font-size: 17px; }
+/* 运行结果：同宽线框圆（同电脑端 RunStatusIcon）。 */
+.rsi { flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid currentColor; display: inline-flex; align-items: center; justify-content: center; }
+.rsi--ok { color: var(--success); }
+.rsi--error { color: var(--danger); }
+.rsi--skipped { color: var(--fg-subtle); }
+.rsi--aborted { color: var(--warning); }
+
 /* ───────── 对话页 ───────── */
 .msgs { padding: 12px 12px 6px; display: flex; flex-direction: column; gap: 14px; font-size: calc(15px * var(--fs)); }
 .msgs__more { align-self: center; color: var(--fg-subtle); font-size: 13px; min-height: 20px; }
@@ -301,6 +342,21 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 .ga__col .file { width: auto; max-width: 100%; min-width: 240px; margin-top: 0; }
 .ga__meta { padding-left: 4px; font-size: 12px; color: var(--fg-subtle); }
 .note { font-size: 12.5px; color: var(--fg-subtle); padding-left: 4px; }
+/* 接在一组回复后面（同一列、不出头像）：头像位留空，间距同列内的 6px。 */
+.ga__sp { flex: none; width: 34px; }
+.ga.is-cont, .pslot.is-cont { margin-top: -8px; }
+/* 交互卡处理之后的一行回执（同提示行：图标 + 灰字）；绿色对勾 = 已回答 / 已批准 / 已创建。 */
+.pslot { transition: margin-top .28s cubic-bezier(.2,.8,.2,1); }
+.rc-in { animation: fade-in .2s ease-out; }
+.rc { display: flex; align-items: flex-start; gap: 6px; max-width: 100%; padding-left: 4px; font-size: 13px; line-height: 1.55; color: var(--fg-subtle); }
+.rc__ic { flex: none; margin-top: 2.5px; }
+.rc--ok .rc__ic { color: var(--success); }
+.rc b { margin-left: .4em; color: var(--fg-muted); font-weight: 600; word-break: break-word; }
+.rc__more { margin-left: .5em; font-size: 13px; padding: 0; }
+.rc__detail { align-self: stretch; margin-left: 24px; }
+/* 进入对话之后新到的气泡、刚发出的消息：轻轻上浮淡入（只在挂上时播一次，见 chat.tsx）。 */
+.is-new, .u-wrap.is-out { animation: msg-in .26s cubic-bezier(.2,.8,.2,1); }
+@keyframes msg-in { from { opacity: 0; transform: translateY(8px); } }
 /* 进行中：三个跳动的点；连不上电脑时停下。 */
 .bb--dots { display: inline-flex; align-items: center; gap: 5px; min-height: 40px; padding: 0 15px; }
 .bb--dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-subtle); animation: dot 1.3s ease-in-out infinite; }
@@ -350,7 +406,6 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 
 /* 交互卡 */
 .card { border: 1px solid var(--border); border-radius: 18px; padding: 14px 14px 12px; background: var(--bg); display: flex; flex-direction: column; gap: 10px; box-shadow: 0 1px 2px rgba(0,0,0,.04); font-size: 14.5px; }
-.card.is-done { opacity: .72; }
 .card p { margin: 0; line-height: 1.6; }
 .card code { font-family: var(--font-mono); font-size: .88em; padding: 1px 5px; border-radius: 5px; background: var(--bg-inset); word-break: break-all; }
 .card__from { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--fg-subtle); }
@@ -360,8 +415,6 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 .ask__q { display: flex; flex-direction: column; gap: 10px; }
 .ask__q + .ask__q { margin-top: 6px; }
 .ask__tag { margin-left: 6px; padding: 1px 6px; border-radius: 6px; background: var(--bg-inset); color: var(--fg-subtle); font-size: 11.5px; font-weight: 500; vertical-align: 2px; }
-.ask__done { display: flex; flex-direction: column; gap: 2px; font-size: 13.5px; color: var(--fg-muted); }
-.ask__done b { color: var(--fg); font-weight: 600; }
 .opts { display: flex; flex-direction: column; gap: 8px; }
 .opt { width: 100%; display: flex; align-items: flex-start; gap: 11px; padding: 11px 12px; border-radius: 13px; border: 1px solid var(--border); background: var(--bg-panel); }
 .opt.is-on { border-color: var(--accent); background: var(--accent-tint); }

@@ -17,7 +17,7 @@ import { isEn, t } from './strings'
  * 每次连上先做端到端加密握手（shared/remote-crypto.ts）：
  *   pair = 扫码带来的一次性配对票据；install = 添加到主屏幕时带来的安装票据；resume = 已保存的设备密钥。
  * 握手后发 hello；配对 / 安装成功时电脑先回 paired（设备 id + 密钥，交给上层存好，之后改用 resume），再回 ok。
- * 断线自动重连；回到前台或网络恢复时立即重连。
+ * 断线自动重连（间隔逐次拉长，页面在后台时不重连）；回到前台或网络恢复时立即重连。
  */
 
 export type Auth = { kind: 'resume'; device: string; key: Uint8Array } | { kind: 'pair' | 'install'; id: string; secret: Uint8Array }
@@ -38,9 +38,16 @@ export interface LinkEvents {
   onPaired(device: string, key: string): void
 }
 
+/**
+ * 重连间隔：每次翻倍，封顶 1 分钟。每连一次，中转那头都算一次计费请求（Cloudflare 按连接次数计，免费额度每天 10 万次，
+ * 所有用户共用），固定短间隔一直试（尤其是电脑关机过夜、手机停在「不在线」）会很快把额度耗光。
+ * 回到前台 / 网络恢复时不受这个间隔限制，立即重连。
+ */
 const RECONNECT_MIN_MS = 1000
-const RECONNECT_MAX_MS = 15_000
-const OFFLINE_RETRY_MS = 5000
+const RECONNECT_MAX_MS = 60_000
+/** 电脑不在线：从 5 秒起翻倍，同样封顶 1 分钟。 */
+const OFFLINE_RETRY_MIN_MS = 5000
+const OFFLINE_RETRY_MAX_MS = 60_000
 const REQUEST_TIMEOUT_MS = 20_000
 /**
  * 连接是否还通：ping 一路经中转到电脑再回 pong（电脑不在线时中转直接回 offline）。
@@ -243,14 +250,22 @@ export class Link {
     this.scheduleReconnect()
   }
 
+  /**
+   * 隔一段时间再连（间隔见 RECONNECT_* / OFFLINE_RETRY_*）。页面在后台时不连：通知走 Web Push，后台用不上这条连接，
+   * 回到前台时 onVisible 会立即重连。
+   */
   private scheduleReconnect(): void {
     if (this.closed || this.timer !== null) return
     const offline = this.phase.kind === 'offline'
     if (!offline) this.setPhase({ kind: 'connecting', step: 0 })
-    const delay = offline ? OFFLINE_RETRY_MS : Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** Math.min(this.attempt, 4))
+    if (document.visibilityState === 'hidden') return
+    const [min, max] = offline ? [OFFLINE_RETRY_MIN_MS, OFFLINE_RETRY_MAX_MS] : [RECONNECT_MIN_MS, RECONNECT_MAX_MS]
+    const delay = Math.min(max, min * 2 ** Math.min(this.attempt, 6))
     this.attempt++
     this.timer = window.setTimeout(() => {
       this.timer = null
+      // 等的时候切到了后台：留到回前台时再连。
+      if (document.visibilityState === 'hidden') return
       this.connect()
     }, delay)
   }
@@ -379,8 +394,9 @@ export class Link {
   }
 
   /** 历史：缺省取最新一页；before = 往前翻一页；from = 补拉从这条到最后。 */
-  history(sid: string, opts: { before?: number; from?: number } = {}): void {
-    this.send({ t: 'history', sid, before: opts.before, from: opts.from })
+  /** 不带 before = 最新一页，同时告诉电脑正看着这个对话（进行中的新内容会直接推来）。 */
+  history(sid: string, opts: { before?: number } = {}): void {
+    this.send({ t: 'history', sid, before: opts.before })
   }
 
   /** 可选的模型列表（取不到返回 null）。 */
@@ -396,12 +412,13 @@ export class Link {
     this.send({ t: 'stop', sid })
   }
 
-  async sendText(sid: string, text: string, files?: string[]): Promise<{ ok: boolean; message?: string }> {
+  /** at = 这条消息在对话记录里的 id（电脑回执给出；插入进行中这一轮的没有）。 */
+  async sendText(sid: string, text: string, files?: string[]): Promise<{ ok: boolean; message?: string; at?: string }> {
     const cid = this.id('c')
     const r = this.wait((f) => f.t === 'sent' && f.cid === cid)
     if (!this.send({ t: 'send', sid, text, cid, files: files?.length ? files : undefined })) return { ok: false, message: t('notConnected') }
     const f = await r
-    return f && f.t === 'sent' ? { ok: f.ok, message: f.message } : { ok: false, message: t('timeout') }
+    return f && f.t === 'sent' ? { ok: f.ok, message: f.message, at: f.at } : { ok: false, message: t('timeout') }
   }
 
   /**

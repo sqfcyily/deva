@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlarmClock, Archive, ArchiveRestore, ChevronLeft, Menu, Search, SquarePen, Trash2, X } from 'lucide-react'
 import type { WebSession } from '../shared/remote-web'
 import type { Filter, Store } from './App'
@@ -7,6 +7,7 @@ import { InstallTip, LinkStatus } from './onboard'
 import { SessionSheet } from './session-ops'
 import { fmtListTime, t } from './strings'
 import { SwipeRow } from './swipe'
+import { TaskRows } from './tasks'
 
 /** 对话属于哪个角色（没绑定角色的旧对话算默认角色，同电脑端）。 */
 export function ownerOf(s: WebSession): string {
@@ -34,8 +35,9 @@ export function hasTasks(s: WebSession): boolean {
   return s.kind === 'task' || !!s.tasks?.length
 }
 
-/** 已归档的只在「已归档」里出现。 */
+/** 已归档的只在「已归档」里出现；「在会话中运行」的任务对话不进任何列表（从任务详情进入）。 */
 export function matchFilter(s: WebSession, f: Filter): boolean {
+  if (s.hidden) return false
   if (f.kind === 'archived') return !!s.archived
   if (s.archived) return false
   if (f.kind === 'tasks') return hasTasks(s)
@@ -45,6 +47,8 @@ export function matchFilter(s: WebSession, f: Filter): boolean {
 
 /** 左滑露出的按钮各宽 78px。 */
 const ACT_W = 78
+/** 左滑开着时列表滚动超过这么多才收起。 */
+const SCROLL_CLOSE_PX = 10
 
 /** 首页：对话列表。等你决定的排最前，其次是进行中的，其余按最近活动。左滑归档 / 删除，长按弹出操作面板。 */
 export function Home({ store }: { store: Store }): React.JSX.Element {
@@ -57,12 +61,30 @@ export function Home({ store }: { store: Store }): React.JSX.Element {
   const q = query.trim().toLowerCase()
   const { filter } = store
 
+  /** 上一次排好的顺序（左滑开着时沿用）。 */
+  const order = useRef<string[]>([])
+  const holding = swiped !== null
   const list = useMemo(() => {
     const rank = (s: WebSession): number => (s.waiting ? 0 : s.busy ? 1 : 2)
     const all = [...store.sessions.values()].filter((s) => matchFilter(s, filter))
     all.sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt)
+    // 左滑开着时不重排：有对话在跑会不停更新时间、换位置，开着的那一行会从手指下挪走，点「删除」就点空了。
+    // 沿用上次的顺序，新出现的排在最后；收起后再按正常顺序排。
+    if (holding) {
+      const pos = new Map(order.current.map((id, i) => [id, i]))
+      all.sort((a, b) => (pos.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (pos.get(b.id) ?? Number.MAX_SAFE_INTEGER))
+    }
+    order.current = all.map((s) => s.id)
     return q ? all.filter((s) => s.title.toLowerCase().includes(q) || s.preview.toLowerCase().includes(q)) : all
-  }, [store.sessions, filter, q])
+  }, [store.sessions, filter, q, holding])
+
+  // 列表真的滚动了才收起左滑开着的那一行：列表更新、浏览器校正滚动位置会带来一两像素的滚动，不能算。
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const openTop = useRef(0)
+  const swipedId = swiped?.id
+  useEffect(() => {
+    if (swipedId) openTop.current = scrollRef.current?.scrollTop ?? 0
+  }, [swipedId])
 
   const compose = (): void => {
     // 在某个角色的列表里：直接用这个角色新建（不等电脑回执，立刻进入对话页）。
@@ -92,7 +114,7 @@ export function Home({ store }: { store: Store }): React.JSX.Element {
             <input
               ref={input}
               value={query}
-              placeholder={t('search')}
+              placeholder={filter.kind === 'tasks' ? t('searchTasks') : t('search')}
               enterKeyHint="search"
               onChange={(e) => setQuery(e.target.value)}
             />
@@ -118,15 +140,23 @@ export function Home({ store }: { store: Store }): React.JSX.Element {
         >
           {searching ? <X size={22} strokeWidth={1.8} /> : <Search size={22} strokeWidth={1.8} />}
         </button>
-        {!searching && filter.kind !== 'archived' && (
+        {!searching && filter.kind !== 'archived' && filter.kind !== 'tasks' && (
           <button className="ib" aria-label={t('newChat')} disabled={!store.ready} onClick={compose}>
             <SquarePen size={22} strokeWidth={1.8} />
           </button>
         )}
       </header>
-      <div className="scroll" onScroll={() => swiped && setSwiped(null)}>
+      <div
+        ref={scrollRef}
+        className="scroll"
+        onScroll={(e) => {
+          if (swiped && Math.abs(e.currentTarget.scrollTop - openTop.current) > SCROLL_CLOSE_PX) setSwiped(null)
+        }}
+      >
         <InstallTip store={store} />
-        {list.length === 0 ? (
+        {filter.kind === 'tasks' ? (
+          <TaskRows store={store} q={q} />
+        ) : list.length === 0 ? (
           <div className="empty">
             {q ? t('noResult') : store.sessions.size === 0 ? (store.ready ? t('chatsEmpty') : '') : t('filterEmpty')}
           </div>

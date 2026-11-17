@@ -13,6 +13,7 @@ import { t } from './strings'
 export function ChatMenu({ store, s, onClose }: { store: Store; s: WebSession; onClose: () => void }): React.JSX.Element {
   const [view, setView] = useState<'main' | 'models' | 'delete'>('main')
   const persona = store.personas.get(s.personaId ?? 'general')
+  const tasks = store.tasks.filter((x) => x.owner?.sid === s.id || x.sessionId === s.id)
   const run = (fn: () => void): void => {
     onClose()
     fn()
@@ -69,15 +70,27 @@ export function ChatMenu({ store, s, onClose }: { store: Store; s: WebSession; o
                       </span>
                     </div>
                   )}
-                  {!!s.tasks?.length && (
-                    <div className="info__r">
-                      <span className="info__k">{t('tasks')}</span>
-                      <span className="info__v">
-                        <AlarmClock size={16} />
-                        {s.tasks.join('、')}
-                      </span>
-                    </div>
-                  )}
+                  {/* 这个对话里运行的定时任务（或这就是任务自己的对话）：点开进任务详情。任务列表还没到时只列名字。 */}
+                  {tasks.length
+                    ? tasks.map((x) => (
+                        <button key={x.id} className="info__r" onClick={() => run(() => store.open({ name: 'task', id: x.id }))}>
+                          <span className="info__k">{t('tasks')}</span>
+                          <span className="info__v">
+                            <AlarmClock size={16} />
+                            {x.title}
+                          </span>
+                          <ChevronRight size={17} className="info__go" />
+                        </button>
+                      ))
+                    : !!s.tasks?.length && (
+                        <div className="info__r">
+                          <span className="info__k">{t('tasks')}</span>
+                          <span className="info__v">
+                            <AlarmClock size={16} />
+                            {s.tasks.join('、')}
+                          </span>
+                        </div>
+                      )}
                   <button className="info__r" disabled={!store.ready} onClick={() => setView('models')}>
                     <span className="info__k">{t('model')}</span>
                     <span className="info__v">{s.modelName ?? t('noModel')}</span>

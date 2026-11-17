@@ -1,4 +1,4 @@
-import type { WebDelivered, WebMessage, WebPart, WebPersona, WebSession } from '../shared/remote-web'
+import type { WebDelivered, WebMessage, WebPart, WebPersona, WebSession, WebTask } from '../shared/remote-web'
 
 /**
  * 本机缓存（IndexedDB）：对话列表、角色、最近打开过的对话的最新一页。打开时先显示缓存，
@@ -15,6 +15,8 @@ export interface CachedHistory {
 export interface DeskSnapshot {
   sessions: WebSession[]
   personas: WebPersona[]
+  /** 旧缓存里没有。 */
+  tasks?: WebTask[]
   syncedAt: number
 }
 

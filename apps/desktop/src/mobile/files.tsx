@@ -45,9 +45,9 @@ export function FileTile({ name }: { name: string }): React.JSX.Element {
   )
 }
 
-export function FileCard({ file, onOpen }: { file: WebDelivered; onOpen: () => void }): React.JSX.Element {
+export function FileCard({ file, onOpen, className }: { file: WebDelivered; onOpen: () => void; className?: string }): React.JSX.Element {
   return (
-    <button className="file" onClick={onOpen}>
+    <button className={`file${className ? ` ${className}` : ''}`} onClick={onOpen}>
       <FileTile name={file.name} />
       <span className="file__k">
         <b>{file.name}</b>
@@ -163,8 +163,13 @@ export function FilePage({ store, sid, file }: { store: Store; sid: string; file
   )
 }
 
-/** 对话里图片附件的缩略图（按 ref 向电脑要，取过的记住）。 */
-const thumbs = new Map<string, string | null>()
+/** 对话里图片附件的缩略图（按 ref 向电脑要，取到的记住；没取到的下次显示时再要）。 */
+const thumbs = new Map<string, string>()
+
+/** 手机发出的照片对上对话记录里的那条以后：本机预览直接当它的缩略图，不再向电脑要一遍（见 outbox.ts）。 */
+export function adoptThumb(deskId: string, sid: string, refId: string, uri: string): void {
+  thumbs.set(`${deskId}|${sid}|${refId}`, uri)
+}
 
 export function AttachmentThumb({ store, sid, refId, name }: { store: Store; sid: string; refId: string; name: string }): React.JSX.Element {
   const key = `${store.deskId}|${sid}|${refId}`
@@ -174,7 +179,7 @@ export function AttachmentThumb({ store, sid, refId, name }: { store: Store; sid
     if (uri !== undefined || !store.link || !store.ready) return
     let alive = true
     void store.link.image(sid, refId).then((u) => {
-      thumbs.set(key, u)
+      if (u) thumbs.set(key, u)
       if (alive) setUri(u)
     })
     return () => {

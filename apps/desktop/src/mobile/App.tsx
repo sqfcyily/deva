@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { b64uDecode, parseTicket } from '../shared/remote-crypto'
-import { parseWebPageParams, type WebDelivered, type WebPersona, type WebPrompt, type WebServerFrame, type WebSession } from '../shared/remote-web'
-import type { ActionValue } from '../shared/remote-views'
+import {
+  parseWebPageParams,
+  type WebDelivered,
+  type WebMessage,
+  type WebPersona,
+  type WebServerFrame,
+  type WebSession,
+  type WebTask
+} from '../shared/remote-web'
 import { dropDesk, loadHistory, loadSnapshot, saveHistory, saveSnapshot, type CachedHistory } from './cache'
 import { ChatPage } from './chat'
 import { Drawer } from './drawer'
@@ -10,11 +17,13 @@ import { Home, NewChatSheet } from './home'
 import { Link, deviceName, type Auth, type LinkPhase } from './link'
 import { InstallSheet, NotifySheet, Splash, StatePage } from './onboard'
 import { useOutbox, type Outbox, type Outgoing } from './outbox'
+import { usePrompts, type Act, type LivePrompt } from './prompts'
 import { currentSub, isStandalone, permission, pushSupport, registerSW, subscribe, unsubscribe } from './push'
 import { Scanner } from './scanner'
 import { SnackBar, useSessionOps, type SessionOps } from './session-ops'
 import { Settings } from './settings'
 import { t } from './strings'
+import { TaskPage } from './tasks'
 import { useTheme, type ThemePref } from './theme'
 import { currentDeskId, getDesk, listDesks, patchDesk, prefGet, prefSet, removeDesk, saveDesk, setCurrentDesk, type DeskCred } from './vault'
 
@@ -25,7 +34,12 @@ import { currentDeskId, getDesk, listDesks, patchDesk, prefGet, prefSet, removeD
  * 先显示本机缓存（秒开），连上后同步。页面内导航用一层「栈」配合 history，系统返回手势可用。
  */
 
-export type Page = { name: 'home' } | { name: 'chat'; sid: string } | { name: 'settings' } | { name: 'file'; sid: string; file: WebDelivered }
+export type Page =
+  | { name: 'home' }
+  | { name: 'chat'; sid: string }
+  | { name: 'settings' }
+  | { name: 'file'; sid: string; file: WebDelivered }
+  | { name: 'task'; id: string }
 export type Overlay = null | 'drawer' | 'new' | 'install' | 'notify' | 'scan'
 export type Filter = { kind: 'all' } | { kind: 'tasks' } | { kind: 'persona'; id: string } | { kind: 'archived' }
 export type TextSize = 'sm' | 'md' | 'lg'
@@ -51,7 +65,10 @@ export interface Store {
   ready: boolean
   sessions: Map<string, WebSession>
   personas: Map<string, WebPersona>
-  prompts: Map<string, WebPrompt>
+  /** 定时任务（电脑端排好序：进行中 → 出错 → 已暂停 → 已完成）。 */
+  tasks: WebTask[]
+  /** 对话末尾的交互卡（见 prompts.ts）。 */
+  prompts: Map<string, LivePrompt>
   hist: Map<string, CachedHistory>
   seen: Map<string, number>
   syncedAt: number | null
@@ -64,7 +81,7 @@ export interface Store {
   overlay: Overlay
   setOverlay(o: Overlay): void
   toast(text: string, ok?: boolean): void
-  act(key: string, value: ActionValue, form?: Record<string, string | string[]>): Promise<void>
+  act: Act
   markSeen(sid: string): void
   switchDesk(deskId: string): void
   disconnect(): Promise<void>
@@ -159,7 +176,7 @@ export function App(): React.JSX.Element {
   const [phase, setPhase] = useState<LinkPhase>({ kind: 'connecting', step: 0 })
   const [sessions, setSessions] = useState<Map<string, WebSession>>(new Map())
   const [personas, setPersonas] = useState<Map<string, WebPersona>>(new Map())
-  const [prompts, setPrompts] = useState<Map<string, WebPrompt>>(new Map())
+  const [tasks, setTasks] = useState<WebTask[]>([])
   const [hist, setHist] = useState<Map<string, CachedHistory>>(new Map())
   const [seen, setSeen] = useState<Map<string, number>>(new Map())
   const [syncedAt, setSyncedAt] = useState<number | null>(null)
@@ -248,7 +265,8 @@ export function App(): React.JSX.Element {
     ops.reset()
     setSessions(new Map())
     setPersonas(new Map())
-    setPrompts(new Map())
+    setTasks([])
+    live.reset([])
     setHist(new Map())
     setSyncedAt(null)
     setSeen(loadSeen(deskId))
@@ -257,6 +275,7 @@ export function App(): React.JSX.Element {
       if (!alive || !snap) return
       setSessions((cur) => (cur.size ? cur : new Map(snap.sessions.map((s) => [s.id, s]))))
       setPersonas((cur) => (cur.size ? cur : new Map(snap.personas.map((p) => [p.id, p]))))
+      setTasks((cur) => (cur.length ? cur : (snap.tasks ?? [])))
       setSyncedAt(snap.syncedAt)
     })
 
@@ -300,7 +319,7 @@ export function App(): React.JSX.Element {
           }
         }
         setSessions(ops.fromServer(f.sessions))
-        setPrompts(new Map(f.prompts.map((p) => [p.view.key, p])))
+        live.reset(f.prompts)
         setVapid(f.vapid)
         setDevName(f.device.name)
         setSyncedAt(Date.now())
@@ -335,32 +354,24 @@ export function App(): React.JSX.Element {
       case 'personas':
         setPersonas(new Map(f.list.map((p) => [p.id, p])))
         return
+      case 'tasks':
+        setTasks(f.list)
+        return
       case 'history': {
-        const h = mergeHistory(histRef.current.get(f.sid), f)
+        const cur = histRef.current.get(f.sid)
+        // 电脑推来的进行中这一轮接不上手上已有的（最新一页还没到）：丢掉，别拿这一小段把整段换掉。
+        if (f.live && (!cur || f.start > cur.total)) return
+        const h = mergeHistory(cur, f)
         histRef.current = new Map(histRef.current).set(f.sid, h)
         setHist((m) => new Map(m).set(f.sid, h))
         void saveHistory(deskId, f.sid, h)
         outbox.reconcile(f.sid, h, sessionsRef.current.get(f.sid)?.busy ?? false)
+        // 包含这一轮末尾的：处理过的交互卡的回执已在对话记录里，末尾那条交给它（往前翻的页不算）。
+        if (f.end >= f.total) live.settle(f.sid)
         return
       }
       case 'prompt':
-        setPrompts((m) => {
-          const next = new Map(m)
-          next.set(f.p.view.key, f.p)
-          if (f.p.view.state !== 'open')
-            // 已决议的卡片留一会儿让人看到结果，然后收起。
-            window.setTimeout(
-              () =>
-                setPrompts((m2) => {
-                  if (m2.get(f.p.view.key)?.view.state === 'open') return m2
-                  const n2 = new Map(m2)
-                  n2.delete(f.p.view.key)
-                  return n2
-                }),
-              4000
-            )
-          return next
-        })
+        live.update(f.p)
         return
       case 'notice':
         if (stackTop().name !== 'chat' || (stackTop() as { sid?: string }).sid !== f.n.sessionId)
@@ -377,6 +388,7 @@ export function App(): React.JSX.Element {
   const linkRef = useRef<Link | null>(null)
   linkRef.current = link
   const outbox = useOutbox(linkRef, histRef, toast)
+  const live = usePrompts(linkRef, toast)
   const ops = useSessionOps(linkRef, sessionsRef, setSessions, toast)
   const { send: outSend, retry: outRetry, discard: outDiscard } = outbox
   const outboxOps = useMemo(() => ({ send: outSend, retry: outRetry, discard: outDiscard }), [outSend, outRetry, outDiscard])
@@ -391,14 +403,15 @@ export function App(): React.JSX.Element {
       () =>
         saveSnapshot(target.deskId, {
           // 进行中的状态只在连着时有意义：缓存里一律记成空闲，免得电脑不在线时还显示「运行测试…」。
-          sessions: [...sessions.values()].map((s) => ({ ...s, busy: false, status: undefined, since: undefined, rev: undefined, retry: undefined })),
+          sessions: [...sessions.values()].map((s) => ({ ...s, busy: false, status: undefined, since: undefined, retry: undefined })),
           personas: [...personas.values()],
+          tasks,
           syncedAt
         }),
       800
     )
     return () => window.clearTimeout(id)
-  }, [target, sessions, personas, syncedAt])
+  }, [target, sessions, personas, tasks, syncedAt])
 
   // 打开对话时先放上缓存的历史。
   const top = stack[stack.length - 1]
@@ -450,15 +463,6 @@ export function App(): React.JSX.Element {
     [target]
   )
 
-  const act = useCallback(
-    async (key: string, value: ActionValue, form?: Record<string, string | string[]>) => {
-      const l = linkRef.current
-      if (!l) return
-      const r = await l.result((rid) => ({ t: 'action', rid, key, value, form }))
-      if (!r.ok || (r.message && !/^已/.test(r.message))) toast(r.message, r.ok)
-    },
-    [toast]
-  )
 
   const switchDesk = useCallback((deskId: string) => {
     const t2 = switchTarget(deskId)
@@ -571,7 +575,8 @@ export function App(): React.JSX.Element {
       ready: phase.kind === 'ready',
       sessions,
       personas,
-      prompts,
+      tasks,
+      prompts: live.prompts,
       hist,
       seen,
       syncedAt,
@@ -584,7 +589,7 @@ export function App(): React.JSX.Element {
       overlay,
       setOverlay,
       toast,
-      act,
+      act: live.act,
       markSeen,
       switchDesk,
       disconnect,
@@ -612,7 +617,7 @@ export function App(): React.JSX.Element {
       outboxOps,
       ops
     }),
-    [link, target, computer, desks, phase, sessions, personas, prompts, hist, seen, syncedAt, vapid, devName, filter, open, back, overlay, toast, act, markSeen, switchDesk, disconnect, removeComputer, rename, notify, enableNotify, disableNotify, textSize, setTextSize, theme, setTheme, installEvt, installed, markInstalled, outbox.outbox, outboxOps, ops]
+    [link, target, computer, desks, phase, sessions, personas, tasks, live.prompts, live.act, hist, seen, syncedAt, vapid, devName, filter, open, back, overlay, toast, markSeen, switchDesk, disconnect, removeComputer, rename, notify, enableNotify, disableNotify, textSize, setTextSize, theme, setTheme, installEvt, installed, markInstalled, outbox.outbox, outboxOps, ops]
   )
 
   // ───────── 渲染 ─────────
@@ -683,6 +688,7 @@ export function App(): React.JSX.Element {
   if (top.name === 'chat') page = <ChatPage key={top.sid} store={store} sid={top.sid} />
   else if (top.name === 'settings') page = <Settings store={store} />
   else if (top.name === 'file') page = <FilePage store={store} sid={top.sid} file={top.file} />
+  else if (top.name === 'task') page = <TaskPage key={top.id} store={store} id={top.id} />
   else page = <Home store={store} />
 
   return (
@@ -704,12 +710,23 @@ export function App(): React.JSX.Element {
  * 补拉，替换 start 之后的部分；接不上（离开太久，中间缺了一段）就整段换掉。
  */
 function mergeHistory(cur: CachedHistory | undefined, f: Extract<WebServerFrame, { t: 'history' }>): CachedHistory {
-  if (cur && f.end <= cur.start && f.start < cur.start) return { messages: [...f.messages, ...cur.messages], start: f.start, total: cur.total }
+  const incoming = reuse(cur, f.messages)
+  if (cur && f.end <= cur.start && f.start < cur.start) return { messages: [...incoming, ...cur.messages], start: f.start, total: cur.total }
   if (cur && f.start > cur.start && f.start <= cur.total) {
     const keep = cur.messages.filter((x) => Number(x.id) < f.start)
-    return { messages: [...keep, ...f.messages], start: cur.start, total: f.end }
+    return { messages: [...keep, ...incoming], start: cur.start, total: f.end }
   }
-  return { messages: f.messages, start: f.start, total: f.end }
+  return { messages: incoming, start: f.start, total: f.end }
+}
+
+/** 内容没变的消息沿用手上原来的对象：对话页的气泡据此跳过重新渲染（见 chat.tsx）。 */
+function reuse(cur: CachedHistory | undefined, list: WebMessage[]): WebMessage[] {
+  if (!cur) return list
+  const old = new Map(cur.messages.map((m) => [m.id, m]))
+  return list.map((m) => {
+    const o = old.get(m.id)
+    return o && JSON.stringify(o) === JSON.stringify(m) ? o : m
+  })
 }
 
 function switchTarget(deskId: string): Target | null {

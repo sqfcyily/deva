@@ -1,21 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, MoreHorizontal } from 'lucide-react'
-import type { WebMessage, WebPersona } from '../shared/remote-web'
+import type { WebDelivered, WebMessage, WebPart, WebPersona } from '../shared/remote-web'
 import type { Store } from './App'
 import { Avatar, SessionFace } from './avatar'
-import { Markdown, PromptCard } from './cards'
+import { Markdown } from './cards'
 import { ChatMenu } from './chat-menu'
 import { Composer } from './composer'
 import { AttachmentThumb, FileCard } from './files'
 import { LinkStatus } from './onboard'
 import type { Outgoing } from './outbox'
+import { LivePromptSlot, Receipt } from './receipt'
 import { fmtDuration, t } from './strings'
 
 /**
  * 对话页（同 IM）：你发的消息在右侧气泡；助手的一轮按段拆成多条回复，左侧头像 + 气泡，写完一段就出现一段。
  * 执行步骤不显示，进行中只在最后显示三个跳动的点（连不上电脑时点停下）。标题栏只放头像和标题，
  * 角色、文件夹、模型等在右上角「更多」里。消息从顶部往下排；发出的消息立刻显示，电脑收下后换成对话记录里那条。
- * 历史按页拉（先显示本机缓存），滚到顶自动往前翻；进行中有新内容只补拉最后几条。
+ * 历史按页拉（先显示本机缓存），滚到顶自动往前翻；进行中写完一段电脑就把这一轮推来。
+ * 进入对话之后新到的气泡淡入，停在底部时平滑跟到底。
  */
 export function ChatPage({ store, sid }: { store: Store; sid: string }): React.JSX.Element {
   const session = store.sessions.get(sid)
@@ -29,23 +31,16 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
   const [menu, setMenu] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
+  /** 正在自动平滑滚到底：途中的滚动事件不算「离开了底部」。 */
+  const auto = useRef(false)
   const loadingOlder = useRef(false)
-  const histRef = useRef(history)
-  histRef.current = history
 
-  // 进入 / 对话有更新：拉最新一页；看过的记为已读。
+  // 进入 / 对话有更新（一轮开始或结束、在别处改过）：拉最新一页。这也告诉电脑正看着这个对话，进行中的新内容会直接推来。
   const updatedAt = session?.updatedAt ?? 0
-  const { link, ready } = store
+  const { link, ready, open } = store
   useEffect(() => {
     if (ready) link?.history(sid)
   }, [link, ready, sid, updatedAt])
-  // 进行中又写完一条回复：只补拉最后几条。
-  const rev = session?.rev ?? 0
-  useEffect(() => {
-    if (!ready || !rev) return
-    const h = histRef.current
-    link?.history(sid, h ? { from: Math.max(0, h.total - 1) } : {})
-  }, [link, ready, sid, rev])
   // 看着这个对话（页面在前台）：记为已读；锁屏 / 切到后台时来的新回复，等回到前台再算看过。
   useEffect(() => {
     const seen = (): void => {
@@ -67,10 +62,18 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
 
   const busy = session?.busy ?? false
   const typing = busy && !session?.waiting
-  const firstId = history?.messages[0]?.id
+  const messages = history?.messages ?? []
+  const firstId = messages[0]?.id
+  const last = messages[messages.length - 1]
   const prevTop = useRef<{ id?: string; height: number } | null>(null)
 
-  // 往前翻页后保持视线位置；在底部时新内容到达自动贴底。
+  // 序号不小于它的消息里新出现的气泡要淡入：页面第一次显示出内容时定下（那时已有的、往前翻出来的都不动）。
+  const [enterFrom, setEnterFrom] = useState<number | null>(null)
+  useEffect(() => {
+    if (enterFrom === null && history) setEnterFrom(last ? Number(last.id) : 0)
+  }, [enterFrom, history, last])
+
+  // 往前翻页后保持视线位置；在底部时新内容到达跟到底（刚进来、或落下超过一屏时直接到底）。
   useEffect(() => {
     const el = listRef.current
     if (!el) return
@@ -81,24 +84,42 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
       loadingOlder.current = false
       return
     }
-    if (stick.current) el.scrollTop = el.scrollHeight
-  }, [firstId, history, outgoing.length, typing, prompts.length, session?.retry])
+    if (!stick.current) return
+    const gap = el.scrollHeight - el.clientHeight - el.scrollTop
+    if (gap < 2) return
+    if (enterFrom === null || gap > el.clientHeight || reducedMotion()) el.scrollTop = el.scrollHeight
+    else {
+      auto.current = true
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
+  }, [firstId, history, outgoing.length, typing, prompts.length, session?.retry, enterFrom])
 
   const onScroll = (): void => {
     const el = listRef.current
     if (!el) return
-    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (gap < 80) {
+      stick.current = true
+      if (gap < 2) auto.current = false
+    } else if (!auto.current) stick.current = false
     if (el.scrollTop < 120 && history && history.start > 0 && !loadingOlder.current && ready) {
       loadingOlder.current = true
       prevTop.current = { id: firstId, height: el.scrollHeight }
       link?.history(sid, { before: history.start })
     }
   }
+  // 手指 / 滚轮一动就是自己在滚：不再当作自动滚动。
+  const takeOver = (): void => {
+    auto.current = false
+  }
 
-  const messages = history?.messages ?? []
-  const last = messages[messages.length - 1]
-  // 进行中的点接在最后一组回复下面；最后是你发的消息时另起一组。
-  const dotsInLast = typing && !outgoing.length && last?.role === 'assistant'
+  const openFile = useCallback((file: WebDelivered) => open({ name: 'file', sid, file }), [open, sid])
+
+  // 进行中的点接在最后一组回复下面；最后是你发的消息时另起一组；刚处理完的交互卡（末尾的回执）之后接在回执下面。
+  // 交互卡还开着时在等你，不显示。
+  const lastIsReply = !outgoing.length && last?.role === 'assistant'
+  const cardOpen = prompts.some((p) => p.view.state === 'open')
+  const dotsInLast = typing && lastIsReply && !prompts.length
   const empty = history && history.total === 0 && !busy && !prompts.length && !outgoing.length
 
   return (
@@ -116,44 +137,52 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
           <MoreHorizontal size={23} strokeWidth={1.8} />
         </button>
       </header>
-      <div className="scroll msgs" ref={listRef} onScroll={onScroll}>
+      <div className="scroll msgs" ref={listRef} onScroll={onScroll} onTouchStart={takeOver} onWheel={takeOver}>
         {history && history.start > 0 && <div className="msgs__more">{ready ? <span className="spin" /> : t('loadMore')}</div>}
         {empty && <div className="empty">{t('chatEmpty')}</div>}
-        {messages.map((m) =>
-          m.role === 'user' ? (
-            <UserMessage key={m.id} m={m} store={store} sid={sid} />
-          ) : (
+        {messages.map((m) => {
+          if (m.role === 'user') return <UserMessage key={m.id} m={m} store={store} sid={sid} />
+          const here = dotsInLast && m === last
+          return (
             <Reply
               key={m.id}
               m={m}
               persona={persona}
               seed={session?.personaId}
-              store={store}
-              sid={sid}
-              dots={dotsInLast && m === last ? <Dots stalled={!ready} retry={session?.retry} /> : null}
+              enter={enterFrom !== null && Number(m.id) >= enterFrom}
+              onOpen={openFile}
+              dots={here}
+              stalled={here && !ready}
+              retry={here ? session?.retry : undefined}
             />
           )
-        )}
+        })}
         {outgoing.map((o) => (
           <OutgoingMessage key={o.id} o={o} store={store} />
         ))}
-        {typing && !dotsInLast && (
-          <div className="ga">
-            <Avatar persona={persona} seed={session?.personaId} size={34} />
-            <div className="ga__col">
-              <Dots stalled={!ready} retry={session?.retry} />
-            </div>
-          </div>
-        )}
         {prompts.map((p) => (
-          <PromptCard key={p.view.key} view={p.view} onAction={store.act} who={persona} />
+          <LivePromptSlot key={p.view.key} p={p} onAction={store.act} who={persona} seed={session?.personaId} cont={lastIsReply} />
         ))}
+        {typing && !dotsInLast && !cardOpen && (
+          <Typing
+            persona={persona}
+            seed={session?.personaId}
+            cont={prompts.length > 0}
+            enter={enterFrom !== null}
+            stalled={!ready}
+            retry={session?.retry}
+          />
+        )}
         <div className="msgs__pad" />
       </div>
       <Composer store={store} sid={sid} busy={busy} waiting={!!session?.waiting} onSent={() => (stick.current = true)} />
       {menu && session && <ChatMenu store={store} s={session} onClose={() => setMenu(false)} />}
     </div>
   )
+}
+
+function reducedMotion(): boolean {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 }
 
 /** 进行中：三个跳动的点。连不上电脑时停下（看得出不是在等回复）；模型连接中断 / 重试时旁边写一句。 */
@@ -168,39 +197,77 @@ function Dots({ stalled, retry }: { stalled: boolean; retry?: string }): React.J
   )
 }
 
-function UserMessage({ m, store, sid }: { m: Extract<WebMessage, { role: 'user' }>; store: Store; sid: string }): React.JSX.Element {
-  if (m.notify) return <div className="sys">{m.text}</div>
-  const images = m.attachments?.filter((a) => a.kind === 'image' && a.ref) ?? []
-  const others = m.attachments?.filter((a) => !(a.kind === 'image' && a.ref)) ?? []
+/**
+ * 回复还没来时的三个点单独一组：你的消息之后带头像；刚处理完的交互卡之后接在回执那一列（cont）。
+ * 进入对话之后才出现的淡入。
+ */
+function Typing({
+  persona,
+  seed,
+  cont,
+  enter,
+  stalled,
+  retry
+}: {
+  persona?: WebPersona
+  seed?: string
+  cont: boolean
+  enter: boolean
+  stalled: boolean
+  retry?: string
+}): React.JSX.Element {
+  const [fresh] = useState(enter)
   return (
-    <div className="u-wrap">
-      {images.length > 0 && (
-        <div className="thumbs">
-          {images.map((a) => (
-            <AttachmentThumb key={a.ref} store={store} sid={sid} refId={a.ref!} name={a.name} />
-          ))}
-        </div>
-      )}
-      {others.length > 0 && (
-        <div className="atts">
-          {others.map((a, i) => (
-            <span key={i} className="att">
-              {a.name}
-            </span>
-          ))}
-        </div>
-      )}
-      {m.text && <div className="u">{m.text}</div>}
+    <div className={`ga${cont ? ' is-cont' : ''}${fresh ? ' is-new' : ''}`}>
+      {cont ? <span className="ga__sp" /> : <Avatar persona={persona} seed={seed} size={34} />}
+      <div className="ga__col">
+        <Dots stalled={stalled} retry={retry} />
+      </div>
     </div>
   )
 }
+
+/**
+ * 对话记录里你的消息。不淡入：多数是替换发出时先显示的那条（见 OutgoingMessage）。
+ * store 每次都是新对象，只比缩略图用得到的连接与电脑。
+ */
+const UserMessage = memo(
+  function UserMessage({ m, store, sid }: { m: Extract<WebMessage, { role: 'user' }>; store: Store; sid: string }): React.JSX.Element {
+    if (m.notify) return <div className="sys">{m.text}</div>
+    const images = m.attachments?.filter((a) => a.kind === 'image' && a.ref) ?? []
+    const others = m.attachments?.filter((a) => !(a.kind === 'image' && a.ref)) ?? []
+    return (
+      <div className="u-wrap">
+        {images.length > 0 && (
+          <div className="thumbs">
+            {images.map((a) => (
+              <AttachmentThumb key={a.ref} store={store} sid={sid} refId={a.ref!} name={a.name} />
+            ))}
+          </div>
+        )}
+        {others.length > 0 && (
+          <div className="atts">
+            {others.map((a, i) => (
+              <span key={i} className="att">
+                {a.name}
+              </span>
+            ))}
+          </div>
+        )}
+        {m.text && <div className="u">{m.text}</div>}
+      </div>
+    )
+  },
+  (a, b) =>
+    a.m === b.m && a.sid === b.sid && a.store.link === b.store.link && a.store.ready === b.store.ready && a.store.deskId === b.store.deskId
+)
 
 /** 发出去还没出现在对话记录里的消息：发送中稍等片刻才显示转圈；失败的写明原因，可重发或删除。 */
 function OutgoingMessage({ o, store }: { o: Outgoing; store: Store }): React.JSX.Element {
   const images = o.files.filter((f) => f.preview)
   const others = o.files.filter((f) => !f.preview)
   return (
-    <div className={`u-wrap is-${o.state}`}>
+    <div className={`u-wrap is-out is-${o.state}`}>
       {images.length > 0 && (
         <div className="thumbs">
           {images.map((f) => (
@@ -236,42 +303,59 @@ function OutgoingMessage({ o, store }: { o: Outgoing; store: Store }): React.JSX
   )
 }
 
-/** 助手的一条回复：头像 + 一列气泡（每段正文一个），交付文件与提示按出现的先后穿插；一轮的最后一条下面写用时。 */
-function Reply({
+/**
+ * 助手的一条回复：头像 + 一列气泡（每段正文一个），交付文件与提示按出现的先后穿插；一轮的最后一条下面写用时。
+ * 内容没变的（mergeHistory 沿用原对象）不重新渲染。
+ */
+const Reply = memo(function Reply({
   m,
   persona,
   seed,
-  store,
-  sid,
-  dots
+  enter,
+  onOpen,
+  dots,
+  stalled,
+  retry
 }: {
   m: Extract<WebMessage, { role: 'assistant' }>
   persona?: WebPersona
   seed?: string
-  store: Store
-  sid: string
-  dots: React.ReactNode
+  /** 现在新挂上的气泡要淡入。 */
+  enter: boolean
+  onOpen: (file: WebDelivered) => void
+  /** 进行中的点接在这条下面。 */
+  dots: boolean
+  stalled: boolean
+  retry?: string
 }): React.JSX.Element {
   return (
     <div className="ga">
       <Avatar persona={persona} seed={seed} size={34} />
       <div className="ga__col">
-        {m.parts.map((p, i) =>
-          p.k === 'text' ? (
-            <div key={i} className="bb">
-              <Markdown text={p.text} />
-            </div>
-          ) : p.k === 'file' ? (
-            <FileCard key={i} file={p.file} onOpen={() => store.open({ name: 'file', sid, file: p.file })} />
-          ) : (
-            <div key={i} className="note">
-              {p.text}
-            </div>
-          )
-        )}
-        {dots}
+        {m.parts.map((p, i) => (
+          <Part key={i} p={p} enter={enter} onOpen={onOpen} />
+        ))}
+        {dots && <Dots stalled={stalled} retry={retry} />}
         {!dots && m.durationMs ? <div className="ga__meta">{t('doneMeta', { d: fmtDuration(m.durationMs) })}</div> : null}
       </div>
     </div>
   )
+})
+
+/**
+ * 回复里的一段正文 / 一个交付文件 / 一行提示 / 一行回执。要不要淡入在挂上时定下，之后不变（已显示的不会再闪一次）。
+ * 回执不淡入：它接替的是末尾那条已经显示着的（见 receipt.tsx）。
+ */
+function Part({ p, enter, onOpen }: { p: WebPart; enter: boolean; onOpen: (file: WebDelivered) => void }): React.JSX.Element {
+  const [fresh] = useState(enter)
+  if (p.k === 'receipt') return <Receipt r={p} />
+  const cls = fresh ? ' is-new' : ''
+  if (p.k === 'text')
+    return (
+      <div className={`bb${cls}`}>
+        <Markdown text={p.text} />
+      </div>
+    )
+  if (p.k === 'file') return <FileCard file={p.file} onOpen={() => onOpen(p.file)} className={fresh ? 'is-new' : undefined} />
+  return <div className={`note${cls}`}>{p.text}</div>
 }

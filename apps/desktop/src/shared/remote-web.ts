@@ -13,7 +13,7 @@ import type { ActionValue, PromptView } from './remote-views'
  * WebClientFrame / WebServerFrame 是密文里的内容。明文只有握手、心跳与中转发的「电脑不在线」。
  */
 
-export const WEB_PROTOCOL_VERSION = 5
+export const WEB_PROTOCOL_VERSION = 6
 
 /**
  * 手机新建对话时先定好的对话 id（同电脑端 sess_<时间>_<随机>）：手机不等回执直接进入对话页。
@@ -70,18 +70,41 @@ export interface WebSession {
   members?: { id: string; name: string; avatar?: string; personaId?: string }[]
   /** 已归档：只在「已归档」里列出。 */
   archived?: boolean
+  /** 「在会话中运行」的定时任务的对话：不进任何列表，从任务详情「查看对话」进入（同电脑端）。 */
+  hidden?: boolean
   /** 这个对话发消息时用的模型（「服务商 id:模型 id」）与显示名；一个可用模型都没有时缺省。 */
   model?: string
   modelName?: string
-  /**
-   * 进行中的这一轮有新内容可看（又写完一条回复、用户消息或插入的消息已送达）：每次加一。
-   * 对话页据此只补拉最后几条，不等整轮结束。
-   */
-  rev?: number
   /** 连接模型中断 / 自动重试时的说明（对话页「进行中」标识旁显示）；正常进行时缺省。 */
   retry?: string
   /** 最后一次被看过的时间（电脑或手机，任一端看过就算）：手机的未读红点以它为准，电脑上看过的不再显示红点。 */
   readAt?: number
+}
+
+export type WebTaskStatus = 'active' | 'paused' | 'completed' | 'error'
+export type WebTaskRunStatus = 'ok' | 'error' | 'skipped' | 'aborted'
+/** 手机上对定时任务的操作（第一版不能编辑）。 */
+export type WebTaskAction = 'pause' | 'resume' | 'run' | 'delete'
+
+/** 定时任务（抽屉「定时任务」的列表与详情，对比稿 design/mobile-tasks.html 方案 A）。 */
+export interface WebTask {
+  id: string
+  title: string
+  /** 人读的日程（「每天 09:00」），电脑端按界面语言生成。 */
+  schedule: string
+  status: WebTaskStatus
+  /** 下次运行（只在进行中时有意义）；不再触发为 null。 */
+  nextRunAt: number | null
+  /** 最近一次运行（含「立即运行」）；从未运行时缺省。 */
+  lastRun?: { at: number; status: WebTaskRunStatus }
+  /** 执行的角色；缺省 = 默认角色 Deva。 */
+  personaId?: string
+  /** 模型显示名（服务商 · 模型）；缺省 = 跟随默认模型。 */
+  model?: string
+  /** 「在会话中运行」时所在的对话；缺省 = 独立运行。 */
+  owner?: { sid: string; title: string }
+  /** 任务自己的对话（「查看对话」）；第一次运行前还没有、被删了也没有。 */
+  sessionId?: string
 }
 
 /** 用户消息里的附件。ref = 图片在对话里的定位（取缩略图 / 原图用）。 */
@@ -98,8 +121,21 @@ export interface WebDelivered {
   name: string
 }
 
-/** 一条助手回复里的内容：一段正文、一个交付的文件、一行提示（已停止、出错等），按出现的先后排列。 */
-export type WebPart = { k: 'text'; text: string } | { k: 'file'; file: WebDelivered } | { k: 'note'; text: string }
+/**
+ * 交互卡（问答、计划、挂载、定时任务、角色名片）处理之后留在对话里的一行回执（文案见 shared/remote-receipts.ts）。
+ * tone：ok = 已回答 / 已批准 / 已创建 / 已添加（绿色对勾）；redo = 继续完善；off = 跳过 / 忽略 / 拒绝 / 未作答（灰色）。
+ * strong = 加粗的那段（你的选择）；detail = 点「查看」展开的全文（Markdown：计划正文、多个问题的问答）。
+ */
+export interface WebReceipt {
+  k: 'receipt'
+  tone: 'ok' | 'redo' | 'off'
+  text: string
+  strong?: string
+  detail?: string
+}
+
+/** 一条助手回复里的内容：一段正文、一个交付的文件、一行提示（已停止、出错等）、一行回执，按出现的先后排列。 */
+export type WebPart = { k: 'text'; text: string } | { k: 'file'; file: WebDelivered } | { k: 'note'; text: string } | WebReceipt
 
 /**
  * 对话里的一条消息（由电脑端的展示投影归约而来：只有正文，工具调用与过程不下发）。
@@ -149,10 +185,10 @@ export type WebClientFrame =
   /** 重新拉对话列表与角色列表。 */
   | { t: 'refresh' }
   /**
-   * 某对话的历史：before = 只要序号小于它的（往前翻页）；from = 从这个序号取到最后（进行中补拉最后几条，
-   * 太多时退回最新一页）；都缺省取最新一页。
+   * 某对话的历史：before = 只要序号小于它的（往前翻页）；缺省取最新一页，同时表示正看着这个对话——
+   * 进行中有新内容电脑会直接推来（history 帧带 live）。
    */
-  | { t: 'history'; sid: string; before?: number; from?: number; limit?: number }
+  | { t: 'history'; sid: string; before?: number; limit?: number }
   /** cid = 客户端临时 id，服务端用 sent 帧回结果。files = 已上传完的文件 id。进行中的对话会作为插入送达。 */
   | { t: 'send'; sid: string; text: string; cid: string; files?: string[] }
   | { t: 'stop'; sid: string }
@@ -190,6 +226,8 @@ export type WebClientFrame =
   | { t: 'set_model'; rid: string; sid: string; ref: string }
   /** 改这台手机在电脑上显示的名字。 */
   | { t: 'rename'; rid: string; name: string }
+  /** 定时任务：暂停 / 恢复 / 立即运行 / 删除（rid 用 result 帧回；立即运行时 message 非空 = 已在运行，不是错误）。 */
+  | { t: 'task'; rid: string; id: string; action: WebTaskAction }
   /** 断开这台手机（电脑端移除这台设备）。 */
   | { t: 'bye' }
 
@@ -211,10 +249,16 @@ export type WebServerFrame =
   | { t: 'session'; s: WebSession }
   | { t: 'session_gone'; sid: string }
   | { t: 'personas'; list: WebPersona[] }
-  /** 展示投影里 [start, end) 这一段归约出的消息；total = 投影的总条数。 */
-  | { t: 'history'; sid: string; messages: WebMessage[]; start: number; end: number; total: number }
+  /** 定时任务的完整列表（连上时、任务或对话有变化时整份重发）。 */
+  | { t: 'tasks'; list: WebTask[] }
+  /**
+   * 展示投影里 [start, end) 这一段归约出的消息；total = 投影的总条数。
+   * live = 进行中电脑主动推来的这一轮（从它的用户消息起）：接不上手机已有的那段就丢掉，不拿它整段替换。
+   */
+  | { t: 'history'; sid: string; messages: WebMessage[]; start: number; end: number; total: number; live?: true }
   | { t: 'models'; rid: string; list: WebModel[] }
-  | { t: 'sent'; cid: string; sid: string; ok: boolean; message?: string }
+  /** 发送回执。at = 这条消息在对话记录里的 id（插入进行中这一轮的没有：要等交给模型才落进记录）。 */
+  | { t: 'sent'; cid: string; sid: string; ok: boolean; message?: string; at?: string }
   | { t: 'created'; rid: string; sid?: string; error?: string }
   | { t: 'prompt'; p: WebPrompt }
   | { t: 'notice'; n: WebNotice }
