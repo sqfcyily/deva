@@ -158,6 +158,21 @@ export interface WebModel {
 export interface WebPrompt {
   view: PromptView
   at: number
+  /** 成员在等你处理的卡：显示在主对话末尾（同电脑端），不在卡片自己的对话里（成员对话手机上看不到）。 */
+  member?: WebPromptMember
+}
+
+/**
+ * 等你处理的那位成员。sid = 主对话；id / avatar / personaId 同 WebSession.members（画头像）；
+ * isNew = 主角色建成员时为新成员选文件夹（成员还没建，没有头像）。
+ */
+export interface WebPromptMember {
+  sid: string
+  name: string
+  id?: string
+  avatar?: string
+  personaId?: string
+  isNew?: boolean
 }
 
 /** 一条通知（定时任务跑完 / 自动暂停 …），可关联到某个对话。 */

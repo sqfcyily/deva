@@ -1,9 +1,19 @@
 import { basename } from 'node:path'
 import type { DisplayMessage } from '../../../../shared/chat-protocol'
 import { agentReceipt, askReceipt, autotaskReceipt, planReceipt } from '../../../../shared/remote-receipts'
-import type { WebAttachment, WebMessage, WebModel, WebPart, WebPersona, WebReceipt } from '../../../../shared/remote-web'
+import type { PromptView } from '../../../../shared/remote-views'
+import type {
+  WebAttachment,
+  WebMessage,
+  WebModel,
+  WebPart,
+  WebPersona,
+  WebPromptMember,
+  WebReceipt
+} from '../../../../shared/remote-web'
 import type { ContentPart } from '../../../providers/types'
-import type { ChatSessionMeta, StoredSession } from '../../chat-store'
+import { getSession, type ChatSessionMeta, type StoredSession } from '../../chat-store'
+import type { MemberRef } from '../../members'
 import { AUTO_SHAPE, isAvatarShape } from '../../../../shared/avatar-shape'
 import { ATTACHMENTS_ONLY_QUESTION } from '../../attachments'
 import { getConfig } from '../../config'
@@ -147,14 +157,38 @@ type WebMember = { id: string; name: string; avatar?: string; personaId?: string
  */
 export function sessionExtras(m: ChatSessionMeta): { folder?: string; members?: WebMember[] } {
   const folder = typeof m.focusRoot === 'string' && m.focusRoot.trim() ? basename(m.focusRoot.replace(/[\\/]+$/, '')) : undefined
-  const members: WebMember[] = []
-  for (const x of m.members ?? []) {
-    if (x.removed) continue
-    const own = x.origin === 'mention' ? getPersona(x.personaId) : null
-    if (own) members.push({ id: own.id, name: own.name, avatar: own.avatar, personaId: own.id })
-    else members.push({ id: x.sessionId, name: x.name, avatar: JSON.stringify({ shape: isAvatarShape(x.shape) ? x.shape : AUTO_SHAPE }) })
-  }
+  const members = (m.members ?? []).filter((x) => !x.removed).map(memberFace)
   return { folder, members: members.length ? members : undefined }
+}
+
+function memberFace(x: MemberRef): WebMember {
+  const own = x.origin === 'mention' ? getPersona(x.personaId) : null
+  if (own) return { id: own.id, name: own.name, avatar: own.avatar, personaId: own.id }
+  return { id: x.sessionId, name: x.name, avatar: JSON.stringify({ shape: isAvatarShape(x.shape) ? x.shape : AUTO_SHAPE }) }
+}
+
+/**
+ * 成员在等你处理的卡该显示在哪个主对话、署谁的名（同电脑端 MemberAsks）：成员会话里的提问 / 计划 / 选文件夹 → 它的主对话；
+ * 主角色建成员时为新成员选文件夹（主对话自己的卡，带成员名）→ isNew。其余的卡返回 undefined（照常显示在自己的对话里）。
+ */
+export function promptMember(view: PromptView): WebPromptMember | undefined {
+  const s = getSession(view.sessionId)
+  if (s?.parentId) {
+    const main = getSession(s.parentId)
+    const ref = main?.members?.find((x) => x.sessionId === s.id)
+    if (!main) return undefined
+    if (!ref) return { sid: main.id, name: s.title || '成员', id: s.id }
+    return { sid: main.id, ...memberFace(ref) }
+  }
+  if (view.kind === 'mount' && view.member) return { sid: view.sessionId, name: view.member, isNew: true }
+  return undefined
+}
+
+/** 推送通知与胶囊同一句：只写谁在等什么（同电脑端，不写问题的具体内容）。 */
+export function memberWaitText(view: PromptView, m: WebPromptMember): string {
+  if (view.kind === 'ask') return `${m.name}在等你回答`
+  if (view.kind === 'plan') return `${m.name}在等你批准计划`
+  return m.isNew ? `新成员${m.name}在等你选择文件夹` : `${m.name}在等你选择文件夹`
 }
 
 /** 手机端能看到的角色：已启用的全部角色（手机版是主人自己的设备，不按回复范围过滤）。 */

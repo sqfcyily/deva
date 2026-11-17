@@ -7,8 +7,10 @@ import { Markdown } from './cards'
 import { ChatMenu } from './chat-menu'
 import { Composer } from './composer'
 import { AttachmentThumb, FileCard } from './files'
+import { MemberAsks } from './member-asks'
 import { LinkStatus } from './onboard'
 import type { Outgoing } from './outbox'
+import { promptSid } from './prompts'
 import { LivePromptSlot, Receipt } from './receipt'
 import { fmtDuration, t } from './strings'
 
@@ -24,10 +26,11 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
   const persona = session ? store.personas.get(session.personaId ?? 'general') : undefined
   const history = store.hist.get(sid)
   const outgoing = store.outbox.get(sid) ?? []
-  const prompts = useMemo(
-    () => [...store.prompts.values()].filter((p) => p.view.sessionId === sid).sort((a, b) => a.at - b.at),
-    [store.prompts, sid]
-  )
+  // 这个对话的交互卡：自己的排在末尾；成员在等你的（显示在主对话里，见 member-asks.tsx）排在最后，不挡主对话的输入和进度。
+  const [prompts, memberAsks] = useMemo(() => {
+    const all = [...store.prompts.values()].filter((p) => promptSid(p) === sid).sort((a, b) => a.at - b.at)
+    return [all.filter((p) => !p.member), all.filter((p) => p.member)]
+  }, [store.prompts, sid])
   const [menu, setMenu] = useState(false)
   const listRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
@@ -92,7 +95,7 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
       auto.current = true
       el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
     }
-  }, [firstId, history, outgoing.length, typing, prompts.length, session?.retry, enterFrom])
+  }, [firstId, history, outgoing.length, typing, prompts.length, memberAsks.length, session?.retry, enterFrom])
 
   const onScroll = (): void => {
     const el = listRef.current
@@ -120,7 +123,7 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
   const lastIsReply = !outgoing.length && last?.role === 'assistant'
   const cardOpen = prompts.some((p) => p.view.state === 'open')
   const dotsInLast = typing && lastIsReply && !prompts.length
-  const empty = history && history.total === 0 && !busy && !prompts.length && !outgoing.length
+  const empty = history && history.total === 0 && !busy && !prompts.length && !memberAsks.length && !outgoing.length
 
   return (
     <div className="page page--chat">
@@ -173,6 +176,7 @@ export function ChatPage({ store, sid }: { store: Store; sid: string }): React.J
             retry={session?.retry}
           />
         )}
+        <MemberAsks list={memberAsks} personas={store.personas} onAction={store.act} />
         <div className="msgs__pad" />
       </div>
       <Composer store={store} sid={sid} busy={busy} waiting={!!session?.waiting} onSent={() => (stick.current = true)} />

@@ -850,7 +850,8 @@ function onBusEvent({ turnId, sessionId, event }: ChatEventPayload): void {
               sessionTitle: title,
               tool: event.tool,
               path: event.path,
-              state: 'open'
+              state: 'open',
+              ...(event.member ? { member: event.member } : {})
             }
     )
     scheduleFlush(t, true)

@@ -3,6 +3,7 @@ import { AlarmClock, Archive, ArchiveRestore, ChevronLeft, Menu, Search, SquareP
 import type { WebSession } from '../shared/remote-web'
 import type { Filter, Store } from './App'
 import { Avatar, SessionFace } from './avatar'
+import { memberWaitLabel } from './member-asks'
 import { InstallTip, LinkStatus } from './onboard'
 import { SessionSheet } from './session-ops'
 import { fmtListTime, t } from './strings'
@@ -64,8 +65,13 @@ export function Home({ store }: { store: Store }): React.JSX.Element {
   /** 上一次排好的顺序（左滑开着时沿用）。 */
   const order = useRef<string[]>([])
   const holding = swiped !== null
+  // 有成员在等你的主对话（卡片显示在主对话里）：同「等你决定」排在前面。
+  const memberWaits = useMemo(
+    () => new Set([...store.prompts.values()].filter((p) => p.member && p.view.state === 'open').map((p) => p.member!.sid)),
+    [store.prompts]
+  )
   const list = useMemo(() => {
-    const rank = (s: WebSession): number => (s.waiting ? 0 : s.busy ? 1 : 2)
+    const rank = (s: WebSession): number => (s.waiting || memberWaits.has(s.id) ? 0 : s.busy ? 1 : 2)
     const all = [...store.sessions.values()].filter((s) => matchFilter(s, filter))
     all.sort((a, b) => rank(a) - rank(b) || b.updatedAt - a.updatedAt)
     // 左滑开着时不重排：有对话在跑会不停更新时间、换位置，开着的那一行会从手指下挪走，点「删除」就点空了。
@@ -76,7 +82,7 @@ export function Home({ store }: { store: Store }): React.JSX.Element {
     }
     order.current = all.map((s) => s.id)
     return q ? all.filter((s) => s.title.toLowerCase().includes(q) || s.preview.toLowerCase().includes(q)) : all
-  }, [store.sessions, filter, q, holding])
+  }, [store.sessions, filter, q, holding, memberWaits])
 
   // 列表真的滚动了才收起左滑开着的那一行：列表更新、浏览器校正滚动位置会带来一两像素的滚动，不能算。
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -205,9 +211,14 @@ function SessionRow({
 }): React.JSX.Element {
   const unread = isUnread(s, store.seen)
   const ask = s.waiting
-    ? [...store.prompts.values()].find((p) => p.view.sessionId === s.id && p.view.state === 'open')
+    ? [...store.prompts.values()].find((p) => !p.member && p.view.sessionId === s.id && p.view.state === 'open')
     : undefined
-  const askText = ask?.view.kind === 'ask' ? ask.view.questions[0]?.question : undefined
+  // 成员在等你：第二行同胶囊，只写谁在等什么。
+  const memberAsk = s.waiting
+    ? undefined
+    : [...store.prompts.values()].find((p) => p.member?.sid === s.id && p.view.state === 'open')
+  const waiting = s.waiting || !!memberAsk
+  const askText = ask?.view.kind === 'ask' ? ask.view.questions[0]?.question : memberAsk ? memberWaitLabel(memberAsk) : undefined
   const close = (): void => setSwiped(null)
   const actions = confirm ? (
     <button
@@ -256,7 +267,7 @@ function SessionRow({
         </span>
         <span className="row__sub">
           <span className="row__pv">
-            {s.waiting ? (
+            {waiting ? (
               <>
                 <span className="flag">{t('waitingFlag')}</span> {askText ?? s.preview}
               </>

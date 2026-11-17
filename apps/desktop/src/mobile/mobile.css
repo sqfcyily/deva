@@ -354,6 +354,33 @@ button.info__r:active:not(:disabled) { background: var(--bg-hover); }
 .rc b { margin-left: .4em; color: var(--fg-muted); font-weight: 600; word-break: break-word; }
 .rc__more { margin-left: .5em; font-size: 13px; padding: 0; }
 .rc__detail { align-self: stretch; margin-left: 24px; }
+/*
+ * 成员在等你处理（主对话末尾，见 member-asks.tsx，同电脑端 .cf-masks）：每件一枚居中胶囊，展开的那件下面直接是卡片。
+ * 一行是一个折叠块（grid 行 1fr ↔ 0fr + 淡出）；收起时用 margin-top 抵消行距，整组收起时连同消息列的行距一起收掉，
+ * 贴底时画面平滑下移、不跳。
+ */
+.mfold { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .3s ease, opacity .3s ease, margin-top .3s ease; }
+.mfold > .mfold__in { min-height: 0; overflow: hidden; }
+.mfold.is-shut { grid-template-rows: 0fr; opacity: 0; }
+.mfold.is-shut > .mfold__in { visibility: hidden; transition: visibility 0s linear .3s; }
+.masks { display: flex; flex-direction: column; gap: 8px; transition: margin-top .3s ease; }
+.masks:not(:has(> .mask:not(.is-shut))) { margin-top: -14px; }
+.mask.is-shut:not(:first-child) { margin-top: -8px; }
+.mask:has(.mask__fold:not(.is-shut)) + .mask:not(.is-shut) { margin-top: 8px; }
+.mask > .mfold__in { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.mask__pill { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 4px 11px 4px 4px; border-radius: 999px; background: var(--bg-inset); font-size: 13px; line-height: 18px; color: var(--fg-muted); white-space: nowrap; }
+.mask__text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mask__chev { flex: none; color: var(--fg-subtle); transition: transform .15s; }
+.mask__pill.is-open .mask__chev { transform: rotate(180deg); }
+/* 新成员还没有头像：同尺寸的文件夹图标圆片 */
+.mask__icon { flex: none; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--bg-elevated); color: var(--fg-muted); }
+/* 回执：绿勾 = 已回答 / 已批准 / 已选，跳过 / 忽略为灰 */
+.mask__pill.is-done { padding-left: 9px; animation: fade-in .15s ease; }
+.mask__pill.is-done svg { flex: none; color: var(--fg-subtle); }
+.mask__pill.is-done.is-ok svg { color: var(--success); }
+.mask__fold { width: 100%; }
+.mask__fold.is-shut { margin-top: -6px; }
+@media (prefers-reduced-motion: reduce) { .mfold, .mfold.is-shut > .mfold__in, .masks { transition: none; } }
 /* 进入对话之后新到的气泡、刚发出的消息：轻轻上浮淡入（只在挂上时播一次，见 chat.tsx）。 */
 .is-new, .u-wrap.is-out { animation: msg-in .26s cubic-bezier(.2,.8,.2,1); }
 @keyframes msg-in { from { opacity: 0; transform: translateY(8px); } }

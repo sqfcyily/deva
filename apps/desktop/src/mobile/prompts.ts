@@ -11,12 +11,24 @@ import { t } from './strings'
  * 电脑那边是先把结果写进对话记录、再发出「已处理」，所以确认之后收到的、包含这一轮末尾的历史里已经有这条回执：
  * 这时撤掉末尾这条，由对话记录里的那条接着显示在原处（文案同一套，见 shared/remote-receipts.ts）。
  * 挂载请求不进对话记录，回执显示到下一段内容到来。
+ *
+ * 成员在等你的卡（member，显示在主对话末尾，见 member-asks.tsx）不在主对话记录里：同电脑端，处理完的留着回执，
+ * 等主对话里这一批都处理完（没有还开着的成员卡）再停一会儿，一起收起、移除。
  */
 
 export interface LivePrompt extends WebPrompt {
   /** 电脑确认已处理（本机先行收起、电脑还没确认的没有）。 */
   done?: boolean
+  /** 成员卡：这一批都处理完了，正在收起（随后移除）。 */
+  leaving?: boolean
 }
+
+/** 卡片显示在哪个对话：成员的卡在主对话里。 */
+export const promptSid = (p: WebPrompt): string => p.member?.sid ?? p.view.sessionId
+
+/** 成员卡全部处理完后，回执再停留多久一起收起；收起过渡的时长（同电脑端 MemberAsks）。 */
+const MEMBER_HOLD_MS = 1100
+export const MEMBER_OUT_MS = 300
 
 export type Act = (key: string, value: ActionValue, form?: Record<string, string | string[]>) => Promise<void>
 
@@ -56,15 +68,47 @@ export function usePrompts(linkRef: { current: Link | null }, toast: (text: stri
 
   const reset = useCallback((list: WebPrompt[]) => setPrompts(new Map(list.map((p) => [p.view.key, p]))), [])
 
+  // 某主对话的成员卡处理完一张：到时候还没有开着的，就一起收起再移除（期间又来了一张就作罢，等它处理完再来）。
+  const sweep = useCallback((sid: string) => {
+    window.setTimeout(() => {
+      const list = [...ref.current.values()].filter((p) => p.member?.sid === sid)
+      if (!list.length || list.some((p) => p.view.state === 'open')) return
+      const keys = new Set(list.map((p) => p.view.key))
+      setPrompts((m) => {
+        const next = new Map(m)
+        for (const k of keys) {
+          const p = next.get(k)
+          if (p && p.view.state !== 'open') next.set(k, { ...p, leaving: true })
+        }
+        return next
+      })
+      window.setTimeout(
+        () =>
+          setPrompts((m) => {
+            const next = new Map(m)
+            for (const k of keys) if (next.get(k)?.leaving) next.delete(k)
+            return next
+          }),
+        MEMBER_OUT_MS
+      )
+    }, MEMBER_HOLD_MS)
+  }, [])
+
   const update = useCallback(
-    (p: WebPrompt) => setPrompts((m) => new Map(m).set(p.view.key, p.view.state === 'open' ? p : { ...p, done: true })),
-    []
+    (p: WebPrompt) => {
+      const open = p.view.state === 'open'
+      // 已处理的、手上却没有这张（先行收起后已经收走了）：电脑的确认来晚了，不再加回来。
+      if (!open && !ref.current.has(p.view.key)) return
+      setPrompts((m) => (open || m.has(p.view.key) ? new Map(m).set(p.view.key, open ? p : { ...p, done: true }) : m))
+      if (p.member && !open) sweep(p.member.sid)
+    },
+    [sweep]
   )
 
   const settle = useCallback(
     (sid: string) =>
       setPrompts((m) => {
-        const gone = [...m.values()].filter((p) => p.done && p.view.sessionId === sid)
+        const gone = [...m.values()].filter((p) => p.done && !p.member && p.view.sessionId === sid)
         if (!gone.length) return m
         const next = new Map(m)
         for (const p of gone) next.delete(p.view.key)
@@ -79,7 +123,10 @@ export function usePrompts(linkRef: { current: Link | null }, toast: (text: stri
       if (!l) return
       const before = ref.current.get(key)
       const view = before ? resolved(before.view, value, form) : null
-      if (before && view) setPrompts((m) => new Map(m).set(key, { ...before, view }))
+      if (before && view) {
+        setPrompts((m) => new Map(m).set(key, { ...before, view }))
+        if (before.member) sweep(before.member.sid)
+      }
       const r = await l.result((rid) => ({ t: 'action', rid, key, value, form }))
       if (r.ok) return
       // 电脑没收下：还是先行收起的样子（电脑没推来别的结果）就恢复原卡。
@@ -87,7 +134,7 @@ export function usePrompts(linkRef: { current: Link | null }, toast: (text: stri
         setPrompts((m) => (m.get(key)?.view === view ? new Map(m).set(key, before) : m))
       toast(r.message || t('sendFailed'), false)
     },
-    [linkRef, toast]
+    [linkRef, toast, sweep]
   )
 
   return { prompts, reset, update, settle, act }

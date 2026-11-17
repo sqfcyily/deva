@@ -1,0 +1,21 @@
+{
+  "name": "@deva/relay-node",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deva 手机版中转的 Node.js 版本（部署在自己的服务器上，协议与 apps/relay 相同）",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node dist/relay.cjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.21.5",
+    "typescript": "^5.7.2"
+  }
+}

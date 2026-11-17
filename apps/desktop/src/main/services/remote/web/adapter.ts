@@ -28,9 +28,11 @@ import { sendPush, vapidOf, type PushMessage } from './push'
 import { taskAction, taskList } from './tasks'
 import {
   lastUserMessageId,
+  memberWaitText,
   modelList,
   personaList,
   previewOf,
+  promptMember,
   sessionExtras,
   sessionModel,
   toWebRange,
@@ -682,18 +684,22 @@ export class PhoneAdapter implements RemoteAdapter, ConnSink {
 
   async renderPrompt(chat: ChatAddress, view: PromptView): Promise<MessageHandle | undefined> {
     const prev = this.prompts.get(view.key)
-    const p: WebPrompt = { view, at: prev?.at ?? Date.now() }
+    // 成员在等你的卡显示在主对话里（手机上看不到成员对话），通知也点进主对话。
+    const member = prev?.member ?? promptMember(view)
+    const p: WebPrompt = { view, at: prev?.at ?? Date.now(), ...(member ? { member } : {}) }
     if (view.state === 'open') this.prompts.set(view.key, p)
     else this.prompts.delete(view.key)
     this.emit(chat.chatId, { t: 'prompt', p })
-    this.pushSession(view.sessionId)
+    const sid = member?.sid ?? view.sessionId
+    this.pushSession(sid)
     const mark = `${view.key}|${chat.chatId}`
     if (view.state !== 'open') this.promptPushed.delete(mark)
     else if (!this.promptPushed.has(mark)) {
       this.promptPushed.add(mark)
+      const title = member ? getSession(sid)?.title || '新对话' : view.sessionTitle || 'Deva'
       this.notifyDevices(
-        { title: view.sessionTitle || 'Deva', body: promptText(view), sid: view.sessionId, tag: view.sessionId },
-        { only: chat.chatId, skipIfDesk: !this.fromPhone.has(view.sessionId) }
+        { title, body: member ? memberWaitText(view, member) : promptText(view), sid, tag: sid },
+        { only: chat.chatId, skipIfDesk: !this.fromPhone.has(sid) }
       )
     }
     return view.key

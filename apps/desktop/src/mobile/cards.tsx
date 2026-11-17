@@ -2,10 +2,10 @@ import { memo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ActionValue, PromptView } from '../shared/remote-views'
-import type { WebPersona } from '../shared/remote-web'
+import type { WebPersona, WebPromptMember } from '../shared/remote-web'
 import { Avatar } from './avatar'
 import type { Act } from './prompts'
-import { t } from './strings'
+import { isEn, t } from './strings'
 
 /**
  * 交互卡（提问、计划、挂载、定时任务名片、角色名片），出现在对话末尾。按钮的 value 由电脑端 hub 生成，这里原样回传。
@@ -92,16 +92,31 @@ function From({ who, label }: { who?: WebPersona; label: string }): React.JSX.El
   )
 }
 
-/** 一张还没处理的交互卡（处理之后收成一行回执，见 receipt.tsx）。 */
-export function PromptCard({ view, onAction, who }: { view: PromptView; onAction: Act; who?: WebPersona }): React.JSX.Element {
+/**
+ * 一张还没处理的交互卡（处理之后收成一行回执，见 receipt.tsx）。
+ * bare = 不要卡头（成员在等你的卡：上面的胶囊已写明谁在等什么，见 member-asks.tsx）；member = 为这位成员选文件夹。
+ */
+export function PromptCard({
+  view,
+  onAction,
+  who,
+  bare,
+  member
+}: {
+  view: PromptView
+  onAction: Act
+  who?: WebPersona
+  bare?: boolean
+  member?: WebPromptMember
+}): React.JSX.Element {
   const name = who?.name ?? 'Deva'
   switch (view.kind) {
     case 'ask':
-      return <AskCard view={view} onAction={onAction} who={who} />
+      return <AskCard view={view} onAction={onAction} who={who} bare={bare} />
     case 'plan':
       return (
         <div className="card">
-          <From who={who} label={`${name} · 请审阅计划`} />
+          {!bare && <From who={who} label={`${name} · 请审阅计划`} />}
           <Fold text={view.plan} limit={1500} />
           <Buttons
             k={view.key}
@@ -115,9 +130,10 @@ export function PromptCard({ view, onAction, who }: { view: PromptView; onAction
         </div>
       )
     case 'mount':
+      if (member) return <MemberMountCard view={view} member={member} onAction={onAction} />
       return (
         <div className="card">
-          <From who={who} label={`${name} · 需要一个文件夹`} />
+          {!bare && <From who={who} label={`${name} · 需要一个文件夹`} />}
           <p>
             这一步（<b>{view.tool}</b>
             {view.path && (
@@ -191,13 +207,39 @@ export function PromptCard({ view, onAction, who }: { view: PromptView; onAction
   }
 }
 
+/**
+ * 为成员选文件夹（同电脑端成员版选文件夹卡：问句 + 灰字说明「不限」的意思）。手机上只能选「不限」：
+ * 新建成员 = 不指定文件夹，成员做到一半来要 = 改用完整路径。
+ */
+function MemberMountCard({
+  view,
+  member,
+  onAction
+}: {
+  view: Extract<PromptView, { kind: 'mount' }>
+  member: WebPromptMember
+  onAction: Act
+}): React.JSX.Element {
+  return (
+    <div className="card">
+      <div className="card__q">{t('mPickQ', { name: member.name })}</div>
+      <p className="muted">
+        {member.isNew ? t('mNoLimitNone') : t('mNoLimitPaths', { name: member.name })}
+        {isEn ? ' ' : ''}
+        {t('mPickOnDesk')}
+      </p>
+      <Buttons k={view.key} buttons={[{ label: t('noLimit'), value: { k: 'mount', key: view.key }, primary: true }]} onAction={onAction} />
+    </div>
+  )
+}
+
 type AskView = Extract<PromptView, { kind: 'ask' }>
 
 /**
  * 问答卡：每题按单选 / 多选列出选项，最后一行「自己输入…」点开原地变成输入框（同电脑端）；没有选项的题只有输入框。
  * 表单字段名与 hub 约定一致：q{i} = 选中项（多选为数组），q{i}_text = 自由文字。
  */
-function AskCard({ view, onAction, who }: { view: AskView; onAction: Act; who?: WebPersona }): React.JSX.Element {
+function AskCard({ view, onAction, who, bare }: { view: AskView; onAction: Act; who?: WebPersona; bare?: boolean }): React.JSX.Element {
   const [picks, setPicks] = useState<string[][]>(() => view.questions.map(() => []))
   const [texts, setTexts] = useState<string[]>(() => view.questions.map(() => ''))
   const [editing, setEditing] = useState<number | null>(null)
@@ -242,7 +284,7 @@ function AskCard({ view, onAction, who }: { view: AskView; onAction: Act; who?: 
 
   return (
     <div className="card">
-      <From who={who} label={t('askFrom', { who: who?.name ?? 'Deva' })} />
+      {!bare && <From who={who} label={t('askFrom', { who: who?.name ?? 'Deva' })} />}
       {view.questions.map((q, n) => {
         const labels = [...new Set(q.options.map((o) => o.label))]
         const freeOnly = labels.length === 0

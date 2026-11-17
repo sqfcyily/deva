@@ -33,6 +33,29 @@ export function Avatar({
   )
 }
 
+/** 一位成员的头像（同 SessionFace 里的成员：@ 加入的角色按角色列表取，主角色建的成员以成员会话 id 为种子）。 */
+export function MemberFace({
+  m,
+  personas,
+  size
+}: {
+  m: { id?: string; avatar?: string; personaId?: string }
+  personas: Map<string, WebPersona>
+  size: number
+}): React.JSX.Element {
+  const p = m.personaId ? personas.get(m.personaId) : undefined
+  return (
+    <span className="ava" style={{ width: size, height: size }} aria-hidden>
+      <PersonaFace
+        seed={p?.id ?? m.id ?? 'member'}
+        spec={parseAvatarSpec(p?.avatar ?? m.avatar)}
+        image={p?.avatarImage || undefined}
+        size={size}
+      />
+    </span>
+  )
+}
+
 /** 群组头像排布（照电脑端 GroupFace，以 38px 为基准按比例缩放）。 */
 const GROUP: Record<2 | 3 | 4, { s: number; at: [number, number][] }> = {
   2: { s: 28, at: [[-3, 5], [13, 5]] },

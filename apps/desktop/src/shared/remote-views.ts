@@ -67,6 +67,8 @@ export type PromptView =
       path: string
       state: 'open' | 'mounted' | 'skipped' | 'cancelled'
       root?: string
+      /** 为成员选文件夹：成员名（主角色建成员时的 pick_folder，或成员做到一半来要）。 */
+      member?: string
     }
   /** 定时任务确认名片（key = create_task 的工具调用 id）。 */
   | {

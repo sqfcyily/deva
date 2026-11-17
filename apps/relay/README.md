@@ -5,6 +5,7 @@
 - 中转只按「桌面 id」路由，不解析内容。手机与电脑之间是**端到端加密**的（X25519 + ChaCha20-Poly1305，见 `apps/desktop/src/shared/remote-crypto.ts`），中转只看得到握手公钥和密文。
 - 运行在 Cloudflare Workers + Durable Objects 上，免费套餐即可（使用 SQLite 后端的 DO）。
 - 电脑端「连接方式」选「远程」时，默认用官方中转（`apps/desktop/src/shared/remote-web.ts` 的 `OFFICIAL_RELAY_URL`）；也可以部署自己的中转，在配置文件里改地址（见下文「自建中转」）。
+- 不使用 Cloudflare 时，可以把 Node.js 版（`apps/relay-node`，协议相同）部署在自己的服务器上，见其 README。
 
 ## 部署
 

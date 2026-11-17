@@ -144,6 +144,25 @@ importers:
         specifier: ^4.20.0
         version: 4.161.0(@cloudflare/workers-types@4.20260702.1)
 
+  apps/relay-node:
+    dependencies:
+      ws:
+        specifier: 8.18.3
+        version: 8.18.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      esbuild:
+        specifier: 0.21.5
+        version: 0.21.5
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
 packages:
 
   '@babel/code-frame@7.29.7':
