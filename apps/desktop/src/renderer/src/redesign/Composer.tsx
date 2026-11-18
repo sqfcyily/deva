@@ -1,5 +1,5 @@
 /**
- * 输入框：草稿、/指令、插话胶囊、模型与思考等级选择。
+ * 输入框：草稿、/指令、插话胶囊；模型、思考等级与上下文占用在 ModelPanel.tsx。
  */
 import {
   memo,
@@ -11,11 +11,9 @@ import {
   useSyncExternalStore
 } from 'react'
 import {
-  Check,
   ChevronDown,
   Clock,
   FolderPlus,
-  Lightbulb,
   Paperclip,
   Plus,
   Puzzle,
@@ -32,22 +30,12 @@ import {
 } from './composer-editor'
 import { AttachmentList } from './attachments'
 import type { Persona } from '../mock/extensions'
-import type {
-  EffortLevel
-} from '../../../preload'
 import { TodoCapsule } from '../features/chat/Todos'
 import { BackgroundCapsule } from '../features/chat/BackgroundTasks'
 import { BrowserCapsule } from '../features/browser/BrowserCapsule'
 import { useDockOrder } from '../features/chat/dockOrder'
 import { type AttachKind, type SendAttachment, useChatState, useChatActions } from '../store/chat'
 import { rolesAllow, useExtensions } from '../store/extensions'
-import { findActive, useModels } from '../store/models'
-import {
-  clampEffort,
-  isToggleEffort,
-  supportedEffortLevels,
-  type EffortAdapter
-} from '../../../shared/effort'
 import { NEW_MEMBER_TOKENS } from '../../../shared/mention'
 import { useI18n } from '../i18n/i18n'
 import { useToast } from '../components/ToastProvider'
@@ -66,6 +54,7 @@ import {
 import { samePath, DEFAULT_PERSONA_ID, fill, AvatarStack, Avatar } from './shell-common'
 import { GitWidget, WorkspaceMenu } from './GitWidget'
 import { leadingQuote, withQuote, quotePlain } from './ConvMessage'
+import { ModelPanel } from './ModelPanel'
 
 /**
  * 一次挑选返回的附件（与 preload PickedAttachment 结构一致）；拖入 / 粘贴的文件夹也放这里，kind 为 folder。
@@ -939,8 +928,7 @@ export const Composer = memo(function Composer({
                 {t('cf.mountWorkspace')}
               </button>
             )}
-            <ModelPicker />
-            <EffortPicker />
+            <ModelPanel />
             {/* 回合进行中只有一枚键：输入框有文字＝「发送」（插入当前轮），空＝「停止」（只放图标，与发送同宽不跳动）。
                 有文字时不出停止，要停先清空输入框。 */}
             {streaming ? (
@@ -975,181 +963,3 @@ export const Composer = memo(function Composer({
     </div>
   )
 })
-
-/**
- * 模型选择器。复用 app.css 的既有类
- * （model-pick / chip / model-pick__backdrop / model-pick__menu），零新增 CSS。
- * 只列「已启用服务商 × 已启用模型」，按服务商分组。
- * 切换时做两件事：① 写当前对话覆盖层并立即落库到会话属性（setSessionModel，切了不发重启也不丢），
- * 故同角色的多个对话可各用不同模型；② 把这次选择记为「最近使用模型」（setActiveModel）——本应用不设
- * 显式「默认模型」，最近一次在此切换的模型即充当**新对话未选时的默认**（见 store/models.tsx activeModelId）。
- * 显示的是**本对话生效模型**：本对话已选则显示所选；未选 / 所选模型已被删除 → 回落最近使用模型
- * activeModel 显示（与主进程 resolveModelRef 的兜底一致，删除的偏好模型自动回归最近使用）。
- * 菜单向上弹出（.model-pick__menu 的 bottom:calc(100%+8px)），锚在输入区工具条恰在屏内。
- */
-function ModelPicker(): React.JSX.Element {
-  const { t } = useI18n()
-  const { activeModel, providers, setActiveModel } = useModels()
-  const { currentBinding } = useChatState()
-  const { setSessionModel } = useChatActions()
-  const [open, setOpen] = useState(false)
-  // 只列对话模型（purpose==='llm'）：决策模型（如 Jev）不生成文本，绝不可被选为对话模型。
-  const groups = providers
-    .filter((p) => p.enabled && (p.purpose ?? 'llm') === 'llm')
-    .map((p) => ({ p, models: p.models.filter((m) => m.enabled) }))
-    .filter((g) => g.models.length > 0)
-  // 本对话生效模型：解析对话覆盖层的 model 引用 `"pid:mid"`；空/非法/已删除 → 回落全局 activeModel。
-  const selected = useMemo(() => {
-    const ref = currentBinding.model
-    if (ref) {
-      const idx = ref.indexOf(':')
-      if (idx > 0) {
-        const pid = ref.slice(0, idx)
-        const mid = ref.slice(idx + 1)
-        const p = providers.find((x) => x.id === pid)
-        const m = p?.models.find((x) => x.id === mid)
-        if (p && m) return { pid, mid, name: m.name, accent: p.accent }
-      }
-    }
-    if (activeModel)
-      return {
-        pid: activeModel.provider.id,
-        mid: activeModel.model.id,
-        name: activeModel.model.name,
-        accent: activeModel.provider.accent
-      }
-    return null
-  }, [currentBinding.model, providers, activeModel])
-  return (
-    <div className="model-pick">
-      <button
-        className={`chip${open ? ' is-open' : ''}`}
-        type="button"
-        title={t('chat.selectModel')}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {selected && <span className="chip__dot" style={{ background: selected.accent }} />}
-        <span className="chip__label">{selected ? selected.name : t('chat.selectModel')}</span>
-        <ChevronDown size={13} className="chip__caret" />
-      </button>
-      {open && (
-        <>
-          <div className="model-pick__backdrop" onClick={() => setOpen(false)} />
-          <div className="model-pick__menu" role="menu">
-            {groups.length === 0 && <div className="model-pick__empty">{t('chat.noModel')}</div>}
-            {groups.map(({ p, models }) => (
-              <div key={p.id} className="model-pick__group">
-                <div className="model-pick__group-head">
-                  <span className="model-pick__dot" style={{ background: p.accent }} />
-                  <span className="model-pick__group-name">{p.name}</span>
-                </div>
-                {models.map((m) => {
-                  const active = selected?.pid === p.id && selected?.mid === m.id
-                  return (
-                    <button
-                      key={m.id}
-                      role="menuitemradio"
-                      aria-checked={active}
-                      className={`model-pick__item${active ? ' is-active' : ''}`}
-                      title={m.name === m.id ? m.id : `${m.name} · ${m.id}`}
-                      onClick={() => {
-                        // ① 记入本对话属性；② 记为「最近使用」，充当后续新对话未选时的默认。
-                        setSessionModel(`${p.id}:${m.id}`)
-                        setActiveModel(p.id, m.id)
-                        setOpen(false)
-                      }}
-                    >
-                      <span className="model-pick__name">{m.name}</span>
-                      {active && <Check size={14} className="model-pick__check" />}
-                    </button>
-                  )
-                })}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-/**
- * 思考等级选择器（紧挨模型选择器，复用其 model-pick / chip 类）。与模型同一套语义：切换只改本对话并立即
- * 落库（setSessionEffort），同时记为「最近使用」（setActiveEffort），尚未定格的对话（新对话）沿用它。
- * 只列本对话生效模型支持的档（模型能力内置表，见 shared/effort.ts）；模型不支持思考等级则整个隐藏。
- * 「默认」= 不发任何思考参数；各档如何映射到各家协议、不支持时如何自愈，见主进程 providers/* 与 chat.ts。
- */
-function EffortPicker(): React.JSX.Element | null {
-  const { t } = useI18n()
-  const { activeEffort, setActiveEffort, activeModel, providers } = useModels()
-  const { currentBinding } = useChatState()
-  const { setSessionEffort } = useChatActions()
-  const [open, setOpen] = useState(false)
-  // 本对话生效模型（同 ModelPicker：本对话已选 → 否则回落最近使用）。选择器只列对话模型，adapter 必属三协议之一。
-  const active = findActive(providers, currentBinding.model ?? null) ?? activeModel
-  const adapter = active?.provider.adapter as EffortAdapter | undefined
-  const modelId = active?.model.id
-  const levels = adapter && modelId ? supportedEffortLevels(adapter, modelId) : []
-  if (!adapter || !modelId || levels.length === 0) return null
-  // 只能开、不能调档的模型（如通义 qwen-plus、Kimi K2）：唯一的一档显示为「开启」。
-  const toggle = isToggleEffort(adapter, modelId)
-  const nameOf = (lv: EffortLevel): string =>
-    toggle && lv !== 'default' ? t('chat.effort.on') : t(`chat.effort.levels.${lv}`)
-  const hintOf = (lv: EffortLevel): string =>
-    toggle && lv !== 'default' ? t('chat.effort.onHint') : t(`chat.effort.hints.${lv}`)
-  // 本对话存的档位（尚未定格时为「最近使用」）收敛到该模型支持的档来显示——与主进程实际发送的一致；
-  // 存值本身不改，换回支持该档的模型即恢复。
-  const current = clampEffort(adapter, modelId, currentBinding.effort ?? activeEffort)
-  const label = nameOf(current)
-  const options: EffortLevel[] = ['default', ...levels]
-  return (
-    <div className="model-pick">
-      <button
-        className={`chip${open ? ' is-open' : ''}`}
-        type="button"
-        title={`${t('chat.effort.title')}：${label}`}
-        aria-label={`${t('chat.effort.title')}：${label}`}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <Lightbulb size={13} />
-        <span className="chip__label">{label}</span>
-        <ChevronDown size={13} className="chip__caret" />
-      </button>
-      {open && (
-        <>
-          <div className="model-pick__backdrop" onClick={() => setOpen(false)} />
-          <div className="model-pick__menu" role="menu">
-            <div className="model-pick__group">
-              <div className="model-pick__group-head">
-                <span className="model-pick__group-name">{t('chat.effort.title')}</span>
-              </div>
-              {options.map((lv) => {
-                const active = lv === current
-                return (
-                  <button
-                    key={lv}
-                    role="menuitemradio"
-                    aria-checked={active}
-                    className={`model-pick__item${active ? ' is-active' : ''}`}
-                    onClick={() => {
-                      // ① 记入本对话属性；② 记为「最近使用」，充当后续新对话的默认。
-                      setSessionEffort(lv)
-                      setActiveEffort(lv)
-                      setOpen(false)
-                    }}
-                  >
-                    <span className="model-pick__name cf-effort__text">
-                      <span>{nameOf(lv)}</span>
-                      <span className="cf-effort__hint">{hintOf(lv)}</span>
-                    </span>
-                    {active && <Check size={14} className="model-pick__check" />}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  )
-}

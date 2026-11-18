@@ -32,6 +32,7 @@ import type {
   MountResponse,
   ResolveAutotaskResult,
   ChatStreamEvent,
+  ContextUsage,
   MemberProgressGroup
 } from '../shared/chat-protocol'
 
@@ -63,6 +64,7 @@ export type {
   MountResponse,
   ResolveAutotaskResult,
   ChatStreamEvent,
+  ContextUsage,
   MemberProgressGroup
 }
 
@@ -841,6 +843,9 @@ const api = {
       ipcRenderer.invoke('chat:delete-turns', sessionId, workspaceRoot, turnIndices),
     /** 待办清单：某会话的当前状态（切到该会话时拉取，此后的变化走 todos 事件）。 */
     todos: (sessionId: string): Promise<TodoState> => ipcRenderer.invoke('chat:todos', sessionId),
+    /** 上下文占用：按 modelRef（本对话生效模型）算窗口与压缩线；模型解析不了回 null。 */
+    contextUsage: (sessionId: string, modelRef: string): Promise<ContextUsage | null> =>
+      ipcRenderer.invoke('chat:context-usage', sessionId, modelRef),
     /** 手动取消当前清单（回合进行中不受理）：胶囊收起，下一条消息告知模型。返回取消后的状态。 */
     cancelTodoList: (sessionId: string): Promise<TodoState> =>
       ipcRenderer.invoke('chat:todo-cancel', sessionId),

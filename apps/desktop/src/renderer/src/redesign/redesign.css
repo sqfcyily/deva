@@ -2719,33 +2719,11 @@ button.cf-mask__pill:hover {
   background: var(--bg-hover);
   color: var(--fg);
 }
-/* 模型选择器吸右：占尽左侧空白，把「模型选择器 + 发送键」一并推到工具条右端，
+/* 模型面板吸右：占尽左侧空白，把「模型面板 + 发送键」一并推到工具条右端，
    模型切换恰落在发送键之前（📎 / 工作区 chip 仍留在左侧）。仅作用于对话输入框，
-   不影响任务表单的同款选择器。 */
+   不影响任务表单的同款选择器。面板与二级菜单的样式见 model-panel.css。 */
 .cf-composer .model-pick {
   margin-left: auto;
-}
-/* 思考等级选择器紧贴模型选择器：只让第一个吃掉左侧空白；再抵掉工具条的 gap、收窄两枚贴片
-   相邻一侧的内边距，二者读作一组（贴片无底色，否则中间会空出一截比到发送键还宽的距离）。 */
-.cf-composer .model-pick + .model-pick {
-  margin-left: calc(-1 * var(--space-1));
-}
-.cf-composer .model-pick:has(+ .model-pick) .chip {
-  padding-right: 4px;
-}
-.cf-composer .model-pick + .model-pick .chip {
-  padding-left: 4px;
-}
-/* 思考等级菜单项：档位名 + 一行说明。 */
-.cf-effort__text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.cf-effort__hint {
-  font-size: 11.5px;
-  font-weight: 400;
-  color: var(--fg-subtle);
 }
 .cf-send {
   display: inline-flex;

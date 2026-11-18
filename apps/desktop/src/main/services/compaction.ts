@@ -168,7 +168,7 @@ const OUTPUT_RESERVE_UNKNOWN = 20_000
  * 输出上限必须扣：Anthropic 等要求「输入 + max_tokens」不超窗口。它封顶半个窗口，防填错值时每轮都压。
  * 用户在 config.json 写了 triggerRatio 时取两者中更早的那个。
  */
-function triggerTokens(model: LimitModelRef, cfg: CompactionCfg): number {
+export function triggerTokens(model: LimitModelRef, cfg: CompactionCfg = compactionConfig()): number {
   const window = contextWindowFor(model, cfg)
   const output =
     modelOverrides(model.providerId, model.model).maxOutput ??
