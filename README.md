@@ -347,6 +347,12 @@ pnpm relay:deploy     # 构建手机网页并部署中转
 pnpm relay:dev        # 本地调试中转（http://127.0.0.1:8787）
 ```
 
+## 支持项目
+
+Deva 免费开源。如果它对你有帮助，欢迎通过微信赞赏支持，款项用于官方远程服务与域名等运行费用。
+
+<img src="docs/wx.jpg" alt="微信赞赏码" width="240" />
+
 ## 许可
 
 [MIT](LICENSE)
