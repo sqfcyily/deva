@@ -13,7 +13,11 @@ import type { ActionValue, PromptView } from './remote-views'
  * WebClientFrame / WebServerFrame 是密文里的内容。明文只有握手、心跳与中转发的「电脑不在线」。
  */
 
-export const WEB_PROTOCOL_VERSION = 6
+/**
+ * 协议版本：手机连上时在 hello 里报给电脑端，两边不一致就提示刷新页面或更新 Deva 并断开。
+ * 手机网页随中转部署、电脑端随用户安装各自更新，帧格式有不兼容的改动时加 1（随后重新部署中转）。
+ */
+export const WEB_PROTOCOL_VERSION = 1
 
 /**
  * 手机新建对话时先定好的对话 id（同电脑端 sess_<时间>_<随机>）：手机不等回执直接进入对话页。

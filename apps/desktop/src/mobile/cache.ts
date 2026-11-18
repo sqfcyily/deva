@@ -85,7 +85,7 @@ export function saveSnapshot(deskId: string, snap: DeskSnapshot): void {
   void set(`${deskId}:snap`, snap)
 }
 
-/** 旧版缓存（协议 v3）里助手消息是整轮一段正文：转成 parts，免得升级后打开缓存的对话出错。 */
+/** 发布前开发版的缓存里助手消息是整轮一段正文：转成 parts，免得升级后打开缓存的对话出错。 */
 type LegacyReply = { id: string; role: 'assistant'; text?: string; notes?: string[]; files?: WebDelivered[]; durationMs?: number }
 
 function upgrade(m: WebMessage): WebMessage {
