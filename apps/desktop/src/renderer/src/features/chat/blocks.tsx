@@ -72,6 +72,7 @@ import { HumationFace, PersonaFace, USER_AVATAR_SEED, seededShape } from '../../
 import { useProfile } from '../../store/profile'
 import { TaskConfirmCard } from './TaskConfirmCard'
 import { DeliverablesCard } from './DeliverablesCard'
+import { WorkspaceMountCard } from './MountCard'
 import { TodoItemList } from './Todos'
 
 /**
@@ -108,6 +109,8 @@ const TOOL_META: Record<string, { key: string; icon: LucideIcon }> = {
   tool_search: { key: 'toolSearch', icon: BookOpen },
   // 内置浏览器：时间轴上按动作区分（见 BROWSER_META）；这里是不知道动作时（如底部状态行）的通用说法。
   browser: { key: 'browser', icon: Globe },
+  // 请用户挂载工作区（见 services/workspace-mount.ts）：等待时另有挂载卡，这一步只写结果（文件夹名或「暂不挂载」）。
+  mount_workspace: { key: 'mountWorkspace', icon: FolderOpen },
   // 项目成员（见 services/members.ts）：主智能体添加成员 / 派任务 / 中止，成员查看主对话、把结论交给主对话处理。
   create_member: { key: 'createMember', icon: UserPlus },
   member_send: { key: 'memberSend', icon: Send },
@@ -683,10 +686,9 @@ export function BlockView({
 }
 
 /**
- * 挂载工作区请求卡：未挂载工作区时，模型某次调用缺「相对路径基准」，主进程闸门已暂停循环等这里的处置。
- * 「挂载工作区」走系统目录对话框（fs.openFolder，与输入框上方的挂载入口同一条路径与信任语义）——
- * 目录只可能是用户亲手选的，卡片里绝不出现「按模型给的路径一键挂载」。取消对话框 ≠ 暂不挂载：
- * 卡片保持未决，循环继续等着。decided 为终态、只读展示。
+ * 挂载请求卡：模型调用 mount_workspace（见 MountCard.tsx），或主角色为成员选文件夹（member）。
+ * 目录只可能是用户亲手选的（系统目录对话框，或用户自己挂过的文件夹），卡片里绝不出现「按模型给的路径一键挂载」。
+ * 取消对话框 ≠ 暂不挂载：卡片保持未决，循环继续等着。
  */
 function MountRequestCard({
   block,
@@ -701,7 +703,7 @@ function MountRequestCard({
   bare?: boolean
   extra?: React.ReactNode
   hint?: React.ReactNode
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const { t } = useI18n()
   const decided = block.decided
   const pick = (): void => {
@@ -774,59 +776,14 @@ function MountRequestCard({
       </div>
     )
   }
+  // 请用户挂载工作区（mount_workspace）：决定之后这一步的工具节点写明结果，卡片不再显示。
+  if (decided) return null
   return (
-    <div
-      className={`msg__mount${decided ? ' is-decided' : ''}${decided === 'mounted' ? ' is-ok' : ''}`}
-    >
-      {!(bare && !decided) && (
-        <div className="msg__mount-head">
-          <FolderOpen size={14} />
-          <span className="msg__mount-title">{t('chat.mount.cardTitle')}</span>
-          {decided && (
-            <span
-              className={
-                decided === 'mounted' ? 'msg__mount-badge msg__mount-badge--ok' : 'msg__mount-badge'
-              }
-            >
-              {decided === 'mounted' ? t('chat.mount.mounted') : t('chat.mount.skipped')}
-            </span>
-          )}
-        </div>
-      )}
-      <div className="msg__mount-body">
-        {decided === 'mounted' ? (
-          <span>
-            {t('chat.mount.doneHint')} <code>{block.root}</code>
-          </span>
-        ) : (
-          <>
-            <span>
-              {block.path ? t('chat.mount.reasonPath') : t('chat.mount.reasonScan')}
-              {block.path && <code>{block.path}</code>}
-            </span>
-            <span className="msg__mount-tool">
-              {t('chat.mount.byTool')} <code>{block.tool}</code>
-            </span>
-          </>
-        )}
-      </div>
-      {!decided && onMountReq && (
-        <div className="msg__mount-actions">
-          <button type="button" className="btn btn--sm btn--primary" onClick={pick}>
-            <FolderOpen size={14} />
-            {t('chat.mount.pick')}
-          </button>
-          <button
-            type="button"
-            className="btn btn--sm"
-            onClick={() => onMountReq(block.key, null)}
-          >
-            {t('chat.mount.skip')}
-          </button>
-          {extra}
-        </div>
-      )}
-    </div>
+    <WorkspaceMountCard
+      question={block.question}
+      onAnswer={onMountReq ? (path) => onMountReq(block.key, path) : undefined}
+      extra={extra}
+    />
   )
 }
 
@@ -1701,16 +1658,17 @@ function TimelineTodo({ block }: { block: Extract<ChatBlock, { kind: 'todolist' 
   )
 }
 
-/** 时间轴上已处置的挂载请求：「已挂载工作区 + 目录」或「未挂载工作区」。 */
-function TimelineMount({ block }: { block: Extract<ChatBlock, { kind: 'mount' }> }): React.JSX.Element {
+/**
+ * 时间轴上为成员选过的文件夹：「已为 X 选择文件夹 + 目录」或「X 不限文件夹」。挂载本对话工作区（mount_workspace）
+ * 的结果由那一步的工具节点写明，这里不再重复。
+ */
+function TimelineMount({ block }: { block: Extract<ChatBlock, { kind: 'mount' }> }): React.JSX.Element | null {
   const { t } = useI18n()
+  if (block.member === undefined) return null
   const mounted = block.decided === 'mounted'
-  const verb =
-    block.member !== undefined
-      ? t(mounted ? 'chat.flow.mount.memberPicked' : 'chat.flow.mount.memberSkipped')
-          .split('{name}')
-          .join(block.member)
-      : t(mounted ? 'chat.flow.mount.mounted' : 'chat.flow.mount.skipped')
+  const verb = t(mounted ? 'chat.flow.mount.memberPicked' : 'chat.flow.mount.memberSkipped')
+    .split('{name}')
+    .join(block.member)
   return (
     <li className="tl__item">
       <span className="tl__node">

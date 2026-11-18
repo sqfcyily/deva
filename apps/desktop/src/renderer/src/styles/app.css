@@ -3302,10 +3302,6 @@ button.tl__line:hover {
 .msg__mount-body code {
   word-break: break-all;
 }
-.msg__mount-tool {
-  color: var(--fg-muted);
-  font-size: 12px;
-}
 .msg__mount-actions {
   display: flex;
   align-items: center;
@@ -3339,6 +3335,22 @@ button.tl__line:hover {
   display: flex;
   gap: var(--space-2);
   margin-left: auto;
+}
+/* 挂载卡里最近用过的文件夹（mount_workspace，见 MountCard.tsx）：同提问卡的选项，点一行直接挂载；路径过长省略。 */
+.msg__mount-recent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.msg__mount-recent .ask__option {
+  align-items: center;
+  cursor: pointer;
+}
+.msg__mount-recent .ask__option-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .permission__resolved {
   font-size: 12px;

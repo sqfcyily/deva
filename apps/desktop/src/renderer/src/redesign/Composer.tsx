@@ -13,7 +13,6 @@ import {
 import {
   ChevronDown,
   Clock,
-  FolderPlus,
   Paperclip,
   Plus,
   Puzzle,
@@ -55,6 +54,7 @@ import { samePath, DEFAULT_PERSONA_ID, fill, AvatarStack, Avatar } from './shell
 import { GitWidget, WorkspaceMenu } from './GitWidget'
 import { leadingQuote, withQuote, quotePlain } from './ConvMessage'
 import { ModelPanel } from './ModelPanel'
+import { MountMenu } from './MountMenu'
 
 /**
  * 一次挑选返回的附件（与 preload PickedAttachment 结构一致）；拖入 / 粘贴的文件夹也放这里，kind 为 folder。
@@ -284,7 +284,7 @@ export const Composer = memo(function Composer({
   onPrefillConsumed: () => void
 }): React.JSX.Element {
   const { t, locale } = useI18n()
-  const { skills: allSkills } = useExtensions()
+  const { skills: allSkills, personas } = useExtensions()
   // 本对话角色能用的技能（已启用、且可用角色含该角色；内置恒可用）——同主进程的过滤，/ 联想与上色只认它们。
   const ownerId = roleId ?? owner?.id ?? DEFAULT_PERSONA_ID
   const skills = useMemo(
@@ -433,14 +433,8 @@ export const Composer = memo(function Composer({
   }
   const mounted = Boolean(focusRoot)
 
-  // 挂载工作区（放在输入区工具条，取代原顶部头部的入口）：仅未挂载态的 chip 调用，选了才挂载，取消则保持现状。
-  // 已挂载态不提供直接更换（见 WorkspaceMenu），卸载由尾随的 ✕ 图标承担，避免「取消对话框＝卸载」的意外语义。
-  const pickWorkspace = (): void => {
-    void (async () => {
-      const r = await window.deva.fs.openFolder()
-      if (r) onMount(r.path)
-    })()
-  }
+  // 挂载工作区：未挂载时工具条上是「挂载工作区」菜单（最近用过 / 选择文件夹，底部说明默认文件夹，见 MountMenu）。
+  // 已挂载态不提供直接更换（见 WorkspaceMenu），卸载由尾随的 ✕ 图标承担，卸载后回到角色的默认文件夹。
 
   // 新增附件并入 pending：不支持 / 过大的不加入（加了也发不出去），toast 说明哪些被跳过；按路径去重。
   const addPicked = (picked: Picked[]): void => {
@@ -918,15 +912,11 @@ export const Composer = memo(function Composer({
                 </button>
               </span>
             ) : (
-              <button
-                type="button"
-                className="cf-wschip"
-                title={t('cf.mountHint')}
-                onClick={pickWorkspace}
-              >
-                <FolderPlus size={15} />
-                {t('cf.mountWorkspace')}
-              </button>
+              <MountMenu
+                personaId={ownerId}
+                personaName={personas.find((p) => p.id === ownerId)?.name ?? name}
+                onMount={onMount}
+              />
             )}
             <ModelPanel />
             {/* 回合进行中只有一枚键：输入框有文字＝「发送」（插入当前轮），空＝「停止」（只放图标，与发送同宽不跳动）。

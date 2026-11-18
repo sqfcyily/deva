@@ -154,14 +154,14 @@ export type ChatBlock =
     }
   | {
       /**
-       * 挂载工作区请求卡：未挂载工作区时，模型某次调用缺「相对路径基准」，主进程闸门暂停循环等用户处置。
-       * undecided（decided 缺省）可点「挂载工作区/暂不挂载」；decided 为终态、只读展示。
-       * **只活在本次运行的渲染态**（不落边车）：重开时那对 tool_use/tool_result 已把来龙去脉讲清楚。
+       * 挂载工作区请求卡：模型调用 mount_workspace（或主角色为成员选文件夹），主进程暂停循环等用户选文件夹。
+       * undecided（decided 缺省）可点最近用过的文件夹 / 选择其他文件夹 / 暂不挂载；decided 为终态。
+       * **只活在本次运行的渲染态**（不落边车）：重开时那次 mount_workspace 调用的工具节点已写明结果。
        */
       kind: 'mount'
       key: string
-      tool: string
-      path: string
+      /** 卡片上的问句（模型给的，可缺省）。 */
+      question?: string
       /** 为成员选择文件夹（不是挂载本对话的工作区）：成员名。 */
       member?: string
       decided?: 'mounted' | 'skipped'
@@ -818,7 +818,12 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       next.push({ kind: 'todolist', id: ev.id, title: ev.title, items: ev.items })
       return next
     case 'mount_request':
-      next.push({ kind: 'mount', key: ev.key, tool: ev.tool, path: ev.path, ...(ev.member ? { member: ev.member } : {}) })
+      next.push({
+        kind: 'mount',
+        key: ev.key,
+        ...(ev.question ? { question: ev.question } : {}),
+        ...(ev.member ? { member: ev.member } : {})
+      })
       return next
     case 'insert':
       next.push({ kind: 'insert', text: ev.text })
@@ -1417,7 +1422,12 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
             ? { kind: 'ask', key: ev.key, questions: ev.questions }
             : ev.type === 'plan_review'
               ? { kind: 'plan', key: ev.key, plan: ev.plan }
-              : { kind: 'mount', key: ev.key, tool: ev.tool, path: ev.path, ...(ev.member ? { member: ev.member } : {}) }
+              : {
+                  kind: 'mount',
+                  key: ev.key,
+                  ...(ev.question ? { question: ev.question } : {}),
+                  ...(ev.member ? { member: ev.member } : {})
+                }
         setPendingCards((prev) => ({
           ...prev,
           [sid]: [...(prev[sid] ?? []).filter((c) => c.key !== card.key), card]

@@ -134,17 +134,9 @@ export function PromptCard({
       return (
         <div className="card">
           {!bare && <From who={who} label={`${name} · 需要一个文件夹`} />}
-          <p>
-            这一步（<b>{view.tool}</b>
-            {view.path && (
-              <>
-                {' '}
-                <code>{view.path}</code>
-              </>
-            )}
-            ）需要先挂载一个文件夹。
-          </p>
-          <p className="muted">选择文件夹要在电脑上操作；也可以先跳过，让它改用完整路径。</p>
+          {view.question && <div className="card__q">{view.question}</div>}
+          <p>需要一个文件夹，但这个对话还没有挂载工作区。</p>
+          <p className="muted">选择文件夹要在电脑上操作；也可以先跳过，让它继续在默认文件夹里工作，或改用完整路径。</p>
           <Buttons k={view.key} buttons={[{ label: '暂不挂载', value: { k: 'mount', key: view.key } }]} onAction={onAction} />
         </div>
       )

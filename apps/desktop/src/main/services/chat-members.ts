@@ -682,7 +682,7 @@ export async function mainMemberTool(
     // 不知道文件夹在哪：在对话里弹选择文件夹的卡片请用户点选（复用挂载卡），不让用户打字报路径。
     if (!folder && a.pick_folder === true) {
       const name = str('name').replace(/^@+/, '')
-      const picked = await requestMount(turnId, mainId, tc.name, '', name || '成员')
+      const picked = await requestMount(turnId, mainId, '', name || '成员')
       if (picked) folder = picked
     }
     return createMember(main, str('name'), folder, str('duty'))

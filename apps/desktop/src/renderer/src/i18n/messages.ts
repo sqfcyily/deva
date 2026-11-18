@@ -301,6 +301,7 @@ const zhCN: MessageTree = {
       memoryDelete: '删除记忆',
       todoWrite: '更新待办清单',
       presentFiles: '交付文件',
+      mountWorkspace: '挂载工作区',
       createMember: '添加成员',
       memberSend: '派给成员',
       memberStop: '中止成员任务',
@@ -327,6 +328,7 @@ const zhCN: MessageTree = {
       revealOther: '在文件夹中显示',
       copyPath: '复制路径',
       missing: '文件已不存在',
+      roleHome: '{name} 的文件夹',
       expand: '展开其余 {n} 个',
       collapse: '收起',
       // 整张卡收起时标题后的摘要：{name}=首个文件名，{n}=总数，{rest}=其余个数
@@ -385,6 +387,7 @@ const zhCN: MessageTree = {
         memoryDelete: '已删除记忆',
         todoWrite: '已更新待办清单',
         presentFiles: '已交付',
+        mountWorkspace: '挂载工作区',
         createMember: '已添加成员',
         memberSend: '已交给',
         memberStop: '已中止',
@@ -437,6 +440,7 @@ const zhCN: MessageTree = {
         memoryDelete: '正在删除记忆',
         todoWrite: '正在更新待办清单',
         presentFiles: '正在交付',
+        mountWorkspace: '正在等你挂载工作区',
         createMember: '正在添加成员',
         memberSend: '正在交给',
         memberStop: '正在中止',
@@ -489,6 +493,7 @@ const zhCN: MessageTree = {
         memoryDelete: '删除记忆',
         todoWrite: '更新待办清单',
         presentFiles: '交付',
+        mountWorkspace: '挂载工作区',
         createMember: '添加成员',
         memberSend: '交给',
         memberStop: '中止',
@@ -533,8 +538,6 @@ const zhCN: MessageTree = {
         cancelled: '计划已取消'
       },
       mount: {
-        mounted: '已挂载工作区',
-        skipped: '未挂载工作区',
         memberPicked: '已为成员 {name} 选择文件夹',
         memberSkipped: '成员 {name} 未指定文件夹'
       }
@@ -679,15 +682,11 @@ const zhCN: MessageTree = {
       feedbackLabel: '回复'
     },
     mount: {
-      cardTitle: '需要挂载工作区',
-      reasonPath: '当前对话未挂载工作区，无法确定相对路径的落点：',
-      reasonScan: '当前对话未挂载工作区，扫描类操作没有默认的项目根可用。',
-      byTool: '触发于工具',
-      pick: '挂载工作区…',
+      // 模型调用 mount_workspace 时的挂载卡（问句缺省时用 ask）
+      ask: '要处理哪个文件夹？',
+      sub: '这个对话还没挂载工作区。挂载后在其中读写文件，并读取它的项目说明（AGENTS.md）。',
+      pickOther: '选择其他文件夹…',
       skip: '暂不挂载',
-      mounted: '已挂载',
-      skipped: '暂不挂载',
-      doneHint: '已挂载工作区：',
       // 为成员选择文件夹（create_member 的 pick_folder）
       memberTitle: '为成员「{name}」选择文件夹',
       memberHint: '选择它负责的文件夹，可以在任何位置。',
@@ -1116,10 +1115,14 @@ const zhCN: MessageTree = {
     defaultModelHint: '使用最近一次选择的模型',
     viewProfile: '查看资料',
     mountHint: '挂载一个文件夹，让当前对话聚焦其中',
-    unmountHint: '卸载文件夹，回到全机通用助手',
+    unmountHint: '卸载工作区，回到默认文件夹',
     resizeSidebar: '拖动调整宽度，双击恢复默认',
     resizeComposer: '拖动调整输入框高度，双击恢复默认',
     mountWorkspace: '挂载工作区',
+    mountRecent: '最近用过',
+    mountPick: '选择文件夹…',
+    mountHomeNote: '未挂载时，文件保存在 {name} 的文件夹',
+    mountHomeOpen: '打开',
     // 已挂载 chip 的文件夹名菜单
     ws: {
       menuHint: '文件夹操作',
@@ -1470,6 +1473,12 @@ const zhCN: MessageTree = {
     },
     fSpecialty: '专长',
     fModel: '偏好模型',
+    fWorkspace: '工作文件夹',
+    wsDefault: '{name} 的文件夹（默认）',
+    wsChange: '更换…',
+    wsReset: '恢复默认',
+    wsHintDefault: '没挂载工作区时，这个角色在这里读写文件。默认文件夹只存放它做出来的文件，不读项目说明，也没有项目记忆。',
+    wsHintProject: '换成项目文件夹后，这个角色的新对话一开始就挂载它：读取项目说明（AGENTS.md）、启用项目记忆。对话里仍可卸载，卸载后回到默认文件夹。',
     fPrompt: '系统提示词',
     extEmpty: '暂无扩展',
     kindSkill: '技能',
@@ -1829,6 +1838,7 @@ const en: MessageTree = {
       memoryDelete: 'Forget memory',
       todoWrite: 'Update todo list',
       presentFiles: 'Deliver files',
+      mountWorkspace: 'Mount workspace',
       createMember: 'Add member',
       memberSend: 'Assign to member',
       memberStop: 'Stop member task',
@@ -1854,6 +1864,7 @@ const en: MessageTree = {
       revealOther: 'Show in folder',
       copyPath: 'Copy path',
       missing: 'File no longer exists',
+      roleHome: "{name}'s folder",
       expand: 'Show {n} more',
       collapse: 'Show less',
       collapsedMany: '{name} and {rest} more'
@@ -1901,6 +1912,7 @@ const en: MessageTree = {
         memoryDelete: 'Forgot memory',
         todoWrite: 'Updated todo list',
         presentFiles: 'Delivered',
+        mountWorkspace: 'Mount workspace',
         createMember: 'Added member',
         memberSend: 'Assigned to',
         memberStop: 'Stopped',
@@ -1953,6 +1965,7 @@ const en: MessageTree = {
         memoryDelete: 'Forgetting memory',
         todoWrite: 'Updating todo list',
         presentFiles: 'Delivering',
+        mountWorkspace: 'Waiting for a workspace',
         createMember: 'Adding member',
         memberSend: 'Assigning to',
         memberStop: 'Stopping',
@@ -2005,6 +2018,7 @@ const en: MessageTree = {
         memoryDelete: 'Forget memory',
         todoWrite: 'Update todo list',
         presentFiles: 'Deliver',
+        mountWorkspace: 'Mount workspace',
         createMember: 'Add member',
         memberSend: 'Assign to',
         memberStop: 'Stop',
@@ -2048,8 +2062,6 @@ const en: MessageTree = {
         cancelled: 'Plan cancelled'
       },
       mount: {
-        mounted: 'Mounted workspace',
-        skipped: 'Skipped mounting workspace',
         memberPicked: 'Picked a folder for member {name}',
         memberSkipped: 'No folder for member {name}'
       }
@@ -2191,17 +2203,10 @@ const en: MessageTree = {
       feedbackLabel: 'Reply'
     },
     mount: {
-      cardTitle: 'Workspace needed',
-      reasonPath:
-        'No workspace is mounted for this chat, so this relative path has no base directory: ',
-      reasonScan:
-        'No workspace is mounted for this chat, so a scan has no project root to start from.',
-      byTool: 'Triggered by tool',
-      pick: 'Mount workspace…',
+      ask: 'Which folder should I work in?',
+      sub: 'No workspace is mounted for this chat. Once mounted, files are read and written there, and its project notes (AGENTS.md) are followed.',
+      pickOther: 'Choose another folder…',
       skip: 'Not now',
-      mounted: 'Mounted',
-      skipped: 'Skipped',
-      doneHint: 'Workspace mounted: ',
       memberTitle: 'Pick a folder for member “{name}”',
       memberHint: 'Choose the folder it’s responsible for — it can be anywhere.',
       memberAsk: 'Which folder should {name} work in?',
@@ -2638,10 +2643,14 @@ const en: MessageTree = {
     defaultModelHint: 'Uses the most recently selected model',
     viewProfile: 'View profile',
     mountHint: 'Mount a folder to focus this conversation inside it',
-    unmountHint: 'Unmount the folder and return to the whole-machine assistant',
+    unmountHint: 'Unmount the workspace and go back to the default folder',
     resizeSidebar: 'Drag to resize, double-click to reset',
     resizeComposer: 'Drag to resize the input box, double-click to reset',
     mountWorkspace: 'Mount workspace',
+    mountRecent: 'Recent',
+    mountPick: 'Choose folder…',
+    mountHomeNote: "When nothing is mounted, files are saved in {name}'s folder",
+    mountHomeOpen: 'Open',
     ws: {
       menuHint: 'Folder actions',
       copyPath: 'Copy path',
@@ -2982,6 +2991,12 @@ const en: MessageTree = {
     },
     fSpecialty: 'Specialty',
     fModel: 'Preferred model',
+    fWorkspace: 'Working folder',
+    wsDefault: "{name}'s folder (default)",
+    wsChange: 'Change…',
+    wsReset: 'Use default',
+    wsHintDefault: 'When no workspace is mounted, this persona reads and writes files here. The default folder only holds what it makes — no project notes, no project memory.',
+    wsHintProject: 'New chats with this persona mount this folder right away: project notes (AGENTS.md) are followed and project memory is on. You can still unmount it in a chat, which goes back to the default folder.',
     fPrompt: 'System prompt',
     extEmpty: 'No extensions',
     kindSkill: 'Skill',

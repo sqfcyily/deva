@@ -1,0 +1,63 @@
+/*
+ * 角色编辑页「工作文件夹」一栏（PersonaFolderField.tsx）：图标 + 名称 / 路径两行 + 恢复默认 + 更换…。
+ * 外框同表单输入框；换成项目文件夹后图标转主题色。
+ */
+.cf-pfolder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 8px 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+.cf-pfolder__ic {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.cf-pfolder.is-project .cf-pfolder__ic {
+  color: var(--accent);
+}
+.cf-pfolder__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.cf-pfolder__name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-pfolder__path {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-pfolder__reset {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.cf-pfolder__reset:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.cf-pfolder .cf-btn {
+  flex-shrink: 0;
+}

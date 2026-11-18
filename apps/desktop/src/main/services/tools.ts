@@ -33,7 +33,8 @@ import {
 } from './image-read'
 import type { ImagePart, ListingRecord, ToolSpec } from '../providers/types'
 import { BROWSER_BRIEF, BROWSER_GUIDE, browserToolSpec, runBrowserTool, type MemberHandoff } from './browser'
-import { builtinCategory, EDIT_TOOLS, pathKind } from './tool-catalog'
+import { builtinCategory, EDIT_TOOLS } from './tool-catalog'
+import { baseDir } from './role-home'
 import { deferTool } from './tool-search'
 import { OFFICE_EXT, officeText } from './office-text'
 
@@ -165,7 +166,7 @@ const fullToolSpecs: ToolSpec[] = [
         paths: {
           type: 'array',
           items: { type: 'string' },
-          description: '成品文件路径列表：绝对路径，或相对已挂载工作区的路径。'
+          description: '成品文件路径列表：绝对路径，或相对当前工作目录的路径。'
         }
       },
       required: ['paths']
@@ -180,7 +181,7 @@ const fullToolSpecs: ToolSpec[] = [
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
-      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 600000ms（可用 timeout 调整，最长 1800000ms）；输出超过 30000 字符时完整内容存到文件，只返回开头、结尾与文件路径。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+      '工作目录：已挂载工作区时为项目根，未挂载时为当前角色的默认文件夹（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 600000ms（可用 timeout 调整，最长 1800000ms）；输出超过 30000 字符时完整内容存到文件，只返回开头、结尾与文件路径。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -594,7 +595,13 @@ export function toolCategory(name: string): ToolCategory {
 }
 
 export interface ToolContext {
+  /** 挂载的工作区（项目）：项目说明、项目私有记忆只认它；null = 没挂载。 */
   workspaceRoot: string | null
+  /**
+   * 当前角色的默认文件夹（见 role-home.ts）：没挂载工作区时的相对路径基准与 run_command 工作目录，用到时才创建。
+   * 它不是项目，不参与项目说明与项目私有记忆。
+   */
+  homeDir?: string | null
   /** run_command 与 browser 使用：随 chat:abort 中止正在跑的子进程（杀树）/ 正在等待的浏览器操作。 */
   signal?: AbortSignal
   /** 当前对话：browser 按对话管理标签。 */
@@ -728,15 +735,10 @@ function toAbsPath(root: string | null, p: string): string {
  */
 function resolvePath(root: string | null, p: unknown): string {
   if (typeof p !== 'string' || !p.trim()) throw new Error('缺少有效的 path 参数')
-  // 未挂载工作区 + 相对路径 = 没有基准。旧行为是悄悄落到应用自身的 process.cwd()——读多半 ENOENT、
-  // 写则**静默成功**在谁也找不到的地方。一律明确报错，让模型改用绝对路径（写入类更早一步由
-  // needsWorkspaceMount 拦成挂载卡，正常走不到这里；此处是所有通道共同的兜底）。
+  // 没有基准 + 相对路径：不该发生（没挂载时有角色的默认文件夹，见 role-home.ts）。旧行为是悄悄落到应用自身的
+  // process.cwd()——读多半 ENOENT、写则**静默成功**在谁也找不到的地方。一律明确报错，让模型改用绝对路径。
   if (!root && !isAbsolute(expandHome(p)))
-    throw new Error(
-      // 刻意不提「请用户挂载」：主轮该弹卡的调用早被 needsWorkspaceMount 截走，能走到这里的是
-      // 子智能体与密封定时任务——它们没有人可问，提了只会诱导出一句无人应答的文字请求。
-      '未挂载工作区，相对路径没有基准：请改用绝对路径（~/ 开头的主目录路径亦可）。'
-    )
+    throw new Error('当前没有工作目录，相对路径没有基准：请改用绝对路径（~/ 开头的主目录路径亦可）。')
   return toAbsPath(root, p)
 }
 
@@ -760,48 +762,6 @@ export function writeTargetPath(
 
 /** present_files 一次最多交付的文件数。 */
 const PRESENT_MAX = 20
-
-/**
- * 「本次调用是否缺少相对路径基准」——挂载工作区提示卡的**唯一判据**。
- *
- * 刻意**不按工具语义**（查询类 / 需求类）分档：那既模糊又判不准——`run_command` 里既有 `date`
- * 也有 `npm test`，`read_file` 读 `/etc/hosts` 不需要工作区、读 `src/index.ts` 需要。工具粒度
- * 根本区分不了，同一个工具的不同入参落在两边。故判据是纯机械的「这次调用的落点能否解析」，
- * 零语义猜测：没有 path 参数的调用（取系统时间之类）自动出局，绝对路径（含 `~/` 展开后的主
- * 目录路径）一律放行。
- *
- * 两档命中：
- *  ① 单文件类（write_file / edit_file / read_file）给了**相对路径**。写入档是唯一会「悄悄出错」
- *     的：未挂载时 resolve 基准是**应用自身的 process.cwd()**（打包态是 exe 目录），会静默写成功
- *     在谁也不知道的地方。
- *  ② 扫描类（list_dir / glob / grep）**省略 path 或给了相对路径** —— 前者本就抛「未打开项目，且
- *     未提供 path」这句对用户毫无帮助的裸错误；升级成可点的挂载卡是净赚。
- *
- * `read_file` 一度被排除（当时理由：失败是响亮的 ENOENT，模型自会改绝对路径，不值得再打断用户）。
- * **系统提示词改成「默认相对路径」之后这笔账翻转了**：模型被明确劝向相对写法，「自会改绝对路径」
- * 的本能随之减弱，而回灌文案里若再提「请用户挂载」，就会诱导它用文字索要挂载——正是本功能要消灭
- * 的行为。判据本身（落点能否解析）从来就覆盖 read_file，当初只是按性价比排除。
- *
- * 仍刻意不含 `run_command`：命令文本里的相对路径无法可靠判定（`cat src/a.ts` / `cd /tmp && ls` /
- * `npm test`），要判就得解析 shell 语法，不可靠；何况它有 homedir
- * 兜底，失败同样响亮（失败时另追加一行提示，见 run_command 分支）。
- */
-export function needsWorkspaceMount(
-  name: string,
-  args: unknown,
-  root: string | null
-): { tool: string; path: string } | null {
-  if (root) return null
-  const a = (args ?? {}) as Record<string, unknown>
-  // 先展开 ~ 再判 isAbsolute：`~/notes.txt` 是明确的主目录落点，不缺基准，不该打断用户。
-  const p = typeof a.path === 'string' ? expandHome(a.path.trim()) : ''
-  // 单文件类（path 是必填的落点）：相对写法缺基准。路径语义登记在 tool-catalog.ts。
-  const kind = pathKind(name)
-  if (kind === 'file') return p && !isAbsolute(p) ? { tool: name, path: p } : null
-  // 扫描类：省略 path（隐含项目根）与相对 path 都缺基准，同样命中。
-  if (kind === 'scan') return isAbsolute(p) ? null : { tool: name, path: p }
-  return null
-}
 
 /** 解析「搜索根目录」（读取语义）：给了 path 用之，否则回落项目根；两者皆缺则报错。 */
 /**
@@ -1407,7 +1367,7 @@ function errorSummary(e: unknown): string {
 const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>> = {
   browser: (a, ctx) => runBrowserTool(a, ctx),
   read_file: async (a, ctx) => {
-    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const abs = resolvePath(baseDir(ctx), a.path)
     const stat = await fs.stat(abs)
     const ext = extname(abs).toLowerCase()
     // Word / Excel / PowerPoint：解压取文字，同文本一样带行号返回（附件按路径交给模型时靠它读）。
@@ -1473,7 +1433,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     for (const p of list) {
       let abs: string
       try {
-        abs = resolvePath(ctx.workspaceRoot, p)
+        abs = resolvePath(baseDir(ctx), p)
       } catch (e) {
         bad.push(`${String(p)}：${(e as Error).message}`)
         continue
@@ -1503,7 +1463,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
   },
   list_dir: async (a, ctx) => {
     // path 省略时回落项目根（与工具描述「默认项目根」一致）。
-    const abs = resolveReadDir(ctx.workspaceRoot, a.path)
+    const abs = resolveReadDir(baseDir(ctx), a.path)
     const dirents = await fs.readdir(abs, { withFileTypes: true })
     const rows = dirents
       .filter((d) => d.isDirectory() || d.isFile())
@@ -1515,7 +1475,8 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
   glob: async (a, ctx) => {
     const pattern = typeof a.pattern === 'string' ? a.pattern.trim() : ''
     if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
-    const dir = resolveReadDir(ctx.workspaceRoot, a.path)
+    const root = baseDir(ctx)
+    const dir = resolveReadDir(root, a.path)
     const re = globToRegExp(pattern)
     const files = await collectFiles(dir)
     const matched = files.filter((f) => re.test(f.rel))
@@ -1527,7 +1488,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
         } catch {
           /* 忽略无法 stat 的条目 */
         }
-        return { rel: displayPath(ctx.workspaceRoot, f.abs), mtime }
+        return { rel: displayPath(root, f.abs), mtime }
       })
     )
     stated.sort((x, y) => y.mtime - x.mtime)
@@ -1545,7 +1506,8 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     const pattern = typeof a.pattern === 'string' ? a.pattern : ''
     if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
     const { re, note } = compileGrepPattern(pattern, a.ignore_case === true)
-    const target = resolveReadDir(ctx.workspaceRoot, a.path)
+    const root = baseDir(ctx)
+    const target = resolveReadDir(root, a.path)
     let globRe: RegExp | null = null
     // 不含 / 的 glob（如 *.ts）只匹配文件名，与 ripgrep 一致——否则只命中根目录文件、静默返回无匹配。
     let globBase = false
@@ -1581,7 +1543,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
       const hits: string[] = []
       for (let i = 0; i < lines.length && hits.length < GREP_MATCH_MAX; i++) {
         if (re.test(lines[i]))
-          hits.push(`${displayPath(ctx.workspaceRoot, f.abs)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
+          hits.push(`${displayPath(root, f.abs)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
       }
       return hits
     }
@@ -1704,7 +1666,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     }
   },
   write_file: async (a, ctx) => {
-    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const abs = resolvePath(baseDir(ctx), a.path)
     const content = typeof a.content === 'string' ? a.content : ''
     // 父目录不存在时先自动创建，免得模型还得先 run_command mkdir。
     await fs.mkdir(dirname(abs), { recursive: true })
@@ -1723,7 +1685,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     return { content: `已写入 ${Buffer.byteLength(out, 'utf8')} 字节`, summary: '已写入' }
   },
   edit_file: async (a, ctx) => {
-    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const abs = resolvePath(baseDir(ctx), a.path)
     const oldStr = typeof a.old_string === 'string' ? a.old_string : ''
     const newStr = typeof a.new_string === 'string' ? a.new_string : ''
     if (!oldStr)
@@ -1805,11 +1767,10 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     const command = typeof a.command === 'string' ? a.command.trim() : ''
     if (!command)
       return { content: '缺少有效的 command 参数', summary: '参数无效', isError: true }
-    // cwd：挂载了工作区 → 项目根；未挂载（对话优先外壳的「全机通用助手」）→ 回落用户主目录，
-    // 与终端面板 safeCwd 同一口径，不再因「未打开项目」整个不可用。
+    // cwd：挂载了工作区 → 项目根；未挂载 → 角色的默认文件夹（与文件工具的相对路径基准一致，见 role-home.ts）。
     // cwd 只是相对路径基准，不是安全边界——命令执行不设任何限制。
-    let cwd = ctx.workspaceRoot
-    // 目录不存在（项目被移走/改名）同样回落主目录，避免 spawn 直接失败。
+    let cwd = baseDir(ctx)
+    // 目录不存在（项目被移走/改名）回落用户主目录，避免 spawn 直接失败。
     if (!cwd || !existsSync(cwd)) cwd = homedir()
     const timeoutMs = Math.min(
       Math.max(toInt(a.timeout) ?? EXEC_TIMEOUT_DEFAULT, 1000),
@@ -1838,12 +1799,11 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     }
     if (r.lingering) status += '（有子进程未能确认结束，可能仍在后台运行）'
     const isError = Boolean(r.spawnError) || r.capped || r.aborted || r.timedOut || r.code !== 0
-    // 未挂载工作区时命令在用户主目录执行，失败多半只是「不在项目里」（典型：git 报 not a git
-    // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。命令文本里的相对路径无法
-    // 可靠判定（故 needsWorkspaceMount 不拦 run_command），改用这种「失败才提示」的事后自愈。
+    // 未挂载工作区时命令在角色的默认文件夹里执行，失败多半只是「不在项目里」（典型：git 报 not a git
+    // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。
     const cwdHint =
       isError && !ctx.workspaceRoot
-        ? `\n（提示：当前未挂载工作区，命令在用户主目录 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或请用户挂载该项目为工作区。）`
+        ? `\n（提示：当前未挂载工作区，命令在默认文件夹 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或调用 mount_workspace 请用户挂载该项目。）`
         : ''
     const content = (body ? body + '\n' : '') + status + cwdHint
     return { content, summary, isError }

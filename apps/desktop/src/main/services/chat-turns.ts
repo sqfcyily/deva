@@ -109,6 +109,8 @@ import {
   skillDirNote
 } from './chat-prompts'
 import { pendingNotices, takeNotices, wakeForNotices } from './background-tasks'
+import { roleHome } from './role-home'
+import { buildMountTool } from './workspace-mount'
 import { pendingHandoffs, deliverResult, finishInform, taskAsks, reportTaskAsk } from './chat-task-handoff'
 import {
   memberDispatches,
@@ -466,6 +468,9 @@ export async function runTurn(
     const rolePersonaId = resolvePersonaId(session.personaId)
     ctx.personaId = rolePersonaId
     const persona = getPersona(rolePersonaId)
+    // 没挂载工作区时的相对路径基准与 run_command 工作目录：本角色的默认文件夹（见 role-home.ts）。
+    ctx.homeDir = roleHome(rolePersonaId)
+    const workDir = { root: effectiveRoot, home: ctx.homeDir }
 
     // 提示缓存已过期：先把较早的大块工具结果换成占位（原文存文件，不调模型）。缓存反正要重建，此时改写历史
     // 不多花钱；缓存还热时不动（见 tool-results.ts）。清掉的往往足以让下面的摘要压缩不必发生。
@@ -513,6 +518,8 @@ export async function runTurn(
       buildPlanTool(),
       buildTodoTool(),
       buildSkillTool(),
+      // 请用户挂载工作区（见 workspace-mount.ts）；定时任务的工具表按目录表剔除它。
+      buildMountTool(),
       // 查看按需加载工具（browser、create_* 等，见 tool-search.ts）的完整用法；这几个工具在各类对话里至少剩 browser。
       buildToolSearchTool(),
       subagentTool,
@@ -566,8 +573,8 @@ export async function runTurn(
               addedAt: 0
             },
             owner: personaName(parentSession),
-            workspaceRoot: effectiveRoot,
-            folder: effectiveRoot ? rootLabel(effectiveRoot, mainRoot) : '未指定（需要时用户会为你选择，或使用绝对路径）',
+            dir: workDir,
+            folder: effectiveRoot ? rootLabel(effectiveRoot, mainRoot) : '未指定（需要时调用 mount_workspace 请用户选择，或使用绝对路径）',
             personas,
             // 全局记忆只读；有文件夹时可读写该文件夹的项目私有记忆。
             memory: memoryPromptSection({ writable: false, projectWritable: true, root: effectiveRoot }),
@@ -575,7 +582,7 @@ export async function runTurn(
           })
         : unattended
         ? sealedSystemPrompt(
-            effectiveRoot,
+            workDir,
             personas,
             memoryPromptSection({ writable: false, root: effectiveRoot }),
             projectDoc,
@@ -586,7 +593,7 @@ export async function runTurn(
                 : undefined
           )
         : systemPrompt(
-            effectiveRoot,
+            workDir,
             personas,
             memoryPromptSection({ writable: true, root: effectiveRoot }),
             projectDoc

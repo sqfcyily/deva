@@ -65,6 +65,11 @@ export interface PersonaRecord {
   avatarImage: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认（见 model-resolve.ts）。 */
   model: string
+  /**
+   * 工作文件夹（frontmatter `workspace`，绝对路径；空串 = 用角色的默认文件夹，见 role-home.ts）。设了就是一个项目：
+   * 绑定此角色的新对话一开始就挂载它（见 role-home.ts personaWorkspace）。对话里的挂 / 卸只改那个对话，不回写角色。
+   */
+  workspace: string
   /** .md 正文 = 要追加进系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -77,6 +82,8 @@ export interface PersonaUpsertInput {
   description?: string
   avatar?: string
   model?: string
+  /** 可选：工作文件夹（绝对路径；空串 = 改回默认文件夹；缺省 = 保持原值）。 */
+  workspace?: string
   prompt?: string
   /** 可选：一并设置启用态（新建默认关）。 */
   enabled?: boolean
@@ -176,6 +183,7 @@ function parsePersona(id: string, raw: string, enabled: boolean, withImage: bool
     avatar: fmString(data, 'avatar'),
     avatarImage: withImage ? readAvatarImage(id) : '',
     model: fmString(data, 'model'),
+    workspace: fmString(data, 'workspace'),
     prompt: body.trim(),
     enabled
   }
@@ -245,6 +253,7 @@ function composePersonaMd(input: {
   description: string
   avatar: string
   model: string
+  workspace?: string
   prompt: string
 }): string {
   const lines = ['---', `name: ${fmScalar(input.name)}`]
@@ -252,6 +261,8 @@ function composePersonaMd(input: {
   // avatar 为 JSON 字符串（含引号/大括号），必须经 fmScalar 引号化 + 转义，方能安全存进 YAML 单行。
   if (input.avatar) lines.push(`avatar: ${fmScalar(input.avatar)}`)
   if (input.model) lines.push(`model: ${fmScalar(input.model)}`)
+  // 路径常含空格 / 中文，同样经 fmScalar 引号化；空 = 用默认文件夹，不写该行（旧文件零差异）。
+  if (input.workspace) lines.push(`workspace: ${fmScalar(input.workspace)}`)
   lines.push('---', '', input.prompt.trim(), '')
   return lines.join('\n')
 }
@@ -262,12 +273,16 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
   let id = input.id && isSafeId(input.id) ? input.id : ''
   const isNew = !id
   if (!id) id = makeId(name)
+  // 工作文件夹缺省 = 保持原值：只改头像、提示词的调用（pinAutoAvatarShapes 等）不会把它冲掉。
+  const workspace =
+    input.workspace !== undefined ? input.workspace.trim() : isNew ? '' : (getPersona(id)?.workspace ?? '')
 
   const md = composePersonaMd({
     name,
     description: (input.description ?? '').trim(),
     avatar: (input.avatar ?? '').trim(),
     model: (input.model ?? '').trim(),
+    workspace,
     prompt: input.prompt ?? ''
   })
 
@@ -291,6 +306,7 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
       avatar: (input.avatar ?? '').trim(),
       avatarImage: readAvatarImage(id),
       model: (input.model ?? '').trim(),
+      workspace,
       prompt: input.prompt ?? '',
       enabled: input.enabled === true
     }

@@ -23,6 +23,7 @@ import {
 } from '../components/humation'
 import { AvatarEditor } from './AvatarEditor'
 import { basename, DragBar, useRelativeTime } from './shell-common'
+import { PersonaFolderField } from './PersonaFolderField'
 
 /**
  * 角色编辑器打开态：新建 / 编辑（带原对象）/ 确认名片（propose：预填 LLM 草稿，接受才落盘）。
@@ -211,6 +212,8 @@ export function PersonaEditor({
   const [name, setName] = useState(editing?.name ?? draft?.name ?? '')
   const [desc, setDesc] = useState(editing?.desc ?? draft?.desc ?? '')
   const [model, setModel] = useState(editing?.model ?? draft?.model ?? '')
+  // 工作文件夹：空 = 角色的默认文件夹；名片草稿不带（目录只能由用户亲手在系统对话框里选）。
+  const [workspace, setWorkspace] = useState(editing?.workspace ?? '')
   const [prompt, setPrompt] = useState(editing?.prompt ?? draft?.prompt ?? '')
   const [saving, setSaving] = useState(false)
 
@@ -294,6 +297,7 @@ export function PersonaEditor({
         // 存显式头像 spec（JSON 串）：所见即所存即所渲染。
         avatar: serializeAvatarSpec(avatar),
         model,
+        workspace,
         prompt,
         enabled: true
       }
@@ -410,6 +414,13 @@ export function PersonaEditor({
                   display={modelDisplay}
                 />
               </div>
+
+              <PersonaFolderField
+                personaId={editing?.id}
+                personaName={name}
+                value={workspace}
+                onChange={setWorkspace}
+              />
 
               <div className="cf-field">
                 <label className="cf-field__label">{t('cf.fPrompt')}</label>
