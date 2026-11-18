@@ -357,7 +357,10 @@ pnpm relay-node:deploy root@<服务器地址>   # 经 SSH 部署，配置在服�
 
 Deva 免费开源。如果它对你有帮助，欢迎通过微信赞赏支持，款项用于官方远程服务与域名等运行费用。
 
-<img src="docs/wx.jpg" alt="微信赞赏码" width="240" />
+<p align="center">
+  <img src="docs/wx.jpg" alt="微信赞赏码" width="260" /><br />
+  <sub>微信扫码赞赏</sub>
+</p>
 
 ## 许可
 
