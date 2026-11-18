@@ -195,7 +195,7 @@ function prepareContinueSubagent(
   rec.messages.push({
     role: 'user',
     content: moved
-      ? `（提示：当前工作目录已变为 ${ctx.workspaceRoot ?? `${ctx.homeDir ?? ''}（未挂载工作区，主对话角色的默认文件夹）`}，相对路径以此为准。）\n${message}`
+      ? `（提示：当前工作目录已变为 ${ctx.workspaceRoot ?? `${ctx.homeDir ?? ''}（未挂载工作区，主对话角色的默认工作区）`}，相对路径以此为准。）\n${message}`
       : message
   })
   rec.workspaceRoot = ctx.workspaceRoot

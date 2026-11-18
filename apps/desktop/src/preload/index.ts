@@ -265,7 +265,7 @@ export interface PersonaRecord {
   avatarImage: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
   model: string
-  /** 工作文件夹（绝对路径；空串 = 用角色的默认文件夹）。设了则绑定此角色的新对话一开始就挂载它。 */
+  /** 工作区（绝对路径；空串 = 用角色的默认工作区）。设了则绑定此角色的新对话一开始就挂载它。 */
   workspace: string
   /** 正文 = 追加进主智能体系统提示词的内容。 */
   prompt: string
@@ -306,7 +306,7 @@ export interface PersonaUpsertInput {
   description?: string
   avatar?: string
   model?: string
-  /** 工作文件夹（空串 = 改回默认文件夹；缺省 = 保持原值）。 */
+  /** 工作区（空串 = 改回默认工作区；缺省 = 保持原值）。 */
   workspace?: string
   prompt?: string
   enabled?: boolean
@@ -1090,19 +1090,11 @@ const api = {
     reveal: (sessionId: string, toolUseId: string, index: number): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('deliverables:reveal', sessionId, toolUseId, index)
   },
-  /**
-   * 角色的默认文件夹（没挂载工作区时的落点，见 main/services/role-home.ts）与最近挂载过的文件夹：
-   * 输入框「挂载工作区」菜单、挂载卡、角色编辑页用。
-   */
+  /** 角色的默认工作区（没挂载工作区时的落点，见 main/services/role-home.ts）：角色编辑页用。 */
   workspace: {
-    /** 角色的默认文件夹路径（还没写过文件时 exists 为 false）。 */
+    /** 角色的默认工作区路径（还没写过文件时 exists 为 false）。 */
     roleHome: (personaId: string): Promise<{ path: string; exists: boolean }> =>
-      ipcRenderer.invoke('workspace:role-home', personaId),
-    /** 在系统文件管理器里打开角色的默认文件夹（还没有就先建好）。 */
-    openRoleHome: (personaId: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('workspace:open-role-home', personaId),
-    /** 最近挂载过、现在仍存在的文件夹（按最近使用，最多 5 个）。 */
-    recent: (): Promise<{ path: string; name: string }[]> => ipcRenderer.invoke('workspace:recent')
+      ipcRenderer.invoke('workspace:role-home', personaId)
   },
   /**
    * 检查更新（设置 → 关于）。状态由主进程持有，经 onState 推送；check / download / install 只负责触发。

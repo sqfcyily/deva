@@ -550,7 +550,7 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
     'chat:create-session',
     (_e, payload: ChatCreateSessionRequest): { ok: true } => {
       const { sessionId, personaId, focusRoot, modelRef } = payload
-      // 角色设了工作文件夹（见 role-home.ts personaWorkspace）且调用方没指定：新对话一开始就挂载它。
+      // 角色设了工作区（见 role-home.ts personaWorkspace）且调用方没指定：新对话一开始就挂载它。
       ensureSession(sessionId, { personaId, focusRoot: focusRoot ?? personaWorkspace(personaId), model: modelRef })
       saveProject(sessionId)
       return { ok: true }

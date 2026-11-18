@@ -188,8 +188,8 @@ const STR = {
   mDoneNoMount: ['{name}暂不挂载', '{name}: no folder for now'],
   // 为成员选文件夹的卡（「不限」的意思；手机上只能选不限）
   mPickQ: ['{name}负责哪个文件夹？', 'Which folder is {name} responsible for?'],
-  mNoLimitNone: ['可以在任何位置。选「不限」则不指定文件夹。', 'It can be anywhere. “Any” means no specific folder.'],
-  mNoLimitPaths: ['可以在任何位置。选「不限」则{name}改用完整路径工作。', 'It can be anywhere. With “Any”, {name} uses full paths instead.'],
+  mNoLimitNone: ['可以在任何位置。选「不限」则在默认工作区里工作。', 'It can be anywhere. With “Any”, it works in the default workspace.'],
+  mNoLimitPaths: ['可以在任何位置。选「不限」则{name}继续在默认工作区里工作。', 'It can be anywhere. With “Any”, {name} keeps working in the default workspace.'],
   mPickOnDesk: ['选择具体的文件夹要在电脑上操作。', 'Picking a specific folder has to be done on the computer.'],
   noLimit: ['不限', 'Any'],
   // 设置

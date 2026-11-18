@@ -1,25 +1,23 @@
 import { useEffect, useState } from 'react'
 import { Folder, FolderOpen } from 'lucide-react'
 import { useI18n } from '../i18n/i18n'
-import { basename } from './shell-common'
 import './persona-folder.css'
 
 /**
- * 角色编辑页的「工作文件夹」一栏（对比稿 design/workspace-home.html 场景 ⑤，并入 #49 角色默认工作区）。
+ * 角色编辑页的「默认工作区」一栏（对比稿 design/workspace-home.html 场景 ⑤，并入 #49 角色默认工作区）。
  *
- * 默认是角色自己的文件夹（`~/Deva/<角色名>`，没挂载工作区时的落点）；「更换…」换成某个项目文件夹后，这个角色的
+ * 默认是角色自己的目录（`~/Deva/Agents/<角色 id>`，没挂载工作区时的落点）；「更换…」换成某个项目文件夹后，这个角色的
  * 新对话一开始就挂载它（读项目说明、启用项目私有记忆），「恢复默认」改回来。只在保存时落盘。
+ * 一行显示（图标 + 路径 + 按钮），与同表单的输入框等高。
  */
 export function PersonaFolderField({
   personaId,
-  personaName,
   value,
   onChange
 }: {
-  /** 编辑已有角色时的 id；新建时缺省（默认文件夹在第一次用到时才定下，这里不显示路径）。 */
+  /** 编辑已有角色时的 id；新建时缺省（id 保存时才生成，默认工作区随之确定）。 */
   personaId?: string
-  personaName: string
-  /** 换成的工作文件夹；空串 = 用默认文件夹。 */
+  /** 换成的工作区；空串 = 用默认工作区。 */
   value: string
   onChange: (path: string) => void
 }): React.JSX.Element {
@@ -44,33 +42,28 @@ export function PersonaFolderField({
       if (r) onChange(r.path)
     })()
   }
-  const label = personaName.trim() || t('cf.assistant')
   const path = value || home
   return (
     <div className="cf-field">
       <label className="cf-field__label">{t('cf.fWorkspace')}</label>
       <div className={`cf-pfolder${value ? ' is-project' : ''}`}>
-        <span className="cf-pfolder__ic">{value ? <FolderOpen size={16} /> : <Folder size={16} />}</span>
-        <span className="cf-pfolder__main">
-          <span className="cf-pfolder__name">
-            {value ? basename(value) : t('cf.wsDefault').replace('{name}', label)}
+        <span className="cf-pfolder__ic">{value ? <FolderOpen size={15} /> : <Folder size={15} />}</span>
+        {path ? (
+          <span className="cf-pfolder__path" title={path}>
+            {path}
           </span>
-          {path && (
-            <span className="cf-pfolder__path" title={path}>
-              {path}
-            </span>
-          )}
-        </span>
+        ) : (
+          <span className="cf-pfolder__path is-muted">{t('cf.wsPending')}</span>
+        )}
         {value && (
-          <button type="button" className="cf-pfolder__reset" onClick={() => onChange('')}>
+          <button type="button" className="cf-pfolder__btn" onClick={() => onChange('')}>
             {t('cf.wsReset')}
           </button>
         )}
-        <button type="button" className="cf-btn" onClick={pick}>
+        <button type="button" className="cf-pfolder__btn" onClick={pick}>
           {t('cf.wsChange')}
         </button>
       </div>
-      <span className="cf-field__hint">{value ? t('cf.wsHintProject') : t('cf.wsHintDefault')}</span>
     </div>
   )
 }

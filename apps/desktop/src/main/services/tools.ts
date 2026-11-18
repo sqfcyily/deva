@@ -50,11 +50,11 @@ const fullToolSpecs: ToolSpec[] = [
   {
     name: 'read_file',
     description:
-      '读取工作区内一个文本文件，返回带行号的内容（便于定位与后续精确编辑）。默认从第 1 行起最多读 2000 行，超过 2000 字符的行会被截断；可用 offset（起始行，1 起）/ limit（行数）分段读取大文件，已知目标位置时建议只读相关片段。单次返回内容过大会报错，届时请缩小范围或先用 grep 定位。path 可相对项目根或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。Word / Excel / PowerPoint 文件（.docx / .xlsx / .pptx）返回从中提取的纯文字（不含格式与图片），同样带行号、可分段读取，但不能用 edit_file 修改。',
+      '读取工作区内一个文本文件，返回带行号的内容（便于定位与后续精确编辑）。默认从第 1 行起最多读 2000 行，超过 2000 字符的行会被截断；可用 offset（起始行，1 起）/ limit（行数）分段读取大文件，已知目标位置时建议只读相关片段。单次返回内容过大会报错，届时请缩小范围或先用 grep 定位。path 可相对当前工作目录或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。Word / Excel / PowerPoint 文件（.docx / .xlsx / .pptx）返回从中提取的纯文字（不含格式与图片），同样带行号、可分段读取，但不能用 edit_file 修改。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '文件路径，相对项目根或绝对路径' },
+        path: { type: 'string', description: '文件路径，相对当前工作目录或绝对路径' },
         offset: { type: 'integer', description: '起始行号（1 起，含）。默认从第 1 行。' },
         limit: { type: 'integer', description: '读取行数。默认 2000 行。' }
       },
@@ -63,11 +63,11 @@ const fullToolSpecs: ToolSpec[] = [
   },
   {
     name: 'list_dir',
-    description: '列出工作区内某个目录的直接子项（目录在前）。用于探索项目结构。不传 path 时默认列项目根。',
+    description: '列出工作区内某个目录的直接子项（目录在前）。用于探索项目结构。不传 path 时默认列当前工作目录。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '目录路径，相对项目根或绝对路径。省略则默认项目根。' }
+        path: { type: 'string', description: '目录路径，相对当前工作目录或绝对路径。省略则默认当前工作目录。' }
       }
     }
   },
@@ -79,7 +79,7 @@ const fullToolSpecs: ToolSpec[] = [
       type: 'object',
       properties: {
         pattern: { type: 'string', description: 'glob 模式，如 **/*.ts、src/**/*.{ts,tsx}' },
-        path: { type: 'string', description: '搜索根目录，相对项目根或绝对路径。默认项目根。' }
+        path: { type: 'string', description: '搜索根目录，相对当前工作目录或绝对路径。默认当前工作目录。' }
       },
       required: ['pattern']
     }
@@ -95,7 +95,7 @@ const fullToolSpecs: ToolSpec[] = [
           type: 'string',
           description: '正则表达式（JavaScript 语法，支持 \\p{…}）。搜字面量时转义元字符，如 foo\\(；非法正则会退化为纯文本搜索。'
         },
-        path: { type: 'string', description: '搜索根目录，相对项目根或绝对路径。默认项目根。' },
+        path: { type: 'string', description: '搜索根目录，相对当前工作目录或绝对路径。默认当前工作目录。' },
         glob: {
           type: 'string',
           description: '仅搜索匹配该 glob 的文件。不含 / 时只匹配文件名（*.ts 匹配任意层级的 .ts）；含 / 时匹配相对路径（如 src/**/*.tsx）。可选。'
@@ -125,7 +125,7 @@ const fullToolSpecs: ToolSpec[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '文件路径，相对项目根或绝对路径' },
+        path: { type: 'string', description: '文件路径，相对当前工作目录或绝对路径' },
         content: { type: 'string', description: '要写入的文本内容（覆盖时为完整内容，追加时为本段内容）' },
         append: {
           type: 'boolean',
@@ -142,7 +142,7 @@ const fullToolSpecs: ToolSpec[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '文件路径，相对项目根或绝对路径' },
+        path: { type: 'string', description: '文件路径，相对当前工作目录或绝对路径' },
         old_string: {
           type: 'string',
           description: '要被替换的原文（需与文件内容逐字符一致，含缩进/换行；去掉 read_file 的行号前缀）'
@@ -181,7 +181,7 @@ const fullToolSpecs: ToolSpec[] = [
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
-      '工作目录：已挂载工作区时为项目根，未挂载时为当前角色的默认文件夹（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 600000ms（可用 timeout 调整，最长 1800000ms）；输出超过 30000 字符时完整内容存到文件，只返回开头、结尾与文件路径。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+      '工作目录：已挂载工作区时为项目根，未挂载时为当前角色的默认工作区（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 600000ms（可用 timeout 调整，最长 1800000ms）；输出超过 30000 字符时完整内容存到文件，只返回开头、结尾与文件路径。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -598,7 +598,7 @@ export interface ToolContext {
   /** 挂载的工作区（项目）：项目说明、项目私有记忆只认它；null = 没挂载。 */
   workspaceRoot: string | null
   /**
-   * 当前角色的默认文件夹（见 role-home.ts）：没挂载工作区时的相对路径基准与 run_command 工作目录，用到时才创建。
+   * 当前角色的默认工作区（见 role-home.ts）：没挂载工作区时的相对路径基准与 run_command 工作目录，用到时才创建。
    * 它不是项目，不参与项目说明与项目私有记忆。
    */
   homeDir?: string | null
@@ -735,7 +735,7 @@ function toAbsPath(root: string | null, p: string): string {
  */
 function resolvePath(root: string | null, p: unknown): string {
   if (typeof p !== 'string' || !p.trim()) throw new Error('缺少有效的 path 参数')
-  // 没有基准 + 相对路径：不该发生（没挂载时有角色的默认文件夹，见 role-home.ts）。旧行为是悄悄落到应用自身的
+  // 没有基准 + 相对路径：不该发生（没挂载时有角色的默认工作区，见 role-home.ts）。旧行为是悄悄落到应用自身的
   // process.cwd()——读多半 ENOENT、写则**静默成功**在谁也找不到的地方。一律明确报错，让模型改用绝对路径。
   if (!root && !isAbsolute(expandHome(p)))
     throw new Error('当前没有工作目录，相对路径没有基准：请改用绝对路径（~/ 开头的主目录路径亦可）。')
@@ -1462,7 +1462,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     }
   },
   list_dir: async (a, ctx) => {
-    // path 省略时回落项目根（与工具描述「默认项目根」一致）。
+    // path 省略时回落当前工作目录（与工具描述「默认当前工作目录」一致）。
     const abs = resolveReadDir(baseDir(ctx), a.path)
     const dirents = await fs.readdir(abs, { withFileTypes: true })
     const rows = dirents
@@ -1767,7 +1767,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     const command = typeof a.command === 'string' ? a.command.trim() : ''
     if (!command)
       return { content: '缺少有效的 command 参数', summary: '参数无效', isError: true }
-    // cwd：挂载了工作区 → 项目根；未挂载 → 角色的默认文件夹（与文件工具的相对路径基准一致，见 role-home.ts）。
+    // cwd：挂载了工作区 → 项目根；未挂载 → 角色的默认工作区（与文件工具的相对路径基准一致，见 role-home.ts）。
     // cwd 只是相对路径基准，不是安全边界——命令执行不设任何限制。
     let cwd = baseDir(ctx)
     // 目录不存在（项目被移走/改名）回落用户主目录，避免 spawn 直接失败。
@@ -1799,11 +1799,11 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     }
     if (r.lingering) status += '（有子进程未能确认结束，可能仍在后台运行）'
     const isError = Boolean(r.spawnError) || r.capped || r.aborted || r.timedOut || r.code !== 0
-    // 未挂载工作区时命令在角色的默认文件夹里执行，失败多半只是「不在项目里」（典型：git 报 not a git
+    // 未挂载工作区时命令在角色的默认工作区里执行，失败多半只是「不在项目里」（典型：git 报 not a git
     // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。
     const cwdHint =
       isError && !ctx.workspaceRoot
-        ? `\n（提示：当前未挂载工作区，命令在默认文件夹 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或调用 mount_workspace 请用户挂载该项目。）`
+        ? `\n（提示：当前未挂载工作区，命令在默认工作区 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或调用 mount_workspace 请用户挂载该项目。）`
         : ''
     const content = (body ? body + '\n' : '') + status + cwdHint
     return { content, summary, isError }

@@ -1,16 +1,18 @@
 /*
- * 角色编辑页「工作文件夹」一栏（PersonaFolderField.tsx）：图标 + 名称 / 路径两行 + 恢复默认 + 更换…。
- * 外框同表单输入框；换成项目文件夹后图标转主题色。
+ * 角色编辑页「默认工作区」一栏（PersonaFolderField.tsx）：一行——图标 + 路径（过长省略）+（换成项目时）恢复默认 + 更换…。
+ * 外框与同表单的 .cf-input 同高、同边框、同底色；换成项目文件夹后图标转主题色。
  */
 .cf-pfolder {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
-  padding: 7px 8px 7px 12px;
+  height: 34px;
+  padding: 0 4px 0 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  background: var(--bg-elevated);
+  background: var(--bg);
+  font-size: 13px;
 }
 .cf-pfolder__ic {
   display: grid;
@@ -21,32 +23,22 @@
 .cf-pfolder.is-project .cf-pfolder__ic {
   color: var(--accent);
 }
-.cf-pfolder__main {
+.cf-pfolder__path {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.cf-pfolder__name {
-  font-size: 13px;
-  font-weight: 500;
   color: var(--fg);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cf-pfolder__path {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
+.cf-pfolder__path.is-muted {
   color: var(--fg-subtle);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.cf-pfolder__reset {
+/* 行内按钮：比输入框矮一截，整行仍是 34px */
+.cf-pfolder__btn {
   flex-shrink: 0;
-  padding: 4px 8px;
+  height: 26px;
+  padding: 0 8px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -54,10 +46,7 @@
   font-size: 12.5px;
   cursor: pointer;
 }
-.cf-pfolder__reset:hover {
+.cf-pfolder__btn:hover {
   background: var(--bg-hover);
   color: var(--fg);
-}
-.cf-pfolder .cf-btn {
-  flex-shrink: 0;
 }

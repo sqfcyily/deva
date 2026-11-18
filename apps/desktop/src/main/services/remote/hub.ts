@@ -1121,7 +1121,7 @@ function genSessionId(): string {
 export function createSessionFor(channel: ChannelId, personaId?: string, sid = genSessionId()): string {
   const persona = personaId ? getPersona(personaId) : null
   // 与桌面「新建对话」同形：立即建档（左侧列表可见），模型快照角色偏好（空 = 跟随默认）。
-  // 角色设了工作文件夹就一开始挂载它（同桌面新建对话，见 role-home.ts personaWorkspace）。
+  // 角色设了工作区就一开始挂载它（同桌面新建对话，见 role-home.ts personaWorkspace）。
   ensureSession(sid, { personaId, focusRoot: personaWorkspace(personaId), model: persona?.model || undefined })
   saveSession(sid)
   // 桌面左侧列表只在回合开始时刷新，/new 建的空对话不发消息就一直看不到：单独通知一次。

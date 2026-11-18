@@ -409,8 +409,8 @@ export function MemberAsks({
                 : 'cf.member.waitMount'
         // 只有展开着的那张接受操作；收起中 / 离开中的点了也不再提交。
         const live = isOpen
-        // 选文件夹卡的说明：「不限」在新建成员时 = 不指定文件夹（不跟随主对话，之后可在成员对话里再选）；成员做到一半
-        // 来要时 = 成员改用完整路径。
+        // 选文件夹卡的说明：「不限」= 不指定文件夹（不跟随主对话，之后可在成员对话里再选），成员在它角色的默认工作区里
+        // 工作（见 main/services/role-home.ts）；新建成员与做到一半来要时说法略有不同。
         const mountHint =
           card.kind !== 'mount'
             ? undefined

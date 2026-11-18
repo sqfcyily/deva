@@ -468,7 +468,7 @@ export async function runTurn(
     const rolePersonaId = resolvePersonaId(session.personaId)
     ctx.personaId = rolePersonaId
     const persona = getPersona(rolePersonaId)
-    // 没挂载工作区时的相对路径基准与 run_command 工作目录：本角色的默认文件夹（见 role-home.ts）。
+    // 没挂载工作区时的相对路径基准与 run_command 工作目录：本角色的默认工作区（见 role-home.ts）。
     ctx.homeDir = roleHome(rolePersonaId)
     const workDir = { root: effectiveRoot, home: ctx.homeDir }
 

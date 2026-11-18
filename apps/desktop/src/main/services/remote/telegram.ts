@@ -729,7 +729,7 @@ function promptRendered(v: Exclude<PromptView, { kind: 'ask' }>, act: (v: Action
     html:
       `${head('需要挂载工作区', v.sessionTitle)}\n\n` +
       `${v.question ? `${b(esc(v.question))}\n\n` : ''}需要一个文件夹，但当前对话还没有挂载工作区。\n\n` +
-      i('挂载文件夹需要在电脑端选择；也可以先跳过，让它继续在默认文件夹里工作，或改用完整路径。'),
+      i('挂载文件夹需要在电脑端选择；也可以先跳过，让它继续在默认工作区里工作，或改用完整路径。'),
     keyboard: [[btn('暂不挂载', { k: 'mount', key: v.key })]]
   }
 }

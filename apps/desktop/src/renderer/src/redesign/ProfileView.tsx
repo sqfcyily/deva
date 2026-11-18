@@ -1,7 +1,7 @@
 /**
  * 角色资料卡与角色编辑器。
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Folder, Plug, Puzzle, Sparkles } from 'lucide-react'
 import type { Persona } from '../mock/extensions'
 import type {
@@ -24,6 +24,7 @@ import {
 import { AvatarEditor } from './AvatarEditor'
 import { basename, DragBar, useRelativeTime } from './shell-common'
 import { PersonaFolderField } from './PersonaFolderField'
+import { PersonaPromptPage, PersonaPromptRow } from './PersonaPrompt'
 
 /**
  * 角色编辑器打开态：新建 / 编辑（带原对象）/ 确认名片（propose：预填 LLM 草稿，接受才落盘）。
@@ -212,7 +213,7 @@ export function PersonaEditor({
   const [name, setName] = useState(editing?.name ?? draft?.name ?? '')
   const [desc, setDesc] = useState(editing?.desc ?? draft?.desc ?? '')
   const [model, setModel] = useState(editing?.model ?? draft?.model ?? '')
-  // 工作文件夹：空 = 角色的默认文件夹；名片草稿不带（目录只能由用户亲手在系统对话框里选）。
+  // 工作区：空 = 角色的默认工作区（~/Deva/Agents/<角色 id>）；名片草稿不带（目录只能由用户亲手在系统对话框里选）。
   const [workspace, setWorkspace] = useState(editing?.workspace ?? '')
   const [prompt, setPrompt] = useState(editing?.prompt ?? draft?.prompt ?? '')
   const [saving, setSaving] = useState(false)
@@ -235,11 +236,26 @@ export function PersonaEditor({
   // 头像编辑面板开关：点击信息表单里的头像缩略图进入。面板自持草稿：「完成」回写这里的
   // avatar/avatarImage、「取消」/ ✕ 直接收起即丢弃；两者都只切回表单，真正落盘仍走表单底部的保存/接受。
   const [avatarEditing, setAvatarEditing] = useState(false)
-  // 顶部 ✕ / 点击背景：在头像面板时只退回信息表单（丢弃头像改动），否则关闭整个编辑器。
+  // 系统提示词编辑页：表单里收起成一行，点了在同一个弹窗里换成编辑页（同头像面板），「完成」带回、「取消」丢弃。
+  // 进来时把弹窗高度定格为表单当时的高度，切换前后弹窗大小不变、不抖动；回到表单再放开。
+  const modalRef = useRef<HTMLDivElement>(null)
+  const [promptEditing, setPromptEditing] = useState(false)
+  const [lockedH, setLockedH] = useState<number | null>(null)
+  const openPrompt = (): void => {
+    setLockedH(modalRef.current?.getBoundingClientRect().height ?? null)
+    setPromptEditing(true)
+  }
+  const closePrompt = (): void => {
+    setPromptEditing(false)
+    setLockedH(null)
+  }
+  // 顶部 ✕ / 点击背景：在头像面板 / 提示词编辑页时只退回信息表单（丢弃这次改动），否则关闭整个编辑器。
   const dismiss = (): void => {
     if (avatarEditing) setAvatarEditing(false)
+    else if (promptEditing) closePrompt()
     else onClose()
   }
+  const subEditing = avatarEditing || promptEditing
 
   // 模型下拉：「跟随默认」+ 按服务商分组的模型（同输入框的模型选择）→ "providerId:modelId"；空 = 跟随默认。
   // 决策模型（purpose==='decision'）不参与对话生成，排除在角色偏好模型之外。
@@ -325,7 +341,9 @@ export function PersonaEditor({
   return (
     <div className="cf-modal__backdrop" onClick={dismiss}>
       <div
+        ref={modalRef}
         className="cf-modal is-editor"
+        style={lockedH ? { height: lockedH } : undefined}
         role="dialog"
         aria-label={
           proposing
@@ -340,7 +358,9 @@ export function PersonaEditor({
           <span className="cf-modal__title">
             {avatarEditing
               ? t('cf.fAvatar')
-              : proposing
+              : promptEditing
+                ? t('cf.fPrompt')
+                : proposing
                 ? t('cf.editorProposeTitle')
                 : editing
                   ? t('cf.editorEditTitle')
@@ -349,13 +369,25 @@ export function PersonaEditor({
           {/* ✕/背景：头像面板时退回信息表单；否则关闭（propose 态丢弃改动、保持 pending、可再开），不 resolve、不写。 */}
           <button
             className="cf-modal__close"
-            title={avatarEditing ? t('cf.cancel') : proposing ? t('cf.close') : t('cf.cancel')}
+            title={subEditing ? t('cf.cancel') : proposing ? t('cf.close') : t('cf.cancel')}
             onClick={dismiss}
           >
             ✕
           </button>
         </div>
-        <div className="cf-editor">
+        {promptEditing ? (
+          /* ===== 系统提示词编辑页：点表单里的提示词一行进入；「完成」回写并返回信息表单。
+             不放进 .cf-editor（它自带内边距与滚动），正文与底栏的边距、横线由编辑页自己管 ===== */
+          <PersonaPromptPage
+            initial={prompt}
+            onCancel={closePrompt}
+            onDone={(next) => {
+              setPrompt(next)
+              closePrompt()
+            }}
+          />
+        ) : (
+          <div className="cf-editor">
           {avatarEditing ? (
             /* ===== 头像编辑面板：点击头像进入；「完成」回写并返回信息表单 ===== */
             <AvatarEditor
@@ -415,22 +447,9 @@ export function PersonaEditor({
                 />
               </div>
 
-              <PersonaFolderField
-                personaId={editing?.id}
-                personaName={name}
-                value={workspace}
-                onChange={setWorkspace}
-              />
+              <PersonaFolderField personaId={editing?.id} value={workspace} onChange={setWorkspace} />
 
-              <div className="cf-field">
-                <label className="cf-field__label">{t('cf.fPrompt')}</label>
-                <textarea
-                  className="cf-textarea"
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  rows={5}
-                />
-              </div>
+              <PersonaPromptRow value={prompt} onOpen={openPrompt} />
 
               <div className="cf-editor__actions">
                 {/* propose：左=拒绝（不写+标记 rejected），右=接受（upsert+标记 accepted）；否则 取消/保存。 */}
@@ -448,6 +467,7 @@ export function PersonaEditor({
             </>
           )}
         </div>
+        )}
       </div>
     </div>
   )

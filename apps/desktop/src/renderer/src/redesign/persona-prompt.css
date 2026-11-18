@@ -1,0 +1,89 @@
+/*
+ * 角色编辑器的系统提示词（PersonaPrompt.tsx）：表单里收起的一行（同 .cf-input 高）与撑满弹窗的编辑页。
+ */
+.cf-promptrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.cf-promptrow:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+}
+.cf-promptrow__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-promptrow__text.is-empty {
+  color: var(--fg-subtle);
+}
+.cf-promptrow__count {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.cf-promptrow__chev {
+  flex-shrink: 0;
+  color: var(--fg-subtle);
+}
+
+/*
+ * 编辑页：沿用表单的 .cf-editor（同样的内边距）与 .cf-editor__actions（同样的按钮行），弹窗高度又已定格（见 PersonaEditor），
+ * 「取消 / 完成」与表单的「取消 / 保存」落在同一位置，切换时按钮不跳；不加横线（表单也没有）。字数在正文框左下。
+ */
+.cf-promptpage {
+  overflow: hidden;
+}
+/*
+ * 正文框吃掉剩余高度；它的底边到按钮与表单里提示词一行到按钮同为 24px（.cf-editor 的 16px 间距 + 按钮行 8px 上边距），
+ * 切换时框的底边不动。字数不占布局，浮在这 24px 的空当左侧（框下 4px），否则会把框顶高一截。
+ */
+.cf-promptpage__main {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.cf-promptpage__text {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13.5px;
+  line-height: 1.7;
+  resize: none;
+  outline: none;
+}
+.cf-promptpage__text:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.cf-promptpage__count {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  line-height: 16px;
+  font-size: 12px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
