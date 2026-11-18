@@ -243,16 +243,27 @@ function bodyHint(body: string): string {
 const INBAND_CONTEXT = /context[ _-]?(length|window)|prompt is too long|too many (input )?tokens|exceeds? (the )?(maximum )?context/i
 
 /**
+ * 带内错误里认作「连接中途断开」的句式：中转与上游之间的连接在回复到一半时断了，网关把它包成流里的错误发来
+ *（如「Codex: connection lost mid-reply (unexpectedEOF)」「stream disconnected before completion」）。
+ * 本质同本地断线，只是断在中转那一段。
+ */
+const INBAND_DISCONNECT =
+  /unexpected[ _-]?eof|connection (was )?(lost|reset|closed|aborted|terminated|interrupted|dropped)|(stream|upstream) (was )?(disconnected|closed|interrupted|terminated|reset)|disconnected before completion|premature close|socket hang up|other side closed|ECONNRESET|broken pipe|连接(已|被)?(中断|断开|丢失|重置|关闭)|上游(连接)?(已)?(中断|断开)/i
+
+/**
  * 带内错误（HTTP 200 之后在流里报的错：网关常把上游的 400 包成这样，如「Streaming response failed: [400]
  * This model's maximum context length is …」，issue #43）：正文认得出上下文超限 / 输出上限被拒的，与 HTTP 400
- * 同样归类，引擎的自愈（调小输出预算、压缩后重发）才用得上；其余照旧按 fallback（多为服务端错误）。
+ * 同样归类，引擎的自愈（调小输出预算、压缩后重发）才用得上；认得出是连接中途断开的，按可重试的网络错误处理，
+ * 引擎自动重连、重发本步（同本地断线）；其余照旧按 fallback（多为服务端错误）。
  */
 export function inbandError(text: string, fallback: NormalizedError): NormalizedError {
   const contextual =
     INBAND_CONTEXT.test(text) ||
     parseContextLimit(text) !== undefined ||
     parseContextOverflow(text) !== undefined
-  return contextual ? httpError(400, text) : fallback
+  if (contextual) return httpError(400, text)
+  if (INBAND_DISCONNECT.test(text)) return { kind: 'network', retryable: true, message: fallback.message }
+  return fallback
 }
 
 /** 解析 retry-after 头（秒数或 HTTP 日期）→ 毫秒；无效返回 undefined。 */
