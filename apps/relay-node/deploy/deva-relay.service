@@ -1,6 +1,5 @@
-# Deva 手机版中转 systemd 服务示例。
-# 复制到 /etc/systemd/system/deva-relay.service，按实际情况修改 node 路径与环境变量后：
-#   systemctl daemon-reload && systemctl enable --now deva-relay
+# Deva 手机版中转 systemd 服务（install.sh 会把 __NODE__ 换成服务器上 node 的路径后写入
+# /etc/systemd/system/deva-relay.service，每次部署都重写）。端口、证书等配置在 /etc/deva-relay/relay.env。
 # 查看日志：journalctl -u deva-relay -f
 
 [Unit]
@@ -12,14 +11,10 @@ Wants=network-online.target
 Type=simple
 User=deva-relay
 WorkingDirectory=/opt/deva-relay
-ExecStart=/usr/bin/node /opt/deva-relay/relay.cjs
-Environment=PORT=8787
-
-# 放在 Cloudflare 代理后面、由本程序直接提供 HTTPS 时（证书用 Cloudflare Origin CA），改用下面几行：
-# Environment=PORT=443
-# Environment=TLS_CERT=/etc/deva-relay/origin.pem
-# Environment=TLS_KEY=/etc/deva-relay/origin.key
-# AmbientCapabilities=CAP_NET_BIND_SERVICE
+EnvironmentFile=/etc/deva-relay/relay.env
+ExecStart=__NODE__ /opt/deva-relay/relay.cjs
+# 允许以普通用户监听 443 等低端口（relay.env 里 PORT=443 时用到）。
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 Restart=always
 RestartSec=3

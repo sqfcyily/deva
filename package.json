@@ -19,6 +19,7 @@
     "relay:deploy": "pnpm --filter @deva/desktop build:mobile && pnpm --filter @deva/relay run deploy",
     "relay:dev": "pnpm --filter @deva/desktop build:mobile && pnpm --filter @deva/relay run dev",
     "relay-node:build": "pnpm --filter @deva/desktop build:mobile && pnpm --filter @deva/relay-node run build",
+    "relay-node:deploy": "pnpm relay-node:build && pnpm --filter @deva/relay-node run deploy",
     "relay-node:start": "pnpm --filter @deva/relay-node run start"
   },
   "pnpm": {

@@ -356,6 +356,12 @@ pnpm relay:deploy     # build the phone web app and deploy the relay
 pnpm relay:dev        # run the relay locally (http://127.0.0.1:8787)
 ```
 
+The relay can also run on your own Linux server (Node.js version, not subject to the Workers request quota; see [apps/relay-node](apps/relay-node/README.md)). The server needs Node.js 20+ and systemd; one command builds, uploads, and installs or upgrades it:
+
+```bash
+pnpm relay-node:deploy root@<server>   # deploys over SSH; settings live in /etc/deva-relay/relay.env on the server
+```
+
 ```
 apps/desktop/src/
 ├── main/        main process: agent loop, tools, MCP, members, scheduler, IM integration

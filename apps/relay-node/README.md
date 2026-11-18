@@ -20,7 +20,9 @@ pnpm relay-node:build
 |---|---|
 | `relay.cjs` | 中转程序，已打包全部依赖，服务器上无需 `npm install` |
 | `public/` | 手机网页 |
-| `deva-relay.service` | systemd 服务示例 |
+| `deva-relay.service` | systemd 服务（node 路径由 `install.sh` 填入） |
+| `relay.env` | 默认配置，首次安装时复制为 `/etc/deva-relay/relay.env` |
+| `install.sh` | 在服务器上安装或升级 |
 
 手机网页与电脑端的协议版本（`WEB_PROTOCOL_VERSION`）须一致，协议升级后要重新构建并部署。
 
@@ -46,29 +48,27 @@ node relay.cjs
 
 ## 部署到 Linux 服务器（systemd）
 
-1. 创建运行用户和目录：
+服务器需要 Node.js 20 或以上与 systemd，本机需要 OpenSSH 客户端（Windows 10 及以上自带）。在项目根目录执行：
 
-   ```bash
-   sudo useradd --system --no-create-home --shell /usr/sbin/nologin deva-relay
-   sudo mkdir -p /opt/deva-relay/data
-   ```
+```bash
+pnpm relay-node:deploy root@<服务器地址>
+```
 
-2. 把 `dist/` 中的全部内容上传到服务器的 `/opt/deva-relay/`，然后设置数据目录的属主：
+该命令依次完成：构建、经 `scp` 上传到服务器的临时目录、经 `ssh` 执行 `install.sh`。首次执行时创建运行用户 `deva-relay`、程序目录 `/opt/deva-relay` 与配置文件 `/etc/deva-relay/relay.env`，注册并启动服务；之后执行时替换程序与手机网页并重启服务，`relay.env` 与 `data/` 保持不变。最后请求 `/healthz` 确认服务已启动，失败时输出最近的日志。重启期间电脑和手机会自动重连。
 
-   ```bash
-   sudo chown -R deva-relay:deva-relay /opt/deva-relay/data
-   ```
+服务器地址也可以不写在命令里，按以下顺序读取：
 
-3. 安装并启动服务。先按实际情况修改服务文件中的 node 路径（`which node`）与环境变量：
+1. 命令行参数，如 `root@1.2.3.4`，或 `~/.ssh/config` 中的 Host 别名；
+2. 环境变量 `RELAY_SSH`，端口用 `RELAY_SSH_PORT`；
+3. `apps/relay-node/deploy.json`（不纳入版本管理）：`{ "ssh": "root@1.2.3.4", "port": 22 }`。
 
-   ```bash
-   sudo cp /opt/deva-relay/deva-relay.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now deva-relay
-   journalctl -u deva-relay -f
-   ```
+登录用户不是 root 时须有 sudo 权限，`install.sh` 会自动改用 sudo，需要时在终端中输入密码。
 
-**升级**：替换 `relay.cjs` 和 `public/` 后执行 `sudo systemctl restart deva-relay`，不要改动 `data/`。重启期间电脑和手机会自动重连。
+**修改配置**：编辑服务器上的 `/etc/deva-relay/relay.env`（端口、证书等，变量含义见上文「运行」），然后执行 `sudo systemctl restart deva-relay`。
+
+**手动部署**：把 `dist/` 中的全部内容上传到服务器任意目录，执行 `sudo bash install.sh`，效果与上述命令相同。
+
+查看日志：`journalctl -u deva-relay -f`。
 
 ## 让电脑使用这台中转
 
@@ -82,7 +82,7 @@ node relay.cjs
 ## 放在 Cloudflare 代理后面
 
 1. 添加 DNS 记录指向服务器并开启代理（橙色云）。经代理的普通请求不计入 Workers 的请求额度。
-2. SSL/TLS 加密模式选「完全（严格）」（Full (strict)）。在「源服务器」（Origin Server）页面创建 Origin CA 证书，保存为 PEM 文件后配置到 `TLS_CERT` / `TLS_KEY`，`PORT` 设为 `443`（服务文件中有对应的注释行）。
+2. SSL/TLS 加密模式选「完全（严格）」（Full (strict)）。在「源服务器」（Origin Server）页面创建 Origin CA 证书，保存为 PEM 文件后在 `/etc/deva-relay/relay.env` 中配置 `TLS_CERT` / `TLS_KEY`，并将 `PORT` 设为 `443`（文件中有对应的注释行）。私钥须能被 `deva-relay` 用户读取。
 3. 服务器防火墙的 443 端口只放行 Cloudflare 的 IP 段（<https://www.cloudflare.com/ips/>），避免绕过 Cloudflare 直接访问。
 4. 服务器位于中国大陆时，域名须完成 ICP 备案，否则云厂商会拦截未备案域名的访问。
 

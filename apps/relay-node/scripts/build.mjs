@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url'
  * 打包成可直接部署的 dist/：
  *   relay.cjs           中转程序（已把 ws 打包进去，服务器上不需要 npm install）
  *   public/             手机网页（apps/desktop 构建出的 out/mobile）
- *   deva-relay.service  systemd 服务示例
+ *   deva-relay.service  systemd 服务（node 路径由 install.sh 填入）
+ *   relay.env           默认配置（首次安装时复制到 /etc/deva-relay/）
+ *   install.sh          在服务器上安装或升级（pnpm relay-node:deploy 会自动上传并执行）
  * 先在 apps/desktop 跑 `pnpm build:mobile`（根目录的 `pnpm relay-node:build` 会一起做）。
  */
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -33,5 +35,5 @@ await build({
   logLevel: 'warning'
 })
 cpSync(page, resolve(dist, 'public'), { recursive: true })
-cpSync(resolve(root, 'deploy/deva-relay.service'), resolve(dist, 'deva-relay.service'))
+for (const f of ['deva-relay.service', 'relay.env', 'install.sh']) cpSync(resolve(root, 'deploy', f), resolve(dist, f))
 console.log(`已构建到 ${dist}`)

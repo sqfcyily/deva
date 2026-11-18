@@ -347,6 +347,12 @@ pnpm relay:deploy     # 构建手机网页并部署中转
 pnpm relay:dev        # 本地调试中转（http://127.0.0.1:8787）
 ```
 
+也可以把中转部署到自己的 Linux 服务器（Node.js 版，不受 Workers 请求额度限制，详见 [apps/relay-node](apps/relay-node/README.md)）。服务器需要 Node.js 20 及以上与 systemd，一条命令完成构建、上传、安装或升级：
+
+```bash
+pnpm relay-node:deploy root@<服务器地址>   # 经 SSH 部署，配置在服务器的 /etc/deva-relay/relay.env
+```
+
 ## 支持项目
 
 Deva 免费开源。如果它对你有帮助，欢迎通过微信赞赏支持，款项用于官方远程服务与域名等运行费用。
