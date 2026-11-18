@@ -6,7 +6,8 @@ import { useToast } from '../components/ToastProvider'
 
 /*
  * 记忆标签墙的编辑逻辑，个人资料面板（全局记忆）使用。
- * 读写全走 memory:* IPC（root 省略即全局），与模型的 memory_* 工具同一套校验（单条字数 / 条数 / 总字数上限）；
+ * 读写全走 memory:* IPC（root 省略即全局），与模型的 memory_* 工具同一套校验（标题字数 / 条数 / 索引总字数上限）；
+ * 标签显示标题、行内只改标题（正文的查看与修改等界面对比稿，见 design/memory-v2-plan.html 第 10 节）；
  * 每次写操作回带最新快照，直接替换本地列表。面板开着时模型可能在后台写记忆 → 监听对话 done 再拉一次（不轮询）。
  */
 
@@ -128,8 +129,8 @@ export function useMemoryEditor({
   const saveEdit = async (): Promise<void> => {
     if (!editId) return
     const cur = mem?.entries.find((e) => e.id === editId)
-    if (!cur || editText.trim() === cur.content) return cancelEdit()
-    if (await run(() => window.deva.memory.write(editText, editId, root))) setEditId(null)
+    if (!cur || editText.trim() === cur.title) return cancelEdit()
+    if (await run(() => window.deva.memory.write({ title: editText }, editId, root))) setEditId(null)
   }
   // 删除先二次确认（记忆一旦删掉，Deva 就不再知道这件事）。
   const remove = async (id: string): Promise<void> => {
@@ -137,7 +138,7 @@ export function useMemoryEditor({
     if (!hit || pending) return
     const ok = await dialog.confirm({
       title: t('cf.profile.memDelete'),
-      message: fill(t('cf.profile.memDeleteConfirm'), { content: hit.content }),
+      message: fill(t('cf.profile.memDeleteConfirm'), { content: hit.title }),
       confirmText: t('cf.profile.memDelete'),
       variant: 'danger'
     })
@@ -161,7 +162,7 @@ export function useMemoryEditor({
   const errorText =
     error &&
     fill(t(`cf.profile.err.${error}`), {
-      max: mem?.maxChars ?? 0,
+      max: mem?.maxTitle ?? 0,
       entries: mem?.maxEntries ?? 0,
       budget: mem?.budget ?? 0
     })
@@ -174,12 +175,12 @@ export function useMemoryEditor({
       editId,
       editText,
       editBase,
-      maxChars: mem?.maxChars ?? 0,
+      maxChars: mem?.maxTitle ?? 0,
       pending,
       onEditText: setEditText,
       onStartEdit: (e, base) => {
         setEditId(e.id)
-        setEditText(e.content)
+        setEditText(e.title)
         setEditBase(base)
         setError(null)
       },

@@ -27,7 +27,9 @@ import { readMainTool, replyTaskTool, reportToMainTool, rootLabel } from './memb
 import { MEMBER_EXCLUDED, MEMBER_FOLDER_ONLY, UNATTENDED_EXCLUDED } from './tool-catalog'
 import { slashTokens } from '../../shared/slash'
 import { skillInvocationText } from './skill-invoke'
-import { memoryPromptSection } from './memory'
+import type { MemoryAccess, MemoryScope } from './memory'
+import { memoryPromptSection } from './memory-prompt'
+import { tidyPendingMemories } from './memory-tidy'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
 import { DEFAULT_PERSONA_ID, getPersona, resolvePersonaId } from './personas'
 import {
@@ -451,10 +453,9 @@ export async function runTurn(
       canPromptUser: !taskAsk && (trigger === 'desktop' || trigger === 'member'),
       // memory_write 撞上限时用本轮模型归纳旧记忆（定时任务记忆只读，用不到）。
       memoryModel: turnModel,
-      // 成员会话：全局记忆只读（用户本人的通用偏好由主角色记），项目私有记忆可写。
+      // 成员会话：浏览器交接由主对话提醒（记忆的读写方式见下方 memoryAccess）。
       ...(isMember
         ? {
-            globalMemoryReadonly: true,
             memberHandoff: {
               name: memberRef?.name ?? notifyTitle(sessionId),
               notify: (reason: string) => notifyPending(turnId, sessionId, { kind: 'browser', reason })
@@ -470,6 +471,23 @@ export async function runTurn(
     const persona = getPersona(rolePersonaId)
     // 没挂载工作区时的相对路径基准与 run_command 工作目录：本角色的默认工作区（见 role-home.ts）。
     ctx.homeDir = roleHome(rolePersonaId)
+    // 各层记忆的读写方式（方案 design/memory-v2-plan.html）：主对话全可写；项目成员全局与角色记忆只读（用户本人的偏好与
+    // 角色的经验由主对话里的角色来记）、项目记忆可写；定时任务等无人值守的回合全只读。
+    const memoryAccess: MemoryAccess = {
+      global: isMember || unattended ? 'ro' : 'rw',
+      role: { personaId: rolePersonaId, name: persona?.name ?? 'Deva', mode: isMember || unattended ? 'ro' : 'rw' },
+      project: unattended ? 'ro' : 'rw'
+    }
+    ctx.memoryAccess = memoryAccess
+    // 旧版记忆待整理时，后台用本轮模型补上类型与标题（不等它，见 memory-tidy.ts）。
+    tidyPendingMemories(
+      [
+        { kind: 'global' },
+        { kind: 'role', personaId: rolePersonaId },
+        ...(effectiveRoot ? [{ kind: 'project', root: effectiveRoot } as MemoryScope] : [])
+      ],
+      turnModel
+    )
     const workDir = { root: effectiveRoot, home: ctx.homeDir }
 
     // 提示缓存已过期：先把较早的大块工具结果换成占位（原文存文件，不调模型）。缓存反正要重建，此时改写历史
@@ -576,15 +594,15 @@ export async function runTurn(
             dir: workDir,
             folder: effectiveRoot ? rootLabel(effectiveRoot, mainRoot) : '未指定（需要时调用 mount_workspace 请用户选择，或使用绝对路径）',
             personas,
-            // 全局记忆只读；有文件夹时可读写该文件夹的项目私有记忆。
-            memory: memoryPromptSection({ writable: false, projectWritable: true, root: effectiveRoot }),
+            // 全局与角色记忆只读；有文件夹时可读写该文件夹的项目记忆。
+            memory: memoryPromptSection(memoryAccess, effectiveRoot),
             projectDoc
           })
         : unattended
         ? sealedSystemPrompt(
             workDir,
             personas,
-            memoryPromptSection({ writable: false, root: effectiveRoot }),
+            memoryPromptSection(memoryAccess, effectiveRoot),
             projectDoc,
             handoffOwner
               ? { owner: handoffOwner }
@@ -595,7 +613,7 @@ export async function runTurn(
         : systemPrompt(
             workDir,
             personas,
-            memoryPromptSection({ writable: true, root: effectiveRoot }),
+            memoryPromptSection(memoryAccess, effectiveRoot),
             projectDoc
           ),
       tools,

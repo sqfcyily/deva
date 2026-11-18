@@ -289,10 +289,19 @@ function flowObject(
     }
     if (typeof o.path === 'string' && o.path.trim()) return { text: shortPath(o.path), full: o.path }
     if (typeof o.url === 'string' && o.url.trim()) return { text: o.url, full: o.url }
-    // memory_write 的记忆正文：让用户在工具行上直接看到模型记了什么（写入对用户可见、可审计）。
-    const m = args as { content?: unknown; id?: unknown }
+    // memory_write 的记忆标题（旧版是一句话 content）：让用户在工具行上直接看到模型记了什么（写入对用户可见、可审计）；
+    // 悬停看正文。memory_read 带 ids 时写读了哪几条。
+    const m = args as { content?: unknown; id?: unknown; title?: unknown; body?: unknown; ids?: unknown }
+    if (typeof m.title === 'string' && m.title.trim()) {
+      const full = typeof m.body === 'string' && m.body.trim() ? `${m.title}\n${m.body}` : m.title
+      return { text: m.title, full }
+    }
     if (typeof m.content === 'string' && m.content.trim()) return { text: m.content, full: m.content }
     if (typeof m.id === 'string' && m.id.trim()) return { text: m.id, full: m.id }
+    if (Array.isArray(m.ids) && m.ids.length) {
+      const ids = m.ids.filter((x): x is string => typeof x === 'string').join('、')
+      if (ids) return { text: ids, full: ids }
+    }
   }
   return null
 }

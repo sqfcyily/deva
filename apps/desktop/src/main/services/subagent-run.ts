@@ -229,7 +229,9 @@ async function runSubagentLoop(
       // 子智能体恒跟随主对话（继承本轮模型与思考等级）。
       model,
       effort,
-      ctx: bg ? { workspaceRoot: ctx.workspaceRoot, homeDir: ctx.homeDir, signal: bg.signal } : ctx,
+      ctx: bg
+        ? { workspaceRoot: ctx.workspaceRoot, homeDir: ctx.homeDir, memoryAccess: ctx.memoryAccess, signal: bg.signal }
+        : ctx,
       controller: bg ?? controller,
       // 定时任务里派出的子智能体同受步数上限（主对话里为 undefined = 不限）。
       maxSteps,

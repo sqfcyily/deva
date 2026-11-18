@@ -1425,12 +1425,13 @@ const zhCN: MessageTree = {
       memClear: '清空全部记忆',
       memClearConfirm: '确定清空全部记忆吗？Deva 将忘记关于你的所有习惯与偏好，此操作不可撤销。',
       err: {
-        empty: '内容不能为空',
-        tooLong: '单条最多 {max} 字，请精简成一句话',
+        empty: '标题不能为空',
+        tooLong: '标题最多 {max} 字，请精简成一句话',
         full: '记忆已达 {entries} 条上限，请先删除或合并旧条目',
-        budget: '记忆总量已达 {budget} 字上限，请先精简、合并或删除旧条目',
+        budget: '记忆标题总量已达 {budget} 字上限，请先精简、合并或删除旧条目',
         notFound: '该记忆已不存在（可能刚被删除），列表已刷新',
-        duplicate: '已有内容相同的记忆，无需重复保存',
+        duplicate: '已有同标题的记忆，请改一个标题',
+        badType: '记忆类型无效',
         failed: '操作失败，请重试'
       }
     },
@@ -2939,12 +2940,13 @@ const en: MessageTree = {
       memClearConfirm:
         'Clear all memories? Deva will forget all your habits and preferences. This cannot be undone.',
       err: {
-        empty: 'Content cannot be empty',
-        tooLong: 'Each entry is limited to {max} characters — keep it to one sentence',
+        empty: 'Title cannot be empty',
+        tooLong: 'Titles are limited to {max} characters — keep it to one sentence',
         full: 'Memory is full ({entries} entries). Delete or merge old entries first',
         budget: 'Memory has reached its {budget}-character limit. Trim, merge or delete old entries first',
         notFound: 'This memory no longer exists (it may have just been deleted); list refreshed',
-        duplicate: 'An identical memory already exists — no need to save it again',
+        duplicate: 'A memory with this title already exists — use a different title',
+        badType: 'Invalid memory type',
         failed: 'Operation failed, please try again'
       }
     },

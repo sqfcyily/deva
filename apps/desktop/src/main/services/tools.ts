@@ -8,20 +8,8 @@ import ignore, { type Ignore } from 'ignore'
 import { resolveExecShell } from './exec-policy'
 import { spillLongOutput } from './tool-results'
 import { skillsDir, upsertSkill } from './skills'
-import {
-  deleteMemory,
-  formatMemoryLine,
-  listMemories,
-  scopeKindOfId,
-  scopeLabel,
-  GLOBAL_SCOPE,
-  MEMORY_BUDGET_CHARS,
-  MEMORY_MAX_CHARS,
-  PROJECT_MEMORY_BUDGET_CHARS,
-  type MemoryScope
-} from './memory'
-import { memoryDeletedRecord, memoryWrittenRecord } from './listing'
-import { writeMemoryWithConsolidation } from './memory-consolidate'
+import type { MemoryAccess } from './memory'
+import { MEMORY_TOOL_SPECS, memoryDeleteTool, memoryReadTool, memoryWriteTool } from './memory-tools'
 import type { CompactModelConfig } from './compaction'
 import { upsertServer, type McpValue } from './mcp-config'
 import {
@@ -284,57 +272,8 @@ const fullToolSpecs: ToolSpec[] = [
       required: ['name', 'instructions']
     }
   },
-  {
-    name: 'memory_read',
-    description:
-      '读取记忆，返回全部条目及其 id：全局记忆（用户本人的习惯/偏好），以及已挂载工作区时的项目私有记忆。' +
-      '记忆条目已由系统随对话消息附带，通常无需调用；仅当附带的条目被截断、或需要确认最新内容再更新/删除时使用。',
-    inputSchema: { type: 'object', properties: {} }
-  },
-  {
-    name: 'memory_write',
-    description:
-      '写入一条记忆，分两个作用域（scope）：' +
-      '`global`（新增时的默认）= 用户本人在所有项目都适用的稳定习惯/偏好/纠正（如「用户偏好用 pnpm 而非 npm」）；' +
-      '`project` = 仅在当前工作区有用、只属于用户本人的私有经验（如「本项目 e2e 测试须先启动 mock 服务（原因：否则全部超时）」），不入版本库，须已挂载工作区；' +
-      '用户纠正你的做法时务必记下，同样的错不应再犯第二次；你走了弯路才发现的项目坑（原因在环境、工具链或项目约定，而非你刚写错的代码）也应记下。' +
-      '**必须**在写本轮最终回复之前调用（先记再回复，回复里顺带告知），严禁写完回复再补记——回复之后的调用会让整段回复被界面收进过程里。' +
-      '两者都不是用来记通用知识或代码里能直接看出的内容的；团队共享的项目约定应写进 AGENTS.md（仅当用户要求时）。' +
-      '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增），更新时可省略 scope，按 id 前缀自动定位（m_ 为全局，p_ 为项目）。' +
-      `内容须是一句话（≤${MEMORY_MAX_CHARS} 字）：偏好与背景写成事实陈述，纠正与踩坑写成「做法 + 原因」；不得记录密码/密钥等敏感信息或一次性任务细节。` +
-      `总量上限：全局 ${MEMORY_BUDGET_CHARS} 字、项目 ${PROJECT_MEMORY_BUDGET_CHARS} 字；写满时系统会先自动归纳旧条目（合并相近、删除过时）再写入，结果里会说明。` +
-      '请始终用本工具写入记忆（会做去重与总量校验），不要用 write_file 等直接改记忆文件。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        content: { type: 'string', description: '要记住的一句话：事实陈述，或「做法 + 原因」。' },
-        scope: {
-          type: 'string',
-          enum: ['global', 'project'],
-          description:
-            '作用域：global（用户本人的通用偏好）或 project（当前工作区的私有经验）。新增时省略即 global；带 id 更新时省略即按 id 前缀定位。'
-        },
-        id: {
-          type: 'string',
-          description: '可选：要更新的已有记忆 id（如 m_1a2b3c4d / p_1a2b3c4d）；省略则新增。'
-        }
-      },
-      required: ['content']
-    }
-  },
-  {
-    name: 'memory_delete',
-    description:
-      '删除一条记忆（用户要求忘记、或该记忆已过时/与新偏好或代码现状矛盾时使用）。按 id 前缀自动定位作用域：m_ 为全局记忆，p_ 为当前工作区的项目私有记忆。' +
-      '同样**必须**在写本轮最终回复之前调用，严禁写完回复再补删。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: '要删除的记忆 id（如 m_1a2b3c4d / p_1a2b3c4d）。' }
-      },
-      required: ['id']
-    }
-  },
+  // 记忆：memory_read / memory_write / memory_delete（规格与执行见 memory-tools.ts）
+  ...MEMORY_TOOL_SPECS,
   {
     name: 'propose_agent',
     description:
@@ -616,10 +555,10 @@ export interface ToolContext {
    */
   memberHandoff?: MemberHandoff
   /**
-   * 全局记忆只读（项目成员的会话）：memory_write 只能写项目私有记忆（省略 scope 即项目），memory_delete 不能删全局条目。
-   * 用户本人的通用偏好由主角色记。
+   * 本轮各层记忆（全局 / 本角色 / 项目）的读写方式，见 memory.ts MemoryAccess：主对话全可写，项目成员全局与角色只读、
+   * 项目可写，定时任务全只读。缺省 = 不能用记忆（子智能体）。
    */
-  globalMemoryReadonly?: boolean
+  memoryAccess?: MemoryAccess
   /** 本轮的模型：memory_write 撞上限时用它把旧记忆归纳一遍再写（见 memory-consolidate.ts）；不传则按原样拒写。 */
   memoryModel?: CompactModelConfig
 }
@@ -1832,97 +1771,9 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
       summary: '已创建技能'
     }
   },
-  memory_read: async (_a, ctx) => {
-    const globals = listMemories(GLOBAL_SCOPE)
-    const out = ['【全局记忆】', ...(globals.length ? globals.map(formatMemoryLine) : ['（当前尚无全局记忆）'])]
-    let total = globals.length
-    if (ctx.workspaceRoot) {
-      const projects = listMemories({ kind: 'project', root: ctx.workspaceRoot })
-      total += projects.length
-      out.push(
-        '',
-        `【项目私有记忆】（${ctx.workspaceRoot}）`,
-        ...(projects.length ? projects.map(formatMemoryLine) : ['（当前项目尚无私有记忆）'])
-      )
-    } else {
-      out.push('', '（未挂载工作区，无项目私有记忆）')
-    }
-    return { content: out.join('\n'), summary: `${total} 条` }
-  },
-  memory_write: async (a, ctx) => {
-    const content = typeof a.content === 'string' ? a.content : ''
-    const id = typeof a.id === 'string' && a.id.trim() ? a.id.trim() : undefined
-    // 显式给了 scope 就按它；省略时新增默认全局，带 id 更新则按 id 前缀定位（同 memory_delete），
-    // 免得模型更新 p_ 条目时漏写 scope 被默认成 global 而误报不符。
-    const explicit = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
-    const kind = explicit ?? (id ? scopeKindOfId(id) : ctx.globalMemoryReadonly ? 'project' : 'global')
-    if (kind === 'global' && ctx.globalMemoryReadonly)
-      return {
-        content:
-          '你是项目成员，全局记忆（用户本人的通用偏好）对你只读，由主角色来记；你只能写当前文件夹的项目私有记忆（scope="project"）。',
-        summary: '未写入',
-        isError: true
-      }
-    if (kind === 'project' && !ctx.workspaceRoot)
-      return {
-        content: id
-          ? `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`
-          : '当前未挂载工作区，无法写入项目私有记忆：请改用 scope="global"（若确属用户本人的通用偏好），或请用户先挂载项目。',
-        summary: '未写入',
-        isError: true
-      }
-    if (id && scopeKindOfId(id) !== kind)
-      return {
-        content: `id ${id} 属于${scopeKindOfId(id) === 'project' ? '项目私有记忆（scope="project"）' : '全局记忆（scope="global"）'}，与所给 scope 不符：更新时可省略 scope，按 id 自动定位；如要换作用域，请删除原条目后在新作用域新增。`,
-        summary: '参数无效',
-        isError: true
-      }
-    const scope: MemoryScope =
-      kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
-    // 直调主进程 memory 服务（去重 + 总量预算在服务内校验）；撞上限时先自动归纳旧条目再写。
-    const w = await writeMemoryWithConsolidation(content, id, scope, ctx.memoryModel, ctx.signal)
-    const r = w.result
-    const c = w.consolidated
-    const note = c
-      ? `${scopeLabel(scope)}已写满，已自动归纳：${c.before.count} 条 / ${c.before.used} 字 → ${c.after.count} 条 / ${c.after.used} 字（归纳前的内容已备份到 ${c.backup}；变化会随下一条消息的【记忆更新】告知）。
-`
-      : ''
-    if (!r.ok)
-      return {
-        content: `${note}${r.error}${w.failure ? `（自动归纳未成功：${w.failure}）` : ''}`,
-        summary: '未写入',
-        isError: true
-      }
-    // 本结果即告知：挂上记录，记忆清单折叠时视这条为已告知，不再随后重复附带。
-    return {
-      content: `${note}${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}`,
-      summary: c ? '已归纳并记住' : r.created ? '已记住' : id ? '已更新' : '已存在',
-      listing: memoryWrittenRecord(r.entry)
-    }
-  },
-  memory_delete: async (a, ctx) => {
-    const id = typeof a.id === 'string' ? a.id.trim() : ''
-    if (!id) return { content: '缺少要删除的记忆 id', summary: '参数无效', isError: true }
-    const kind = scopeKindOfId(id)
-    if (kind === 'global' && ctx.globalMemoryReadonly)
-      return {
-        content: `${id} 是全局记忆，对项目成员只读，不能删除；需要删除请告诉用户由主角色处理。`,
-        summary: '未删除',
-        isError: true
-      }
-    if (kind === 'project' && !ctx.workspaceRoot)
-      return { content: `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`, summary: '未找到', isError: true }
-    const scope: MemoryScope =
-      kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
-    const removed = deleteMemory(id, scope)
-    if (!removed)
-      return { content: `不存在 id 为 ${id} 的记忆（可先用 memory_read 查看）`, summary: '未找到', isError: true }
-    return {
-      content: `已删除记忆：${formatMemoryLine(removed)}`,
-      summary: '已删除',
-      listing: memoryDeletedRecord(removed.id)
-    }
-  },
+  memory_read: memoryReadTool,
+  memory_write: memoryWriteTool,
+  memory_delete: memoryDeleteTool,
   propose_agent: async (a, _ctx) => {
     // 惰性工具：**不写任何东西**。草稿参数经 tool_call 事件的 args 到渲染层铸成名片，
     // 用户点「接受」后才走渲染层 personas:upsert 真正建角色（零提权）。

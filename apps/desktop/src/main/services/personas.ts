@@ -16,6 +16,7 @@ import { DEFAULT_PERSONAS, LEGACY_PROMPT_HASHES, type DefaultPersona } from './d
 import { fmScalar, fmString, parseFrontmatter } from './frontmatter'
 import { reassignTaskPersona } from './tasks'
 import { AUTO_SHAPE, legacyAutoShape } from '../../shared/avatar-shape'
+import { removeRoleMemory } from './memory'
 
 /**
  * Agent 提示词（Personas）服务：发现 / 解析 / 读写 `~/.deva/personas/<id>.md`（全局，与项目无关）。
@@ -363,6 +364,8 @@ export function deletePersona(id: string): void {
   }
   // 连自定义头像一起删：不留孤儿文件（旧版 makeId 会复用已删角色的 id，遗留的图曾挂到新角色脸上）。
   clearAvatarImage(id)
+  // 角色记忆随角色一起删（先备份到 personas/memory/memory-backups/，见 memory.ts）。
+  removeRoleMemory(id)
   // 绑定该角色的定时任务改由默认角色 Deva 执行（连同其独占对话），任务照常运行。
   reassignTaskPersona(id, DEFAULT_PERSONA_ID)
   // 从技能 / MCP 的可用角色里剔除；只给它用的那些改回所有角色并停用。

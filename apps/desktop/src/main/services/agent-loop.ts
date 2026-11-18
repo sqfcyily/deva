@@ -498,8 +498,9 @@ async function streamModelStep(run: LoopRun): Promise<ModelStep> {
       attachListing(history, (h) =>
         skillListingPart(modelMessages(h), enabledSkillSummaries(personaId, hasTool))
       )
-    if (listsMemory)
-      attachListing(history, (h) => memoryListingPart(modelMessages(h), ctx.workspaceRoot))
+    const memoryAccess = ctx.memoryAccess
+    if (listsMemory && memoryAccess)
+      attachListing(history, (h) => memoryListingPart(modelMessages(h), memoryAccess, ctx.workspaceRoot))
     // 项目成员名单：主对话的主轮，名单有增减或更新时附上（同技能清单）。有成员（含本对话的定时任务）时
     // 派任务 / 查状态才用得上：这两个按需加载的工具，用法还不在上下文里就随名单一并附上，免得调用时被拦。
     const listMembers = args.listMembers

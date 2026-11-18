@@ -280,23 +280,32 @@ export interface UserProfile {
   avatarImage: string
 }
 
-/** 记忆条目（全局 / 项目私有共用，与 services/memory.ts 对齐）。 */
+/** 记忆类型：user 用户 / feedback 做事方式 / project 进展 / reference 资料（与 services/memory.ts 对齐）。 */
+export type MemoryType = 'user' | 'feedback' | 'project' | 'reference'
+/** 记忆条目（全局 / 角色 / 项目共用，与 services/memory.ts 对齐）。 */
 export interface MemoryEntry {
   id: string
-  content: string
+  type: MemoryType
+  /** 一句话标题（进索引）。 */
+  title: string
+  /** 正文，可为空。 */
+  body: string
   createdAt: number
   updatedAt: number
 }
 export interface MemorySnapshot {
   entries: MemoryEntry[]
-  /** 当前总字数（与注入系统提示词同一口径）。 */
+  /** 当前索引总字数（与随消息下发同一口径）。 */
   used: number
-  /** 总字数上限：写入后超出即拒写。 */
+  /** 索引总字数上限：写入后超出即拒写。 */
   budget: number
   maxEntries: number
-  maxChars: number
+  maxTitle: number
+  maxBody: number
 }
-export type MemoryErrorCode = 'empty' | 'tooLong' | 'full' | 'budget' | 'notFound' | 'duplicate'
+/** 记忆作用域：省略 = 全局；字符串 = 该工作区的项目记忆；`{ personaId }` = 该角色的记忆。 */
+export type MemoryScopeArg = string | { personaId: string }
+export type MemoryErrorCode = 'empty' | 'tooLong' | 'full' | 'budget' | 'notFound' | 'duplicate' | 'badType'
 export type MemoryIpcResult = { ok: true; snapshot: MemorySnapshot } | { ok: false; code: MemoryErrorCode }
 
 /** Agent 提示词新建/更新入参（有 id 覆盖，无 id 新建）。 */
@@ -697,15 +706,20 @@ const api = {
   },
   /**
    * 记忆：查看 / 增改删 / 清空，与模型的 memory_* 工具同一套校验。
-   * 末位可选 root：省略 = 全局记忆（~/.deva/memory.json）；给出 = 该工作区的项目私有记忆（~/.deva/projects/<key>/）。
+   * 末位可选 scope：省略 = 全局记忆（~/.deva/memory.json）；字符串 = 该工作区的项目记忆（~/.deva/projects/<key>/）；
+   * `{ personaId }` = 该角色的记忆（~/.deva/personas/memory/<id>.json）。
    */
   memory: {
-    list: (root?: string): Promise<MemorySnapshot> => ipcRenderer.invoke('memory:list', root),
-    /** 无 id 新增，有 id 覆盖更新。 */
-    write: (content: string, id?: string, root?: string): Promise<MemoryIpcResult> =>
-      ipcRenderer.invoke('memory:write', content, id, root),
-    remove: (id: string, root?: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:delete', id, root),
-    clear: (root?: string): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:clear', root)
+    list: (scope?: MemoryScopeArg): Promise<MemorySnapshot> => ipcRenderer.invoke('memory:list', scope),
+    /** 无 id 新增（type、title 必填），有 id 更新（省略的字段保持原值）。 */
+    write: (
+      input: { type?: MemoryType; title?: string; body?: string },
+      id?: string,
+      scope?: MemoryScopeArg
+    ): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:write', input, id, scope),
+    remove: (id: string, scope?: MemoryScopeArg): Promise<MemoryIpcResult> =>
+      ipcRenderer.invoke('memory:delete', id, scope),
+    clear: (scope?: MemoryScopeArg): Promise<MemoryIpcResult> => ipcRenderer.invoke('memory:clear', scope)
   },
   /** Agent 提示词（全局 ~/.deva/personas）：列出 / 读取 / 新建更新 / 删除 / 启停。 */
   personas: {

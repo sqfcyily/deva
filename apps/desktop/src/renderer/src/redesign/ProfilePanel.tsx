@@ -225,7 +225,7 @@ function MemoryTag({
       }}
       className={`cf-me__tag${isEditing ? ' is-editing' : ''}${pop ? ' is-hot' : ''}`}
       style={style}
-      title={isEditing ? undefined : e.content}
+      title={isEditing ? undefined : e.body && e.body !== e.title ? `${e.title}\n\n${e.body}` : e.title}
       tabIndex={isEditing ? -1 : 0}
       onMouseEnter={showPop}
       onMouseLeave={hidePop}
@@ -277,7 +277,7 @@ function MemoryTag({
         />
       ) : (
         <>
-          <span className="cf-me__tagtext">{e.content}</span>
+          <span className="cf-me__tagtext">{e.title}</span>
           {pop &&
             createPortal(
               <span
@@ -570,7 +570,7 @@ function MemoryOrbit({
                 className="cf-me__tag"
                 style={slotStyle(i)}
               >
-                <span className="cf-me__tagtext">{e.content}</span>
+                <span className="cf-me__tagtext">{e.title}</span>
               </div>
             ))}
           </div>
