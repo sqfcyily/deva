@@ -447,6 +447,8 @@ export async function runTurn(
       signal: controller.signal,
       sessionId,
       canPromptUser: !taskAsk && (trigger === 'desktop' || trigger === 'member'),
+      // memory_write 撞上限时用本轮模型归纳旧记忆（定时任务记忆只读，用不到）。
+      memoryModel: turnModel,
       // 成员会话：全局记忆只读（用户本人的通用偏好由主角色记），项目私有记忆可写。
       ...(isMember
         ? {

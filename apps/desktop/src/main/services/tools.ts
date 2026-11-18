@@ -13,7 +13,7 @@ import {
   formatMemoryLine,
   listMemories,
   scopeKindOfId,
-  writeMemory,
+  scopeLabel,
   GLOBAL_SCOPE,
   MEMORY_BUDGET_CHARS,
   MEMORY_MAX_CHARS,
@@ -21,6 +21,8 @@ import {
   type MemoryScope
 } from './memory'
 import { memoryDeletedRecord, memoryWrittenRecord } from './listing'
+import { writeMemoryWithConsolidation } from './memory-consolidate'
+import type { CompactModelConfig } from './compaction'
 import { upsertServer, type McpValue } from './mcp-config'
 import {
   MAX_IMAGE_SOURCE_BYTES,
@@ -299,7 +301,7 @@ const fullToolSpecs: ToolSpec[] = [
       '两者都不是用来记通用知识或代码里能直接看出的内容的；团队共享的项目约定应写进 AGENTS.md（仅当用户要求时）。' +
       '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增），更新时可省略 scope，按 id 前缀自动定位（m_ 为全局，p_ 为项目）。' +
       `内容须是一句话（≤${MEMORY_MAX_CHARS} 字）：偏好与背景写成事实陈述，纠正与踩坑写成「做法 + 原因」；不得记录密码/密钥等敏感信息或一次性任务细节。` +
-      `总量上限：全局 ${MEMORY_BUDGET_CHARS} 字、项目 ${PROJECT_MEMORY_BUDGET_CHARS} 字，写满会被拒绝：此时请带 id 合并/精简相近条目或先 memory_delete 过时条目。` +
+      `总量上限：全局 ${MEMORY_BUDGET_CHARS} 字、项目 ${PROJECT_MEMORY_BUDGET_CHARS} 字；写满时系统会先自动归纳旧条目（合并相近、删除过时）再写入，结果里会说明。` +
       '请始终用本工具写入记忆（会做去重与总量校验），不要用 write_file 等直接改记忆文件。',
     inputSchema: {
       type: 'object',
@@ -611,6 +613,8 @@ export interface ToolContext {
    * 用户本人的通用偏好由主角色记。
    */
   globalMemoryReadonly?: boolean
+  /** 本轮的模型：memory_write 撞上限时用它把旧记忆归纳一遍再写（见 memory-consolidate.ts）；不传则按原样拒写。 */
+  memoryModel?: CompactModelConfig
 }
 
 export interface ToolResult {
@@ -1915,13 +1919,24 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
       }
     const scope: MemoryScope =
       kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
-    // 直调主进程 memory 服务（去重 + 总量预算在服务内校验）。
-    const r = writeMemory(content, id, scope)
-    if (!r.ok) return { content: r.error, summary: '未写入', isError: true }
+    // 直调主进程 memory 服务（去重 + 总量预算在服务内校验）；撞上限时先自动归纳旧条目再写。
+    const w = await writeMemoryWithConsolidation(content, id, scope, ctx.memoryModel, ctx.signal)
+    const r = w.result
+    const c = w.consolidated
+    const note = c
+      ? `${scopeLabel(scope)}已写满，已自动归纳：${c.before.count} 条 / ${c.before.used} 字 → ${c.after.count} 条 / ${c.after.used} 字（归纳前的内容已备份到 ${c.backup}；变化会随下一条消息的【记忆更新】告知）。
+`
+      : ''
+    if (!r.ok)
+      return {
+        content: `${note}${r.error}${w.failure ? `（自动归纳未成功：${w.failure}）` : ''}`,
+        summary: '未写入',
+        isError: true
+      }
     // 本结果即告知：挂上记录，记忆清单折叠时视这条为已告知，不再随后重复附带。
     return {
-      content: `${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}`,
-      summary: r.created ? '已记住' : id ? '已更新' : '已存在',
+      content: `${note}${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}`,
+      summary: c ? '已归纳并记住' : r.created ? '已记住' : id ? '已更新' : '已存在',
       listing: memoryWrittenRecord(r.entry)
     }
   },

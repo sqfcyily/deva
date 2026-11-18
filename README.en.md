@@ -307,6 +307,8 @@ Servers are configured in `~/.deva/mcp.json` using the Claude Desktop `mcpServer
 
 Each entry is at most 300 characters. Preferences are written as statements of fact; corrections and lessons as "what to do + why". Project memory stays on your machine and never enters the repository.
 
+When memory is full, the next write by the model first consolidates the existing entries with the conversation's model: entries on the same topic are merged, outdated or superseded ones are removed, and the total is brought down to about 70% of capacity before the new entry is written. The previous entries are backed up to `memory-backups/` next to the memory file (the last 5 are kept); if consolidation fails, memory is left unchanged and the write is rejected. Adding a memory by hand in the UI still reports that memory is full instead of consolidating.
+
 ## Security Model
 
 > [!WARNING]
