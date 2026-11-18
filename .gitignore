@@ -27,8 +27,5 @@ Thumbs.db
 .env.*
 !.env.example
 
-#files
-AGENTS.md
-
 # Design mockups
 design/
