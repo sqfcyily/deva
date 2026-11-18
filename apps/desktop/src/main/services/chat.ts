@@ -149,6 +149,8 @@ function deleteTurns(s: StoredSession, turnIndices: number[]): void {
   const ranges = turnRanges(s.messages)
   const del = new Set(turnIndices.filter((k) => Number.isInteger(k) && k >= 0 && k < ranges.length))
   if (del.size === 0) return
+  // 实测输入量描述的是删轮前的长历史，留着会让下一轮误触发压缩、上下文占用也显示旧值；清掉即回落字符估算。
+  s.lastInputTokens = undefined
 
   const old = s.messages
   // 压缩摘要不随轮删除：它概括的是此前全部内容（两轮之间的摘要落在上一轮的区间末尾，轮内的在本轮中间），
