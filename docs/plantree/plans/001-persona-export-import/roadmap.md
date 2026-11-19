@@ -6,8 +6,9 @@
 - 六问批复落决策（2026-11-19）→ [decisions/001-bundle-basics.md](decisions/001-bundle-basics.md)、[decisions/002-bundle-scope.md](decisions/002-bundle-scope.md)
 - v2 能力包设计定稿（2026-11-19）→ [topics/export-import-design.md](topics/export-import-design.md)
 - 实现 + 提交（2026-11-19）：feat c42f180（persona-port.ts 新模块、personas.ts 助手/簿记/级联、atomic-write 二进制重载、IPC+preload 桥、Rail/AddMenu 入口、i18n）；docs 55b57c7（本方案树）
-- 验证（2026-11-19）：typecheck 双侧 + build 通过；electron 桩冒烟 4 案全绿（导出含内置拒绝 / 回环+同包更新 / 冲突铸新 id / originalId=general 硬闸+坏 manifest）；隔离 user-data-dir+DEVA_HOME 真机启动，CDP 验证桥函数在位、种子正常（原生对话框路径无法脚本化，留手工）
-- llmdoc 同步（2026-11-19）：capabilities/skills-personas.mdx 补角色包契约，提交 dfc012b + d4f0b64，概念路由第一名命中
+- 验证（2026-11-19）：typecheck 双侧 + build 通过；electron 桩冒烟 6 案全绿（导出含内置拒绝 / 回环+同包更新 / 冲突铸新 id / originalId=general 硬闸+坏 manifest / **删除级联：簿记+头像+知识库随删，再导入为全新** / **缺秘密导出：包成功+警告列出字段**）；隔离 user-data-dir+DEVA_HOME 真机启动，CDP 验证桥函数在位、种子正常（原生对话框路径无法脚本化，留手工）
+- 冒烟揪出的缺口已修（2026-11-19）：删除级联漏清知识库目录（档 0 遗留行为，随本功能收编）→ fix a65e049；llmdoc 级联描述同步 → docs 3a073e3
+- llmdoc 同步（2026-11-19）：capabilities/skills-personas.mdx 补角色包契约，baseline 已前进到 ca748a3
 
 ## In Progress
 
