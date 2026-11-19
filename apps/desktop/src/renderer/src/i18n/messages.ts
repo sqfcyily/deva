@@ -235,19 +235,15 @@ const zhCN: MessageTree = {
       onHint: '开启思考（该模型无法设置思考等级）',
       unsupported: '不支持'
     },
-    // 输入框模型面板：上下文占用 + 模型 / 思考等级入口（redesign/ModelPanel.tsx）
+    // 输入框模型面板：上下文占用 + 模型列表 + 思考等级（redesign/ModelPanel.tsx）
     panel: {
-      context: '上下文',
+      context: '上下文容量',
       approx: '约 {n}',
-      used: '已用 {used} / 窗口 {window}',
-      left: '再用约 {n} 后自动压缩较早的对话',
+      usage: '{used}/{window} ({pct})',
       soon: '下次发送时会先自动压缩较早的对话',
       over: '已超出这个模型的窗口，下次发送时会先自动压缩较早的对话',
       estimated: '估算值，下次发送后按实际用量更新',
-      autoCompact: '自动压缩',
-      empty: '发送第一条消息后显示上下文占用',
-      allProviders: '全部服务商',
-      providers: '服务商'
+      autoCompact: '自动压缩'
     },
     empty: '有什么可以帮你？',
     emptyHint: '描述任务，Deva 会读写项目文件、按需请求授权来完成。',
@@ -1767,15 +1763,11 @@ const en: MessageTree = {
     panel: {
       context: 'Context',
       approx: '~{n}',
-      used: '{used} of {window} used',
-      left: 'Older messages are compacted after about {n} more',
+      usage: '{used} / {window} ({pct})',
       soon: 'Older messages will be compacted before the next request',
       over: "Exceeds this model's window; older messages will be compacted before the next request",
       estimated: 'Estimated; updates with actual usage after the next message',
-      autoCompact: 'Auto-compact',
-      empty: 'Context usage appears after the first message',
-      allProviders: 'All providers',
-      providers: 'Providers'
+      autoCompact: 'Auto-compact'
     },
     empty: 'How can I help?',
     emptyHint: 'Describe a task; Deva reads and writes project files, asking permission as needed.',

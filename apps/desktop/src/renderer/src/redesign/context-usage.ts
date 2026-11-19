@@ -72,11 +72,11 @@ export function usageRatio(u: ContextUsage): number {
 }
 
 /**
- * 百分比文字（不加「约」）：最多 100%（换到窗口小的模型时读数可能超过窗口，下次发送会先压缩）；
- * 用量不足 1% 但非零时写 <1%，免得一个新对话显示 0%。
+ * 百分比文字（不加「约」），一位小数：19.9%。最多 100%（换到窗口小的模型时读数可能超过窗口，
+ * 下次发送会先压缩）；用量不足 0.1% 但非零时写 <0.1%，免得显示成 0%。
  */
 export function usagePercent(u: ContextUsage): string {
   if (u.used == null || u.window <= 0) return ''
   const p = (u.used / u.window) * 100
-  return p > 0 && p < 1 ? '<1%' : `${Math.min(100, Math.round(p))}%`
+  return p > 0 && p < 0.1 ? '<0.1%' : `${Number(Math.min(100, p).toFixed(1))}%`
 }

@@ -1,7 +1,7 @@
 /*
- * 输入框模型面板（ModelPanel.tsx / ModelMenu.tsx）。贴片沿用 app.css 的 .chip，菜单项沿用 .model-pick__item /
- * __group-head / __dot / __name / __check。外壳 .cf-mp__pop 只负责定位、不裁切：二级菜单从它向左弹出，
- * 放在会滚动（overflow）的容器里会被裁掉；需要滚动的只是二级菜单里的列表 .cf-mp__list。
+ * 输入框模型面板（ModelPanel.tsx / ModelMenu.tsx）。贴片沿用 app.css 的 .chip，模型列表沿用 .model-pick__group /
+ * __group-head / __item / __dot / __name / __check。面板一层到底：占用、模型列表、思考等级上下排开，
+ * 只有中间的模型列表 .cf-mp__list 滚动，占用与思考等级始终可见。
  */
 
 /* ---------- 贴片 ---------- */
@@ -21,33 +21,27 @@
 }
 
 /* ---------- 面板 ---------- */
-.cf-mp__pop {
+.cf-mp__panel {
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
   z-index: 50;
-  text-align: left;
-}
-.cf-mp__panel,
-.cf-mp__sub {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  max-height: min(560px, 80vh);
   padding: 5px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-elevated);
   box-shadow: var(--shadow);
-}
-.cf-mp__panel {
-  width: 280px;
+  text-align: left;
 }
 
-/* 上半部分：上下文占用 */
+/* 顶部：上下文容量。一行「标题 …… 已用/窗口 (百分比)」+ 进度条，有事要说明时再加一行 */
 .cf-mp__usage {
-  padding: 8px 9px 10px;
-}
-.cf-mp__empty {
-  padding: 10px 9px;
-  font-size: 12.5px;
-  color: var(--fg-subtle);
+  flex-shrink: 0;
+  padding: 8px 9px 9px;
 }
 .cf-mp__top {
   display: flex;
@@ -60,10 +54,11 @@
   font-weight: 600;
   color: var(--fg-muted);
 }
+/* 标题右侧的「已用/窗口 (百分比)」：浅色小字，同思考等级的说明 */
 .cf-mp__big {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
 }
 .cf-mp__bar {
@@ -78,7 +73,7 @@
   height: 100%;
   border-radius: inherit;
 }
-/* 自动压缩的位置：一道竖线，下方标注（文字右缘对齐竖线） */
+/* 自动压缩的位置：一道竖线，悬停提示写「自动压缩」（::before 把可悬停范围左右各放宽 5px） */
 .cf-mp__tick {
   position: absolute;
   top: -3px;
@@ -88,127 +83,30 @@
   border-radius: 1px;
   background: var(--fg-subtle);
 }
-.cf-mp__ticklabel {
-  position: relative;
-  height: 15px;
-  margin-top: 3px;
-  font-size: 11px;
-  color: var(--fg-subtle);
-}
-.cf-mp__ticklabel span {
+.cf-mp__tick::before {
+  content: '';
   position: absolute;
-  top: 0;
-  transform: translateX(-100%);
-  padding-right: 4px;
-  white-space: nowrap;
-}
-.cf-mp__line {
-  margin-top: 4px;
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--fg);
-  font-variant-numeric: tabular-nums;
+  inset: -2px -5px;
 }
 .cf-mp__note {
+  margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
   color: var(--fg-subtle);
 }
 
-/* 下半部分：「模型」「思考等级」两行入口 */
-.cf-mp__rows {
-  padding-top: 4px;
-  border-top: 1px solid var(--border);
-}
-.cf-mp__row.is-on {
-  background: var(--bg-hover);
-}
-.cf-mp__row.is-disabled {
-  color: var(--fg-subtle);
-  cursor: default;
-}
-.cf-mp__row.is-disabled:hover {
-  background: transparent;
-}
-.cf-mp__icon {
-  flex-shrink: 0;
-  color: var(--fg-muted);
-}
-.cf-mp__key {
-  flex-shrink: 0;
-}
-.cf-mp__val {
-  flex: 1;
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  font-size: 12.5px;
-  font-weight: 400;
-  color: var(--fg-subtle);
-}
-.cf-mp__valtext {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ---------- 二级菜单：贴着面板左侧、与面板底边对齐（两行入口在面板底部），向左弹出 ---------- */
-.cf-mp__sub {
-  position: absolute;
-  right: calc(100% + 6px);
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  width: 272px;
-  max-height: min(380px, 70vh);
-}
-/* 面板左侧放不下（窗口太窄）：盖在面板上 */
-.cf-mp__pop.is-narrow .cf-mp__sub {
-  right: 0;
-  z-index: 1;
-}
+/* 中间：模型列表，按服务商分组平铺；只有这一段滚动。position 供 ModelMenu 按 offsetTop 定位当前模型 */
 .cf-mp__list {
+  position: relative;
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
 }
-.cf-mp__subtitle {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--fg-subtle);
+/* 上面有容量一段时才画分隔线（模型已删时那一段不显示） */
+.cf-mp__usage + .cf-mp__list {
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
 }
-.cf-mp__back {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  padding: 6px 8px;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 12.5px;
-  text-align: left;
-  cursor: pointer;
-}
-.cf-mp__back:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
-}
-.cf-mp__sep {
-  flex-shrink: 0;
-  height: 1px;
-  margin: 4px 0;
-  background: var(--border);
-}
-/* 服务商行：当前模型所在的服务商名用主题色 */
-.cf-mp__prov.has-cur .model-pick__name {
-  color: var(--accent);
-  font-weight: 600;
-}
-.cf-mp__count,
 .cf-mp__win {
   flex-shrink: 0;
   font-size: 11.5px;
@@ -216,25 +114,63 @@
   color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
 }
-.cf-mp__chev {
-  flex-shrink: 0;
-  color: var(--fg-subtle);
-}
 /* 勾选位固定宽度，未选中的行窗口数字也对齐 */
 .cf-mp__check {
   display: inline-flex;
   flex-shrink: 0;
   width: 14px;
 }
-/* 思考等级菜单项：档位名 + 一行说明 */
-.cf-mp__lv {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
+
+/* 底部：思考等级。标题 + 一行说明（悬停档 / 当前档，放不下省略），下面一排档位，放不下换行 */
+.cf-mp__effort {
+  flex-shrink: 0;
+  margin-top: 4px;
+  padding: 7px 4px 4px;
+  border-top: 1px solid var(--border);
 }
-.cf-mp__hint {
+.cf-mp__efhead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 5px;
+}
+.cf-mp__efhead .cf-mp__title {
+  flex-shrink: 0;
+}
+.cf-mp__efhint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
   font-size: 11.5px;
-  font-weight: 400;
   color: var(--fg-subtle);
-  white-space: normal;
+}
+.cf-mp__segs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 7px;
+}
+.cf-mp__seg {
+  flex: 1 0 auto;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+.cf-mp__seg:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.cf-mp__seg.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
 }
