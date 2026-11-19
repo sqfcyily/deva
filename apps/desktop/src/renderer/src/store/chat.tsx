@@ -372,8 +372,10 @@ interface ChatContextValue {
   deleteSession: (id: string) => void
   /** 重命名对话（立即落库）；title 为空即恢复自动标题（由首条用户消息派生）。不改列表顺序。 */
   renameSession: (id: string, title: string) => void
-  /** 归档 / 取消归档对话（立即落库）。不改列表顺序；在已归档的对话里发消息会由主进程自动取消归档。 */
-  setArchived: (id: string, archived: boolean) => void
+  /**
+   * 归档 / 取消归档对话（立即落库），可一次传多个。不改列表顺序；在已归档的对话里发消息会由主进程自动取消归档。
+   */
+  setArchived: (id: string | string[], archived: boolean) => void
   /**
    * 批量删除对话（删除角色时一并清理其名下历史）。一次性中止各自在跑回合、逐条落盘删除、清绑定
    * 覆盖层，最后只刷新一次列表；若当前会话在其中，则切到最近一条或起新会话。空数组为无操作。
@@ -2138,22 +2140,29 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
 
     // 归档 / 取消归档：先就地改标记（列表立刻移走 / 移回），再落盘；失败（尚未建档）则以主进程清单为准。
     // 归档的是当前对话：右侧随之离开，与删除一样打开列表第一条。归档即清掉它的未读（取消归档也不恢复）。
-    const setArchived = (id: string, archived: boolean): void => {
+    // 一次归档多个时整批一起算：当前对话在其中的话，接着打开的是这一批之外的第一条。
+    const setArchived = (id: string | string[], archived: boolean): void => {
+      const ids = new Set(typeof id === 'string' ? [id] : id)
+      if (ids.size === 0) return
       setSessions((list) =>
-        list.map((s) => (s.id === id ? { ...s, archived: archived || undefined } : s))
+        list.map((s) => (ids.has(s.id) ? { ...s, archived: archived || undefined } : s))
       )
       if (archived)
         setUnread((prev) => {
-          if (!prev.has(id)) return prev
+          if (![...ids].some((x) => prev.has(x))) return prev
           const next = new Set(prev)
-          next.delete(id)
+          for (const x of ids) next.delete(x)
           return next
         })
-      if (archived && id === sessionIdRef.current)
-        openFirstSession(sessions.filter((s) => s.id !== id))
+      if (archived && ids.has(sessionIdRef.current))
+        openFirstSession(sessions.filter((s) => !ids.has(s.id)))
       void (async () => {
-        const r = await window.deva.chat.setArchived({ sessionId: id, archived })
-        if (!r.ok) void refreshSessions()
+        let failed = false
+        for (const sessionId of ids) {
+          const r = await window.deva.chat.setArchived({ sessionId, archived })
+          if (!r.ok) failed = true
+        }
+        if (failed) void refreshSessions()
       })()
     }
 

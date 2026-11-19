@@ -13,6 +13,8 @@ import {
   Folder,
   FolderMinus,
   Globe,
+  Check,
+  ListChecks,
   ListFilter,
   MessageCircle,
   Pencil,
@@ -44,7 +46,8 @@ import {
   useHoverMenu,
   Avatar
 } from './shell-common'
-import { ContextMenu } from './ContextMenu'
+import { type CtxEntry, ContextMenu } from './ContextMenu'
+import { ThreadSelectBar, useThreadBatch, useThreadSelect } from './ThreadSelect'
 import { memberPersona } from './MemberBar'
 import { useDraftPreview } from './Composer'
 
@@ -172,6 +175,8 @@ export function IconRail({
 type RowMenu =
   | { x: number; y: number; kind: 'thread'; id: string; title: string; archived: boolean }
   | { x: number; y: number; kind: 'persona'; id: string; name: string }
+  /** 多选时右键对话行：对选中的对话批量操作。 */
+  | { x: number; y: number; kind: 'select' }
 
 /* ============================ 左栏：列表列（对话 / 角色） ============================ */
 /** 对话列表的一项筛选条件：角色 id，或挂载文件夹路径（NO_FOLDER = 未挂载文件夹）。 */
@@ -181,6 +186,8 @@ interface ConvFilter {
 }
 
 const NO_FOLDER = ''
+
+const NO_SESSIONS: SessionMeta[] = []
 
 const folderKeyOf = (s: SessionMeta): string => s.focusRoot || NO_FOLDER
 
@@ -447,6 +454,56 @@ export function Rail({
     )
   }, [personas, q])
 
+  // 多选（右键某条对话进入，见 ThreadSelect.tsx）：范围是此刻列出的对话——对话列表（搜索 / 筛选之后）或已归档对话。
+  const listed = tab === 'chats' ? (archiveView ? archivedSessions : ordered) : NO_SESSIONS
+  const listedIds = useMemo(() => listed.map((s) => s.id), [listed])
+  const select = useThreadSelect(listedIds)
+  const batch = useThreadBatch(select, listed, sessionStates)
+  // 换到角色 tab、进出已归档对话、浮出的列表收回：都退出多选（选的是另一份列表了）。
+  const exitSelect = select.exit
+  useEffect(() => exitSelect(), [tab, archiveView, exitSelect])
+  useEffect(() => {
+    if (collapsed && !peek) exitSelect()
+  }, [collapsed, peek, exitSelect])
+  // 右键菜单里的「多选」（对话列表与已归档对话都有）。
+  const multiSelectItem = (id: string): CtxEntry => ({
+    label: t('cf.multiSelect'),
+    icon: <ListChecks size={14} />,
+    onClick: () => select.start(id)
+  })
+  // 多选时的右键菜单：与底部操作条同样的几项，带上选中的数量。
+  const withCount = (label: string): string =>
+    locale === 'en' ? `${label} (${batch.count})` : `${label}（${batch.count}）`
+  const selectMenuItems = (): CtxEntry[] => [
+    archiveView
+      ? {
+          label: withCount(t('cf.unarchive')),
+          icon: <ArchiveRestore size={14} />,
+          disabled: batch.count === 0,
+          onClick: batch.unarchive
+        }
+      : {
+          label: withCount(t('cf.archive')),
+          icon: <Archive size={14} />,
+          disabled: batch.count === 0,
+          onClick: batch.archive
+        },
+    {
+      label: withCount(t('cf.deleteChat')),
+      icon: <Trash2 size={14} />,
+      danger: true,
+      disabled: batch.count === 0,
+      onClick: batch.remove
+    },
+    { kind: 'separator' },
+    {
+      label: t(batch.allOn ? 'cf.selectNone' : 'cf.selectAll'),
+      icon: <ListChecks size={14} />,
+      onClick: select.toggleAll
+    },
+    { label: t('cf.selectExit'), icon: <X size={14} />, onClick: select.exit }
+  ]
+
   const clearDrag = (): void => {
     setDragId(null)
     setDropTarget(null)
@@ -482,9 +539,16 @@ export function Rail({
       browserPages={browserPages[s.id] ?? 0}
       tasks={tasksBySession[s.id] ?? []}
       active={s.id === currentSessionId}
-      onClick={() => onOpenThread(s.id)}
+      picked={select.active ? select.selected.has(s.id) : undefined}
+      // 多选时点对话行是勾选 / 取消，不打开对话；右键出批量操作的菜单——右键的那条还没勾上就先勾上（同文件管理器）。
+      onClick={() => (select.active ? select.toggle(s.id) : onOpenThread(s.id))}
       onContext={(e) => {
         e.preventDefault()
+        if (select.active) {
+          if (!select.selected.has(s.id)) select.toggle(s.id)
+          setMenu({ x: e.clientX, y: e.clientY, kind: 'select' })
+          return
+        }
         setMenu({
           x: e.clientX,
           y: e.clientY,
@@ -701,14 +765,22 @@ export function Rail({
         )}
       </div>
 
+      {/* 多选操作条：贴在列表底部，列表照常滚动。 */}
+      {select.active && tab === 'chats' && (
+        <ThreadSelectBar select={select} batch={batch} total={listed.length} archivedView={archiveView} />
+      )}
+
       {menu && (
         <ContextMenu
           x={menu.x}
           y={menu.y}
           onClose={() => setMenu(null)}
           items={
-            menu.kind === 'thread' && menu.archived
+            menu.kind === 'select'
+              ? selectMenuItems()
+              : menu.kind === 'thread' && menu.archived
               ? [
+                  multiSelectItem(menu.id),
                   {
                     label: t('cf.unarchive'),
                     icon: <ArchiveRestore size={14} />,
@@ -733,6 +805,7 @@ export function Rail({
                     icon: <Pencil size={14} />,
                     onClick: () => onRenameThread(menu.id, menu.title)
                   },
+                  multiSelectItem(menu.id),
                   {
                     label: t('cf.archive'),
                     icon: <Archive size={14} />,
@@ -1019,9 +1092,12 @@ function ThreadRow({
   browserPages,
   tasks,
   active,
+  picked,
   onClick,
   onContext
 }: {
+  /** 多选时这一行是否勾上；不在多选状态为 undefined（不画勾选框）。 */
+  picked?: boolean
   session: SessionMeta
   owner?: Persona
   /** 成员的显示身份（未移除的，按加入先后）：有成员时头像换成群组头像（GroupFace）。 */
@@ -1047,7 +1123,10 @@ function ThreadRow({
   const members = (session.members ?? []).filter((m) => !m.removed)
   return (
     <button
-      className={`cf-thread${active ? ' is-active' : ''}`}
+      // 多选时不标「当前对话」，行底色只表示勾没勾上。
+      className={`cf-thread${picked === undefined ? (active ? ' is-active' : '') : picked ? ' is-picked' : ''}`}
+      role={picked === undefined ? undefined : 'checkbox'}
+      aria-checked={picked}
       onClick={onClick}
       onContextMenu={onContext}
     >
@@ -1072,6 +1151,12 @@ function ThreadRow({
             attention={!active && !session.archived && state?.attention}
             unread={!active && !session.archived && state?.unread}
           />
+        )}
+        {/* 多选的勾选框：压在头像右下角，不挤占行内布局，进出多选时列表不跳。 */}
+        {picked !== undefined && (
+          <span className="cf-thread__pick" aria-hidden="true">
+            {picked && <Check size={11} strokeWidth={3} />}
+          </span>
         )}
       </span>
       <div className="cf-thread__main">

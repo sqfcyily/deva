@@ -784,6 +784,77 @@ body.cf-resizing-y * {
 :root[data-theme='dark'] .cf-thread.is-active {
   --row-bg: color-mix(in srgb, var(--bg-panel), var(--accent) 20%);
 }
+/* 多选（见 ThreadSelect.tsx）：勾上的行铺主题色底；勾选框是压在头像右下角的小圆，外圈一道行底色的环与头像隔开 */
+.cf-thread.is-picked {
+  background: var(--bg-selected);
+  --row-bg: color-mix(in srgb, var(--bg-panel), var(--accent) 12%);
+}
+:root[data-theme='dark'] .cf-thread.is-picked {
+  --row-bg: color-mix(in srgb, var(--bg-panel), var(--accent) 20%);
+}
+.cf-thread__pick {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  z-index: 2;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--bg-panel);
+  box-shadow: 0 0 0 2px var(--row-bg);
+  display: grid;
+  place-items: center;
+  color: #fff;
+}
+.cf-thread.is-picked .cf-thread__pick {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+/* 多选操作条：贴在对话列表底部。左边已选数量与全选，右边归档 / 删除 / 退出 */
+.cf-railsel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.cf-railsel__count {
+  color: var(--fg-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.cf-railsel__all {
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cf-railsel__all:hover {
+  background: var(--bg-hover);
+}
+.cf-railsel__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 2px;
+}
+.cf-railsel .cf-iconbtn:disabled,
+.cf-railsel__all:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.cf-railsel .cf-iconbtn:disabled:hover {
+  background: transparent;
+  color: var(--fg-subtle);
+}
+.cf-railsel__danger:not(:disabled):hover {
+  color: var(--danger);
+}
 /* 群组头像（有成员的对话）：两人左右堆叠、三人三角排布、四人 2×2 稍微堆叠、更多时第 4 枚写 +N（GroupFace） */
 .cf-thread__face {
   position: relative;
