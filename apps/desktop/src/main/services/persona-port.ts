@@ -1,6 +1,6 @@
 import { app, dialog, ipcMain, type BrowserWindow } from 'electron'
 import { createHash } from 'crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { isAbsolute, join, resolve, sep } from 'path'
 import { unzipSync, zipSync, type Unzipped } from 'fflate'
 import { writeFileAtomic } from './atomic-write'
@@ -14,8 +14,9 @@ import {
   personasDir,
   readImportsMap,
   readPersonaMdRaw,
-  upsertPersona,
+  setPersonaEnabled,
   writeImportsEntry,
+  writePersonaMdRaw,
   type PersonaImportProvenance
 } from './personas'
 import { clearAvatarImage, readAvatarImage, writeAvatarImage } from './avatar-image'
@@ -145,10 +146,12 @@ function collectDirInto(
     const rel = `${relBase}${name}`
     let st
     try {
-      st = statSync(abs)
+      // lstat：符号链接一律跳过——链接到目录会带来环递归与越界拉取（对齐检查点模块的同类安全取法）。
+      st = lstatSync(abs)
     } catch {
       continue
     }
+    if (st.isSymbolicLink()) continue
     if (st.isDirectory()) {
       if (!collectDirInto(abs, `${rel}/`, out, state)) return false
       continue
@@ -369,7 +372,7 @@ function unzipBundle(filePath: string): { files: Unzipped; manifest: BundleManif
   return { files, manifest }
 }
 
-/** 包内 persona.md → upsertPersona 入参（frontmatter 四键 + 正文）。 */
+/** 包内 persona.md 的校验解析（name 提取供铸 id；写盘走 writePersonaMdRaw 原样字节）。 */
 function parseBundlePersona(
   files: Unzipped,
   fallbackName: string
@@ -565,8 +568,12 @@ export async function importPersonaBundleFrom(filePath: string): Promise<Persona
     const { finalId, updated, keepOriginal } = resolveImportId(originalId, persona.name)
     const prov = keepOriginal ? readImportsMap()[finalId] : undefined
 
-    // 角色本体（upsert 原子写；新建默认关、更新不动启用态）
-    upsertPersona({ id: finalId, ...persona })
+    // 角色本体：**原样写包内字节**，不做 frontmatter 重组——手改键与未来字段（knowledge/workspace）不在往返中丢失。
+    // 启用态：新建默认关（与 upsert 既有语义一致）；更新不动启用态。
+    if (!writePersonaMdRaw(finalId, Buffer.from(files['persona.md']).toString('utf8'))) {
+      return { ok: false, error: 'write-failed' }
+    }
+    if (!updated) setPersonaEnabled(finalId, false)
 
     // 头像 / 知识库 / 随包技能 / 随包 MCP
     installAvatar(files, finalId)

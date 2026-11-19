@@ -213,6 +213,22 @@ export function readPersonaMdRaw(id: string): string | null {
 }
 
 /**
+ * 原样写角色 .md 磁盘内容（导入角色包用）：**不做 frontmatter 重组**——导出/导入的工件字节保真，
+ * 手改过的键、未来新增的字段（issue#65 knowledge、PR#49 workspace）都不会在往返中丢失。
+ * 写失败返回 false（调用方按 write-failed 处理）。
+ */
+export function writePersonaMdRaw(id: string, raw: string): boolean {
+  if (!isSafeId(id)) return false
+  try {
+    mkdirSync(personasDir(), { recursive: true })
+    writeFileAtomic(personaFile(id), raw)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * 据显示名生成安全、唯一的文件名 id：slug + 随机后缀，**绝不复用已删角色的 id**。
  * 定时任务、对话、IM 回复范围都按 id 引用角色；若只在撞名时加序号，中文名全被 slug 成同一个 `persona`，
  * 删掉一个角色后新建就会拿回同一个 id，旧引用便悄悄指向了新角色。
