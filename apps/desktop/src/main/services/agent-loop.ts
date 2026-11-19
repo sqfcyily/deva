@@ -236,7 +236,15 @@ interface AgentLoopArgs {
 }
 
 /** 工具循环里一步中的一次调用（参数残缺的另带 truncated / cause，见 tool_call_truncated）。 */
-type StepToolCall = { id: string; name: string; args: unknown; truncated?: number; cause?: BrokenCallCause }
+type StepToolCall = {
+  id: string
+  name: string
+  args: unknown
+  truncated?: number
+  cause?: BrokenCallCause
+  /** 思考签名（见 providers/types.ts 的 ToolUsePart.signature）：随调用落进历史，回放时带回。 */
+  signature?: string
+}
 
 /** 在闸门前就地处理的工具调用的结果（见 buildLoopTools 与 runStepTools 的 deliver）。 */
 interface LoopToolOutcome {
@@ -558,7 +566,12 @@ async function streamModelStep(run: LoopRun): Promise<ModelStep> {
         // 个别网关不给 id：补一个，且事件与消息共用同一个——按 toolUseId 归属的边车 / 检查点
         // 若遇空 id，会把不同轮的记录串到同一个键上。
         const id = ev.id || `call_${randomUUID()}`
-        toolCalls.push({ id, name: ev.name, args: ev.args })
+        toolCalls.push({
+          id,
+          name: ev.name,
+          args: ev.args,
+          ...(ev.signature ? { signature: ev.signature } : {})
+        })
         // 没查用法就调用的按需加载工具会被拦下、改为附上用法：画成一步「查看用法」，不画失败，
         // 名片类（create_task / propose_agent）也不铸名片——桌面与手机端都不会冒出一张作废的卡。
         if (usageGated(ev.name))
@@ -840,7 +853,13 @@ async function commitStep(
   const content: ContentPart[] = []
   if (assistantText) content.push({ type: 'text', text: assistantText })
   for (const tc of toolCalls)
-    content.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args })
+    content.push({
+      type: 'tool_use',
+      id: tc.id,
+      name: tc.name,
+      input: tc.args,
+      ...(tc.signature ? { signature: tc.signature } : {})
+    })
   if (content.length) history.push({ role: 'assistant', content })
   if (assistantText) run.finalText = assistantText
 

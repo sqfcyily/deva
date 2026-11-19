@@ -39,7 +39,35 @@ interface OpenAIMessage {
     id: string
     type: 'function'
     function: { name: string; arguments: string }
+    /** Gemini 的思考签名，见 geminiSignature。 */
+    extra_content?: { google: { thought_signature: string } }
   }[]
+}
+
+/**
+ * Gemini 对没有签名的工具调用认的占位签名（官方给的兜底值）：跳过校验，代价是这一步没有思考上下文可接。
+ * 只用于拿不到真签名的调用——别的模型留下的历史、参数残缺的调用、本修复之前的旧对话。
+ */
+const GEMINI_SKIP_SIGNATURE = 'skip_thought_signature_validator'
+
+/** 请求是否发往 Gemini（官方的 OpenAI 兼容端点，或经中转但模型名带 gemini）。 */
+function isGemini(baseURL: string, model: string): boolean {
+  return /gemini/i.test(model) || /generativelanguage\.googleapis\.com/i.test(baseURL)
+}
+
+/**
+ * 回放一条助手消息里第 index 个工具调用时要带的 Gemini 思考签名。Gemini 3 起每一步的第一个工具调用
+ * 必须带签名，缺了整个请求 400（issue #74）；同一步并行的其余调用本来就没有签名。故有真签名的原样带回，
+ * 第一个调用没有的补占位签名。只对 Gemini 发：别家不认 extra_content 字段。
+ */
+function geminiSignature(
+  gemini: boolean,
+  part: Extract<ContentPart, { type: 'tool_use' }>,
+  index: number
+): { extra_content?: { google: { thought_signature: string } } } {
+  if (!gemini) return {}
+  const signature = part.signature ?? (index === 0 ? GEMINI_SKIP_SIGNATURE : undefined)
+  return signature ? { extra_content: { google: { thought_signature: signature } } } : {}
 }
 
 function imageUrlPart(p: ImagePart): OpenAIContentPart {
@@ -47,7 +75,7 @@ function imageUrlPart(p: ImagePart): OpenAIContentPart {
 }
 
 /** 把归一化消息展开成 OpenAI 消息序列（一条 assistant 的工具结果会裂成多条 tool 消息）。 */
-function mapMessages(system: string | undefined, messages: Message[]): OpenAIMessage[] {
+function mapMessages(system: string | undefined, messages: Message[], gemini: boolean): OpenAIMessage[] {
   const out: OpenAIMessage[] = []
   if (system) out.push({ role: 'system', content: system })
 
@@ -69,10 +97,11 @@ function mapMessages(system: string | undefined, messages: Message[]): OpenAIMes
         role: 'assistant',
         content: text || null,
         tool_calls: toolUses.length
-          ? toolUses.map((t) => ({
+          ? toolUses.map((t, i) => ({
               id: t.id,
               type: 'function' as const,
-              function: { name: t.name, arguments: JSON.stringify(t.input ?? {}) }
+              function: { name: t.name, arguments: JSON.stringify(t.input ?? {}) },
+              ...geminiSignature(gemini, t, i)
             }))
           : undefined
       })
@@ -165,6 +194,8 @@ interface PendingCall {
   id: string
   name: string
   args: string
+  /** Gemini 随调用给的思考签名，见 geminiSignature。 */
+  signature?: string
 }
 
 export async function* streamOpenAI(
@@ -172,7 +203,7 @@ export async function* streamOpenAI(
   req: GenerateRequest
 ): AsyncGenerator<StreamEvent> {
   const url = `${cfg.baseURL.replace(/\/$/, '')}/chat/completions`
-  const messages = mapMessages(req.system, req.messages)
+  const messages = mapMessages(req.system, req.messages, isGemini(cfg.baseURL, req.model))
   // DeepSeek 思考模式要求每条回放的助手消息都带 reasoning_content（缺了即 400）。本应用不留思维链，
   // 补空串即可满足（pi-ai 同样如此兜底）。
   if (req.effort?.reasoningField)
@@ -226,6 +257,8 @@ export async function* streamOpenAI(
 
   // index -> 正在拼接的 tool_call
   const calls = new Map<number, PendingCall>()
+  // 最近一次拼接的 tool_call 下标：增量不带 index 时据此归位（见下方拼接处）。
+  let lastIndex = -1
   let stopReason: StopReason = 'end_turn'
   let inputTokens = 0
   let outputTokens = 0
@@ -238,7 +271,14 @@ export async function* streamOpenAI(
       const c = calls.get(i)!
       const args = parseToolArgs(c.args)
       if (args === undefined) broken.push({ id: c.id, name: c.name, raw: c.args })
-      else yield { type: 'tool_call', id: c.id, name: c.name, args }
+      else
+        yield {
+          type: 'tool_call',
+          id: c.id,
+          name: c.name,
+          args,
+          ...(c.signature ? { signature: c.signature } : {})
+        }
     }
     calls.clear()
     // flush 时 stopReason 已定（finish_reason 到达后，或流末兜底改写之后）。
@@ -305,9 +345,10 @@ export async function* streamOpenAI(
               /** 结构化拒绝文本（OpenAI 及兼容网关在拒绝时改走此字段，content 为空）。 */
               refusal?: string | null
               tool_calls?: {
-                index: number
+                index?: number
                 id?: string
                 function?: { name?: string; arguments?: string }
+                extra_content?: { google?: { thought_signature?: string } }
               }[]
             }
             finish_reason?: string | null
@@ -325,11 +366,19 @@ export async function* streamOpenAI(
 
       if (delta?.tool_calls) {
         for (const tc of delta.tool_calls) {
-          const cur = calls.get(tc.index) ?? { id: '', name: '', args: '' }
+          // Gemini 的兼容端点有时不给 index：id 与正在拼的那个不同就是新的一个调用，否则接着拼上一个
+          //（都落到同一个键上的话，并行调用的参数会被拼成一串坏 JSON）。
+          const prevId = calls.get(lastIndex)?.id
+          const index =
+            tc.index ?? (tc.id && prevId && tc.id !== prevId ? lastIndex + 1 : Math.max(lastIndex, 0))
+          lastIndex = index
+          const cur: PendingCall = calls.get(index) ?? { id: '', name: '', args: '' }
           if (tc.id) cur.id = tc.id
           if (tc.function?.name) cur.name = tc.function.name
           if (tc.function?.arguments) cur.args += tc.function.arguments
-          calls.set(tc.index, cur)
+          const signature = tc.extra_content?.google?.thought_signature
+          if (signature) cur.signature = signature
+          calls.set(index, cur)
         }
       }
 

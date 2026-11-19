@@ -36,6 +36,11 @@ export interface ToolUsePart {
   id: string
   name: string
   input: unknown
+  /**
+   * 模型随这次调用给出的思考签名（目前只有 Gemini，见 providers/openai.ts）：回放历史时须原样带回，
+   * 缺了该模型会以 400 拒收。别家模型没有此项。
+   */
+  signature?: string
 }
 export interface ToolResultPart {
   type: 'tool_result'
@@ -159,7 +164,7 @@ export interface NormalizedError {
 export type StreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  | { type: 'tool_call'; id: string; name: string; args: unknown }
+  | { type: 'tool_call'; id: string; name: string; args: unknown; /** 思考签名，见 ToolUsePart.signature。 */ signature?: string }
   /**
    * 参数没能完整解析的工具调用：参数原文残缺、不可执行，cause 说明原因（见 BrokenCallCause）。
    * 循环把它记成一次失败的工具调用，按原因回灌纠正提示（见 agent-loop.ts runAgentLoop）。
