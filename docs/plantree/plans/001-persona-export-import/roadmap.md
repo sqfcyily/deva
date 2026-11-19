@@ -5,8 +5,9 @@
 - 全角落排查（2026-11-19）→ [topics/persona-surface.md](topics/persona-surface.md)
 - 六问批复落决策（2026-11-19）→ [decisions/001-bundle-basics.md](decisions/001-bundle-basics.md)、[decisions/002-bundle-scope.md](decisions/002-bundle-scope.md)
 - v2 能力包设计定稿（2026-11-19）→ [topics/export-import-design.md](topics/export-import-design.md)
-- 实现（2026-11-19，local-dev 未提交）：persona-port.ts 新模块；personas.ts 导出 dir 助手/imports 簿记/删除级联；atomic-write 扩二进制重载；index.ts 注册；preload 桥；Rail 导出菜单 + AddMenu 导入项 + ChatFirstShell 接线 + i18n 中英文案
-- 验证（2026-11-19）：`pnpm typecheck` 双侧通过；`pnpm build` 通过；electron 桩进程内冒烟 4 案全绿（导出含内置拒绝 / 全新机回环+同包更新 / 冲突铸新 id 不动外来者 / originalId=general 硬闸 + 坏 manifest 拒绝）——harness 在 /tmp/pp-smoke/（会话外即逝，复制回仓库再跑可复现）
+- 实现 + 提交（2026-11-19）：feat c42f180（persona-port.ts 新模块、personas.ts 助手/簿记/级联、atomic-write 二进制重载、IPC+preload 桥、Rail/AddMenu 入口、i18n）；docs 55b57c7（本方案树）
+- 验证（2026-11-19）：typecheck 双侧 + build 通过；electron 桩冒烟 4 案全绿（导出含内置拒绝 / 回环+同包更新 / 冲突铸新 id / originalId=general 硬闸+坏 manifest）；隔离 user-data-dir+DEVA_HOME 真机启动，CDP 验证桥函数在位、种子正常（原生对话框路径无法脚本化，留手工）
+- llmdoc 同步（2026-11-19）：capabilities/skills-personas.mdx 补角色包契约，提交 dfc012b + d4f0b64，概念路由第一名命中
 
 ## In Progress
 
@@ -14,9 +15,8 @@
 
 ## Next
 
-- 用户 GUI 手工过一遍：真机导出 → 换 DEVA_HOME 导入 → 手机端可见
-- `/llmdoc:update`：capabilities/skills-personas.mdx 补导出/导入契约（personas.ts 锚点已变脏）
-- 提交（双语提交规范，type/refactor 之外应为 feat）；是否推送上游由用户定
+- 用户 GUI 手工过一遍原生对话框路径：真机导出 → 换 DEVA_HOME 导入 → 手机端可见
+- 是否推送上游（feature 分支 PR）由用户定
 
 ## Deferred
 

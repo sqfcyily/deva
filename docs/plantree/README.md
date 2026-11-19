@@ -17,7 +17,7 @@ Deva 的规划状态根。架构与长效知识（模块契约、不变量、失
 
 | ID | Plan | Affected Modules | Status | Current Phase | Last Landed | Next Target |
 |---|---|---|---|---|---|---|
-| P001 | [角色导出/导入](plans/001-persona-export-import/) | main-personas, main-ext-roles, main-avatar-image, preload-ipc, renderer-shell | Implemented | 代码落地+冒烟全绿（未提交） | 2026-11-19 typecheck/build/冒烟4案 | GUI 手工回环 → /llmdoc:update → 提交 |
+| P001 | [角色导出/导入](plans/001-persona-export-import/) | main-personas, main-ext-roles, main-avatar-image, preload-ipc, renderer-shell | Implemented | 已提交（c42f180）+ llmdoc 已同步 | 2026-11-19 dfc012b | 用户 GUI 手工回环；推送上游由用户定 |
 
 ## 读取路径
 
