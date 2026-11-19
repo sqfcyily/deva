@@ -82,7 +82,8 @@ export interface PersonaUpsertInput {
   enabled?: boolean
 }
 
-function personasDir(): string {
+/** 角色工件目录（绝对路径）。persona-port.ts（导出/导入角色包）与 IPC 同用，路径唯一出口。 */
+export function personasDir(): string {
   return join(getDevaHome(), 'personas')
 }
 
@@ -93,8 +94,16 @@ function personaFile(id: string): string {
 // ── 自定义头像图片（personas/avatars/<id>.<ext>）─────────────────────────────
 // 落盘细节（一 id 一图、MIME 白名单、大小兜底）见 avatar-image.ts；此处只加 id 合法性守卫。
 
-function avatarsDir(): string {
+export function avatarsDir(): string {
   return join(personasDir(), 'avatars')
+}
+
+/**
+ * 角色知识库目录（issue#65 档 0 约定：`personas/knowledge/<id>/`，子目录不干扰角色扫描——
+ * 顶层扫描只认 `<id>.md`）。现阶段仅目录约定、无 frontmatter 字段；导出/导入按整目录搬运（persona-port.ts）。
+ */
+export function personaKnowledgeDir(id: string): string {
+  return join(personasDir(), 'knowledge', id)
 }
 
 function readAvatarImage(id: string): string {
@@ -141,9 +150,82 @@ function writeOrderList(order: string[]): void {
   setConfig({ personas: { ...base, order } })
 }
 
+// ── 导入角色包的来源簿记（config.json → personas.imports）──────────────────
+// 「同一包再次导入 = 就地更新」的判定依据：本地已存在同 originalId 的角色且簿记在案 → 更新；
+// id 冲突但簿记不在案（撞了别的角色）→ 铸随机 id 新建，绝不覆盖。skills/mcp 记「包内 id → 本地 id」
+// 映射，再导入更新时回访原映射，避免同一随包技能/服务每次导入都改名一份。
+
+export interface PersonaImportProvenance {
+  /** 导出方的文件 id（manifest.originalId）。 */
+  originalId: string
+  /** 包内容摘要（persona.md + contents 的 sha256），仅供展示比对，不参与判定。 */
+  bundleHash?: string
+  skills?: Record<string, string>
+  mcp?: Record<string, string>
+}
+
+export function readImportsMap(): Record<string, PersonaImportProvenance> {
+  const personas = getConfig().personas
+  const imports = (personas as { imports?: unknown })?.imports
+  if (imports && typeof imports === 'object') return imports as Record<string, PersonaImportProvenance>
+  return {}
+}
+
+function writeImportsMap(map: Record<string, PersonaImportProvenance>): void {
+  const personas = getConfig().personas
+  const base = personas && typeof personas === 'object' ? (personas as Record<string, unknown>) : {}
+  setConfig({ personas: { ...base, imports: map } })
+}
+
+/** 记 / 更新一条导入簿记（读-合并写，保住 personas 下其他键——setConfig 顶层浅合并，别清空子对象）。 */
+export function writeImportsEntry(id: string, entry: PersonaImportProvenance): void {
+  if (!isSafeId(id)) return
+  const map = readImportsMap()
+  map[id] = entry
+  writeImportsMap(map)
+}
+
+function deleteImportsEntry(id: string): void {
+  const map = readImportsMap()
+  if (!(id in map)) return
+  delete map[id]
+  writeImportsMap(map)
+}
+
 /** 校验文件名安全（防 `..` / 分隔符逃逸）。 */
-function isSafeId(id: string): boolean {
+export function isSafeId(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(id) && id !== '.' && id !== '..'
+}
+
+/** 内置（种子）角色 id 集合：不允许导出，导入永不落在这些 id 上（覆盖会毁掉种子文件）。 */
+export function builtinPersonaIds(): Set<string> {
+  return new Set(DEFAULT_PERSONAS.map((d) => d.id))
+}
+
+/** 读取角色 .md 磁盘原文（导出角色包用：与用户磁盘上的工件字节一致，含手改过的 frontmatter）。不存在 / 读失败 → null。 */
+export function readPersonaMdRaw(id: string): string | null {
+  if (!isSafeId(id)) return null
+  try {
+    return readFileSync(personaFile(id), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 原样写角色 .md 磁盘内容（导入角色包用）：**不做 frontmatter 重组**——导出/导入的工件字节保真，
+ * 手改过的键、未来新增的字段（issue#65 knowledge、PR#49 workspace）都不会在往返中丢失。
+ * 写失败返回 false（调用方按 write-failed 处理）。
+ */
+export function writePersonaMdRaw(id: string, raw: string): boolean {
+  if (!isSafeId(id)) return false
+  try {
+    mkdirSync(personasDir(), { recursive: true })
+    writeFileAtomic(personaFile(id), raw)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -151,7 +233,7 @@ function isSafeId(id: string): boolean {
  * 定时任务、对话、IM 回复范围都按 id 引用角色；若只在撞名时加序号，中文名全被 slug 成同一个 `persona`，
  * 删掉一个角色后新建就会拿回同一个 id，旧引用便悄悄指向了新角色。
  */
-function makeId(name: string): string {
+export function makeId(name: string): string {
   const slug = name
     .trim()
     .toLowerCase()
@@ -347,6 +429,12 @@ export function deletePersona(id: string): void {
   }
   // 连自定义头像一起删：不留孤儿文件（旧版 makeId 会复用已删角色的 id，遗留的图曾挂到新角色脸上）。
   clearAvatarImage(id)
+  // 知识库目录（issue#65 档 0 约定、角色包导入会创建）一并删：与头像同等待遇，不留孤儿目录。
+  try {
+    rmSync(personaKnowledgeDir(id), { recursive: true, force: true })
+  } catch {
+    /* 忽略删除失败 */
+  }
   // 绑定该角色的定时任务改由默认角色 Deva 执行（连同其独占对话），任务照常运行。
   reassignTaskPersona(id, DEFAULT_PERSONA_ID)
   // 从技能 / MCP 的可用角色里剔除；只给它用的那些改回所有角色并停用。
@@ -359,6 +447,8 @@ export function deletePersona(id: string): void {
   // 一并从手动排序中剔除，避免留下陈旧 id（listPersonas 会忽略，但保持 config 整洁）。
   const order = orderList()
   if (order.includes(id)) writeOrderList(order.filter((x) => x !== id))
+  // 导入簿记随之作废：角色都没了，「再次导入=更新」无处着落（同包再导入会当作新建）。
+  deleteImportsEntry(id)
 }
 
 /**

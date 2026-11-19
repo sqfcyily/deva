@@ -10,6 +10,8 @@ import {
   ArrowUpToLine,
   ChevronRight,
   Cog,
+  Download,
+  FileUp,
   Folder,
   FolderMinus,
   Globe,
@@ -47,6 +49,12 @@ import {
 import { ContextMenu } from './ContextMenu'
 import { memberPersona } from './MemberBar'
 import { useDraftPreview } from './Composer'
+
+/**
+ * 内置（种子）角色 id：不可导出（与主进程 services/personas.ts 的 DEFAULT_PERSONAS 对齐）。
+ * 删除的菜单禁用只锁 general（DEFAULT_PERSONA_ID，回落兜底身份）；导出两者都锁。
+ */
+const BUILTIN_PERSONA_IDS = new Set(['general', 'xiaomajiang'])
 
 /**
  * 花名册手动排序不再按名称（角色可改名 → 名称排序会跳位）：改由用户拖拽 / 置顶决定，顺序以 id 列表
@@ -218,6 +226,8 @@ export function Rail({
   onUnarchiveThread,
   onDeleteThread,
   onDeletePersona,
+  onExportPersona,
+  onImportPersona,
   onReorderPersonas,
   boundTasks,
   collapsed,
@@ -246,6 +256,10 @@ export function Rail({
   onUnarchiveThread: (id: string) => void
   onDeleteThread: (id: string, title: string) => void
   onDeletePersona: (id: string, name: string) => void
+  /** 导出角色包（含专属技能 / MCP / 知识库 / 头像）；主进程弹保存框。 */
+  onExportPersona: (id: string) => void
+  /** 导入角色包：主进程弹选择框，成功后刷新扩展清单。 */
+  onImportPersona: () => void
   onReorderPersonas: (ids: string[]) => void
   /** 绑定在各主对话上的定时任务（主对话行上打闹钟徽标）。 */
   boundTasks: TaskRecord[]
@@ -590,6 +604,8 @@ export function Rail({
               chatLabel={t('cf.addByChat')}
               onManual={onAddPersona}
               onByChat={onAddPersonaByChat}
+              importLabel={t('cf.importPersona')}
+              onImport={onImportPersona}
             />
           )}
           </>
@@ -766,6 +782,14 @@ export function Rail({
                     onClick: () => pinPersona(menu.id)
                   },
                   {
+                    label: t('cf.exportPersona'),
+                    icon: <Download size={14} />,
+                    // 内置角色不导出：应用自带，且避免扩大其提示词的分发面（主进程同样硬拒，UI 先拦一道）。
+                    disabled: BUILTIN_PERSONA_IDS.has(menu.id),
+                    title: BUILTIN_PERSONA_IDS.has(menu.id) ? t('cf.exportBuiltin') : undefined,
+                    onClick: () => onExportPersona(menu.id)
+                  },
+                  {
                     label: t('cf.deletePersona'),
                     icon: <Trash2 size={14} />,
                     danger: true,
@@ -909,7 +933,9 @@ export function AddMenu({
   manualLabel,
   chatLabel,
   onManual,
-  onByChat
+  onByChat,
+  importLabel,
+  onImport
 }: {
   /** 手动项文案，同时作 + 按钮的 title / aria-label（如「添加角色」「添加任务」）。 */
   manualLabel: string
@@ -917,6 +943,9 @@ export function AddMenu({
   chatLabel: string
   onManual: () => void
   onByChat: () => void
+  /** 可选第三项「导入」文案（角色花名册用：导入角色包）；不给则不出现该项。 */
+  importLabel?: string
+  onImport?: () => void
 }): React.JSX.Element {
   const { open, hoverProps, show, choose } = useHoverMenu()
 
@@ -942,6 +971,12 @@ export function AddMenu({
             <MessageCircle size={15} className="cf-addmenu__icon" />
             <span>{chatLabel}</span>
           </button>
+          {onImport && importLabel && (
+            <button className="cf-addmenu__item" role="menuitem" onClick={() => choose(onImport)}>
+              <FileUp size={15} className="cf-addmenu__icon" />
+              <span>{importLabel}</span>
+            </button>
+          )}
         </div>
       )}
     </div>
