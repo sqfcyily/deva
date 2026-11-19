@@ -38,7 +38,7 @@
   text-align: left;
 }
 
-/* 顶部：上下文容量。一行「标题 …… 已用/窗口 (百分比)」+ 进度条，有事要说明时再加一行 */
+/* 顶部：上下文容量。一行「标题 …… 已用/窗口 (百分比)」+ 进度条 */
 .cf-mp__usage {
   flex-shrink: 0;
   padding: 8px 9px 9px;
@@ -87,12 +87,6 @@
   content: '';
   position: absolute;
   inset: -2px -5px;
-}
-.cf-mp__note {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--fg-subtle);
 }
 
 /* 中间：模型列表，按服务商分组平铺；只有这一段滚动。position 供 ModelMenu 按 offsetTop 定位当前模型 */

@@ -240,9 +240,6 @@ const zhCN: MessageTree = {
       context: '上下文容量',
       approx: '约 {n}',
       usage: '{used}/{window} ({pct})',
-      soon: '下次发送时会先自动压缩较早的对话',
-      over: '已超出这个模型的窗口，下次发送时会先自动压缩较早的对话',
-      estimated: '估算值，下次发送后按实际用量更新',
       autoCompact: '自动压缩'
     },
     empty: '有什么可以帮你？',
@@ -1764,9 +1761,6 @@ const en: MessageTree = {
       context: 'Context',
       approx: '~{n}',
       usage: '{used} / {window} ({pct})',
-      soon: 'Older messages will be compacted before the next request',
-      over: "Exceeds this model's window; older messages will be compacted before the next request",
-      estimated: 'Estimated; updates with actual usage after the next message',
       autoCompact: 'Auto-compact'
     },
     empty: 'How can I help?',

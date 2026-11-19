@@ -204,23 +204,12 @@ function ContextRing({ ratio, color }: { ratio: number; color: string }): React.
 /**
  * 面板顶部：上下文容量。一行「上下文容量 …… 199K/1M (19.9%)」加进度条（竖线标出自动压缩的位置）。
  * 新对话还没有读数：右侧只写窗口，进度条是空的。模型解析不了（已删）时整段不显示。
+ * 不另写说明文字：估算值只在数字前加「约」；超出窗口时百分比封顶 100%，下次发送会自动先压缩。
  */
 function UsageSection({ usage, accent }: { usage: ContextUsage | null; accent: string }): React.JSX.Element | null {
   const { t } = useI18n()
   if (!usage) return null
   const tick = usage.trigger != null && usage.window > 0 ? Math.min(1, usage.trigger / usage.window) : null
-  // 平时不写「再用多少会压缩」（竖线已标出位置），只在有事要说明时加一行：
-  // 超出窗口（多见于换到窗口小的模型，百分比封顶 100%）、读数是估算值、下次发送就会压缩。
-  const note =
-    usage.used == null
-      ? ''
-      : usage.used >= usage.window && usage.trigger != null
-        ? t('chat.panel.over')
-        : usage.estimated
-          ? t('chat.panel.estimated')
-          : usage.trigger != null && usage.trigger - usage.used < 1000
-            ? t('chat.panel.soon')
-            : ''
   return (
     <div className="cf-mp__usage">
       <div className="cf-mp__top">
@@ -237,7 +226,6 @@ function UsageSection({ usage, accent }: { usage: ContextUsage | null; accent: s
           />
         )}
       </div>
-      {note && <div className="cf-mp__note">{note}</div>}
     </div>
   )
 }
