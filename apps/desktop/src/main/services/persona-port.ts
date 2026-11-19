@@ -590,6 +590,8 @@ export async function importPersonaBundleFrom(filePath: string): Promise<Persona
       if (Object.keys(files).some((p) => p.startsWith(originalPrefix))) {
         const r = extractDirInto(files, originalPrefix, personaKnowledgeDir(finalId))
         if (!r.ok) warnings.push(`knowledge:${r.error}`)
+      } else {
+        warnings.push('knowledge:missing') // manifest 声称带知识库，包里却没有对应文件（改包/损坏）
       }
     }
 

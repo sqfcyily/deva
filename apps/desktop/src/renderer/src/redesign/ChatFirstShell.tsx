@@ -602,7 +602,8 @@ export function ChatFirstShell(): React.JSX.Element {
     })()
   }
   // 导入角色包：主进程弹选择框；同源包再导入 = 就地更新（主进程按簿记判定）。
-  // 成功刷新扩展清单（花名册 / 技能 / MCP 随之更新），toast 报结果；铸了新 id 的随包技能/MCP 数量一并提示。
+  // 成功刷新扩展清单（花名册 / 技能 / MCP 随之更新），toast 报结果。warnings 两类：随包技能/MCP
+  // 撞名改 id（`含 →`，良性，照常算成功）；真没装上的（write-failed / secret-unavailable 等）才按「部分带入」提示。
   const importPersona = (): void => {
     void (async () => {
       const res = await window.deva?.personas?.importBundle()
@@ -614,11 +615,12 @@ export function ChatFirstShell(): React.JSX.Element {
         return
       }
       refresh()
+      const realFailures = res.warnings?.filter((w) => !w.includes('→')) ?? []
       toast.show({
         variant: 'success',
         title: t('cf.importDone'),
         message: fill(
-          t(res.warnings?.length ? 'cf.importPartial' : res.updated ? 'cf.importUpdated' : 'cf.importCreated'),
+          t(realFailures.length ? 'cf.importPartial' : res.updated ? 'cf.importUpdated' : 'cf.importCreated'),
           { name: clipName(res.name ?? '') }
         )
       })

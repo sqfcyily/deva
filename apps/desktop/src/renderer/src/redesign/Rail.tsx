@@ -2,12 +2,6 @@
  * 左侧图标栏与对话列表（搜索、筛选、分组、行菜单、新建对话 / 角色）。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-
-/**
- * 内置（种子）角色 id：不可导出（与主进程 services/personas.ts 的 DEFAULT_PERSONAS 对齐）。
- * 删除的菜单禁用只锁 general（DEFAULT_PERSONA_ID，回落兜底身份）；导出两者都锁。
- */
-const BUILTIN_PERSONA_IDS = new Set(['general', 'xiaomajiang'])
 import {
   AlarmClock,
   Archive,
@@ -55,6 +49,12 @@ import {
 import { ContextMenu } from './ContextMenu'
 import { memberPersona } from './MemberBar'
 import { useDraftPreview } from './Composer'
+
+/**
+ * 内置（种子）角色 id：不可导出（与主进程 services/personas.ts 的 DEFAULT_PERSONAS 对齐）。
+ * 删除的菜单禁用只锁 general（DEFAULT_PERSONA_ID，回落兜底身份）；导出两者都锁。
+ */
+const BUILTIN_PERSONA_IDS = new Set(['general', 'xiaomajiang'])
 
 /**
  * 花名册手动排序不再按名称（角色可改名 → 名称排序会跳位）：改由用户拖拽 / 置顶决定，顺序以 id 列表
