@@ -15,6 +15,7 @@ import { sweepSubagents } from './services/subagent-store'
 import { sweepMedia } from './services/media-store'
 import { registerSkillsIpc, startSkillsWatcher } from './services/skills'
 import { ensureSeededPersonas, pinAutoAvatarShapes, pruneOrphanExtRoles, registerPersonasIpc } from './services/personas'
+import { registerPersonaPortIpc } from './services/persona-port'
 import { registerProfileIpc } from './services/profile'
 import { registerMemoryIpc } from './services/memory'
 import {
@@ -365,6 +366,7 @@ if (!app.requestSingleInstanceLock()) {
   // 技能 / MCP 的可用角色里已不存在的角色：剔除，都没了的改回所有角色并停用（须在 MCP 自动连接之前）。
   pruneOrphanExtRoles()
   registerPersonasIpc()
+  registerPersonaPortIpc(() => mainWindow)
   registerProfileIpc()
   registerMemoryIpc()
 

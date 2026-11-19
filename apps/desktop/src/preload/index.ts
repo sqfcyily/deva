@@ -716,6 +716,25 @@ const api = {
     reorder: (ids: string[]): Promise<{ ok: true }> =>
       ipcRenderer.invoke('personas:reorder', ids),
     /**
+     * 导出角色包（含专属技能 / MCP / 知识库 / 头像）：主进程弹保存框，写 zip。
+     * 返回与 services/persona-port.ts 的 PersonaExportResult 对齐；cancelled = 用户取消。
+     */
+    exportBundle: (id: string): Promise<{ ok: boolean; path?: string; error?: string; warnings?: string[] }> =>
+      ipcRenderer.invoke('personas:export', id),
+    /**
+     * 导入角色包：主进程弹选择框。同源包再导入 = 就地更新；结果与 services/persona-port.ts 的
+     * PersonaImportResult 对齐（idMap = 包内技能/MCP id → 本地落地 id；warnings 为稳定码清单）。
+     */
+    importBundle: (): Promise<{
+      ok: boolean
+      error?: string
+      id?: string
+      name?: string
+      updated?: boolean
+      idMap?: { skills: Record<string, string>; mcp: Record<string, string> }
+      warnings?: string[]
+    }> => ipcRenderer.invoke('personas:import'),
+    /**
      * 写入自定义头像（data URI，png/jpeg/webp）。返回落盘后读回的 data URI；参数非法 / 写失败返回空串。
      * 同一 id 重复上传即覆盖。新建角色须**先 upsert 拿到 id** 再调用。
      */

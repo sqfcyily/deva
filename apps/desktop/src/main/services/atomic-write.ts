@@ -8,13 +8,13 @@ import { renameSync, rmSync, writeFileSync } from 'fs'
  * （与旧行为一致）并清掉残留 tmp；tmp 本身写不进（磁盘满等）则原样抛出——此时再去直写只会把
  * 旧文件也截断。`.tmp` 后缀让按扩展名扫描目录的地方（对话索引重建、角色目录）天然跳过它。
  */
-export function writeFileAtomic(file: string, data: string): void {
+export function writeFileAtomic(file: string, data: string | Uint8Array): void {
   const tmp = `${file}.tmp`
-  writeFileSync(tmp, data, 'utf8')
+  writeFileSync(tmp, data, typeof data === 'string' ? 'utf8' : undefined)
   try {
     renameSync(tmp, file)
   } catch {
-    writeFileSync(file, data, 'utf8')
+    writeFileSync(file, data, typeof data === 'string' ? 'utf8' : undefined)
     try {
       rmSync(tmp, { force: true })
     } catch {

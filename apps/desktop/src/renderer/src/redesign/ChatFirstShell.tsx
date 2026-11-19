@@ -94,7 +94,7 @@ export function ChatFirstShell(): React.JSX.Element {
     removeMember,
     onInsertsReturned
   } = useChatActions()
-  const { personas, remove, reorderPersonas } = useExtensions()
+  const { personas, remove, reorderPersonas, refresh } = useExtensions()
   const { tasks, setStatus: setTaskStatus, runNow: runTaskNow, update: updateTask, remove: removeTask } = useTasks()
   const { t, locale } = useI18n()
   const dialog = useDialog()
@@ -588,6 +588,42 @@ export function ChatFirstShell(): React.JSX.Element {
       remove('persona', id)
     })()
   }
+  // 导出角色包（含专属技能 / MCP / 知识库 / 头像）：主进程弹保存框写 zip。成功不打扰（保存框已给落点），
+  // 失败（内置角色 / 写盘失败等）toast 一条稳定说明。
+  const exportPersona = (id: string): void => {
+    void (async () => {
+      const res = await window.deva?.personas?.exportBundle(id)
+      if (!res || res.ok || res.error === 'cancelled') return
+      toast.show({
+        variant: 'error',
+        title: t('cf.exportFailed'),
+        message: res.error === 'builtin' ? t('cf.exportBuiltin') : undefined
+      })
+    })()
+  }
+  // 导入角色包：主进程弹选择框；同源包再导入 = 就地更新（主进程按簿记判定）。
+  // 成功刷新扩展清单（花名册 / 技能 / MCP 随之更新），toast 报结果；铸了新 id 的随包技能/MCP 数量一并提示。
+  const importPersona = (): void => {
+    void (async () => {
+      const res = await window.deva?.personas?.importBundle()
+      if (!res) return
+      if (!res.ok) {
+        if (res.error && res.error !== 'cancelled') {
+          toast.show({ variant: 'error', title: t('cf.importFailed'), message: res.error })
+        }
+        return
+      }
+      refresh()
+      toast.show({
+        variant: 'success',
+        title: t('cf.importDone'),
+        message: fill(
+          t(res.warnings?.length ? 'cf.importPartial' : res.updated ? 'cf.importUpdated' : 'cf.importCreated'),
+          { name: clipName(res.name ?? '') }
+        )
+      })
+    })()
+  }
 
   return (
     <div
@@ -673,6 +709,8 @@ export function ChatFirstShell(): React.JSX.Element {
               onUnarchiveThread={(id) => setArchived(id, false)}
               onDeleteThread={deleteThread}
               onDeletePersona={deletePersona}
+              onExportPersona={exportPersona}
+              onImportPersona={importPersona}
               onReorderPersonas={reorderPersonas}
               boundTasks={boundTasks}
               collapsed={collapsed}
