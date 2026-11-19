@@ -103,7 +103,8 @@ import {
   emit,
   notifyPending
 } from './chat-state'
-import { plainTaskText, subagentDisplayArgs } from './chat-display'
+import { insertAttachmentChips, plainTaskText, subagentDisplayArgs } from './chat-display'
+import type { InsertDelivery } from './chat-inserts'
 import { skillDirNote } from './chat-prompts'
 import { type MemberToolResult, setMemberFolder } from './chat-members'
 
@@ -172,10 +173,11 @@ interface AgentLoopArgs {
    */
   takeNotices?: () => string | null
   /**
-   * 取走本会话待送达的插入消息（见 pendingInserts），返回合并后的原文（没有则 null）：每步工具结果回灌前、
-   * 取完通知之后调用，有则附在最后，并发 insert 事件。仅主轮传入。
+   * 取走本会话待送达的插入消息（见 pendingInserts），返回合并后的原文与附件内容块（没有则 null，见
+   * chat-inserts.ts）：每步工具结果回灌前、取完通知之后调用，有则附在最后（附件在前、原文在后），并发 insert 事件。
+   * 仅主轮传入。
    */
-  takeInserts?: () => string | null
+  takeInserts?: () => Promise<InsertDelivery | null>
   /**
    * 每收到一次真实用量即回调（主轮据此持久化 lastInputTokens 作压缩触发依据）。
    * input 为**总提示 token**（含缓存命中/写入）；cacheRead/cacheWrite 仅供观测，不参与任何判定。
@@ -1085,10 +1087,16 @@ async function runStepTools(run: LoopRun, st: ModelStep): Promise<LoopResult | n
   if (notices) resultParts.push({ type: 'text', text: notices })
   // 回合进行中用户插入的消息：同样附在本步工具结果之后（排在通知后面，离模型的下一步最近）。中止时不取，
   // 由回合收尾退回输入框。
-  const inserted = abortedHere ? null : (args.takeInserts?.() ?? null)
+  const inserted = abortedHere ? null : ((await args.takeInserts?.()) ?? null)
   if (inserted) {
-    resultParts.push({ type: 'text', text: insertText(inserted, isEn()) })
-    emit(turnId, sessionId, { type: 'insert', text: plainTaskText(inserted) })
+    resultParts.push(...inserted.parts, { type: 'text', text: insertText(inserted.text, isEn()) })
+    // 图片贴片的 ref 指向这条回灌消息即将落进历史的位置（见 imageRef）。
+    const attachments = insertAttachmentChips(resultParts, history.length)
+    emit(turnId, sessionId, {
+      type: 'insert',
+      text: plainTaskText(inserted.text),
+      ...(attachments.length ? { attachments } : {})
+    })
   }
   history.push({ role: 'user', content: resultParts })
   args.onStep?.()

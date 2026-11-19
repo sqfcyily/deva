@@ -1583,6 +1583,19 @@ button.tl__line:hover {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* 随插入消息送达的附件：沿用用户气泡的附件区（.cf-sent），在时间轴里改为靠左排，与下面的文字隔开一点 */
+.tl__insert-files {
+  margin: 1px 0 6px;
+}
+.tl__insert-files:last-child {
+  margin-bottom: 0;
+}
+.tl__insert-files .cf-sent {
+  align-items: flex-start;
+}
+.tl__insert-files .cf-sent__row {
+  justify-content: flex-start;
+}
 /* 子智能体展开后的内部步骤：每步一行，带小图标 */
 .tl__sub {
   display: flex;

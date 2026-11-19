@@ -20,7 +20,8 @@ import type {
   DisplayMessage,
   MountResponse,
   PlanResponse,
-  ResolveAutotaskResult
+  ResolveAutotaskResult,
+  TakenInserts
 } from '../../shared/chat-protocol'
 import { ipcMain, type BrowserWindow } from 'electron'
 import { onChatEvent, onSessionsChanged, publishRemoteChange, publishSessionsChanged } from './chat-bus'
@@ -479,11 +480,12 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
 
   ipcMain.handle('chat:send', (_e, payload: ChatSendRequest) => sendMessage(payload))
 
-  // 回合进行中插入消息（见 insertMessage）；撤回全部待送达的，返回合并后的原文供放回输入框。
+  // 回合进行中插入消息（见 insertMessage）；撤回全部待送达的，返回合并后的原文与附件供放回输入框。
   ipcMain.handle('chat:insert', (_e, payload: ChatInsertRequest): ChatInsertResult => insertMessage(payload))
-  ipcMain.handle('chat:withdraw-inserts', (_e, sessionId: string): { text: string } => ({
-    text: takeInserts(sessionId) ?? ''
-  }))
+  ipcMain.handle(
+    'chat:withdraw-inserts',
+    (_e, sessionId: string): TakenInserts => takeInserts(sessionId) ?? { text: '', attachments: [] }
+  )
 
   /* 说明：persona 绑定与聚焦工作区都已由 ensureSession 落在 session 上，runTurn 内直接读取 —— 见其实现。 */
 

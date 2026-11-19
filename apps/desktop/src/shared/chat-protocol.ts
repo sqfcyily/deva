@@ -133,6 +133,31 @@ export interface ChatInsertRequest {
   sessionId: string
   text: string
   model: ChatModelConfig
+  /** 随这条消息带的附件；只有附件、没有文字也能插入。 */
+  attachments?: InsertAttachment[]
+}
+
+/**
+ * 随插入消息带的附件。path 须是主进程已授权的路径（用户亲手选中 / 粘贴 / 拖入的，见 attachments.ts），送达时才读内容；
+ * 名称、类型、大小只用于显示，以及撤回 / 退回时放回输入框。
+ */
+export interface InsertAttachment {
+  path: string
+  name: string
+  kind: AttachmentChip['kind']
+  size?: number
+}
+
+/** 一条待送达的插入消息（输入框上方的胶囊）：原文与附件名。 */
+export interface PendingInsertInfo {
+  text: string
+  attachments: string[]
+}
+
+/** 撤回 / 退回的插入消息：几条合并后的原文，连同它们的附件。 */
+export interface TakenInserts {
+  text: string
+  attachments: InsertAttachment[]
 }
 
 /**
@@ -317,7 +342,7 @@ export type DisplayBlock =
    */
   | { kind: 'todolist'; id: string; title: string; items: TodoItem[] }
   /** 回合进行中插入的消息（见 INSERT_MARKER）：执行步骤里的一个节点，排在它送达时的两步之间。 */
-  | { kind: 'insert'; text: string }
+  | { kind: 'insert'; text: string; attachments?: AttachmentChip[] }
 
 export type DisplayMessage =
   | {
@@ -520,16 +545,16 @@ export type ChatStreamEvent =
       }
     }
   /** 插入的消息已随本步工具结果交给模型（回合事件）：渲染层在执行步骤里添一个节点。 */
-  | { type: 'insert'; text: string }
+  | { type: 'insert'; text: string; attachments?: AttachmentChip[] }
   /**
    * 该对话待送达的插入消息有变（会话级，以空 turnId 发出）：插入、送达、撤回、回合结束时都发。
-   * pending 为各条原文，空数组 = 没有待送达的。
+   * pending 为各条的原文与附件名，空数组 = 没有待送达的。
    */
-  | { type: 'inserts'; pending: string[] }
+  | { type: 'inserts'; pending: PendingInsertInfo[] }
   /**
-   * 回合被停止或出错，待送达的插入消息不再发出（会话级，空 turnId）：渲染层把 text 放回该对话的输入框。
+   * 回合被停止或出错，待送达的插入消息不再发出（会话级，空 turnId）：渲染层把 text 与附件放回该对话的输入框。
    */
-  | { type: 'inserts_returned'; text: string }
+  | { type: 'inserts_returned'; text: string; attachments?: InsertAttachment[] }
   /** durationMs：本轮耗时（扣除等用户处置的时间），渲染层据此给工作过程折叠条显示「已处理 X」。 */
   | { type: 'done'; stopReason: StopReason; durationMs?: number }
   /**

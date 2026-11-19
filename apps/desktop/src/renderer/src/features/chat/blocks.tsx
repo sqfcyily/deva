@@ -66,7 +66,9 @@ import {
 import { useI18n } from '../../i18n/i18n'
 import { REPEAT_STOP, TASK_MAX_STEPS } from '../../../../shared/limits'
 import { useExtensions } from '../../store/extensions'
-import type { ChatBlock, ChatMessage, StreamStatus, ToolStatus } from '../../store/chat'
+import { useChatState } from '../../store/chat'
+import type { AttachChip, ChatBlock, ChatMessage, StreamStatus, ToolStatus } from '../../store/chat'
+import { AttachmentList } from '../../redesign/attachments'
 import { CopyButton, Markdown } from './Markdown'
 import { HumationFace, PersonaFace, USER_AVATAR_SEED, seededShape } from '../../components/humation'
 import { useProfile } from '../../store/profile'
@@ -1810,9 +1812,10 @@ function TimelineCompaction({ summary, steps }: { summary: string; steps: number
  * 时间轴上回合进行中插入的消息：节点是用户自己的小头像，正文用用户气泡的底色，与工具步骤区分开，一眼看出是「我说的」。
  * 正文完整显示（可换行），不像工具步骤那样截成一行。
  */
-function TimelineInsert({ text }: { text: string }): React.JSX.Element {
+function TimelineInsert({ text, attachments }: { text: string; attachments?: AttachChip[] }): React.JSX.Element {
   const { t } = useI18n()
   const profile = useProfile()
+  const { currentSessionId } = useChatState()
   return (
     <li className="tl__item tl__item--insert">
       <span className="tl__node">
@@ -1821,7 +1824,23 @@ function TimelineInsert({ text }: { text: string }): React.JSX.Element {
         </span>
       </span>
       <div className="tl__main">
-        <div className="tl__insert">{text}</div>
+        {/* 随这条消息插入的附件：同用户气泡里的附件（缩略图可点开），在时间轴里靠左排。 */}
+        {attachments && attachments.length > 0 && (
+          <div className="tl__insert-files">
+            <AttachmentList
+              variant="sent"
+              entries={attachments.map((a, i) => ({
+                id: String(i),
+                name: a.name,
+                kind: a.kind,
+                size: a.size,
+                title: a.path ?? a.name,
+                src: a.kind === 'image' && a.ref ? { sessionId: currentSessionId, ref: a.ref } : undefined
+              }))}
+            />
+          </div>
+        )}
+        {text && <div className="tl__insert">{text}</div>}
       </div>
     </li>
   )
@@ -1865,7 +1884,8 @@ export function Timeline({
         if (b.kind === 'plan') return <TimelinePlan key={b.key} block={b} />
         if (b.kind === 'mount') return <TimelineMount key={b.key} block={b} />
         if (b.kind === 'todolist') return <TimelineTodo key={b.id} block={b} />
-        if (b.kind === 'insert') return <TimelineInsert key={`i${index}`} text={b.text} />
+        if (b.kind === 'insert')
+          return <TimelineInsert key={`i${index}`} text={b.text} attachments={b.attachments} />
         if (b.kind === 'compaction')
           return <TimelineCompaction key={`c${index}`} summary={b.summary} steps={b.steps ?? 0} />
         return null

@@ -1350,6 +1350,7 @@ const zhCN: MessageTree = {
       pending: '待插入',
       pendingHint: '当前步骤结束后送达',
       count: '{n} 条',
+      files: '{n} 个附件',
       withdraw: '撤回'
     },
     newline: '换行',
@@ -2860,6 +2861,7 @@ const en: MessageTree = {
       pending: 'Queued',
       pendingHint: 'Delivered after the current step',
       count: '{n} messages',
+      files: '{n} attachments',
       withdraw: 'Withdraw'
     },
     newline: 'newline',

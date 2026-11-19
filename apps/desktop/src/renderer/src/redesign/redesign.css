@@ -2769,6 +2769,15 @@ button.cf-mask__pill:hover {
   flex: none;
   color: var(--fg-subtle);
 }
+/* 随消息插入的附件：回形针，多个时后面跟数量 */
+.cf-ins__files {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
 .cf-hint {
   margin-top: 6px;
   font-size: 11px;

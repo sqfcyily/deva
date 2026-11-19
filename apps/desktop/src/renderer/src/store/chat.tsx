@@ -33,7 +33,8 @@ import type {
   AskQuestion,
   ChatStreamEvent as StreamEvent,
   DisplayMessage,
-  HandoffInfo
+  HandoffInfo,
+  PendingInsertInfo
 } from '../../../shared/chat-protocol'
 
 /** 交互卡与交接的协议类型：与主进程共用 shared/chat-protocol.ts。 */
@@ -207,9 +208,9 @@ export type ChatBlock =
   | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
   /**
    * 回合进行中插入、已交给模型的消息：执行步骤里的一个节点，排在它送达时的两步之间（不计入步数）。
-   * 送达前的消息不在这里，显示在输入框上方的胶囊里（见 pendingInserts）。
+   * 送达前的消息不在这里，显示在输入框上方的胶囊里（见 pendingInserts）。attachments = 随它送达的附件。
    */
-  | { kind: 'insert'; text: string }
+  | { kind: 'insert'; text: string; attachments?: AttachChip[] }
 
 /** 成员会话里正等用户处理的交互卡（提问 / 计划 / 选文件夹）：主对话末尾以胶囊 + 卡片呈现，当场处理。 */
 export type PendingCard = Extract<ChatBlock, { kind: 'ask' | 'plan' | 'mount' }>
@@ -470,20 +471,21 @@ interface ChatContextValue {
   removeMember: (sessionId: string, memberSessionId: string) => void
   /**
    * 回合进行中向当前会话插入一条消息：当前步骤结束后交给模型，来不及就在本轮结束后作为下一条发出。
-   * 回合恰好已经结束则改走普通发送。返回是否发出（false 时原因已 toast，调用方把文字放回输入框）。
+   * 回合恰好已经结束则改走普通发送。返回是否发出（false 时原因已 toast，调用方把文字与附件放回输入框）。
+   * 可以带附件，只有附件没有文字也行。
    */
-  insert: (text: string) => Promise<boolean>
+  insert: (text: string, attachments?: SendAttachment[]) => Promise<boolean>
   /** 当前会话待送达的插入消息（输入框上方的胶囊），按插入先后。 */
-  pendingInserts: string[]
+  pendingInserts: PendingInsertInfo[]
   /** 当前（主）对话里还有成员在做、等主角色汇总的派发组（对话末尾的「前端、后端已完成」提示）。 */
   memberProgress: MemberProgressGroup[]
-  /** 撤回当前会话全部待送达的插入消息，返回合并后的原文（已送达或没有则为空串）。 */
-  withdrawInserts: () => Promise<string>
+  /** 撤回当前会话全部待送达的插入消息，返回合并后的原文（已送达或没有则为空串）与附件。 */
+  withdrawInserts: () => Promise<{ text: string; attachments: SendAttachment[] }>
   /**
-   * 订阅「插入消息被退回」（回合被停止或出错时还没送达）：(sessionId, 原文)。返回取消订阅函数。
-   * 由输入框所在的外壳把原文放回对应会话的输入框。
+   * 订阅「插入消息被退回」（回合被停止或出错时还没送达）：(sessionId, 原文, 附件)。返回取消订阅函数。
+   * 由输入框所在的外壳把原文与附件放回对应会话的输入框。
    */
-  onInsertsReturned: (cb: (sessionId: string, text: string) => void) => () => void
+  onInsertsReturned: (cb: InsertReturnListener) => () => void
 }
 
 /*
@@ -541,14 +543,15 @@ const ChatStateContext = createContext<ChatState | null>(null)
 const ChatStreamContext = createContext<ChatStream | null>(null)
 
 /** 各会话「插入消息被退回」的订阅者（见 onInsertsReturned）。 */
-const insertReturnListeners = new Set<(sessionId: string, text: string) => void>()
-function onInsertsReturned(cb: (sessionId: string, text: string) => void): () => void {
+type InsertReturnListener = (sessionId: string, text: string, attachments?: SendAttachment[]) => void
+const insertReturnListeners = new Set<InsertReturnListener>()
+function onInsertsReturned(cb: InsertReturnListener): () => void {
   insertReturnListeners.add(cb)
   return () => {
     insertReturnListeners.delete(cb)
   }
 }
-const NO_INSERTS: string[] = []
+const NO_INSERTS: PendingInsertInfo[] = []
 const NO_PROGRESS: MemberProgressGroup[] = []
 
 /** 空闲态的流式状态（归零）。 */
@@ -628,7 +631,8 @@ function displayToMessages(dms: DisplayMessage[]): ChatMessage[] {
       // 历史回填：已完成的待办清单卡（条目取自主进程 todos 边车里令其完成的那次快照）。
       if (b.kind === 'todolist') return { kind: 'todolist', id: b.id, title: b.title, items: b.items }
       // 历史回填：回合进行中插入的消息（执行步骤里的一个节点）。
-      if (b.kind === 'insert') return { kind: 'insert', text: b.text }
+      if (b.kind === 'insert')
+        return { kind: 'insert', text: b.text, ...(b.attachments?.length ? { attachments: b.attachments } : {}) }
       const status: ToolStatus = b.status === 'error' ? 'error' : b.status === 'running' ? 'running' : 'ok'
       // 历史回填：run_subagent / send_to_subagent 复原为折叠 Task 卡（内部子调用不入父历史，故 children
       // 为空、仅存结论）。
@@ -821,7 +825,7 @@ function reduceBlocks(blocks: ChatBlock[], ev: StreamEvent): ChatBlock[] {
       next.push({ kind: 'mount', key: ev.key, tool: ev.tool, path: ev.path, ...(ev.member ? { member: ev.member } : {}) })
       return next
     case 'insert':
-      next.push({ kind: 'insert', text: ev.text })
+      next.push({ kind: 'insert', text: ev.text, ...(ev.attachments?.length ? { attachments: ev.attachments } : {}) })
       return next
     case 'error':
       next.push({ kind: 'error', message: ev.message })
@@ -1191,8 +1195,8 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
   }, [])
 
   // 各会话待送达的插入消息（键=sessionId）：只由主进程的 inserts 事件更新（插入 / 送达 / 撤回 / 回合结束都会推）。
-  const [insertStates, setInsertStates] = useState<Map<string, string[]>>(() => new Map())
-  const setInsertState = useCallback((sid: string, pending: string[]): void => {
+  const [insertStates, setInsertStates] = useState<Map<string, PendingInsertInfo[]>>(() => new Map())
+  const setInsertState = useCallback((sid: string, pending: PendingInsertInfo[]): void => {
     setInsertStates((prev) => {
       if (!pending.length && !prev.has(sid)) return prev
       const map = new Map(prev)
@@ -1495,7 +1499,7 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
         return
       }
       if (ev.type === 'inserts_returned') {
-        for (const cb of insertReturnListeners) cb(sid, ev.text)
+        for (const cb of insertReturnListeners) cb(sid, ev.text, ev.attachments)
         return
       }
 
@@ -1995,10 +1999,11 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
     }
 
     // 回合进行中插入（见 ChatContextValue.insert）。模型只在来不及送达、改作下一轮发出时用作回落，解析同 send。
-    const insert = async (text: string): Promise<boolean> => {
+    const insert = async (text: string, attachments?: SendAttachment[]): Promise<boolean> => {
       const sid = sessionIdRef.current
       const body = text.trim()
-      if (!body) return false
+      const atts = attachments ?? []
+      if (!body && atts.length === 0) return false
       const ov = bindingsRef.current.get(sid)
       const meta = allSessions.find((s) => s.id === sid)
       const sessionModelRef = ov && ov.model !== undefined ? ov.model : meta?.model
@@ -2017,11 +2022,12 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
             providerId: model.provider.id,
             baseURL: model.provider.apiHost,
             model: model.model.id
-          }
+          },
+          ...(atts.length ? { attachments: atts } : {})
         })
         if (r.ok) return true
         // 回合恰好已经结束：照常发出，开始新的一轮。
-        if (r.reason === 'idle') return send(body)
+        if (r.reason === 'idle') return send(body, atts)
         if (r.reason === 'busy') toast.show({ variant: 'warning', message: t('chat.insert.busy') })
         return false
       } catch (e) {
@@ -2030,11 +2036,11 @@ export function ChatProvider({ children }: { children: ReactNode }): React.JSX.E
       }
     }
 
-    const withdrawInserts = async (): Promise<string> => {
+    const withdrawInserts = async (): Promise<{ text: string; attachments: SendAttachment[] }> => {
       try {
-        return (await window.deva.chat.withdrawInserts(sessionIdRef.current)).text
+        return await window.deva.chat.withdrawInserts(sessionIdRef.current)
       } catch {
-        return ''
+        return { text: '', attachments: [] }
       }
     }
 

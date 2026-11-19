@@ -54,6 +54,50 @@ export function imageRef(msgIndex: number, partIndex: number, data: string): str
   return `${msgIndex}:${partIndex}:${data.length.toString(36)}${data.slice(mid, mid + 8)}`
 }
 
+/**
+ * 一条消息里的附件贴片：图片 / 文档块在前，带附件前缀的文本块（文本文件、文件夹、只给位置的文件）在后。
+ * skip = 不当附件看的那个文本块（用户消息的提问正文：它即便以附件前缀开头也是用户的话）。
+ */
+function attachmentChips(
+  parts: ContentPart[],
+  msgIndex: number,
+  skip?: Extract<ContentPart, { type: 'text' }>
+): AttachmentChip[] {
+  const atts: AttachmentChip[] = []
+  parts.forEach((p, pi) => {
+    if (p.type === 'image')
+      atts.push({ name: p.name ?? '图片', kind: 'image', size: base64Bytes(p.data), ref: imageRef(msgIndex, pi, p.data) })
+    else if (p.type === 'document') atts.push({ name: p.name ?? '文档', kind: 'document', size: base64Bytes(p.data) })
+  })
+  for (const tp of parts) {
+    if (tp.type !== 'text' || tp === skip) continue
+    if (tp.text.startsWith(ATTACH_TEXT_PREFIX)) {
+      // 注入形如「前缀 + 文件名\n```\n正文\n```」，大小按正文算。
+      const body = tp.text.slice(tp.text.indexOf('\n') + 1).replace(/^```\n/, '').replace(/\n```$/, '')
+      atts.push({
+        name: tp.text.slice(ATTACH_TEXT_PREFIX.length).split('\n')[0].trim(),
+        kind: 'text',
+        size: Buffer.byteLength(body, 'utf8')
+      })
+    } else if (tp.text.startsWith(ATTACH_FOLDER_PREFIX)) {
+      const dir = tp.text.slice(ATTACH_FOLDER_PREFIX.length).split('\n')[0].trim()
+      atts.push({ name: basename(dir) || dir, kind: 'folder', path: dir })
+    } else if (tp.text.startsWith(ATTACH_PATH_PREFIX)) {
+      const file = tp.text.slice(ATTACH_PATH_PREFIX.length).split('\n')[0].trim()
+      atts.push({ name: basename(file) || file, kind: 'file', path: file })
+    }
+  }
+  return atts
+}
+
+/**
+ * 随插入消息送达的附件贴片（见 chat-inserts.ts）：parts 是那条工具结果回灌消息的内容块，msgIndex 是它在对话
+ * 记录里的下标。回灌消息里别的文本块（工具结果之外的通知、插入消息正文）都不以附件前缀开头，不会被误认。
+ */
+export function insertAttachmentChips(parts: ContentPart[], msgIndex: number): AttachmentChip[] {
+  return attachmentChips(parts, msgIndex)
+}
+
 /** 插入成员当前工作的任务消息（见 members.ts）：执行步骤里显示时去掉标记前缀。 */
 export function plainTaskText(text: string): string {
   return text.startsWith(MEMBER_TASK_MARKER) ? text.slice(MEMBER_TASK_MARKER.length) : text
@@ -330,38 +374,21 @@ export function toDisplayMessages(
         for (const p of parts) {
           if (p.type !== 'text') continue
           const inserted = insertBody(p.text)
-          if (inserted !== null) lastAssistant.blocks.push({ kind: 'insert', text: plainTaskText(inserted) })
+          if (inserted === null) continue
+          const attachments = insertAttachmentChips(parts, curIndex)
+          lastAssistant.blocks.push({
+            kind: 'insert',
+            text: plainTaskText(inserted),
+            ...(attachments.length ? { attachments } : {})
+          })
         }
       }
       return
     }
 
     // 真实用户消息（可能带附件）：附件在前、提问正文在最后一个 text 块
-    const atts: AttachmentChip[] = []
     const textParts = parts.filter((p): p is Extract<ContentPart, { type: 'text' }> => p.type === 'text')
-    parts.forEach((p, pi) => {
-      if (p.type === 'image')
-        atts.push({ name: p.name ?? '图片', kind: 'image', size: base64Bytes(p.data), ref: imageRef(curIndex, pi, p.data) })
-      else if (p.type === 'document') atts.push({ name: p.name ?? '文档', kind: 'document', size: base64Bytes(p.data) })
-    })
-    for (let i = 0; i < textParts.length - 1; i++) {
-      const tp = textParts[i]
-      if (tp.text.startsWith(ATTACH_TEXT_PREFIX)) {
-        // 注入形如「前缀 + 文件名\n```\n正文\n```」，大小按正文算。
-        const body = tp.text.slice(tp.text.indexOf('\n') + 1).replace(/^```\n/, '').replace(/\n```$/, '')
-        atts.push({
-          name: tp.text.slice(ATTACH_TEXT_PREFIX.length).split('\n')[0].trim(),
-          kind: 'text',
-          size: Buffer.byteLength(body, 'utf8')
-        })
-      } else if (tp.text.startsWith(ATTACH_FOLDER_PREFIX)) {
-        const dir = tp.text.slice(ATTACH_FOLDER_PREFIX.length).split('\n')[0].trim()
-        atts.push({ name: basename(dir) || dir, kind: 'folder', path: dir })
-      } else if (tp.text.startsWith(ATTACH_PATH_PREFIX)) {
-        const file = tp.text.slice(ATTACH_PATH_PREFIX.length).split('\n')[0].trim()
-        atts.push({ name: basename(file) || file, kind: 'file', path: file })
-      }
-    }
+    const atts = attachmentChips(parts, curIndex, textParts[textParts.length - 1])
     const question = textParts.length ? shownText(textParts[textParts.length - 1]) : ''
     out.push(userDisplay(question, atts))
     // 真实用户轮：断开 assistant 合并链，其后的 assistant 段另起新气泡（新头像）。
