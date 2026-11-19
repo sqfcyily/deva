@@ -413,6 +413,12 @@ export function deletePersona(id: string): void {
   }
   // 连自定义头像一起删：不留孤儿文件（旧版 makeId 会复用已删角色的 id，遗留的图曾挂到新角色脸上）。
   clearAvatarImage(id)
+  // 知识库目录（issue#65 档 0 约定、角色包导入会创建）一并删：与头像同等待遇，不留孤儿目录。
+  try {
+    rmSync(personaKnowledgeDir(id), { recursive: true, force: true })
+  } catch {
+    /* 忽略删除失败 */
+  }
   // 绑定该角色的定时任务改由默认角色 Deva 执行（连同其独占对话），任务照常运行。
   reassignTaskPersona(id, DEFAULT_PERSONA_ID)
   // 从技能 / MCP 的可用角色里剔除；只给它用的那些改回所有角色并停用。
