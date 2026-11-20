@@ -1,7 +1,7 @@
 /**
  * 版本控制：分支与变更状态、工作区菜单、提交对话框（含 AI 生成提交信息）。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -37,6 +37,7 @@ import { useDialog } from '../components/DialogProvider'
 import { useToast, type ToastOptions } from '../components/ToastProvider'
 import { Modal } from '../components/Modal'
 import { basename } from './shell-common'
+import { useGitStatus } from './use-git-status'
 import { type CtxEntry, ContextMenu } from './ContextMenu'
 
 /* ─────────────────────────── Git 快捷面板（IDEA 式点击浮出） ───────────────────────────
@@ -45,19 +46,6 @@ import { type CtxEntry, ContextMenu } from './ContextMenu'
  * 安全：focusRoot 在 fs:open-folder 时已 trustRoot，git:status 内部 assertInside——复用既有受信根，
  * 不新增任何越权面，也不弹权限框（与「全放行 + 静默硬底线」一致）。
  */
-
-/** git 是否可用：全应用只探一次（缓存 Promise），避免每次挂载都 spawn 一次 --version。 */
-let gitAvailablePromise: Promise<boolean> | null = null
-
-function probeGitAvailable(): Promise<boolean> {
-  if (!gitAvailablePromise) {
-    gitAvailablePromise = window.deva.git
-      .available()
-      .then((r) => r.available)
-      .catch(() => false)
-  }
-  return gitAvailablePromise
-}
 
 /** GitFailReason → 本地化文案；缺 key 时回落到通用「操作失败」。 */
 function gitReasonText(t: (k: string) => string, reason?: GitFailReason): string {
@@ -102,56 +90,6 @@ function isValidBranchName(raw: string): boolean {
   if (s.includes('..') || s.includes('@{') || s.includes('//') || s.includes('/.')) return false
   // eslint-disable-next-line no-control-regex
   return !/[\s~^:?*[\\\x00-\x1f\x7f]/.test(s)
-}
-
-interface GitState {
-  available: boolean
-  status: GitStatus | null
-  busy: boolean
-  refresh: () => Promise<void>
-}
-
-/**
- * 读取某工作区的 git 状态。不轮询（status 每次 spawn git 进程，且当前无文件监听）：
- * 只在「挂载 / 开菜单 / 每次写操作后」拉取。用 reqRef 防竞态——快速切换工作区时旧结果不覆盖新。
- */
-function useGitStatus(root: string | null): GitState {
-  const [available, setAvailable] = useState(false)
-  const [status, setStatus] = useState<GitStatus | null>(null)
-  const [busy, setBusy] = useState(false)
-  const reqRef = useRef(0)
-
-  const refresh = useCallback(async (): Promise<void> => {
-    const seq = ++reqRef.current
-    if (!root) {
-      setAvailable(false)
-      setStatus(null)
-      return
-    }
-    const ok = await probeGitAvailable()
-    if (seq !== reqRef.current) return
-    setAvailable(ok)
-    if (!ok) {
-      setStatus(null)
-      return
-    }
-    setBusy(true)
-    try {
-      const st = await window.deva.git.status(root)
-      if (seq !== reqRef.current) return
-      setStatus(st.isRepo ? st : null)
-    } catch {
-      if (seq === reqRef.current) setStatus(null)
-    } finally {
-      if (seq === reqRef.current) setBusy(false)
-    }
-  }, [root])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  return { available, status, busy, refresh }
 }
 
 /**

@@ -1,3 +1,4 @@
+import type { GitStatus } from '../shared/git-status'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { EffortLevel } from '../shared/effort'
 import type { UpdateState } from '../shared/update'
@@ -470,33 +471,7 @@ export interface TerminalExitPayload {
   exitCode: number
 }
 
-/** Git「线缆类型」（与 services/git.ts 对齐，按既定模式在 preload 内复述）。 */
-export type GitStatusLetter = 'M' | 'A' | 'D' | 'U' | 'R' | 'C' | 'T'
-export interface GitFileStatus {
-  path: string
-  rel: string
-  name: string
-  dir: string
-  letter: GitStatusLetter
-  staged: boolean
-  unstaged: boolean
-  conflicted: boolean
-  untracked: boolean
-}
-export interface GitStatus {
-  isRepo: boolean
-  root: string
-  branch: string | null
-  detached: boolean
-  upstream: string | null
-  ahead: number
-  behind: number
-  remotes: string[]
-  mergeInProgress: boolean
-  staged: GitFileStatus[]
-  unstaged: GitFileStatus[]
-  conflicts: GitFileStatus[]
-}
+export type { GitStatusLetter, GitFileStatus, GitStatus } from '../shared/git-status'
 export interface GitDiffLine {
   type: 'ctx' | 'add' | 'del' | 'hunk'
   oldNo?: number
