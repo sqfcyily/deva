@@ -232,10 +232,9 @@ const zhCN: MessageTree = {
         max: '不计成本地深想，最慢最贵'
       },
       on: '开启',
-      onHint: '开启思考（该模型无法设置思考等级）',
-      unsupported: '不支持'
+      onHint: '开启思考（该模型无法设置思考等级）'
     },
-    // 输入框模型面板：上下文占用 + 模型列表 + 思考等级（redesign/ModelPanel.tsx）
+    // 输入框上下文圆环与卡片（redesign/ContextRing.tsx）
     panel: {
       context: '上下文容量',
       approx: '约 {n}',
@@ -1767,8 +1766,7 @@ const en: MessageTree = {
         max: 'Thinks as hard as it can; slowest and most expensive'
       },
       on: 'On',
-      onHint: 'Turn thinking on (this model has no thinking levels)',
-      unsupported: 'Not supported'
+      onHint: 'Turn thinking on (this model has no thinking levels)'
     },
     panel: {
       context: 'Context',

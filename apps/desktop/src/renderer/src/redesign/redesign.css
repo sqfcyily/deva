@@ -2790,10 +2790,9 @@ button.cf-mask__pill:hover {
   background: var(--bg-hover);
   color: var(--fg);
 }
-/* 模型面板吸右：占尽左侧空白，把「模型面板 + 发送键」一并推到工具条右端，
-   模型切换恰落在发送键之前（📎 / 工作区 chip 仍留在左侧）。仅作用于对话输入框，
-   不影响任务表单的同款选择器。面板的样式见 model-panel.css。 */
-.cf-composer .model-pick {
+/* 模型区（上下文圆环 + 模型 + 思考等级）吸右：占尽左侧空白，把「模型区 + 发送键」一并推到工具条右端
+   （📎 / 工作区 chip 仍留在左侧）。仅作用于对话输入框，不影响任务表单的同款选择器。样式见 model-panel.css。 */
+.cf-composer .cf-mp {
   margin-left: auto;
 }
 .cf-send {
