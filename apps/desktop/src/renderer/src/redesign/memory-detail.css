@@ -1,0 +1,101 @@
+/*
+ * 记忆详情编辑页（MemoryDetail.tsx）与角色资料页的「记忆」标签页（RoleMemoryTab.tsx）。
+ * 详情页沿用 .cf-editor 的内边距与 .cf-editor__actions 的按钮行；正文框吃掉剩余高度，不整页滚动。
+ */
+.cf-editor.cf-memdetail {
+  gap: var(--space-3);
+  overflow: hidden;
+}
+/* 类型：四选一的分段按钮，等宽铺满 */
+.cf-memtypes {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+}
+.cf-memtypes__btn {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cf-memtypes__btn:hover {
+  color: var(--fg);
+}
+.cf-memtypes__btn.is-on {
+  background: var(--bg);
+  color: var(--fg);
+  font-weight: 600;
+  box-shadow: var(--shadow-xs);
+}
+.cf-memdetail > .cf-input {
+  flex: none;
+}
+.cf-memdetail__body {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.7;
+  resize: none;
+  outline: none;
+}
+.cf-memdetail__body:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+/* 删除：按钮行最左，平时灰字，悬停转红 */
+.cf-memdetail__del {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.cf-memdetail__del:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+.cf-memdetail__del:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 角色资料页里打开的记忆详情弹窗：固定高度，正文框有足够空间 */
+.cf-modal.is-editor.cf-memmodal {
+  height: min(470px, 82vh);
+}
+
+/* 角色资料页「记忆」标签页的行：同「能力」行（.cf-cap），右侧是更新时间 */
+.cf-memrow__time {
+  font-size: 11px;
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
