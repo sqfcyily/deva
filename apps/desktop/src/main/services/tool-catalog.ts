@@ -1,6 +1,6 @@
 /**
- * 内置工具目录：每个内置工具的权限分类、路径语义与适用范围集中在这一张表里。原先散在 chat.ts / tools.ts /
- * sealed.ts 的几份名单（子智能体 / 定时任务 / 成员会话不给哪些、哪些可并发、闸门怎么分类、哪些带路径）
+ * 内置工具目录：每个内置工具的权限分类与适用范围集中在这一张表里。原先散在 chat.ts / tools.ts /
+ * sealed.ts 的几份名单（子智能体 / 定时任务 / 成员会话不给哪些、哪些可并发、闸门怎么分类）
  * 都由它派生。
  *
  * 新增内置工具：规格写在 tools.ts（或对应模块）、执行写进 tools.ts 的 toolHandlers（循环内特判的除外），
@@ -19,11 +19,6 @@ interface ToolTraits {
   category?: BuiltinCategory
   /** 同一步里全部调用都是这类工具时并发执行：无副作用、彼此无先后依赖（见工具循环的 readRuns）。 */
   parallel?: true
-  /**
-   * path 参数的语义（挂载工作区提示卡的判据，见 tools.needsWorkspaceMount）：file = 必填的单文件落点，
-   * 相对写法以项目根为基准；scan = 省略即隐含项目根的扫描类。
-   */
-  path?: 'file' | 'scan'
   /** false = 子智能体不给：交互 / 创建 / 管理类，或只对主对话有意义（待办清单、交付物、项目成员）。 */
   subagent?: false
   /** false = 定时任务等无人值守的回合不给：要等用户回答或批准、要用户在名片上确认、或会改写用户记忆。 */
@@ -37,17 +32,17 @@ interface ToolTraits {
 
 const CATALOG: Record<string, ToolTraits> = {
   // ── 读 ──
-  read_file: { category: 'read', parallel: true, path: 'file' },
-  list_dir: { category: 'read', parallel: true, path: 'scan' },
-  glob: { category: 'read', parallel: true, path: 'scan' },
-  grep: { category: 'read', parallel: true, path: 'scan' },
+  read_file: { category: 'read', parallel: true },
+  list_dir: { category: 'read', parallel: true },
+  glob: { category: 'read', parallel: true },
+  grep: { category: 'read', parallel: true },
   web_fetch: { category: 'read', parallel: true },
   // 读记忆：主进程直读 ~/.deva 下的全局 / 项目记忆，无路径入参。
   memory_read: { category: 'read', parallel: true },
 
   // ── 写 / 执行 ──
-  write_file: { category: 'edit', path: 'file' },
-  edit_file: { category: 'edit', path: 'file' },
+  write_file: { category: 'edit' },
+  edit_file: { category: 'edit' },
   run_command: { category: 'exec' },
   // 内置浏览器会提交表单、改变网页状态，同归执行类（定时任务照常可用）。
   browser: { category: 'exec' },
@@ -61,6 +56,8 @@ const CATALOG: Record<string, ToolTraits> = {
   skill: { category: 'read', subagent: false },
   tool_search: { category: 'read' },
   run_subagent: { category: 'read', subagent: false },
+  // 请用户挂载工作区（见 workspace-mount.ts）：要等用户选，子智能体与定时任务不给；成员会话给（卡片出现在主对话里）。
+  mount_workspace: { category: 'read', subagent: false, unattended: false },
   send_to_subagent: { category: 'read', subagent: false },
 
   // ── 创建 / 提议类：要用户在名片上确认，或直接造持久实体 ──
@@ -93,11 +90,6 @@ const namesWhere = (pred: (t: ToolTraits) => boolean): ReadonlySet<string> =>
 /** 内置工具的闸门分类；未登记或未填 = undefined（由调用方按 mcp 处理）。 */
 export function builtinCategory(name: string): BuiltinCategory | undefined {
   return traitsOf(name)?.category
-}
-
-/** 内置工具 path 参数的语义；不带路径的为 undefined。 */
-export function pathKind(name: string): 'file' | 'scan' | undefined {
-  return traitsOf(name)?.path
 }
 
 /** 子智能体不给的工具（普通子智能体的工具表里没有；fork 沿用主对话工具表，靠工具循环里 depth > 0 拦下）。 */

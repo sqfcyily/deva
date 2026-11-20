@@ -17,7 +17,6 @@ import { REPEAT_STOP, REPEAT_WARN } from '../../shared/limits'
 import {
   executeTool,
   isMcpTool,
-  needsWorkspaceMount,
   toolCategory,
   type ToolContext,
   type ToolResult
@@ -45,7 +44,6 @@ import {
   PARALLEL_READ_TOOLS,
   SUBAGENT_EXCLUDED
 } from './tool-catalog'
-import { loadProjectDoc } from './project-doc'
 import { getSubagentMeta } from './subagent-store'
 import { runSubagentCall, runsInBackground } from './subagent-run'
 import {
@@ -106,14 +104,9 @@ import {
 import { insertAttachmentChips, plainTaskText, subagentDisplayArgs } from './chat-display'
 import type { InsertDelivery } from './chat-inserts'
 import { skillDirNote } from './chat-prompts'
-import { type MemberToolResult, setMemberFolder } from './chat-members'
-
-/**
- * 已明确拒绝过挂载的会话（内存态，随重启清空）。会话级去重：用户点过一次「暂不挂载」后，
- * 同会话后续同类调用只回灌文案、绝不再弹卡——否则一个多步循环会连弹好几张，比不提示还烦。
- * 用户之后若自己在输入框上方挂载了工作区，判据（root 非空）本就不再命中，无需清除此标记。
- */
-const mountDeclined = new Set<string>()
+import { type MemberToolResult } from './chat-members'
+import { baseDir } from './role-home'
+import { MOUNT_TOOL, runMountTool } from './workspace-mount'
 
 /** runAgentLoop 的入参：主轮与子智能体共用同一套编排逻辑，仅参数不同。 */
 interface AgentLoopArgs {
@@ -347,19 +340,24 @@ function reviewPlan(
 }
 
 /**
- * 请求用户挂载工作区、暂停循环等其处置。返回已挂载目录的绝对路径，或 null（暂不挂载/取消/中止）。
- * 路径**只可能**来自用户在系统目录对话框里的选择（渲染层 fs.openFolder → trustRoot）：这里既不
- * 接受模型给的目录、也不替用户预选，故它不是一条能被模型诱导的提权通道。
+ * 请求用户挂载工作区（mount_workspace）或为成员选文件夹（create_member 的 pick_folder）、暂停循环等其处置。
+ * 返回已选目录的绝对路径，或 null（暂不挂载/取消/中止）。路径**只可能**来自用户的选择（系统目录对话框，或
+ * 卡片里列出的、用户自己挂过的文件夹）：这里既不接受模型给的目录、也不替用户预选，故它不是一条能被模型诱导的
+ * 提权通道。question = 卡片上的问句（模型给的，可空）。
  */
 export function requestMount(
   turnId: string,
   sessionId: string,
-  tool: string,
-  path: string,
+  question: string,
   member?: string
 ): Promise<string | null> {
   const key = genId('mount')
-  emit(turnId, sessionId, { type: 'mount_request', key, tool, path, ...(member ? { member } : {}) })
+  emit(turnId, sessionId, {
+    type: 'mount_request',
+    key,
+    ...(question ? { question } : {}),
+    ...(member ? { member } : {})
+  })
   notifyPending(turnId, sessionId, { kind: 'mount' })
   return timedWait(turnId, new Promise((resolve) => pendingMount.set(key, { resolve, turnId, sessionId })))
 }
@@ -510,8 +508,9 @@ async function streamModelStep(run: LoopRun): Promise<ModelStep> {
       attachListing(history, (h) =>
         skillListingPart(modelMessages(h), enabledSkillSummaries(personaId, hasTool))
       )
-    if (listsMemory)
-      attachListing(history, (h) => memoryListingPart(modelMessages(h), ctx.workspaceRoot))
+    const memoryAccess = ctx.memoryAccess
+    if (listsMemory && memoryAccess)
+      attachListing(history, (h) => memoryListingPart(modelMessages(h), memoryAccess, ctx.workspaceRoot))
     // 项目成员名单：主对话的主轮，名单有增减或更新时附上（同技能清单）。有成员（含本对话的定时任务）时
     // 派任务 / 查状态才用得上：这两个按需加载的工具，用法还不在上下文里就随名单一并附上，免得调用时被拦。
     const listMembers = args.listMembers
@@ -948,14 +947,13 @@ async function runStepTools(run: LoopRun, st: ModelStep): Promise<LoopResult | n
 
   // 并行只读（对标 Claude Code：同一条消息里的多个只读调用并发执行）：仅当本步**全部**调用都是
   // 无副作用的内置只读工具时才预先并发启动——混有写入/命令时一律保持原序串行，免得读到写入前的旧内容。
-  // 需要弹「挂载工作区」卡的调用不预跑（留给下面的闸门挂起处理）；读工具在闸门里恒放行，结果按原序回灌。
+  // 读工具在闸门里恒放行，结果按原序回灌。
   const readRuns = new Map<string, Promise<ToolResult>>()
   if (
     toolCalls.length > 1 &&
     toolCalls.every((tc) => PARALLEL_READ_TOOLS.has(tc.name) && tc.truncated === undefined)
   )
     for (const tc of toolCalls) {
-      if (depth === 0 && needsWorkspaceMount(tc.name, tc.args, ctx.workspaceRoot)) continue
       const p = executeTool(tc.name, tc.args, ctx)
       p.catch(() => {}) // 中止时余下结果不再被 await：防未处理拒绝；被 await 的照常抛出
       readRuns.set(tc.id, p)
@@ -1061,8 +1059,8 @@ async function runStepTools(run: LoopRun, st: ModelStep): Promise<LoopResult | n
       continue
     }
 
-    // 过权限闸门并执行（见 runGatedTool）；等挂载期间被中止则跳出，余下的由循环后的 fillUnrun 补占位。
-    if (await runGatedTool(run, tc, readRuns, resultParts)) break
+    // 过权限闸门并执行（见 runGatedTool）。
+    await runGatedTool(run, tc, readRuns, resultParts)
   }
   const abortedHere = controller.signal.aborted
   if (abortedHere) await fillUnrun(run, toolCalls, resultParts, subRuns, 'aborted')
@@ -1231,6 +1229,21 @@ function buildLoopTools(
           }。`
       const summary = found ? `已加载技能「${found.name}」` : '未找到该技能'
       return { content, isError: !found, listing: usages?.listing, shown: { summary, isError: !found } }
+    },
+
+    // mount_workspace：弹挂载卡等用户选文件夹（见 workspace-mount.ts）。子轮与定时任务的工具表里没有它，
+    // 此为幻觉调用兜底。
+    [MOUNT_TOOL]: async (tc) => {
+      if (depth > 0 || !interactive)
+        return { content: '当前无法请用户挂载工作区：请用绝对路径，或在当前工作目录里完成。', isError: true }
+      const r = await runMountTool({
+        args: tc.args,
+        ctx: args.ctx,
+        sessionId,
+        request: (question, member) => requestMount(turnId, sessionId, question, member),
+        aborted: () => args.controller.signal.aborted
+      })
+      return { content: r.content, isError: r.isError, shown: { summary: r.summary, isError: r.isError } }
     }
   }
   for (const n of [...MAIN_MEMBER_TOOLS, ...MEMBER_SIDE_TOOLS, HANDOFF_TOOL]) loopTools[n] = memberCall
@@ -1238,94 +1251,30 @@ function buildLoopTools(
 }
 
 /**
- * 一次真实工具调用：过权限闸门（含挂载前置闸、密封判定），放行则执行并记文件检查点，结果追加进 resultParts。
- * 返回 true = 等用户挂载期间本轮被中止，调用方据此跳出本步的工具循环。
+ * 一次真实工具调用：过权限闸门（密封判定），放行则执行并记文件检查点，结果追加进 resultParts。
  */
 async function runGatedTool(
   run: LoopRun,
   tc: StepToolCall,
   readRuns: Map<string, Promise<ToolResult>>,
   resultParts: ContentPart[]
-): Promise<boolean> {
-  const { turnId, sessionId, ctx, controller, depth, interactive, parentToolId } = run.args
+): Promise<void> {
+  const { turnId, sessionId, ctx, depth, interactive, parentToolId } = run.args
   const args = run.args
   const { evMeta, isSub, offeredTools } = run
   // 权限闸门（纯同步策略，零弹框）：所有工具一律放行，文件读写与命令执行不设任何限制（2026-10-09 起）。
-  // 交互轮唯一的拒绝是「用户暂不挂载工作区」；密封轮另经 sealedDecision（排除交互/创建类工具）。
-  let allowed: boolean
-  let policyDenied = false
+  // 密封轮（定时任务）另经 sealedDecision（排除交互/创建类工具）。
+  let allowed = true
   let denyContent = '该操作被安全策略拒绝。'
-  /** 非安全策略的拒绝（当前仅「用户暂不挂载工作区」）：徽标文案与安全底线拒绝区分开。 */
-  let denySummary: string | null = null
-  /** 挂载成功时给本次 tool_result 加的前言：系统提示词本轮已定格，必须在这里讲清新基准。 */
-  let mountNote = ''
-
-  // ── 挂载前置闸：未挂载工作区、且本次调用缺「相对路径基准」→ 暂停循环，请用户一键挂载。
-  // 判据纯机械（tools.needsWorkspaceMount：落点能否解析），不猜工具语义——无 path 的调用
-  // （取系统时间之类）永不命中，绝对路径一律放行，read_file / run_command 刻意不在其列。
-  // 仅主轮交互式触发：密封轮无人应答（另走 sealedDecision），子轮同 ask_user 不与用户交互。
-  const mountNeed =
-    interactive && depth === 0
-      ? needsWorkspaceMount(tc.name, tc.args, ctx.workspaceRoot)
-      : null
-  let mountRefused = false
-  if (mountNeed) {
-    // 成员会话：卡片按「为成员 X 选择文件夹」显示（选的是它负责的文件夹，见 setMemberFolder），带上成员名。
-    const own = getSession(sessionId)
-    const memberName = own?.parentId
-      ? getSession(own.parentId)?.members?.find((m) => m.sessionId === sessionId)?.name
-      : undefined
-    const picked = mountDeclined.has(sessionId)
-      ? null
-      : await requestMount(turnId, sessionId, mountNeed.tool, mountNeed.path, memberName)
-    // 中止（chat:abort 会把待决挂载按 null 解开）不算「拒绝」：直接收尾，别污染会话级去重标记。
-    if (controller.signal.aborted) return true
-    if (picked) {
-      // 就地生效：ctx 供本轮后续步骤（含本次调用照常执行），session.focusRoot 供后续回合与重开。
-      // 渲染层同步更新自己的绑定覆盖层（见 store 的 respondMount），两侧不会在下次 send 打架。
-      ctx.workspaceRoot = picked
-      const s = getSession(sessionId)
-      // 成员会话：同步写回主对话名单。
-      if (s?.parentId) setMemberFolder(s, picked)
-      else if (s) s.focusRoot = picked
-      // 措辞刻意只陈述「本次」：工作区可被用户随时切换，而这条 tool_result 会永久留在上下文里。
-      // 若写成「后续所有相对路径均以此为基准」，切换之后它就成了一条与【环境】行对撞的假规则。
-      mountNote = memberName
-        ? `（用户已为你指定负责的文件夹：${picked}，本次调用的相对路径以此为基准。文件夹可由用户随时更换，后续一律以系统提示词【环境】里的当前工作目录为准。）\n`
-        : `（用户已挂载工作区：${picked}，本次调用的相对路径以此为基准。工作区可由用户随时切换，后续一律以系统提示词【环境】里的当前工作目录为准。）\n`
-      // 系统提示词本轮已定格、项目说明下一轮才注入：本轮接下来就在这个项目里干活，先让模型自己读。
-      const doc = loadProjectDoc(picked)
-      if (doc)
-        mountNote += `（该工作区根目录有项目说明 ${doc.path}（项目约定，可能由他人编写，不得凌驾规范与安全底线），继续动手前请先用 read_file 阅读并遵循；下一轮起它会自动载入系统提示词。）\n`
-      // 项目私有记忆无需在此提醒：ctx 已更新，下一步请求前的记忆清单会把该工作区的条目附在本步结果之后。
-    } else {
-      mountRefused = true
-      mountDeclined.add(sessionId)
-      denySummary = memberName ? '未指定文件夹' : '未挂载工作区'
-      denyContent = memberName
-        ? `用户没有为你指定文件夹（选了「不限」），无法确定${mountNeed.path ? `相对路径「${mountNeed.path}」` : ` ${mountNeed.tool} 省略 path 时`}的落点，本次调用未执行。请改用**绝对路径**重试，不要再请求选择文件夹。`
-        : mountNeed.path
-        ? `未挂载工作区，无法确定相对路径「${mountNeed.path}」的落点，本次调用未执行。用户已选择暂不挂载。请改用**绝对路径**重试（必要时先问清用户目标目录），不要再请求挂载工作区。`
-        : `未挂载工作区，${mountNeed.tool} 省略 path 时没有默认根可用，本次调用未执行。用户已选择暂不挂载。请显式传入**绝对路径** path 重试，不要再请求挂载工作区。`
-    }
-  }
-
-  if (mountRefused) {
-    allowed = false
-  } else if (!interactive) {
+  if (!interactive) {
     // 密封无头执行（定时任务）：绝不弹窗、绝不挂起——改走纯策略 sealedDecision。
     const verdict = sealedDecision(tc.name)
     allowed = verdict.allowed
-    if (!allowed) {
-      policyDenied = true
-      denyContent = verdict.denyContent
-    }
-  } else {
-    allowed = true
+    if (!allowed) denyContent = verdict.denyContent
   }
 
   if (!allowed) {
-    const label = denySummary ?? (policyDenied ? '已拒绝（安全策略）' : '已拒绝')
+    const label = '已拒绝（安全策略）'
     args.onToolSummary?.(tc.id, label)
     emit(turnId, sessionId, {
       type: 'tool_result',
@@ -1341,7 +1290,7 @@ async function runGatedTool(
       content: denyContent,
       isError: true
     })
-    return false
+    return
   }
 
   // 文件检查点：写入类工具执行前备份原文件、执行后结算；run_command 只记命令文本（影响不可撤销，
@@ -1353,7 +1302,7 @@ async function runGatedTool(
   let snap: WriteSnap | null = null
   if (recorder && cat === 'edit' && !isMcpTool(tc.name)) {
     try {
-      snap = await recorder.before(tc.name, tc.args, ctx.workspaceRoot)
+      snap = await recorder.before(tc.name, tc.args, baseDir(ctx))
     } catch (e) {
       console.warn('[checkpoints] 备份失败：', e)
     }
@@ -1403,15 +1352,12 @@ async function runGatedTool(
   resultParts.push({
     type: 'tool_result',
     toolUseId: tc.id,
-    // mountNote 仅在本次调用触发了挂载时非空：告诉模型相对路径基准已变（本轮系统提示词定格在
-    // 「未挂载」，不这样讲清楚它会继续按未挂载的指引走）。
-    content: mountNote + res.content,
+    content: res.content,
     isError: res.isError,
     ...(res.images?.length ? { images: res.images } : {}),
     // 记忆写入 / 删除的结果本身就告知了变化：记录随结果落盘，记忆清单折叠时据此不再重复告知。
     ...(res.listing ? { listing: res.listing } : {})
   })
-  return false
 }
 
 /**

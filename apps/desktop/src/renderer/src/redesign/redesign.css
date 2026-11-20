@@ -4207,13 +4207,14 @@ button.cf-mask__pill:hover {
   border-radius: var(--radius-full);
   background: var(--bg-elevated);
   color: var(--fg);
+  font-family: inherit;
   font-size: 12.5px;
-  cursor: default;
+  text-align: left;
+  cursor: pointer;
   user-select: none;
   transition: border-color 0.12s ease;
 }
-/* 文字行高 = 标签内高（26 − 上下边框），与编辑态输入框同高同行高：两态文字行盒都从内沿起排、基线一致，
-   进入编辑时不再上下跳（原先 span 行盒偏移 3.625px、输入框 3px，小数坐标下各自取整会差出 1 个物理像素）。 */
+/* 文字行高 = 标签内高（26 − 上下边框），文字行盒从内沿起排，小数坐标下也不会上下偏一个像素。 */
 .cf-me__tagtext {
   min-width: 0;
   line-height: 24px;
@@ -4226,81 +4227,10 @@ button.cf-mask__pill:hover {
   outline: none;
   border-color: var(--accent);
 }
-/* 悬停工具条：portal 到 body、fixed 定位在标签正上方（贴近窗口顶部时改下方），不占标签本身的位置。
-   层级高于模态背景；单钮悬停再染色（编辑蓝、删除红）。 */
-.cf-me__tag.is-hot {
-  border-color: var(--accent);
-}
-.cf-me__tagpop {
-  position: fixed;
-  z-index: 70;
-  translate: -50% -100%;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-full);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow);
-  animation: cf-me-pop 0.12s ease;
-}
-.cf-me__tagpop.is-below {
-  translate: -50% 0;
-}
-@keyframes cf-me-pop {
-  from {
-    opacity: 0;
-  }
-}
-.cf-me__tagbtn {
-  width: 24px;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--fg-subtle);
-  cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-.cf-me__tagbtn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--info) 14%, transparent);
-  color: var(--info);
-}
-.cf-me__tagbtn.is-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
-  color: var(--danger);
-}
-.cf-me__tagbtn:disabled {
-  cursor: default;
-  opacity: 0.5;
-}
-.cf-me__tag.is-editing {
-  padding: 0 4px;
-  border-color: var(--accent);
-}
 .cf-me__tagsempty {
   align-self: center;
   color: var(--fg-subtle);
   font-size: 12.5px;
-}
-/* 输入框填满标签（标签宽度由 JS 按内容算，见 editBoxWidth），可被标签上限压缩（min-width:0），
-   超长文字在框内横向滚动而非撑开标签。 */
-.cf-me__tagedit {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  height: 24px;
-  padding: 0 8px;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--fg);
-  font: inherit;
-  line-height: 24px;
 }
 /* 环形布局：头像居中，每页 12 条沿椭圆环绕（槽位坐标由 JS 算，这里只负责居中锚点）。
    居中用独立的 translate 属性而非 transform —— 翻页动画经 WAAPI 改 transform，两者叠加互不覆盖。 */
@@ -4320,10 +4250,6 @@ button.cf-mask__pill:hover {
 .cf-me__orbit > .cf-me__tag:hover,
 .cf-me__orbit > .cf-me__tag:focus-within {
   z-index: 3;
-}
-/* 编辑中的宽度与位置由 JS 算并夹紧在舞台内（见 MemoryOrbit slotStyle）。 */
-.cf-me__orbit > .cf-me__tag.is-editing {
-  z-index: 4;
 }
 .cf-me__orbitout {
   position: absolute;

@@ -467,12 +467,11 @@ export type ChatStreamEvent =
   /** 本次 todo_write 令清单全部完成：在对话流里落一张「已完成清单」卡（与重开时同形）。 */
   | { type: 'todo_done'; id: string; title: string; items: TodoItem[] }
   /**
-   * 请求挂载工作区：本次工具调用缺相对路径基准（未挂载 + 写入类相对路径 / 扫描类省略 path），
-   * 暂停循环等用户一键挂载。tool/path 仅供卡片说明「为什么需要」。**不是模型发起的工具**——
-   * 由权限闸门前置判定生成（判据见 tools.needsWorkspaceMount），故模型既不占工具槽也无从滥用。
+   * 请求挂载工作区：模型调用 mount_workspace（用户要处理某个已有的项目却没挂载），暂停循环等用户选文件夹。
+   * question = 卡片上的问句（模型给的，可缺省）。目录只能由用户选，模型给不了路径。
+   * member：为成员选择它负责的文件夹（create_member 的 pick_folder，或成员会话里的 mount_workspace）。
    */
-  /** member：为成员选择它负责的文件夹（create_member 的 pick_folder），而不是挂载本对话的工作区。 */
-  | { type: 'mount_request'; key: string; tool: string; path: string; member?: string }
+  | { type: 'mount_request'; key: string; question?: string; member?: string }
   /** 用量。input 为总提示 token（含缓存命中/写入）；cacheRead/cacheWrite 供观测缓存是否生效。 */
   | { type: 'usage'; input: number; output: number; cacheRead?: number; cacheWrite?: number }
   /** 连接中断、正在自动重连（transient；attempt/max 供 UI 显示进度）。 */

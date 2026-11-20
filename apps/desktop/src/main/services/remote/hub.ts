@@ -16,6 +16,7 @@ import {
   upsertPersona,
   type PersonaRecord
 } from '../personas'
+import { personaWorkspace } from '../role-home'
 import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from '../model-resolve'
 import { previewSchedule } from '../tasks'
 import type { TaskCreateInput } from '../tasks-types'
@@ -848,8 +849,7 @@ function onBusEvent({ turnId, sessionId, event }: ChatEventPayload): void {
               key: event.key,
               sessionId,
               sessionTitle: title,
-              tool: event.tool,
-              path: event.path,
+              ...(event.question ? { question: event.question } : {}),
               state: 'open',
               ...(event.member ? { member: event.member } : {})
             }
@@ -1121,7 +1121,8 @@ function genSessionId(): string {
 export function createSessionFor(channel: ChannelId, personaId?: string, sid = genSessionId()): string {
   const persona = personaId ? getPersona(personaId) : null
   // 与桌面「新建对话」同形：立即建档（左侧列表可见），模型快照角色偏好（空 = 跟随默认）。
-  ensureSession(sid, { personaId, focusRoot: null, model: persona?.model || undefined })
+  // 角色设了工作区就一开始挂载它（同桌面新建对话，见 role-home.ts personaWorkspace）。
+  ensureSession(sid, { personaId, focusRoot: personaWorkspace(personaId), model: persona?.model || undefined })
   saveSession(sid)
   // 桌面左侧列表只在回合开始时刷新，/new 建的空对话不发消息就一直看不到：单独通知一次。
   publishSessionsChanged()

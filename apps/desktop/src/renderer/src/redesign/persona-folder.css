@@ -1,0 +1,52 @@
+/*
+ * 角色编辑页「默认工作区」一栏（PersonaFolderField.tsx）：一行——图标 + 路径（过长省略）+（换成项目时）恢复默认 + 更换…。
+ * 外框与同表单的 .cf-input 同高、同边框、同底色；换成项目文件夹后图标转主题色。
+ */
+.cf-pfolder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 34px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 13px;
+}
+.cf-pfolder__ic {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+.cf-pfolder.is-project .cf-pfolder__ic {
+  color: var(--accent);
+}
+.cf-pfolder__path {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cf-pfolder__path.is-muted {
+  color: var(--fg-subtle);
+}
+/* 行内按钮：比输入框矮一截，整行仍是 34px */
+.cf-pfolder__btn {
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.cf-pfolder__btn:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}

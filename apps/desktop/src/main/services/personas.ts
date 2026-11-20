@@ -16,6 +16,7 @@ import { DEFAULT_PERSONAS, LEGACY_PROMPT_HASHES, type DefaultPersona } from './d
 import { fmScalar, fmString, parseFrontmatter } from './frontmatter'
 import { reassignTaskPersona } from './tasks'
 import { AUTO_SHAPE, legacyAutoShape } from '../../shared/avatar-shape'
+import { removeRoleMemory } from './memory'
 
 /**
  * Agent 提示词（Personas）服务：发现 / 解析 / 读写 `~/.deva/personas/<id>.md`（全局，与项目无关）。
@@ -65,6 +66,11 @@ export interface PersonaRecord {
   avatarImage: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认（见 model-resolve.ts）。 */
   model: string
+  /**
+   * 工作区（frontmatter `workspace`，绝对路径；空串 = 用角色的默认工作区，见 role-home.ts）。设了就是一个项目：
+   * 绑定此角色的新对话一开始就挂载它（见 role-home.ts personaWorkspace）。对话里的挂 / 卸只改那个对话，不回写角色。
+   */
+  workspace: string
   /** .md 正文 = 要追加进系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -77,6 +83,8 @@ export interface PersonaUpsertInput {
   description?: string
   avatar?: string
   model?: string
+  /** 可选：工作区（绝对路径；空串 = 改回默认工作区；缺省 = 保持原值）。 */
+  workspace?: string
   prompt?: string
   /** 可选：一并设置启用态（新建默认关）。 */
   enabled?: boolean
@@ -176,6 +184,7 @@ function parsePersona(id: string, raw: string, enabled: boolean, withImage: bool
     avatar: fmString(data, 'avatar'),
     avatarImage: withImage ? readAvatarImage(id) : '',
     model: fmString(data, 'model'),
+    workspace: fmString(data, 'workspace'),
     prompt: body.trim(),
     enabled
   }
@@ -245,6 +254,7 @@ function composePersonaMd(input: {
   description: string
   avatar: string
   model: string
+  workspace?: string
   prompt: string
 }): string {
   const lines = ['---', `name: ${fmScalar(input.name)}`]
@@ -252,6 +262,8 @@ function composePersonaMd(input: {
   // avatar 为 JSON 字符串（含引号/大括号），必须经 fmScalar 引号化 + 转义，方能安全存进 YAML 单行。
   if (input.avatar) lines.push(`avatar: ${fmScalar(input.avatar)}`)
   if (input.model) lines.push(`model: ${fmScalar(input.model)}`)
+  // 路径常含空格 / 中文，同样经 fmScalar 引号化；空 = 用默认工作区，不写该行（旧文件零差异）。
+  if (input.workspace) lines.push(`workspace: ${fmScalar(input.workspace)}`)
   lines.push('---', '', input.prompt.trim(), '')
   return lines.join('\n')
 }
@@ -262,12 +274,16 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
   let id = input.id && isSafeId(input.id) ? input.id : ''
   const isNew = !id
   if (!id) id = makeId(name)
+  // 工作区缺省 = 保持原值：只改头像、提示词的调用（pinAutoAvatarShapes 等）不会把它冲掉。
+  const workspace =
+    input.workspace !== undefined ? input.workspace.trim() : isNew ? '' : (getPersona(id)?.workspace ?? '')
 
   const md = composePersonaMd({
     name,
     description: (input.description ?? '').trim(),
     avatar: (input.avatar ?? '').trim(),
     model: (input.model ?? '').trim(),
+    workspace,
     prompt: input.prompt ?? ''
   })
 
@@ -291,6 +307,7 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
       avatar: (input.avatar ?? '').trim(),
       avatarImage: readAvatarImage(id),
       model: (input.model ?? '').trim(),
+      workspace,
       prompt: input.prompt ?? '',
       enabled: input.enabled === true
     }
@@ -347,6 +364,8 @@ export function deletePersona(id: string): void {
   }
   // 连自定义头像一起删：不留孤儿文件（旧版 makeId 会复用已删角色的 id，遗留的图曾挂到新角色脸上）。
   clearAvatarImage(id)
+  // 角色记忆随角色一起删（先备份到 personas/memory/memory-backups/，见 memory.ts）。
+  removeRoleMemory(id)
   // 绑定该角色的定时任务改由默认角色 Deva 执行（连同其独占对话），任务照常运行。
   reassignTaskPersona(id, DEFAULT_PERSONA_ID)
   // 从技能 / MCP 的可用角色里剔除；只给它用的那些改回所有角色并停用。

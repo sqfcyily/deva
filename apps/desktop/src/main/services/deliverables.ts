@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs'
 import { basename, dirname, extname, isAbsolute } from 'node:path'
 import type { DeliverableInfo } from '../../shared/deliverables'
 import { getSession } from './chat-store'
+import { roleHomeOf } from './role-home'
 
 /**
  * 交付卡（present_files）的操作：查看文件信息与缩略图、用默认应用打开、在文件夹中显示。
@@ -73,12 +74,14 @@ export function registerDeliverablesIpc(): void {
       Promise.all(
         deliveredPaths(sessionId, toolUseId).map(async (p) => {
           const st = await fs.stat(p).catch(() => null)
+          const home = roleHomeOf(dirname(p))
           return {
             path: p,
             name: basename(p),
             dir: dirname(p),
             size: st?.isFile() ? st.size : null,
-            openable: OPENABLE.has(extname(p).toLowerCase())
+            openable: OPENABLE.has(extname(p).toLowerCase()),
+            ...(home ? { home } : {})
           }
         })
       )

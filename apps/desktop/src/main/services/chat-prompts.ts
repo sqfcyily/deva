@@ -25,6 +25,14 @@ import {
 import { getMcpToolSpecs } from './mcp'
 
 /**
+ * 本轮的工作目录：root = 挂载的工作区（项目），home = 角色的默认工作区（没挂载时的相对路径基准，见 role-home.ts）。
+ */
+export interface WorkDir {
+  root: string | null
+  home: string | null
+}
+
+/**
  * 主智能体系统提示词，刻意分两块、职责不重叠：
  *  1) **系统默认提示词（规范）**：只声明本应用内的各类规范——环境、工具使用、执行与安全边界、决策/澄清、技能。
  *     **不含**身份、性格、语气、行文风格、能力范围等——那些一律交给「角色设定」，避免与角色冲突
@@ -33,16 +41,19 @@ import { getMcpToolSpecs } from './mcp'
  *     角色绝不能借此关闭「切勿用文字征求授权」「安全底线不可绕过」等铁律（前言明确框定这一边界）。
  */
 export function systemPrompt(
-  workspaceRoot: string | null,
+  dir: WorkDir,
   personas: { name: string; prompt: string }[] = [],
   memory: string[] = [],
   projectDoc: string[] = []
 ): string {
   // 挂载态那句的「历史目录一律作废」不是废话：工作区可在同一对话中途切换，而历史里的工具结果、
   // 旧的挂载提示、模型自己的行文全是旧根的绝对路径。本行每轮重建，必须被声明为唯一权威。
-  const loc = workspaceRoot
-    ? `当前工作目录：${workspaceRoot}。用户可随时切换工作区——历史消息里出现过的其它目录一律作废，恒以本行为准。`
-    : '当前未挂载工作区（全机通用助手）：文件与命令工具照常可用。涉及某个项目的读写与扫描请直接按**相对路径**发起——系统会自动弹出「挂载工作区」卡片请用户一键选定目录，选定后该目录即成为本对话的相对路径基准（不必用文字索要路径，也不必先问「要不要挂载」）；用户若选择「暂不挂载」，再改用绝对路径继续。run_command 的工作目录为用户主目录。不要因「未打开项目」而拒绝执行。'
+  // 未挂载那句：默认工作区只放 Deva 做出来的文件，用户已有的项目不在这里——要处理它们由模型调用 mount_workspace 请用户挂载。
+  const loc = dir.root
+    ? `当前工作目录：${dir.root}。用户可随时切换工作区——历史消息里出现过的其它目录一律作废，恒以本行为准。`
+    : dir.home
+      ? `当前未挂载工作区，当前工作目录是你的默认工作区：${dir.home}（专门存放你为用户做出来的文件，第一次写入时自动创建；用户可随时挂载工作区——历史消息里出现过的其它目录一律作废，恒以本行为准）。相对路径与 run_command 都以它为准；产出的文件多时按任务建子文件夹整理。用户要处理某个已有的项目或文件夹、却没说在哪时，调用 mount_workspace 请用户挂载（不要用文字索要路径）；用户给了完整路径或指名了位置（桌面、下载等）就直接用绝对路径。不要因「未打开项目」而拒绝执行。`
+      : '当前未挂载工作区：文件与命令工具照常可用，读写文件请使用**绝对路径**。'
   // 技能目录写实际路径而非 ~/.deva：DEVA_HOME 可覆盖；路径进程内恒定，不破坏提示缓存前缀。
   const skillsRoot = skillsDir()
   // ── ① 系统默认提示词：纯规范。开场句仅交代运行环境与「身份/风格见角色设定」，不作任何身份/风格规定。
@@ -51,7 +62,7 @@ export function systemPrompt(
       ? '你运行在 Deva 桌面应用中，可通过工具读取/写入文件、执行命令、加载技能等来完成用户请求。以下是你在本应用内必须始终遵守的规范；你的身份、性格、语气与行文风格由后文的「角色设定」决定，本段不作规定。'
       : '你是 Deva，一个运行在用户桌面上的 AI 助手，可通过工具读取/写入文件、执行命令、加载技能等来完成用户请求。以下是你在本应用内必须始终遵守的规范。',
     `【环境】${loc}`,
-    '【路径约定】默认用**相对路径**（相对上面的当前工作目录）：落点始终由应用按当前挂载的工作区解析，你无需记忆基准目录，也不会被历史消息里的旧目录带偏。只有当目标明确在工作区之外时才用绝对路径——用户指名了桌面、主目录、系统某处或另一个项目（`~/` 表示用户主目录）。切勿把历史消息里出现过的绝对路径当作当前工作目录的依据；未挂载工作区时也照常按相对路径发起，由挂载卡片解决基准问题。',
+    '【路径约定】默认用**相对路径**（相对上面的当前工作目录）：落点始终由应用按当前工作目录解析，你无需记忆基准目录，也不会被历史消息里的旧目录带偏。只有当目标明确在当前工作目录之外时才用绝对路径——用户指名了桌面、主目录、系统某处或另一个项目（`~/` 表示用户主目录）。切勿把历史消息里出现过的绝对路径当作当前工作目录的依据。',
     '【问与做】先分清用户是在提问还是在交代任务：用户问问题、征求意见或评估（如「你觉得怎么样」「这里有什么问题」「能不能这样做」）时，给出你的回答与建议即可，不要擅自动手改文件或执行有副作用的操作——需要的话在回答末尾提议下一步，等用户示意再做；用户明确要你做某事时，直接动手把它做完。',
     '【工具使用】动手前先了解现状：已知具体文件/符号时直接用 read_file / grep 等查看，面广时可交给子智能体（run_subagent）；查找与阅读请用 glob / grep / read_file / list_dir，不要用 run_command 跑 find、grep、cat、ls 代替；write_file 会覆盖整个文件，务必先读后写、保留无关内容。单次回复有输出长度上限：大文件按 write_file 的说明分段写入；完整文档、长篇代码这类很长的产出宜写入文件分段完成，而不是在一条回复里整篇输出。需要动手时直接调用相应工具，不要只声明打算做什么便停下等待确认；若某次调用失败，回灌结果会写明原因——据此改道或如实说明，切勿原样反复重试。',
     '【并行调用】一次回复里可以同时发起多个工具调用。彼此没有依赖的调用（如同时读几个文件、同时搜几个关键词、同时看几个目录）务必在**同一次回复里一并发出**，只读调用会并发执行，省去逐个往返；只有后一步要用到前一步结果时才分开依次发起。',
@@ -92,7 +103,7 @@ export function systemPrompt(
  * 改为明确告知：基于合理默认自主完成，受限处在结论中说明，不要反问、不要等待。
  */
 export function sealedSystemPrompt(
-  workspaceRoot: string | null,
+  dir: WorkDir,
   personas: { name: string; prompt: string }[] = [],
   memory: string[] = [],
   projectDoc: string[] = [],
@@ -102,9 +113,11 @@ export function sealedSystemPrompt(
    */
   handoff?: { owner: string; asked?: boolean }
 ): string {
-  const loc = workspaceRoot
-    ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
-    : '本任务无固定工作目录；如需读写文件请使用**绝对路径**。'
+  const loc = dir.root
+    ? `当前工作目录：${dir.root}。路径可用相对该目录的写法。`
+    : dir.home
+      ? `当前工作目录：${dir.home}（你的默认工作区，第一次写入时自动创建）。路径可用相对该目录的写法，本任务产出的文件放在这里。`
+      : '本任务无固定工作目录；如需读写文件请使用**绝对路径**。'
   const asked = handoff?.asked ? handoff.owner : null
   const doing = asked
     ? `是用户设定的一个定时任务，在「${asked}」的对话中运行。现在不是按时运行：「${asked}」转来了用户的问题（见最后一条消息），通常是追问你之前发出的内容`
@@ -154,15 +167,17 @@ export function sealedSystemPrompt(
 export function memberSystemPrompt(p: {
   member: MemberRef
   owner: string
-  workspaceRoot: string | null
+  dir: WorkDir
   folder: string
   personas: { name: string; prompt: string }[]
   memory: string[]
   projectDoc: string[]
 }): string {
-  const loc = p.workspaceRoot
-    ? `当前工作目录：${p.workspaceRoot}。路径可用相对该目录的写法。`
-    : '没有固定的工作目录；读写文件请使用**绝对路径**。'
+  const loc = p.dir.root
+    ? `当前工作目录：${p.dir.root}。路径可用相对该目录的写法。`
+    : p.dir.home
+      ? `当前工作目录：${p.dir.home}（你的默认工作区，第一次写入时自动创建）。路径可用相对该目录的写法；要处理的项目不在这里时，调用 mount_workspace 请用户为你指定文件夹，或使用绝对路径。`
+      : '没有固定的工作目录；读写文件请使用**绝对路径**。'
   const skillsRoot = skillsDir()
   const lines = [
     `你运行在 Deva 桌面应用中，是项目成员「${p.member.name}」，由主 Agent「${p.owner}」分派工作。你的任务大多由${p.owner}派来（消息以「【${p.owner}派来的任务】」开头，后面是任务说明）；你的最终回复就是结论，会以你的身份（你的头像和名字）原样显示在主对话里给用户看，${p.owner}也会看到。用户也可能直接在你的会话里和你说话（没有这个开头）：这时直接回应用户，你的回复同样会同步给${p.owner}。以下是你必须始终遵守的规范；你的身份、性格与行文风格由后文的「角色设定」决定。`,
@@ -341,10 +356,12 @@ export const CHANGE_REPORT_RULE =
   '若写入了文件或执行了有副作用的命令，在结论中逐条列出：改了哪些文件（绝对路径）、各做了什么改动、执行了哪些命令及结果摘要——主智能体看不到你的过程，要靠这份清单接着做并向用户如实转述。'
 
 /** 子智能体系统提示词：固定的隔离/约束说明 + 该子智能体自身的职责正文（prompt）。 */
-export function buildSubagentSystem(def: SubagentDef, workspaceRoot: string | null): string {
-  const loc = workspaceRoot
-    ? `当前工作目录：${workspaceRoot}。路径可用相对该目录的写法。`
-    : '当前未挂载工作区：文件与命令工具照常可用——涉及文件请用**绝对路径**，run_command 的工作目录为用户主目录。'
+export function buildSubagentSystem(def: SubagentDef, dir: WorkDir): string {
+  const loc = dir.root
+    ? `当前工作目录：${dir.root}。路径可用相对该目录的写法。`
+    : dir.home
+      ? `当前未挂载工作区，当前工作目录是主对话角色的默认工作区：${dir.home}。路径可用相对该目录的写法，run_command 也在这里执行；用户已有的项目不在这里，涉及它们请用**绝对路径**。`
+      : '当前未挂载工作区：文件与命令工具照常可用——涉及文件请用**绝对路径**。'
   const lines = [
     `你是子智能体「${def.name}」，由主智能体派生来独立完成一项被交办的子任务。`,
     loc,
@@ -357,7 +374,7 @@ export function buildSubagentSystem(def: SubagentDef, workspaceRoot: string | nu
   ]
   // 项目说明：子智能体同样在该项目里干活（Explore / Research / Plan 调研、通用子智能体动手），须知项目约定。
   // 派生时按当时的工作区读取（轮中挂载后派生的也能拿到），在子轮内定格。
-  const projectDoc = projectDocPromptSection(loadProjectDoc(workspaceRoot))
+  const projectDoc = projectDocPromptSection(loadProjectDoc(dir.root))
   if (projectDoc.length) lines.push(...projectDoc)
   const body = def.prompt.trim()
   if (body) lines.push('', '你的职责与专长如下：', body)

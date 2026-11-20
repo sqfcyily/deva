@@ -18,11 +18,12 @@ import type { ContentPart, ListingKind, ListingRecord, Message, TextPart } from 
 import { isAutoNudge, isCompactionSummary, isTaskNotification } from './compaction'
 import {
   GLOBAL_SCOPE,
-  MEMORY_BUDGET_CHARS,
-  PROJECT_MEMORY_BUDGET_CHARS,
   formatMemoryLine,
   listMemories,
-  type MemoryEntry
+  memoryLimits,
+  type MemoryAccess,
+  type MemoryEntry,
+  type MemoryScope
 } from './memory'
 import { NO_FOLDER } from './members'
 
@@ -141,9 +142,17 @@ export function skillListingPart(history: Message[], skills: SkillSummary[]): Te
   return { type: 'text', text: lines.join('\n'), listing: d.record }
 }
 
-// ── 记忆条目 ──────────────────────────────────────────────────────────────────
+// ── 记忆索引 ──────────────────────────────────────────────────────────────────
 
-/** 按预算截取（写入已按总量拒超，正常不会截断；这里兜底手改文件 / 旧数据）。 */
+/** 每轮附带的做事方式类正文合计上限：超出时按最近更新保留，其余只给标题（模型可用 memory_read 读）。 */
+const FEEDBACK_BODY_BUDGET = 6000
+
+/** 判断「内容有没有变」的口径：类型、标题、正文任一变化都算更新。 */
+function memoryDigestText(e: MemoryEntry): string {
+  return [e.type, e.title, e.body].join('\n')
+}
+
+/** 按索引预算截取（写入已按索引总量拒超，正常不会截断；这里兜底手改文件 / 旧数据）。 */
 function withinBudget(entries: MemoryEntry[], budget: number): { kept: MemoryEntry[]; omitted: number } {
   const kept: MemoryEntry[] = []
   let used = 0
@@ -156,42 +165,71 @@ function withinBudget(entries: MemoryEntry[], budget: number): { kept: MemoryEnt
   return { kept, omitted: entries.length - kept.length }
 }
 
+type MemoryLayer = 'global' | 'role' | 'project'
+
+/** 附正文的做事方式类条目 id：按最近更新优先，合计不超过 FEEDBACK_BODY_BUDGET。 */
+function feedbackWithBody(entries: MemoryEntry[]): Set<string> {
+  const ids = new Set<string>()
+  let used = 0
+  for (const e of [...entries].filter((x) => x.type === 'feedback' && x.body && x.body !== x.title).sort((a, b) => b.updatedAt - a.updatedAt)) {
+    if (used + e.body.length > FEEDBACK_BODY_BUDGET) continue
+    ids.add(e.id)
+    used += e.body.length
+  }
+  return ids
+}
+
+function entryLines(e: MemoryEntry, withBody: boolean): string[] {
+  const head = formatMemoryLine(e)
+  return withBody ? [head, ...e.body.split('\n').map((l) => `    ${l}`)] : [head]
+}
+
 /**
- * 当前记忆（全局 + 已挂载工作区的项目私有记忆）与历史里已告知的差异，生成一块记忆清单；一致则返回 null。
- * root 取工具上下文的实时工作区：轮中挂载 / 切换后，新工作区的项目记忆随下一步附上，旧工作区的记作不再适用。
+ * 当前记忆（全局 + 本角色 + 已挂载工作区的项目记忆）与历史里已告知的差异，生成一块记忆索引；一致则返回 null。
+ * 只发标题，做事方式类附正文（方案 A）。root 取工具上下文的实时工作区：轮中挂载 / 切换后，新工作区的项目记忆
+ * 随下一步附上，旧工作区的记作不再适用。
  */
-export function memoryListingPart(history: Message[], root: string | null): TextPart | null {
-  const g = withinBudget(listMemories(GLOBAL_SCOPE), MEMORY_BUDGET_CHARS)
-  const p = root
-    ? withinBudget(listMemories({ kind: 'project', root }), PROJECT_MEMORY_BUDGET_CHARS)
-    : { kept: [], omitted: 0 }
-  const items = [
-    ...g.kept.map((entry) => ({ entry, project: false })),
-    ...p.kept.map((entry) => ({ entry, project: true }))
+export function memoryListingPart(history: Message[], access: MemoryAccess, root: string | null): TextPart | null {
+  const scopes: { layer: MemoryLayer; scope: MemoryScope }[] = [
+    { layer: 'global', scope: GLOBAL_SCOPE },
+    { layer: 'role', scope: { kind: 'role', personaId: access.role.personaId } },
+    ...(root ? [{ layer: 'project' as const, scope: { kind: 'project', root } as MemoryScope }] : [])
   ]
-  const d = diffListing(history, 'memory', items, (i) => i.entry.id, (i) => i.entry.content)
+  let omitted = 0
+  const items: { entry: MemoryEntry; layer: MemoryLayer }[] = []
+  for (const { layer, scope } of scopes) {
+    const r = withinBudget(listMemories(scope), memoryLimits(scope).budget)
+    omitted += r.omitted
+    items.push(...r.kept.map((entry) => ({ entry, layer })))
+  }
+  const d = diffListing(history, 'memory', items, (i) => i.entry.id, (i) => memoryDigestText(i.entry))
   if (!d) return null
 
+  const bodies = feedbackWithBody(items.map((i) => i.entry))
   const lines = [
     d.initial
-      ? '【记忆条目】以下是当前已记住的记忆（方括号里是 id，供 memory_write 更新、memory_delete 删除）：'
+      ? '【记忆】以下是当前的记忆索引（方括号里是 id，用于 memory_read 读取正文、memory_write 更新、memory_delete 删除）。做事方式类附了正文，其余正文需要时用 memory_read 按 id 读取：'
       : '【记忆更新】'
   ]
   const tag = d.initial ? '' : '（新增或内容有更新）'
-  const globals = d.listed.filter((i) => !i.project)
-  const projects = d.listed.filter((i) => i.project)
-  if (globals.length) lines.push(`全局记忆${tag}：`, ...globals.map((i) => formatMemoryLine(i.entry)))
-  if (projects.length) lines.push(`项目私有记忆${tag}（${root}）：`, ...projects.map((i) => formatMemoryLine(i.entry)))
-  if (d.removed.length) lines.push(`以下记忆已删除或不再适用于当前工作区，不要再遵循：${d.removed.join('、')}`)
-  const omitted = g.omitted + p.omitted
-  if (omitted) lines.push(`（另有 ${omitted} 条超出预算未列出，可用 memory_read 查看全部；记忆偏多时请合并或清理过时条目。）`)
+  const label: Record<MemoryLayer, string> = {
+    global: '全局记忆',
+    role: `角色记忆（${access.role.name}）`,
+    project: `项目记忆（${root ?? ''}）`
+  }
+  for (const layer of ['global', 'role', 'project'] as const) {
+    const group = d.listed.filter((i) => i.layer === layer)
+    if (group.length) lines.push(`${label[layer]}${tag}：`, ...group.flatMap((i) => entryLines(i.entry, bodies.has(i.entry.id))))
+  }
+  if (d.removed.length) lines.push(`以下记忆已删除或不再适用，不要再遵循：${d.removed.join('、')}`)
+  if (omitted) lines.push(`（另有 ${omitted} 条超出索引预算未列出，可用 memory_read 查看全部；记忆偏多时请合并或清理过时条目。）`)
   lines.push('（以上由系统自动附带，不是用户发来的消息；记忆再有变化时会另行告知，以最近的告知为准。）')
   return { type: 'text', text: lines.join('\n'), listing: d.record }
 }
 
 /** memory_write 成功：工具结果里已写明该条，记为已告知（挂在 tool_result 上）。 */
 export function memoryWrittenRecord(entry: MemoryEntry): ListingRecord {
-  return { kind: 'memory', listed: [{ key: entry.id, digest: digestOf(entry.content) }] }
+  return { kind: 'memory', listed: [{ key: entry.id, digest: digestOf(memoryDigestText(entry)) }] }
 }
 
 /** memory_delete 成功：工具结果里已写明删除，记为已告知。 */

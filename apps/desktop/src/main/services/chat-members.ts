@@ -6,7 +6,8 @@ import type {
   ChatModelConfig
 } from '../../shared/chat-protocol'
 import { publishSessionsChanged } from './chat-bus'
-import { statSync } from 'node:fs'
+import { mkdirSync, statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import { type ContentPart, type StopReason } from '../providers/types'
 import { memberAddedRecord, type MemberListingItem } from './listing'
 import {
@@ -32,6 +33,7 @@ import {
 import { NEW_MEMBER_TOKENS } from '../../shared/mention'
 import { withoutQuotes } from '../../shared/quote'
 import { DEFAULT_PERSONA_ID, getPersona, listPersonas, resolvePersonaId } from './personas'
+import { roleHome } from './role-home'
 import { notifyReplyDone } from './reply-notify'
 import { ensureSession, getSession, save as saveProject, type StoredSession } from './chat-store'
 import { isEn } from '../locale'
@@ -425,15 +427,26 @@ function createMember(main: StoredSession, rawName: string, folder: string, duty
   if (name.length > 16 || /[\s@]/.test(name)) return fail('成员名请用 2～6 个字、不含空格和 @，如「前端」。')
   const mainRoot = main.focusRoot ?? null
   // 没给文件夹 = 不指定：成员没有工作目录（不跟随主对话），用户之后可以在成员的对话里为它选。
+  // 相对路径以主对话的当前工作目录为基准：挂载的工作区，没挂载时是主角色的默认工作区（同主对话的文件工具，见 role-home.ts）。
   let root: string | null = null
   if (folder.trim()) {
-    root = resolveMemberFolder(folder, mainRoot)
-    if (!root) return fail('当前对话没有挂载工作区，folder 请用绝对路径，或省略。')
+    root = resolveMemberFolder(folder, mainRoot ?? roleHome(main.personaId))
+    if (!root) return fail('folder 无法解析，请用绝对路径，或省略。')
     let isDir = false
     try {
       isDir = statSync(root).isDirectory()
     } catch {
       /* 不存在 */
+    }
+    // 相对路径（当前工作目录下的新分工，如 member-test/web）不存在就先建好，免得模型先失败一次再自己 mkdir 重试；
+    // 绝对路径不存在多半是写错了已有项目的位置，照旧报错。
+    if (!isDir && !isAbsolute(folder.trim())) {
+      try {
+        mkdirSync(root, { recursive: true })
+        isDir = true
+      } catch {
+        /* 建不了：照旧报错 */
+      }
     }
     if (!isDir) return fail(`文件夹不存在：${root}。请确认路径，或省略 folder。`)
   }
@@ -682,7 +695,7 @@ export async function mainMemberTool(
     // 不知道文件夹在哪：在对话里弹选择文件夹的卡片请用户点选（复用挂载卡），不让用户打字报路径。
     if (!folder && a.pick_folder === true) {
       const name = str('name').replace(/^@+/, '')
-      const picked = await requestMount(turnId, mainId, tc.name, '', name || '成员')
+      const picked = await requestMount(turnId, mainId, '', name || '成员')
       if (picked) folder = picked
     }
     return createMember(main, str('name'), folder, str('duty'))

@@ -578,8 +578,8 @@ function promptCard(v: PromptView): Card {
   return card(
     [
       md(
-        `这一步（**${v.tool}**${code(v.path)}）需要一个工作区目录，但当前对话还没有挂载文件夹。\n\n` +
-          grey('挂载文件夹需要在电脑端选择；也可以先跳过，让它改用绝对路径。')
+        `${v.question ? `**${v.question}**\n\n` : ''}需要一个文件夹，但当前对话还没有挂载工作区。\n\n` +
+          grey('挂载文件夹需要在电脑端选择；也可以先跳过，让它继续在默认工作区里工作，或改用完整路径。')
       ),
       buttonRow([button('暂不挂载', { k: 'mount', key: v.key })])
     ],

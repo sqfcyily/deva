@@ -132,6 +132,12 @@ export function DeliverablesCard({
   }
 
   const platform = window.deva.platform
+  // 所在目录：在角色的默认工作区里写「Deva 的工作区」（子目录接在后面），不写一长串路径；完整路径在悬停提示里。
+  const dirLabel = (f: DeliverableInfo): string => {
+    if (!f.home) return f.dir
+    const label = t('chat.deliver.roleHome').replace('{name}', f.home.role)
+    return f.home.rel ? `${label}${platform === 'win32' ? '\\' : '/'}${f.home.rel}` : label
+  }
   const revealLabel = t(
     platform === 'win32'
       ? 'chat.deliver.revealWin'
@@ -200,8 +206,8 @@ export function DeliverablesCard({
                     {missing
                       ? t('chat.deliver.missing')
                       : loaded
-                        ? `${formatSize(f.size ?? 0)} · ${f.dir}`
-                        : f.dir}
+                        ? `${formatSize(f.size ?? 0)} · ${dirLabel(f)}`
+                        : dirLabel(f)}
                   </span>
                 </span>
               </button>

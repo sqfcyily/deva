@@ -8,20 +8,8 @@ import ignore, { type Ignore } from 'ignore'
 import { resolveExecShell } from './exec-policy'
 import { spillLongOutput } from './tool-results'
 import { skillsDir, upsertSkill } from './skills'
-import {
-  deleteMemory,
-  formatMemoryLine,
-  listMemories,
-  scopeKindOfId,
-  scopeLabel,
-  GLOBAL_SCOPE,
-  MEMORY_BUDGET_CHARS,
-  MEMORY_MAX_CHARS,
-  PROJECT_MEMORY_BUDGET_CHARS,
-  type MemoryScope
-} from './memory'
-import { memoryDeletedRecord, memoryWrittenRecord } from './listing'
-import { writeMemoryWithConsolidation } from './memory-consolidate'
+import type { MemoryAccess } from './memory'
+import { MEMORY_TOOL_SPECS, memoryDeleteTool, memoryReadTool, memoryWriteTool } from './memory-tools'
 import type { CompactModelConfig } from './compaction'
 import { upsertServer, type McpValue } from './mcp-config'
 import {
@@ -33,7 +21,8 @@ import {
 } from './image-read'
 import type { ImagePart, ListingRecord, ToolSpec } from '../providers/types'
 import { BROWSER_BRIEF, BROWSER_GUIDE, browserToolSpec, runBrowserTool, type MemberHandoff } from './browser'
-import { builtinCategory, EDIT_TOOLS, pathKind } from './tool-catalog'
+import { builtinCategory, EDIT_TOOLS } from './tool-catalog'
+import { baseDir } from './role-home'
 import { deferTool } from './tool-search'
 import { OFFICE_EXT, officeText } from './office-text'
 
@@ -49,11 +38,11 @@ const fullToolSpecs: ToolSpec[] = [
   {
     name: 'read_file',
     description:
-      '读取工作区内一个文本文件，返回带行号的内容（便于定位与后续精确编辑）。默认从第 1 行起最多读 2000 行，超过 2000 字符的行会被截断；可用 offset（起始行，1 起）/ limit（行数）分段读取大文件，已知目标位置时建议只读相关片段。单次返回内容过大会报错，届时请缩小范围或先用 grep 定位。path 可相对项目根或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。Word / Excel / PowerPoint 文件（.docx / .xlsx / .pptx）返回从中提取的纯文字（不含格式与图片），同样带行号、可分段读取，但不能用 edit_file 修改。',
+      '读取工作区内一个文本文件，返回带行号的内容（便于定位与后续精确编辑）。默认从第 1 行起最多读 2000 行，超过 2000 字符的行会被截断；可用 offset（起始行，1 起）/ limit（行数）分段读取大文件，已知目标位置时建议只读相关片段。单次返回内容过大会报错，届时请缩小范围或先用 grep 定位。path 可相对当前工作目录或绝对。注意：用 edit_file 时 old_string 应为「去掉行号前缀」的原文。也可读取图片（png / jpg / gif / webp）：图片会随结果直接附给你查看（过大时自动缩放），offset / limit 对图片无效。Word / Excel / PowerPoint 文件（.docx / .xlsx / .pptx）返回从中提取的纯文字（不含格式与图片），同样带行号、可分段读取，但不能用 edit_file 修改。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '文件路径，相对项目根或绝对路径' },
+        path: { type: 'string', description: '文件路径，相对当前工作目录或绝对路径' },
         offset: { type: 'integer', description: '起始行号（1 起，含）。默认从第 1 行。' },
         limit: { type: 'integer', description: '读取行数。默认 2000 行。' }
       },
@@ -62,11 +51,11 @@ const fullToolSpecs: ToolSpec[] = [
   },
   {
     name: 'list_dir',
-    description: '列出工作区内某个目录的直接子项（目录在前）。用于探索项目结构。不传 path 时默认列项目根。',
+    description: '列出工作区内某个目录的直接子项（目录在前）。用于探索项目结构。不传 path 时默认列当前工作目录。',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '目录路径，相对项目根或绝对路径。省略则默认项目根。' }
+        path: { type: 'string', description: '目录路径，相对当前工作目录或绝对路径。省略则默认当前工作目录。' }
       }
     }
   },
@@ -78,7 +67,7 @@ const fullToolSpecs: ToolSpec[] = [
       type: 'object',
       properties: {
         pattern: { type: 'string', description: 'glob 模式，如 **/*.ts、src/**/*.{ts,tsx}' },
-        path: { type: 'string', description: '搜索根目录，相对项目根或绝对路径。默认项目根。' }
+        path: { type: 'string', description: '搜索根目录，相对当前工作目录或绝对路径。默认当前工作目录。' }
       },
       required: ['pattern']
     }
@@ -94,7 +83,7 @@ const fullToolSpecs: ToolSpec[] = [
           type: 'string',
           description: '正则表达式（JavaScript 语法，支持 \\p{…}）。搜字面量时转义元字符，如 foo\\(；非法正则会退化为纯文本搜索。'
         },
-        path: { type: 'string', description: '搜索根目录，相对项目根或绝对路径。默认项目根。' },
+        path: { type: 'string', description: '搜索根目录，相对当前工作目录或绝对路径。默认当前工作目录。' },
         glob: {
           type: 'string',
           description: '仅搜索匹配该 glob 的文件。不含 / 时只匹配文件名（*.ts 匹配任意层级的 .ts）；含 / 时匹配相对路径（如 src/**/*.tsx）。可选。'
@@ -124,7 +113,7 @@ const fullToolSpecs: ToolSpec[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '文件路径，相对项目根或绝对路径' },
+        path: { type: 'string', description: '文件路径，相对当前工作目录或绝对路径' },
         content: { type: 'string', description: '要写入的文本内容（覆盖时为完整内容，追加时为本段内容）' },
         append: {
           type: 'boolean',
@@ -141,7 +130,7 @@ const fullToolSpecs: ToolSpec[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: '文件路径，相对项目根或绝对路径' },
+        path: { type: 'string', description: '文件路径，相对当前工作目录或绝对路径' },
         old_string: {
           type: 'string',
           description: '要被替换的原文（需与文件内容逐字符一致，含缩进/换行；去掉 read_file 的行号前缀）'
@@ -165,7 +154,7 @@ const fullToolSpecs: ToolSpec[] = [
         paths: {
           type: 'array',
           items: { type: 'string' },
-          description: '成品文件路径列表：绝对路径，或相对已挂载工作区的路径。'
+          description: '成品文件路径列表：绝对路径，或相对当前工作目录的路径。'
         }
       },
       required: ['paths']
@@ -180,7 +169,7 @@ const fullToolSpecs: ToolSpec[] = [
       (process.platform === 'win32'
         ? '命令在 bash 中运行（优先使用 Git Bash，请写 POSIX/bash 命令；若本机未装 Git Bash 则回落到 cmd.exe，此时请改用 Windows 命令）。'
         : '命令在 bash/sh 中运行，请写 POSIX/bash 命令。') +
-      '工作目录：已挂载工作区时为项目根，未挂载时为用户主目录（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 600000ms（可用 timeout 调整，最长 1800000ms）；输出超过 30000 字符时完整内容存到文件，只返回开头、结尾与文件路径。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
+      '工作目录：已挂载工作区时为项目根，未挂载时为当前角色的默认工作区（需要别处执行请在命令里用绝对路径或自行 cd）。非交互运行（已禁用分页器/凭据提示/颜色，避免卡住）；默认超时 600000ms（可用 timeout 调整，最长 1800000ms）；输出超过 30000 字符时完整内容存到文件，只返回开头、结尾与文件路径。命令不受任何限制、直接执行，破坏性操作（删除、覆盖、强推等）请先确认目标无误。请勿运行交互式或长驻命令（如 dev server、vim、npm init——需交互请让用户改用终端面板），否则会阻塞到超时后被强制结束。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -283,57 +272,8 @@ const fullToolSpecs: ToolSpec[] = [
       required: ['name', 'instructions']
     }
   },
-  {
-    name: 'memory_read',
-    description:
-      '读取记忆，返回全部条目及其 id：全局记忆（用户本人的习惯/偏好），以及已挂载工作区时的项目私有记忆。' +
-      '记忆条目已由系统随对话消息附带，通常无需调用；仅当附带的条目被截断、或需要确认最新内容再更新/删除时使用。',
-    inputSchema: { type: 'object', properties: {} }
-  },
-  {
-    name: 'memory_write',
-    description:
-      '写入一条记忆，分两个作用域（scope）：' +
-      '`global`（新增时的默认）= 用户本人在所有项目都适用的稳定习惯/偏好/纠正（如「用户偏好用 pnpm 而非 npm」）；' +
-      '`project` = 仅在当前工作区有用、只属于用户本人的私有经验（如「本项目 e2e 测试须先启动 mock 服务（原因：否则全部超时）」），不入版本库，须已挂载工作区；' +
-      '用户纠正你的做法时务必记下，同样的错不应再犯第二次；你走了弯路才发现的项目坑（原因在环境、工具链或项目约定，而非你刚写错的代码）也应记下。' +
-      '**必须**在写本轮最终回复之前调用（先记再回复，回复里顺带告知），严禁写完回复再补记——回复之后的调用会让整段回复被界面收进过程里。' +
-      '两者都不是用来记通用知识或代码里能直接看出的内容的；团队共享的项目约定应写进 AGENTS.md（仅当用户要求时）。' +
-      '不带 id 为新增；带已有记忆的 id 为覆盖更新（同一主题请更新而非重复新增），更新时可省略 scope，按 id 前缀自动定位（m_ 为全局，p_ 为项目）。' +
-      `内容须是一句话（≤${MEMORY_MAX_CHARS} 字）：偏好与背景写成事实陈述，纠正与踩坑写成「做法 + 原因」；不得记录密码/密钥等敏感信息或一次性任务细节。` +
-      `总量上限：全局 ${MEMORY_BUDGET_CHARS} 字、项目 ${PROJECT_MEMORY_BUDGET_CHARS} 字；写满时系统会先自动归纳旧条目（合并相近、删除过时）再写入，结果里会说明。` +
-      '请始终用本工具写入记忆（会做去重与总量校验），不要用 write_file 等直接改记忆文件。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        content: { type: 'string', description: '要记住的一句话：事实陈述，或「做法 + 原因」。' },
-        scope: {
-          type: 'string',
-          enum: ['global', 'project'],
-          description:
-            '作用域：global（用户本人的通用偏好）或 project（当前工作区的私有经验）。新增时省略即 global；带 id 更新时省略即按 id 前缀定位。'
-        },
-        id: {
-          type: 'string',
-          description: '可选：要更新的已有记忆 id（如 m_1a2b3c4d / p_1a2b3c4d）；省略则新增。'
-        }
-      },
-      required: ['content']
-    }
-  },
-  {
-    name: 'memory_delete',
-    description:
-      '删除一条记忆（用户要求忘记、或该记忆已过时/与新偏好或代码现状矛盾时使用）。按 id 前缀自动定位作用域：m_ 为全局记忆，p_ 为当前工作区的项目私有记忆。' +
-      '同样**必须**在写本轮最终回复之前调用，严禁写完回复再补删。',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        id: { type: 'string', description: '要删除的记忆 id（如 m_1a2b3c4d / p_1a2b3c4d）。' }
-      },
-      required: ['id']
-    }
-  },
+  // 记忆：memory_read / memory_write / memory_delete（规格与执行见 memory-tools.ts）
+  ...MEMORY_TOOL_SPECS,
   {
     name: 'propose_agent',
     description:
@@ -594,7 +534,13 @@ export function toolCategory(name: string): ToolCategory {
 }
 
 export interface ToolContext {
+  /** 挂载的工作区（项目）：项目说明、项目私有记忆只认它；null = 没挂载。 */
   workspaceRoot: string | null
+  /**
+   * 当前角色的默认工作区（见 role-home.ts）：没挂载工作区时的相对路径基准与 run_command 工作目录，用到时才创建。
+   * 它不是项目，不参与项目说明与项目私有记忆。
+   */
+  homeDir?: string | null
   /** run_command 与 browser 使用：随 chat:abort 中止正在跑的子进程（杀树）/ 正在等待的浏览器操作。 */
   signal?: AbortSignal
   /** 当前对话：browser 按对话管理标签。 */
@@ -609,10 +555,10 @@ export interface ToolContext {
    */
   memberHandoff?: MemberHandoff
   /**
-   * 全局记忆只读（项目成员的会话）：memory_write 只能写项目私有记忆（省略 scope 即项目），memory_delete 不能删全局条目。
-   * 用户本人的通用偏好由主角色记。
+   * 本轮各层记忆（全局 / 本角色 / 项目）的读写方式，见 memory.ts MemoryAccess：主对话全可写，项目成员全局与角色只读、
+   * 项目可写，定时任务全只读。缺省 = 不能用记忆（子智能体）。
    */
-  globalMemoryReadonly?: boolean
+  memoryAccess?: MemoryAccess
   /** 本轮的模型：memory_write 撞上限时用它把旧记忆归纳一遍再写（见 memory-consolidate.ts）；不传则按原样拒写。 */
   memoryModel?: CompactModelConfig
 }
@@ -728,15 +674,10 @@ function toAbsPath(root: string | null, p: string): string {
  */
 function resolvePath(root: string | null, p: unknown): string {
   if (typeof p !== 'string' || !p.trim()) throw new Error('缺少有效的 path 参数')
-  // 未挂载工作区 + 相对路径 = 没有基准。旧行为是悄悄落到应用自身的 process.cwd()——读多半 ENOENT、
-  // 写则**静默成功**在谁也找不到的地方。一律明确报错，让模型改用绝对路径（写入类更早一步由
-  // needsWorkspaceMount 拦成挂载卡，正常走不到这里；此处是所有通道共同的兜底）。
+  // 没有基准 + 相对路径：不该发生（没挂载时有角色的默认工作区，见 role-home.ts）。旧行为是悄悄落到应用自身的
+  // process.cwd()——读多半 ENOENT、写则**静默成功**在谁也找不到的地方。一律明确报错，让模型改用绝对路径。
   if (!root && !isAbsolute(expandHome(p)))
-    throw new Error(
-      // 刻意不提「请用户挂载」：主轮该弹卡的调用早被 needsWorkspaceMount 截走，能走到这里的是
-      // 子智能体与密封定时任务——它们没有人可问，提了只会诱导出一句无人应答的文字请求。
-      '未挂载工作区，相对路径没有基准：请改用绝对路径（~/ 开头的主目录路径亦可）。'
-    )
+    throw new Error('当前没有工作目录，相对路径没有基准：请改用绝对路径（~/ 开头的主目录路径亦可）。')
   return toAbsPath(root, p)
 }
 
@@ -760,48 +701,6 @@ export function writeTargetPath(
 
 /** present_files 一次最多交付的文件数。 */
 const PRESENT_MAX = 20
-
-/**
- * 「本次调用是否缺少相对路径基准」——挂载工作区提示卡的**唯一判据**。
- *
- * 刻意**不按工具语义**（查询类 / 需求类）分档：那既模糊又判不准——`run_command` 里既有 `date`
- * 也有 `npm test`，`read_file` 读 `/etc/hosts` 不需要工作区、读 `src/index.ts` 需要。工具粒度
- * 根本区分不了，同一个工具的不同入参落在两边。故判据是纯机械的「这次调用的落点能否解析」，
- * 零语义猜测：没有 path 参数的调用（取系统时间之类）自动出局，绝对路径（含 `~/` 展开后的主
- * 目录路径）一律放行。
- *
- * 两档命中：
- *  ① 单文件类（write_file / edit_file / read_file）给了**相对路径**。写入档是唯一会「悄悄出错」
- *     的：未挂载时 resolve 基准是**应用自身的 process.cwd()**（打包态是 exe 目录），会静默写成功
- *     在谁也不知道的地方。
- *  ② 扫描类（list_dir / glob / grep）**省略 path 或给了相对路径** —— 前者本就抛「未打开项目，且
- *     未提供 path」这句对用户毫无帮助的裸错误；升级成可点的挂载卡是净赚。
- *
- * `read_file` 一度被排除（当时理由：失败是响亮的 ENOENT，模型自会改绝对路径，不值得再打断用户）。
- * **系统提示词改成「默认相对路径」之后这笔账翻转了**：模型被明确劝向相对写法，「自会改绝对路径」
- * 的本能随之减弱，而回灌文案里若再提「请用户挂载」，就会诱导它用文字索要挂载——正是本功能要消灭
- * 的行为。判据本身（落点能否解析）从来就覆盖 read_file，当初只是按性价比排除。
- *
- * 仍刻意不含 `run_command`：命令文本里的相对路径无法可靠判定（`cat src/a.ts` / `cd /tmp && ls` /
- * `npm test`），要判就得解析 shell 语法，不可靠；何况它有 homedir
- * 兜底，失败同样响亮（失败时另追加一行提示，见 run_command 分支）。
- */
-export function needsWorkspaceMount(
-  name: string,
-  args: unknown,
-  root: string | null
-): { tool: string; path: string } | null {
-  if (root) return null
-  const a = (args ?? {}) as Record<string, unknown>
-  // 先展开 ~ 再判 isAbsolute：`~/notes.txt` 是明确的主目录落点，不缺基准，不该打断用户。
-  const p = typeof a.path === 'string' ? expandHome(a.path.trim()) : ''
-  // 单文件类（path 是必填的落点）：相对写法缺基准。路径语义登记在 tool-catalog.ts。
-  const kind = pathKind(name)
-  if (kind === 'file') return p && !isAbsolute(p) ? { tool: name, path: p } : null
-  // 扫描类：省略 path（隐含项目根）与相对 path 都缺基准，同样命中。
-  if (kind === 'scan') return isAbsolute(p) ? null : { tool: name, path: p }
-  return null
-}
 
 /** 解析「搜索根目录」（读取语义）：给了 path 用之，否则回落项目根；两者皆缺则报错。 */
 /**
@@ -1407,7 +1306,7 @@ function errorSummary(e: unknown): string {
 const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>> = {
   browser: (a, ctx) => runBrowserTool(a, ctx),
   read_file: async (a, ctx) => {
-    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const abs = resolvePath(baseDir(ctx), a.path)
     const stat = await fs.stat(abs)
     const ext = extname(abs).toLowerCase()
     // Word / Excel / PowerPoint：解压取文字，同文本一样带行号返回（附件按路径交给模型时靠它读）。
@@ -1473,7 +1372,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     for (const p of list) {
       let abs: string
       try {
-        abs = resolvePath(ctx.workspaceRoot, p)
+        abs = resolvePath(baseDir(ctx), p)
       } catch (e) {
         bad.push(`${String(p)}：${(e as Error).message}`)
         continue
@@ -1502,8 +1401,8 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     }
   },
   list_dir: async (a, ctx) => {
-    // path 省略时回落项目根（与工具描述「默认项目根」一致）。
-    const abs = resolveReadDir(ctx.workspaceRoot, a.path)
+    // path 省略时回落当前工作目录（与工具描述「默认当前工作目录」一致）。
+    const abs = resolveReadDir(baseDir(ctx), a.path)
     const dirents = await fs.readdir(abs, { withFileTypes: true })
     const rows = dirents
       .filter((d) => d.isDirectory() || d.isFile())
@@ -1515,7 +1414,8 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
   glob: async (a, ctx) => {
     const pattern = typeof a.pattern === 'string' ? a.pattern.trim() : ''
     if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
-    const dir = resolveReadDir(ctx.workspaceRoot, a.path)
+    const root = baseDir(ctx)
+    const dir = resolveReadDir(root, a.path)
     const re = globToRegExp(pattern)
     const files = await collectFiles(dir)
     const matched = files.filter((f) => re.test(f.rel))
@@ -1527,7 +1427,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
         } catch {
           /* 忽略无法 stat 的条目 */
         }
-        return { rel: displayPath(ctx.workspaceRoot, f.abs), mtime }
+        return { rel: displayPath(root, f.abs), mtime }
       })
     )
     stated.sort((x, y) => y.mtime - x.mtime)
@@ -1545,7 +1445,8 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     const pattern = typeof a.pattern === 'string' ? a.pattern : ''
     if (!pattern) return { content: '缺少 pattern 参数', summary: '参数无效', isError: true }
     const { re, note } = compileGrepPattern(pattern, a.ignore_case === true)
-    const target = resolveReadDir(ctx.workspaceRoot, a.path)
+    const root = baseDir(ctx)
+    const target = resolveReadDir(root, a.path)
     let globRe: RegExp | null = null
     // 不含 / 的 glob（如 *.ts）只匹配文件名，与 ripgrep 一致——否则只命中根目录文件、静默返回无匹配。
     let globBase = false
@@ -1581,7 +1482,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
       const hits: string[] = []
       for (let i = 0; i < lines.length && hits.length < GREP_MATCH_MAX; i++) {
         if (re.test(lines[i]))
-          hits.push(`${displayPath(ctx.workspaceRoot, f.abs)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
+          hits.push(`${displayPath(root, f.abs)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`)
       }
       return hits
     }
@@ -1704,7 +1605,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     }
   },
   write_file: async (a, ctx) => {
-    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const abs = resolvePath(baseDir(ctx), a.path)
     const content = typeof a.content === 'string' ? a.content : ''
     // 父目录不存在时先自动创建，免得模型还得先 run_command mkdir。
     await fs.mkdir(dirname(abs), { recursive: true })
@@ -1723,7 +1624,7 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     return { content: `已写入 ${Buffer.byteLength(out, 'utf8')} 字节`, summary: '已写入' }
   },
   edit_file: async (a, ctx) => {
-    const abs = resolvePath(ctx.workspaceRoot, a.path)
+    const abs = resolvePath(baseDir(ctx), a.path)
     const oldStr = typeof a.old_string === 'string' ? a.old_string : ''
     const newStr = typeof a.new_string === 'string' ? a.new_string : ''
     if (!oldStr)
@@ -1805,11 +1706,10 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     const command = typeof a.command === 'string' ? a.command.trim() : ''
     if (!command)
       return { content: '缺少有效的 command 参数', summary: '参数无效', isError: true }
-    // cwd：挂载了工作区 → 项目根；未挂载（对话优先外壳的「全机通用助手」）→ 回落用户主目录，
-    // 与终端面板 safeCwd 同一口径，不再因「未打开项目」整个不可用。
+    // cwd：挂载了工作区 → 项目根；未挂载 → 角色的默认工作区（与文件工具的相对路径基准一致，见 role-home.ts）。
     // cwd 只是相对路径基准，不是安全边界——命令执行不设任何限制。
-    let cwd = ctx.workspaceRoot
-    // 目录不存在（项目被移走/改名）同样回落主目录，避免 spawn 直接失败。
+    let cwd = baseDir(ctx)
+    // 目录不存在（项目被移走/改名）回落用户主目录，避免 spawn 直接失败。
     if (!cwd || !existsSync(cwd)) cwd = homedir()
     const timeoutMs = Math.min(
       Math.max(toInt(a.timeout) ?? EXEC_TIMEOUT_DEFAULT, 1000),
@@ -1838,12 +1738,11 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
     }
     if (r.lingering) status += '（有子进程未能确认结束，可能仍在后台运行）'
     const isError = Boolean(r.spawnError) || r.capped || r.aborted || r.timedOut || r.code !== 0
-    // 未挂载工作区时命令在用户主目录执行，失败多半只是「不在项目里」（典型：git 报 not a git
-    // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。命令文本里的相对路径无法
-    // 可靠判定（故 needsWorkspaceMount 不拦 run_command），改用这种「失败才提示」的事后自愈。
+    // 未挂载工作区时命令在角色的默认工作区里执行，失败多半只是「不在项目里」（典型：git 报 not a git
+    // repository）。回灌一行可操作提示，免得模型误判成项目本身有问题。
     const cwdHint =
       isError && !ctx.workspaceRoot
-        ? `\n（提示：当前未挂载工作区，命令在用户主目录 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或请用户挂载该项目为工作区。）`
+        ? `\n（提示：当前未挂载工作区，命令在默认工作区 ${cwd} 下执行。如需在某个项目下运行，请在命令里用绝对路径或先 cd，或调用 mount_workspace 请用户挂载该项目。）`
         : ''
     const content = (body ? body + '\n' : '') + status + cwdHint
     return { content, summary, isError }
@@ -1872,97 +1771,9 @@ const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext
       summary: '已创建技能'
     }
   },
-  memory_read: async (_a, ctx) => {
-    const globals = listMemories(GLOBAL_SCOPE)
-    const out = ['【全局记忆】', ...(globals.length ? globals.map(formatMemoryLine) : ['（当前尚无全局记忆）'])]
-    let total = globals.length
-    if (ctx.workspaceRoot) {
-      const projects = listMemories({ kind: 'project', root: ctx.workspaceRoot })
-      total += projects.length
-      out.push(
-        '',
-        `【项目私有记忆】（${ctx.workspaceRoot}）`,
-        ...(projects.length ? projects.map(formatMemoryLine) : ['（当前项目尚无私有记忆）'])
-      )
-    } else {
-      out.push('', '（未挂载工作区，无项目私有记忆）')
-    }
-    return { content: out.join('\n'), summary: `${total} 条` }
-  },
-  memory_write: async (a, ctx) => {
-    const content = typeof a.content === 'string' ? a.content : ''
-    const id = typeof a.id === 'string' && a.id.trim() ? a.id.trim() : undefined
-    // 显式给了 scope 就按它；省略时新增默认全局，带 id 更新则按 id 前缀定位（同 memory_delete），
-    // 免得模型更新 p_ 条目时漏写 scope 被默认成 global 而误报不符。
-    const explicit = a.scope === 'project' || a.scope === 'global' ? a.scope : undefined
-    const kind = explicit ?? (id ? scopeKindOfId(id) : ctx.globalMemoryReadonly ? 'project' : 'global')
-    if (kind === 'global' && ctx.globalMemoryReadonly)
-      return {
-        content:
-          '你是项目成员，全局记忆（用户本人的通用偏好）对你只读，由主角色来记；你只能写当前文件夹的项目私有记忆（scope="project"）。',
-        summary: '未写入',
-        isError: true
-      }
-    if (kind === 'project' && !ctx.workspaceRoot)
-      return {
-        content: id
-          ? `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`
-          : '当前未挂载工作区，无法写入项目私有记忆：请改用 scope="global"（若确属用户本人的通用偏好），或请用户先挂载项目。',
-        summary: '未写入',
-        isError: true
-      }
-    if (id && scopeKindOfId(id) !== kind)
-      return {
-        content: `id ${id} 属于${scopeKindOfId(id) === 'project' ? '项目私有记忆（scope="project"）' : '全局记忆（scope="global"）'}，与所给 scope 不符：更新时可省略 scope，按 id 自动定位；如要换作用域，请删除原条目后在新作用域新增。`,
-        summary: '参数无效',
-        isError: true
-      }
-    const scope: MemoryScope =
-      kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
-    // 直调主进程 memory 服务（去重 + 总量预算在服务内校验）；撞上限时先自动归纳旧条目再写。
-    const w = await writeMemoryWithConsolidation(content, id, scope, ctx.memoryModel, ctx.signal)
-    const r = w.result
-    const c = w.consolidated
-    const note = c
-      ? `${scopeLabel(scope)}已写满，已自动归纳：${c.before.count} 条 / ${c.before.used} 字 → ${c.after.count} 条 / ${c.after.used} 字（归纳前的内容已备份到 ${c.backup}；变化会随下一条消息的【记忆更新】告知）。
-`
-      : ''
-    if (!r.ok)
-      return {
-        content: `${note}${r.error}${w.failure ? `（自动归纳未成功：${w.failure}）` : ''}`,
-        summary: '未写入',
-        isError: true
-      }
-    // 本结果即告知：挂上记录，记忆清单折叠时视这条为已告知，不再随后重复附带。
-    return {
-      content: `${note}${r.created ? '已记住' : id ? '已更新记忆' : '该记忆已存在'}：${formatMemoryLine(r.entry)}`,
-      summary: c ? '已归纳并记住' : r.created ? '已记住' : id ? '已更新' : '已存在',
-      listing: memoryWrittenRecord(r.entry)
-    }
-  },
-  memory_delete: async (a, ctx) => {
-    const id = typeof a.id === 'string' ? a.id.trim() : ''
-    if (!id) return { content: '缺少要删除的记忆 id', summary: '参数无效', isError: true }
-    const kind = scopeKindOfId(id)
-    if (kind === 'global' && ctx.globalMemoryReadonly)
-      return {
-        content: `${id} 是全局记忆，对项目成员只读，不能删除；需要删除请告诉用户由主角色处理。`,
-        summary: '未删除',
-        isError: true
-      }
-    if (kind === 'project' && !ctx.workspaceRoot)
-      return { content: `${id} 是项目私有记忆，但当前未挂载工作区，无法定位`, summary: '未找到', isError: true }
-    const scope: MemoryScope =
-      kind === 'project' ? { kind: 'project', root: ctx.workspaceRoot as string } : GLOBAL_SCOPE
-    const removed = deleteMemory(id, scope)
-    if (!removed)
-      return { content: `不存在 id 为 ${id} 的记忆（可先用 memory_read 查看）`, summary: '未找到', isError: true }
-    return {
-      content: `已删除记忆：${formatMemoryLine(removed)}`,
-      summary: '已删除',
-      listing: memoryDeletedRecord(removed.id)
-    }
-  },
+  memory_read: memoryReadTool,
+  memory_write: memoryWriteTool,
+  memory_delete: memoryDeleteTool,
   propose_agent: async (a, _ctx) => {
     // 惰性工具：**不写任何东西**。草稿参数经 tool_call 事件的 args 到渲染层铸成名片，
     // 用户点「接受」后才走渲染层 personas:upsert 真正建角色（零提权）。

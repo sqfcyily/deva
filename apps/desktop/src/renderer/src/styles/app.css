@@ -3315,10 +3315,6 @@ button.tl__line:hover {
 .msg__mount-body code {
   word-break: break-all;
 }
-.msg__mount-tool {
-  color: var(--fg-muted);
-  font-size: 12px;
-}
 .msg__mount-actions {
   display: flex;
   align-items: center;

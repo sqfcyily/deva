@@ -63,8 +63,8 @@ export type PromptView =
       key: string
       sessionId: string
       sessionTitle: string
-      tool: string
-      path: string
+      /** 卡片上的问句（模型调用 mount_workspace 时给的，可缺省）。 */
+      question?: string
       state: 'open' | 'mounted' | 'skipped' | 'cancelled'
       root?: string
       /** 为成员选文件夹：成员名（主角色建成员时的 pick_folder，或成员做到一半来要）。 */

@@ -113,6 +113,8 @@ export interface Persona {
   avatarImage: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
   model: string
+  /** 工作区（绝对路径；空串 = 用角色的默认工作区）。设了则绑定此角色的新对话一开始就挂载它。 */
+  workspace: string
   /** 提示词正文（追加进主智能体系统提示词）。 */
   prompt: string
   scope: ExtScope
