@@ -1,57 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { GitStatus } from '../../../shared/git-status'
 
-/** git 是否可用：全应用只探一次（缓存 Promise），避免每次挂载都 spawn 一次 --version。 */
-let gitAvailablePromise: Promise<boolean> | null = null
-
-function probeGitAvailable(): Promise<boolean> {
-  if (!gitAvailablePromise) {
-    gitAvailablePromise = window.deva.git
-      .available()
-      .then((r) => r.available)
-      .catch(() => false)
-  }
-  return gitAvailablePromise
-}
-
-interface GitState {
-  available: boolean
+/** Mount/root changes never launch Git; only explicit refresh requests enumerate files. */
+export function useGitStatus(root: string | null): {
   status: GitStatus | null
   busy: boolean
-  refresh: () => Promise<void>
-}
-
-/**
- * 读取某工作区的 git 状态。不轮询（status 每次 spawn git 进程，且当前无文件监听）：
- * 只在「挂载 / 开菜单 / 每次写操作后」拉取。用 reqRef 防竞态——快速切换工作区时旧结果不覆盖新。
- */
-export function useGitStatus(root: string | null): GitState {
-  const [available, setAvailable] = useState(false)
+  refresh: (scan?: boolean) => Promise<GitStatus | null>
+} {
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const reqRef = useRef(0)
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const refresh = useCallback(async (scan = false): Promise<GitStatus | null> => {
     const seq = ++reqRef.current
     if (!root) {
-      setAvailable(false)
       setStatus(null)
-      return
-    }
-    const ok = await probeGitAvailable()
-    if (seq !== reqRef.current) return
-    setAvailable(ok)
-    if (!ok) {
-      setStatus(null)
-      return
+      setBusy(false)
+      return null
     }
     setBusy(true)
     try {
-      const st = await window.deva.git.status(root)
-      if (seq !== reqRef.current) return
+      const st = await window.deva.git.status(root, { scan })
+      if (seq !== reqRef.current) return null
       setStatus(st.isRepo ? st : null)
+      return st
     } catch {
-      if (seq === reqRef.current) setStatus(null)
+      if (seq === reqRef.current && !scan) setStatus(null)
+      return null
     } finally {
       if (seq === reqRef.current) setBusy(false)
     }
@@ -59,8 +34,8 @@ export function useGitStatus(root: string | null): GitState {
 
   useEffect(() => {
     void refresh()
+    return () => { reqRef.current++ }
   }, [refresh])
 
-  return { available, status, busy, refresh }
+  return { status, busy, refresh }
 }
-

@@ -1,4 +1,4 @@
-import type { GitStatus } from '../shared/git-status'
+import type { GitStatus, GitStatusOptions } from '../shared/git-status'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { EffortLevel } from '../shared/effort'
 import type { UpdateState } from '../shared/update'
@@ -471,7 +471,7 @@ export interface TerminalExitPayload {
   exitCode: number
 }
 
-export type { GitStatusLetter, GitFileStatus, GitStatus } from '../shared/git-status'
+export type { GitStatusLetter, GitFileStatus, GitStatus, GitStatusOptions } from '../shared/git-status'
 export interface GitDiffLine {
   type: 'ctx' | 'add' | 'del' | 'hunk'
   oldNo?: number
@@ -936,8 +936,9 @@ const api = {
   git: {
     /** git 是否可用（定位成功 + --version 跑通） */
     available: (): Promise<GitAvailable> => ipcRenderer.invoke('git:available'),
-    /** 完整状态（分支 / upstream / ahead-behind / 分组文件） */
-    status: (dir: string): Promise<GitStatus> => ipcRenderer.invoke('git:status', dir),
+    /** Metadata only by default; { scan: true } explicitly enumerates the worktree. */
+    status: (dir: string, options?: GitStatusOptions): Promise<GitStatus> =>
+      ipcRenderer.invoke('git:status', dir, options),
     /** 文件级 diff（staged=index↔HEAD；否则 worktree↔index；untracked=读全文件当新增） */
     diff: (
       dir: string,

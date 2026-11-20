@@ -31,5 +31,17 @@ export interface GitStatus {
   staged: GitFileStatus[]
   unstaged: GitFileStatus[]
   conflicts: GitFileStatus[]
+  /** Empty file lists are authoritative only after a complete, explicit scan. */
+  scanState: 'not-scanned' | 'complete' | 'failed'
+  scanError?: string
 }
 
+export interface GitStatusOptions {
+  /** Expensive index/worktree enumeration must be explicitly requested by the user. */
+  scan?: boolean
+}
+
+export type GitParsedStatus = Omit<
+  GitStatus,
+  'isRepo' | 'root' | 'remotes' | 'mergeInProgress' | 'scanState' | 'scanError'
+>

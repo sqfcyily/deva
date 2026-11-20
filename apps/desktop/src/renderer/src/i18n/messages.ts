@@ -1253,6 +1253,9 @@ const zhCN: MessageTree = {
     },
     git: {
       menuHint: 'Git 操作',
+      notScanned: '仅显示分支；点击刷新才扫描文件变更',
+      scanning: '正在扫描文件变更…',
+      scanFailed: 'Git 扫描未完成，不能确认文件变更',
       detached: '游离 HEAD',
       noBranch: '(无分支)',
       fetch: '获取',
@@ -2771,6 +2774,9 @@ const en: MessageTree = {
     },
     git: {
       menuHint: 'Git actions',
+      notScanned: 'Branch metadata only; click Refresh to scan file changes',
+      scanning: 'Scanning file changes…',
+      scanFailed: 'Git scan incomplete; file changes are unknown',
       detached: 'detached HEAD',
       noBranch: '(no branch)',
       fetch: 'Fetch',
