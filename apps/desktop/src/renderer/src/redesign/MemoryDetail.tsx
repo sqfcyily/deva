@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Flag, Link2, ListChecks, Trash2, UserRound, type LucideIcon } from 'lucide-react'
-import type { MemoryEntry, MemoryErrorCode, MemoryScopeArg, MemorySnapshot, MemoryType } from '../../../preload'
+import { Trash2 } from 'lucide-react'
+import type { MemoryEntry, MemoryErrorCode, MemoryScopeArg, MemorySnapshot } from '../../../preload'
 import { useI18n } from '../i18n/i18n'
 import { useDialog } from '../components/DialogProvider'
 import { useToast } from '../components/ToastProvider'
@@ -8,25 +8,11 @@ import { fill } from './memory-editor'
 import './memory-detail.css'
 
 /**
- * 记忆详情编辑页（对比稿 design/memory-ui.html，个人资料面板与角色资料页共用）：类型（分段按钮）、标题、正文（撑满
- * 剩余高度），底部左「删除」（二次确认）、右「取消 / 保存」。不加字段名。与模型的 memory_* 工具同一套校验。
+ * 记忆详情编辑页（对比稿 design/memory-ui.html，个人资料面板与角色资料页共用）：标题、正文（撑满剩余高度），
+ * 底部左「删除」（二次确认）、右「取消 / 保存」。不加字段名。与模型的 memory_* 工具同一套校验。
+ * 不显示也不改类型：条目都由模型写入，类型由模型定；保存不传 type，主进程沿用原类型。
  * 放在弹窗里与 .cf-editor 平级（自带内边距），弹窗高度由调用方定。
  */
-
-export const MEMORY_TYPE_ORDER: MemoryType[] = ['feedback', 'user', 'project', 'reference']
-
-const TYPE_ICON: Record<MemoryType, LucideIcon> = {
-  user: UserRound,
-  feedback: ListChecks,
-  project: Flag,
-  reference: Link2
-}
-
-/** 类型图标（角色资料页的记忆行也用）。 */
-export function MemoryTypeIcon({ type, size = 14 }: { type: MemoryType; size?: number }): React.JSX.Element {
-  const Icon = TYPE_ICON[type] ?? UserRound
-  return <Icon size={size} />
-}
 
 export function MemoryDetail({
   entry,
@@ -44,7 +30,6 @@ export function MemoryDetail({
   const { t } = useI18n()
   const dialog = useDialog()
   const toast = useToast()
-  const [type, setType] = useState<MemoryType>(entry.type)
   const [title, setTitle] = useState(entry.title)
   const [body, setBody] = useState(entry.body)
   const [error, setError] = useState<MemoryErrorCode | null>(null)
@@ -72,8 +57,8 @@ export function MemoryDetail({
   }
 
   const save = (): void => {
-    if (type === entry.type && title.trim() === entry.title && body.trim() === entry.body) return onClose()
-    void run(() => window.deva.memory.write({ type, title, body }, entry.id, scope))
+    if (title.trim() === entry.title && body.trim() === entry.body) return onClose()
+    void run(() => window.deva.memory.write({ title, body }, entry.id, scope))
   }
   const remove = async (): Promise<void> => {
     const ok = await dialog.confirm({
@@ -87,21 +72,6 @@ export function MemoryDetail({
 
   return (
     <div className="cf-editor cf-memdetail">
-      <div className="cf-memtypes" role="radiogroup" aria-label={t('cf.memType.label')}>
-        {MEMORY_TYPE_ORDER.map((k) => (
-          <button
-            key={k}
-            type="button"
-            role="radio"
-            aria-checked={type === k}
-            className={`cf-memtypes__btn${type === k ? ' is-on' : ''}`}
-            onClick={() => setType(k)}
-          >
-            <MemoryTypeIcon type={k} size={13} />
-            {t(`cf.memType.${k}`)}
-          </button>
-        ))}
-      </div>
       <input
         className="cf-input"
         value={title}

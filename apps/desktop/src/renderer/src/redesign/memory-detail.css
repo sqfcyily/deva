@@ -6,42 +6,6 @@
   gap: var(--space-3);
   overflow: hidden;
 }
-/* 类型：四选一的分段按钮，等宽铺满 */
-.cf-memtypes {
-  flex: none;
-  display: flex;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-inset);
-}
-.cf-memtypes__btn {
-  flex: 1;
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  height: 28px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 12.5px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.cf-memtypes__btn:hover {
-  color: var(--fg);
-}
-.cf-memtypes__btn.is-on {
-  background: var(--bg);
-  color: var(--fg);
-  font-weight: 600;
-  box-shadow: var(--shadow-xs);
-}
 .cf-memdetail > .cf-input {
   flex: none;
 }
@@ -91,11 +55,4 @@
 /* 角色资料页里打开的记忆详情弹窗：固定高度，正文框有足够空间 */
 .cf-modal.is-editor.cf-memmodal {
   height: min(470px, 82vh);
-}
-
-/* 角色资料页「记忆」标签页的行：同「能力」行（.cf-cap），右侧是更新时间 */
-.cf-memrow__time {
-  font-size: 11px;
-  color: var(--fg-subtle);
-  white-space: nowrap;
 }
