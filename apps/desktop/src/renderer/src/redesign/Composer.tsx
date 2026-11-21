@@ -944,7 +944,7 @@ export const Composer = memo(function Composer({
                 }}
               >
                 <WorkspaceMenu root={focusRoot} />
-                <GitWidget root={focusRoot} streaming={streaming} />
+                <GitWidget root={focusRoot} />
                 <button
                   type="button"
                   className="cf-wschip__x"
