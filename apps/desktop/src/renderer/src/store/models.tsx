@@ -26,7 +26,7 @@ interface ModelsContextValue {
   setActiveEffort: (level: EffortLevel) => void
   updateProvider: (
     id: string,
-    patch: Partial<Pick<Provider, 'name' | 'apiHost' | 'enabled' | 'adapter' | 'threshold'>>
+    patch: Partial<Pick<Provider, 'name' | 'apiHost' | 'enabled' | 'adapter' | 'threshold' | 'headers'>>
   ) => void
   toggleModel: (providerId: string, modelId: string) => void
   /** 改单个模型的显示名 / 上下文窗口 / 输出上限（模型详情页）；值为 undefined 即恢复自动。 */
@@ -214,7 +214,12 @@ export function ModelsProvider({ children }: { children: ReactNode }): React.JSX
       activeEffort,
       setActiveEffort,
       updateProvider: (id, patch) => {
-        patchProvider(id, (p) => ({ ...p, ...patch }))
+        patchProvider(id, (p) => {
+          const next = { ...p, ...patch }
+          // 清空自定义请求头：删键而不是留 undefined / 空表，落盘的配置里不残留空字段。
+          if (!next.headers || Object.keys(next.headers).length === 0) delete next.headers
+          return next
+        })
         // 禁用服务商时，若默认模型属于它则清空，避免对话页指向不可用模型
         if (patch.enabled === false) {
           setActiveModelId((cur) => (cur && cur.split(':')[0] === id ? null : cur))

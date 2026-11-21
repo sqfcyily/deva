@@ -28,6 +28,7 @@ import {
 } from '../../mock/models'
 import { Switch } from './Switch'
 import { ModelDetail } from './ModelDetail'
+import { ProviderAdvanced } from './ProviderAdvanced'
 
 /**
  * 模型设置页（设置 › 模型）。钻取式（主从抽屉）导航：列表态只列服务商，点进去为配置详情 + 返回；
@@ -61,8 +62,9 @@ export function ModelSettings(): React.JSX.Element {
     secretsAvailable
   } = useModels()
 
-  // 钻取导航：'list' 浏览服务商列表，'detail' 编辑单个服务商，'model' 编辑该服务商下的单个模型
-  const [view, setView] = useState<'list' | 'detail' | 'model'>('list')
+  // 钻取导航：'list' 浏览服务商列表，'detail' 编辑单个服务商，'model' 编辑该服务商下的单个模型，
+  // 'advanced' 该服务商的高级设置（自定义请求头等非常用项）
+  const [view, setView] = useState<'list' | 'detail' | 'model' | 'advanced'>('list')
   const [editingModelId, setEditingModelId] = useState<string | null>(null)
   const [showKey, setShowKey] = useState(false)
   const [addingModel, setAddingModel] = useState(false)
@@ -351,6 +353,13 @@ export function ModelSettings(): React.JSX.Element {
           onBack={() => setView('detail')}
           onUpdate={(patch) => updateModel(selectedProvider.id, editingModel.id, patch)}
         />
+      ) : view === 'advanced' && selectedProvider ? (
+        <ProviderAdvanced
+          key={selectedProvider.id}
+          provider={selectedProvider}
+          onBack={() => setView('detail')}
+          onUpdate={(patch) => updateProvider(selectedProvider.id, patch)}
+        />
       ) : view === 'list' || !selectedProvider ? (
         /* 列表态：扁平行列表，与通用/扩展页同构；右上角图标按钮新增服务商 */
         <>
@@ -385,6 +394,18 @@ export function ModelSettings(): React.JSX.Element {
               {t('common.back')}
             </button>
             <div className="provider-detail__spacer" />
+            {/* 高级设置（自定义请求头等非常用项）：只放一个入口图标，点开钻入子页。
+                仅对话模型：决策模型不经 providerHeaders */}
+            {selectedProvider.purpose !== 'decision' && (
+              <button
+                className="icon-btn"
+                title={t('models.advanced')}
+                aria-label={t('models.advanced')}
+                onClick={() => setView('advanced')}
+              >
+                <Wrench size={15} />
+              </button>
+            )}
             {/* 官方服务商同样可删（恢复为初始状态，见 store/models.tsx removeProvider） */}
             <button
               className="icon-btn provider-detail__del"

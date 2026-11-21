@@ -84,7 +84,7 @@ export function registerProviderIpc(): void {
         : { authorization: `Bearer ${apiKey}` }
     try {
       const res = await fetchWithTimeout(url, {
-        headers: { ...authHeaders, ...providerHeaders(base) }
+        headers: { ...authHeaders, ...providerHeaders(base, cfg.providerId) }
       })
       if (!res.ok) {
         const text = await res.text().catch(() => '')

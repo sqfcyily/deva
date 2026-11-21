@@ -1,6 +1,7 @@
 import { getConfig } from './config'
 import { isEffortLevel, type EffortLevel } from '../providers/types'
 import { CONTEXT_WINDOW_RANGE, MAX_OUTPUT_RANGE, validLimit } from '../../shared/context'
+import { sanitizeHeaders } from '../../shared/provider-headers'
 
 /**
  * 模型引用解析（主进程）。子智能体可指定一个「已配置模型」运行，其引用格式与全局默认模型一致：
@@ -30,6 +31,7 @@ interface StoredProvider {
   id?: unknown
   adapter?: unknown
   apiHost?: unknown
+  headers?: unknown
   models?: unknown
 }
 
@@ -109,6 +111,21 @@ export function modelOverrides(providerId: string, modelId: string): ModelOverri
     if (validLimit(model.contextWindow, CONTEXT_WINDOW_RANGE)) out.contextWindow = model.contextWindow
     if (validLimit(model.maxOutput, MAX_OUTPUT_RANGE)) out.maxOutput = model.maxOutput
     return out
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * 读某服务商的自定义请求头（`config.models.providers[].headers`，见 shared/provider-headers.ts）。
+ * 按 providerId 现查配置，对话、子智能体、定时任务、拉取模型清单共用一处，改了即对下一次请求生效。
+ * 未填 / 找不到 / 读配置异常 → 空表，永不抛错。
+ */
+export function providerCustomHeaders(providerId: string): Record<string, string> {
+  try {
+    const models = (getConfig().models ?? {}) as { providers?: unknown }
+    const providers = Array.isArray(models.providers) ? (models.providers as StoredProvider[]) : []
+    return sanitizeHeaders(providers.find((p) => p && p.id === providerId)?.headers)
   } catch {
     return {}
   }

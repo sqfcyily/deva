@@ -4684,6 +4684,20 @@ button.projmenu__item:disabled {
   justify-content: space-between;
   margin-bottom: var(--space-2);
 }
+/* 服务商高级设置页的「自定义请求头」：清单盒与行沿用「模型」一栏的 .model-list / .model-row，行内是 名称 + 值 + 删除 */
+.header-item + .header-item {
+  border-top: 1px solid var(--border);
+}
+.header-item .model-row {
+  border-bottom: none;
+}
+.header-item .header-item__name {
+  flex: 0 0 34%;
+}
+.header-item .field__warn {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+}
 .field__hint-link {
   display: inline-flex;
   align-items: center;

@@ -44,6 +44,11 @@ export interface Provider {
   adapter: ProviderAdapter
   /** API 基础地址（Base URL） */
   apiHost: string
+  /**
+   * 自定义请求头（头名小写 → 值），并在本应用默认头之后、同名即覆盖；缺省 = 不追加。
+   * 明文存 config.json，由主进程按 providerId 现读（见 shared/provider-headers.ts）。
+   */
+  headers?: Record<string, string>
   /** 获取密钥的文档地址 */
   docUrl?: string
   enabled: boolean

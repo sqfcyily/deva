@@ -49,11 +49,11 @@ export async function* streamChat(
   req: GenerateRequest
 ): AsyncGenerator<StreamEvent> {
   const apiKey = (await getSecret(cfg.providerId)) ?? ''
-  // 服务商专有头（如 OpenCode Go 的会话 id + 自有 UA）：只对认得的端点非空，其余服务商不受影响。
+  // 追加的请求头：自有 UA、OpenCode Go 的会话 id、用户给该服务商填的自定义请求头（见 providerHeaders）。
   const adapterCfg = {
     baseURL: cfg.baseURL,
     apiKey,
-    headers: providerHeaders(cfg.baseURL, req.sessionId)
+    headers: providerHeaders(cfg.baseURL, cfg.providerId, req.sessionId)
   }
   // 发送前消弭连续同角色（压缩产生的「摘要+近期」连续 user 等），对严格网关稳健。
   const normReq: GenerateRequest = { ...req, messages: normalizeMessages(req.messages) }

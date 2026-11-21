@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { app } from 'electron'
+import { providerCustomHeaders } from '../services/model-resolve'
 
 /**
  * OpenCode Console 推理网关（Go 套餐与按量计费）对第三方客户端的两项要求，见官方文档
@@ -35,12 +36,19 @@ function isOpencodeInference(baseURL: string): boolean {
  *  · 所有服务商都带 `user-agent: deva/<版本>` 自报身份——不带就是网络库的默认值（Chromium 浏览器 UA），网关、
  *    中转服务与服务商后台都分不出是哪个工具在调用（issue #33）。版本号与更新器 / MCP 客户端同源。
  *  · opencode.ai 的推理端点另加 `x-opencode-session`（见文件头）。
+ *  · 用户给该服务商填的自定义请求头并在最后，同名即覆盖上面两项（个别中转按 UA / `originator` 识别客户端，
+ *    issue #77）；鉴权头等保留名已在整理时剔除（见 shared/provider-headers.ts）。
+ * @param providerId 服务商 id，据此读它的自定义请求头。
  * @param sessionId 所属对话 id；缺省（不经对话的一次性调用）退回本次运行 id。
  */
-export function providerHeaders(baseURL: string, sessionId?: string): Record<string, string> {
-  const ua = { 'user-agent': `deva/${app.getVersion()}` }
-  if (!isOpencodeInference(baseURL)) return ua
-  return { ...ua, 'x-opencode-session': sessionId?.trim() || runSessionId }
+export function providerHeaders(
+  baseURL: string,
+  providerId: string,
+  sessionId?: string
+): Record<string, string> {
+  const headers: Record<string, string> = { 'user-agent': `deva/${app.getVersion()}` }
+  if (isOpencodeInference(baseURL)) headers['x-opencode-session'] = sessionId?.trim() || runSessionId
+  return { ...headers, ...providerCustomHeaders(providerId) }
 }
 
 /** 推理网关里紧跟在套餐段之后的 API 段（见官方 Base URLs 一节）。 */
