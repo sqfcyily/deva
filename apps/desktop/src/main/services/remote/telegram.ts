@@ -1,4 +1,4 @@
-import { net } from 'electron'
+import { httpFetch } from '../../http'
 import type {
   ActionValue,
   AdapterHost,
@@ -21,7 +21,7 @@ import type {
  * 与飞书卡片的差异由本文件消化：没有表单 → 问答卡改为「点选项（多选 / 多题时再点提交）」，选择状态暂存在适配器；
  * 按钮回传数据上限 64 字节 → 放得下的动作直接编码（重启后照样有效），放不下的存进内存表、只回传短号。
  *
- * 请求一律走 electron net.fetch（Chromium 网络栈，自动使用系统代理）。
+ * 请求走 httpFetch（统一出站 HTTP，认 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY / NO_PROXY 环境变量）。
  */
 
 export interface TelegramOptions {
@@ -68,7 +68,7 @@ export async function tgCall<T>(
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
   let res: Response
   try {
-    res = await net.fetch(`https://api.telegram.org/bot${token}/${method}`, {
+    res = await httpFetch(`https://api.telegram.org/bot${token}/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(params),

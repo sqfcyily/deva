@@ -720,7 +720,7 @@ const zhCN: MessageTree = {
       feishu:
         '扫码的飞书账号会自动成为这个机器人的主人，创建完成后机器人会主动给你发消息。电脑上的 Deva 需要保持运行（关窗驻留托盘即可）。',
       telegram:
-        '点 Start 的 Telegram 账号会成为这个机器人的主人。Token 只加密保存在这台电脑上。电脑上的 Deva 需要保持运行（关窗驻留托盘即可），且能访问 Telegram（如需代理，请设置系统代理）。'
+        '点 Start 的 Telegram 账号会成为这个机器人的主人。Token 只加密保存在这台电脑上。电脑上的 Deva 需要保持运行（关窗驻留托盘即可），且能访问 Telegram（如需代理，设置 HTTPS_PROXY 等环境变量）。'
     },
     tokenLead: '扫码打开 BotFather，发送 /newbot 创建机器人，再把它回复的 Token 粘贴到下面。',
     tokenPlaceholder: '粘贴 Token，形如 123456789:AAH…',
@@ -2253,7 +2253,7 @@ const en: MessageTree = {
       feishu:
         'The account that scans becomes the owner of the bot, and the bot will message you once it is ready. Deva must stay running on this computer (keeping it in the tray is enough).',
       telegram:
-        'The Telegram account that taps Start becomes the owner of the bot. The token is stored encrypted on this computer only. Deva must stay running here (keeping it in the tray is enough) and be able to reach Telegram (set a system proxy if you need one).'
+        'The Telegram account that taps Start becomes the owner of the bot. The token is stored encrypted on this computer only. Deva must stay running here (keeping it in the tray is enough) and be able to reach Telegram (set HTTPS_PROXY or similar env vars if you need a proxy).'
     },
     tokenLead: 'Scan to open BotFather, send /newbot to create a bot, then paste the token it replies with below.',
     tokenPlaceholder: 'Paste the token, e.g. 123456789:AAH…',
