@@ -33,7 +33,7 @@ const STR = {
   // 首次 / 失效
   welcomeTitle: ['连接到电脑上的 Deva', 'Connect to Deva on your computer'],
   // 初始页的三步（「」里的词加粗）。
-  guide1: ['打开电脑上的 Deva，点左下角的「手机」', 'Open Deva on your computer and click Phone at the bottom left'],
+  guide1: ['打开 Deva，点左下角的「手机」', 'Open Deva and click Phone at the bottom left'],
   guide2: ['点 +，添加「Deva 手机版」', 'Click + and add Deva Mobile'],
   guide3: ['用这台手机扫描出现的二维码', 'Scan the QR code that appears with this phone'],
   // 这个页面调不了相机（局域网地址不是 https、浏览器不支持）：没有「扫码连接」按钮，写明用什么扫。
