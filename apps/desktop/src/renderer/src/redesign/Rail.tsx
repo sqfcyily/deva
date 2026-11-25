@@ -10,9 +10,11 @@ import {
   ArrowUpToLine,
   ChevronRight,
   Cog,
+  Copy,
   Folder,
   FolderMinus,
   Globe,
+  GitBranch,
   Check,
   ListChecks,
   ListFilter,
@@ -220,6 +222,8 @@ export function Rail({
   onAddPersona,
   onAddPersonaByChat,
   onNewChatFromThread,
+  onContinueThread,
+  onCopyThreadWorkspace,
   onRenameThread,
   onArchiveThread,
   onUnarchiveThread,
@@ -246,6 +250,8 @@ export function Rail({
   onAddPersona: () => void
   onAddPersonaByChat: () => void
   onNewChatFromThread: (id: string) => void
+  onContinueThread: (id: string) => Promise<boolean>
+  onCopyThreadWorkspace: (id: string) => Promise<void>
   /** 重命名对话（弹框输入新标题）；title 为当前标题。 */
   onRenameThread: (id: string, title: string) => void
   /** 归档（从列表移走，提示条可撤销）/ 移回对话列表。 */
@@ -382,6 +388,25 @@ export function Rail({
     clearFilters()
     fn()
   }
+  const threadContinuationItems = (id: string): CtxEntry[] => [
+    {
+      label: t('cf.continueChat'),
+      icon: <GitBranch size={14} />,
+      onClick: () => {
+        void onContinueThread(id).then((opened) => {
+          if (!opened) return
+          setArchiveView(false)
+          setQuery('')
+          clearFilters()
+        })
+      }
+    },
+    {
+      label: t('cf.copyThreadWorkspace'),
+      icon: <Copy size={14} />,
+      onClick: () => void onCopyThreadWorkspace(id)
+    }
+  ]
   // 筛选面板的选项（只在打开时算）：有对话的角色按花名册顺序，挂过的文件夹按最近使用；已选的即便没有对话了
   // 也列出来，好取消。数字是在另一类条件下的对话数，为 0 置灰（仍可点）。
   const filterOptions = useMemo(() => {
@@ -780,6 +805,7 @@ export function Rail({
               ? selectMenuItems()
               : menu.kind === 'thread' && menu.archived
               ? [
+                  ...threadContinuationItems(menu.id),
                   multiSelectItem(menu.id),
                   {
                     label: t('cf.unarchive'),
@@ -800,6 +826,7 @@ export function Rail({
                     icon: <Plus size={14} />,
                     onClick: () => startFresh(() => onNewChatFromThread(menu.id))
                   },
+                  ...threadContinuationItems(menu.id),
                   {
                     label: t('cf.renameChat'),
                     icon: <Pencil size={14} />,

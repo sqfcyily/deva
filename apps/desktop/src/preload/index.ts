@@ -810,6 +810,8 @@ const api = {
     /** 立即建档一条空对话（对话优先外壳）：首发前即落盘，重启仍在。 */
     createSession: (req: ChatCreateSessionRequest): Promise<{ ok: true }> =>
       ipcRenderer.invoke('chat:create-session', req),
+    continueSession: (sourceId: string): Promise<string | null> =>
+      ipcRenderer.invoke('chat:continue-session', sourceId),
     /** 切换本对话模型并立即落库（不等下一次发送）。 */
     setModel: (req: ChatSetModelRequest): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('chat:set-model', req),

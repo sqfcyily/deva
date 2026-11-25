@@ -43,6 +43,8 @@ export interface StoredSession {
   updatedAt: number
   /** 完整对话记录（内存里始终完整；落盘时按压缩边界拆分，见 compacted）。 */
   messages: Message[]
+  /** 用户从侧栏续接时保存的有界历史快照，首条用户消息带给模型后清除。 */
+  continuationContext?: string
   /**
    * 对话文件按压缩边界拆分存盘：模型已看不到的前 count 条消息存在同目录的 file 里（JSON Lines，一行一条，
    * 只追加；前面的消息变了才换新文件整份重写），主文件的 messages 只存其后的部分——对话再长，每步也只重写
