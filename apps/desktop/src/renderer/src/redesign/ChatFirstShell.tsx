@@ -34,6 +34,7 @@ import { LiveConversation } from './Conversation'
 import { type SlashCommand, type ComposerPrefill, restoreToComposer } from './Composer'
 import { type EditorState, ProfileView, PersonaEditor } from './ProfileView'
 import { type SettingsInit, Settings } from './SettingsPane'
+import { useThreadContinuation } from './ThreadContinuation'
 
 /**
  * 「对话优先」外壳（已接真实 store）。
@@ -373,6 +374,7 @@ export function ChatFirstShell(): React.JSX.Element {
     selectSession(id)
     setRailTab('chats')
   }
+  const { continueThread, copyThreadWorkspace } = useThreadContinuation(railSessions, openThread)
   // 查看某角色资料 → 切到「角色」tab 并选中该角色（右侧随之显示其资料卡）。
   const openProfile = (personaId: string): void => {
     setViewPersonaId(personaId)
@@ -668,6 +670,8 @@ export function ChatFirstShell(): React.JSX.Element {
               onAddPersona={() => setEditor({ mode: 'create' })}
               onAddPersonaByChat={addPersonaByChat}
               onNewChatFromThread={newChatFromThread}
+              onContinueThread={continueThread}
+              onCopyThreadWorkspace={copyThreadWorkspace}
               onRenameThread={renameThread}
               onArchiveThread={archiveThread}
               onUnarchiveThread={(id) => setArchived(id, false)}

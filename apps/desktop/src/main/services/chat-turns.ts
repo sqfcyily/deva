@@ -34,6 +34,7 @@ import type { MemoryAccess, MemoryScope } from './memory'
 import { memoryPromptSection } from './memory-prompt'
 import { tidyPendingMemories } from './memory-tidy'
 import { loadProjectDoc, projectDocPromptSection } from './project-doc'
+import { takeContinuationContext } from './chat-continuation'
 import { DEFAULT_PERSONA_ID, getPersona, resolvePersonaId } from './personas'
 import {
   resolveDefaultEffort,
@@ -1015,6 +1016,8 @@ async function startTurn(
   const questionText = withNotes(question)
   // 技能展开改写了正文：气泡仍显示用户的原话（重开对话、手机端、成员读主对话都按它），技能全文只给模型。
   const shown = effectiveText !== text ? withNotes(text.trim()) : undefined
+  const continuation = takeContinuationContext(session)
+  if (continuation) parts.unshift({ type: 'text', text: continuation })
   // 「仅恢复代码」后的首条消息：把回滚说明作为**第一个**独立 text 块带给模型（展示层只取最后一个
   // text 块作气泡正文，故用户看不到它），用一次即清。
   if (session.restoreNote) {

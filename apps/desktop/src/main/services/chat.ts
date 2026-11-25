@@ -25,6 +25,7 @@ import type {
 } from '../../shared/chat-protocol'
 import { ipcMain, type BrowserWindow } from 'electron'
 import { onChatEvent, onSessionsChanged, publishRemoteChange, publishSessionsChanged } from './chat-bus'
+import { continueChat } from './chat-continuation'
 import { forgetRead } from './read-sync'
 import { statSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
@@ -558,6 +559,8 @@ export function registerChatIpc(getWin: () => BrowserWindow | null): void {
       return { ok: true }
     }
   )
+
+  ipcMain.handle('chat:continue-session', (_e, sourceId: unknown) => continueChat(sourceId))
 
   // 对话输入框切换模型：立即落库到本对话（此前只写渲染层覆盖层、随下一次发送才落库，切了没发重启即丢）。
   // 尚未建档的惰性会话查不到 → 不建档，模型仍由覆盖层随首发落库。不改 updatedAt（换模型不算新活动）。
