@@ -1,7 +1,7 @@
 /**
  * 版本控制：分支与变更状态、工作区菜单、提交对话框（含 AI 生成提交信息）。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -37,6 +37,7 @@ import { useDialog } from '../components/DialogProvider'
 import { useToast, type ToastOptions } from '../components/ToastProvider'
 import { Modal } from '../components/Modal'
 import { basename } from './shell-common'
+import { useGitStatus } from './use-git-status'
 import { type CtxEntry, ContextMenu } from './ContextMenu'
 
 /* ─────────────────────────── Git 快捷面板（IDEA 式点击浮出） ───────────────────────────
@@ -45,19 +46,6 @@ import { type CtxEntry, ContextMenu } from './ContextMenu'
  * 安全：focusRoot 在 fs:open-folder 时已 trustRoot，git:status 内部 assertInside——复用既有受信根，
  * 不新增任何越权面，也不弹权限框（与「全放行 + 静默硬底线」一致）。
  */
-
-/** git 是否可用：全应用只探一次（缓存 Promise），避免每次挂载都 spawn 一次 --version。 */
-let gitAvailablePromise: Promise<boolean> | null = null
-
-function probeGitAvailable(): Promise<boolean> {
-  if (!gitAvailablePromise) {
-    gitAvailablePromise = window.deva.git
-      .available()
-      .then((r) => r.available)
-      .catch(() => false)
-  }
-  return gitAvailablePromise
-}
 
 /** GitFailReason → 本地化文案；缺 key 时回落到通用「操作失败」。 */
 function gitReasonText(t: (k: string) => string, reason?: GitFailReason): string {
@@ -104,58 +92,8 @@ function isValidBranchName(raw: string): boolean {
   return !/[\s~^:?*[\\\x00-\x1f\x7f]/.test(s)
 }
 
-interface GitState {
-  available: boolean
-  status: GitStatus | null
-  busy: boolean
-  refresh: () => Promise<void>
-}
-
 /**
- * 读取某工作区的 git 状态。不轮询（status 每次 spawn git 进程，且当前无文件监听）：
- * 只在「挂载 / 开菜单 / 每次写操作后」拉取。用 reqRef 防竞态——快速切换工作区时旧结果不覆盖新。
- */
-function useGitStatus(root: string | null): GitState {
-  const [available, setAvailable] = useState(false)
-  const [status, setStatus] = useState<GitStatus | null>(null)
-  const [busy, setBusy] = useState(false)
-  const reqRef = useRef(0)
-
-  const refresh = useCallback(async (): Promise<void> => {
-    const seq = ++reqRef.current
-    if (!root) {
-      setAvailable(false)
-      setStatus(null)
-      return
-    }
-    const ok = await probeGitAvailable()
-    if (seq !== reqRef.current) return
-    setAvailable(ok)
-    if (!ok) {
-      setStatus(null)
-      return
-    }
-    setBusy(true)
-    try {
-      const st = await window.deva.git.status(root)
-      if (seq !== reqRef.current) return
-      setStatus(st.isRepo ? st : null)
-    } catch {
-      if (seq === reqRef.current) setStatus(null)
-    } finally {
-      if (seq === reqRef.current) setBusy(false)
-    }
-  }, [root])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  return { available, status, busy, refresh }
-}
-
-/**
- * 挂载 chip 里的分支 pill + 快捷菜单。仅当 git 可用且目标是仓库时渲染，否则返回 null（非仓库 / 没装 git 静默隐藏）。
+ * 挂载时仅读仓库元数据显示分支 pill；Git 只在用户主动操作时运行。
  * 菜单复用 ContextMenu（视口定位 + 越界夹回），始终只显示一级：点「分支」原地换成分支列表（含合并分支 / 新建分支），
  * 点某个分支再换成它的操作（切换 / 重命名 / 删除）。「提交」开 CommitModal。
  */
@@ -165,21 +103,13 @@ type GitMenuView =
   | { kind: 'merge' }
   | { kind: 'branch'; branch: GitBranchEntry }
 
-export function GitWidget({ root, streaming }: { root: string; streaming: boolean }): React.JSX.Element | null {
+export function GitWidget({ root }: { root: string }): React.JSX.Element | null {
   const { t, locale } = useI18n()
   const toast = useToast()
   const dialog = useDialog()
   const { activeModel, providers, hasKey } = useModels()
   const { currentBinding } = useChatState()
-  const { available, status, busy, refresh } = useGitStatus(root)
-
-  // 一轮结束（正常完成 / 中断 / 出错，streaming 由 true 落为 false）后刷新一次：
-  // 本轮可能改了文件，pill 上的状态与提交框的改动清单随之更新。
-  const wasStreaming = useRef(streaming)
-  useEffect(() => {
-    if (wasStreaming.current && !streaming) void refresh()
-    wasStreaming.current = streaming
-  }, [streaming, refresh])
+  const { status, busy, refresh } = useGitStatus(root)
 
   const [menu, setMenu] = useState<{ x: number; y: number; view: GitMenuView } | null>(null)
   const [branches, setBranches] = useState<GitBranchEntry[]>([])
@@ -187,7 +117,7 @@ export function GitWidget({ root, streaming }: { root: string; streaming: boolea
   const [opBusy, setOpBusy] = useState(false)
   const pillRef = useRef<HTMLButtonElement>(null)
 
-  if (!available || !status || !status.isRepo) return null
+  if (!status || !status.isRepo) return null
 
   const label = status.detached ? t('cf.git.detached') : status.branch || t('cf.git.noBranch')
   const fmt = (key: string, name: string): string => t(key).replace('{name}', name)
@@ -435,7 +365,16 @@ export function GitWidget({ root, streaming }: { root: string; streaming: boolea
       { label: t('cf.git.commit'), icon: <GitCommitHorizontal size={14} />, onClick: () => setCommitOpen(true) },
       { kind: 'separator' },
       { label: t('cf.git.branches'), icon: <GitBranch size={14} />, onClick: () => go({ kind: 'branches' }) },
-      { label: t('cf.git.refresh'), icon: <RefreshCw size={14} />, onClick: () => void refresh() }
+      {
+        label: t('cf.git.refresh'),
+        icon: <RefreshCw size={14} />,
+        disabled: busy || opBusy,
+        onClick: () => void refresh(true).then((st) => {
+          if (!st || st.scanState !== 'complete') {
+            toast.show({ variant: 'error', title: t('cf.git.scanFailed'), message: st?.scanError })
+          }
+        })
+      }
     ]
   }
 
@@ -459,7 +398,10 @@ export function GitWidget({ root, streaming }: { root: string; streaming: boolea
         ref={pillRef}
         type="button"
         className={`cf-gitchip${opBusy || busy ? ' is-busy' : ''}`}
-        title={t('cf.git.menuHint')}
+        title={t(
+          status.scanState === 'complete' ? 'cf.git.menuHint'
+            : status.scanState === 'failed' ? 'cf.git.scanFailed' : 'cf.git.notScanned'
+        )}
         aria-label={t('cf.git.menuHint')}
         onClick={() => void openMenu()}
         disabled={opBusy}
@@ -635,20 +577,26 @@ function CommitModal({
     if (gen && el) el.scrollTop = el.scrollHeight
   }, [gen, msg])
 
-  // 打开即重取一次状态：父级快照可能早于本轮对话 / 用户在外部新建的文件，避免改动数与可提交态过期。
+  // Opening the commit dialog is an explicit scan. Unknown/failed is never "clean".
   const [status, setStatus] = useState(initialStatus)
+  const [scanning, setScanning] = useState(true)
+  const [scanError, setScanError] = useState<string | null>(null)
+  const [scanAttempt, setScanAttempt] = useState(0)
   useEffect(() => {
     let alive = true
+    setScanning(true)
+    setScanError(null)
     window.deva.git
-      .status(root)
+      .status(root, { scan: true })
       .then((st) => {
-        if (alive && st.isRepo) setStatus(st)
+        if (!alive) return
+        setStatus(st)
+        if (!st.isRepo || st.scanState !== 'complete') setScanError(st.scanError || 'Git status scan failed')
       })
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [root])
+      .catch(() => { if (alive) setScanError('Git status scan failed') })
+      .finally(() => { if (alive) setScanning(false) })
+    return () => { alive = false }
+  }, [root, scanAttempt])
 
   // 变更集：跨 staged/unstaged/conflicts 按路径去重计数。
   const changed = useMemo(() => {
@@ -660,7 +608,8 @@ function CommitModal({
   }, [status])
 
   const hasConflicts = status.conflicts.length > 0
-  const canCommit = Boolean(msg.trim()) && changed > 0 && !hasConflicts && !busy && !gen
+  const canCommit = status.scanState === 'complete' && !scanning && !scanError
+    && Boolean(msg.trim()) && changed > 0 && !hasConflicts && !busy && !gen
 
   const stopGenerate = (): void => {
     if (genIdRef.current) void window.deva.git.cancelCommitMessage(genIdRef.current)
@@ -703,8 +652,14 @@ function CommitModal({
     try {
       // 提交前再取一次最新状态，暂存其中全部未暂存改动（未跟踪文件已含在 unstaged 内），再提交——
       // 弹窗打开期间新增的文件也不会漏。
-      const fresh = await window.deva.git.status(root)
-      const latest = fresh.isRepo ? fresh : status
+      const fresh = await window.deva.git.status(root, { scan: true })
+      setStatus(fresh)
+      if (!fresh.isRepo || fresh.scanState !== 'complete') {
+        setScanError(fresh.scanError || 'Git status scan failed')
+        toast.show({ variant: 'error', message: t('cf.git.scanFailed') })
+        return
+      }
+      const latest = fresh
       if (latest.conflicts.length > 0) {
         setStatus(latest)
         return
@@ -731,18 +686,36 @@ function CommitModal({
     }
   }
 
-  const meta = hasConflicts
-    ? t('cf.git.commitConflicts')
-    : changed > 0
-      ? t('cf.git.commitCount').replace('{n}', String(changed))
-      : t('cf.git.commitNone')
+  const meta = scanError
+    ? t('cf.git.scanFailed')
+    : scanning
+      ? t('cf.git.scanning')
+      : status.scanState !== 'complete'
+        ? t('cf.git.notScanned')
+        : hasConflicts
+          ? t('cf.git.commitConflicts')
+          : changed > 0
+            ? t('cf.git.commitCount').replace('{n}', String(changed))
+            : t('cf.git.commitNone')
 
   return (
     <Modal open onClose={onClose} width={460} labelledBy="cf-commit-title">
       <h2 id="cf-commit-title" className="modal__title">
         {t('cf.git.commitTitle')}
       </h2>
-      <p className="cf-commit__meta">{meta}</p>
+      <p className="cf-commit__meta" role={scanError ? 'alert' : undefined} title={scanError || undefined}>
+        {meta}
+      </p>
+      {scanError && (
+        <button
+          type="button"
+          className="btn btn--ghost"
+          disabled={scanning || busy}
+          onClick={() => setScanAttempt((n) => n + 1)}
+        >
+          {t('cf.git.refresh')}
+        </button>
+      )}
       <textarea
         ref={msgRef}
         className="input cf-commit__msg"
@@ -763,7 +736,7 @@ function CommitModal({
             type="button"
             className="btn btn--ghost"
             onClick={() => void generate()}
-            disabled={!model || busy}
+            disabled={!model || busy || scanning || Boolean(scanError) || status.scanState !== 'complete'}
             title={model ? t('cf.git.aiHint') : t('cf.git.aiNoModel')}
           >
             <Sparkles size={14} />

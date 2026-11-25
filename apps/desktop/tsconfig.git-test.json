@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "rootDir": ".",
+    "outDir": ".test-out"
+  },
+  "include": [
+    "tests/git-status*.test.ts",
+    "src/shared/git-status.ts",
+    "src/main/services/git-status.ts",
+    "src/main/services/git-status-process.ts"
+  ]
+}

@@ -1,7 +1,12 @@
+import type {
+  GitStatusLetter, GitFileStatus, GitStatus, GitStatusOptions, GitParsedStatus
+} from '../../shared/git-status'
 import { execFile } from 'node:child_process'
 import { existsSync, promises as fs } from 'node:fs'
 import { basename, delimiter, dirname, join, resolve } from 'node:path'
-import { ipcMain } from 'electron'
+import { app, ipcMain } from 'electron'
+import { createGitStatusService } from './git-status'
+import { cancelGitStatusScans } from './git-status-process'
 import { assertAllInside, assertInside, insideRootFlags } from './fs-guard'
 import { getConfig, getDevaHome } from './config'
 import { detectShells } from './shells'
@@ -29,40 +34,7 @@ import { streamChat } from '../providers'
 
 // ── 导出类型（供 preload/renderer 复用；沿用 GitDiffView 现有渲染形状） ──────────────
 
-export type GitStatusLetter = 'M' | 'A' | 'D' | 'U' | 'R' | 'C' | 'T'
-
-export interface GitFileStatus {
-  /** 绝对路径（渲染层回传给文件级操作，主进程再 assertInside 校验） */
-  path: string
-  /** 仓库根相对路径（用于灰色路径展示与 diff pathspec） */
-  rel: string
-  /** 文件名（basename） */
-  name: string
-  /** 相对目录（rel 的 dirname，顶层为空串） */
-  dir: string
-  letter: GitStatusLetter
-  staged: boolean
-  unstaged: boolean
-  conflicted: boolean
-  /** 未跟踪（新文件，git 尚无 diff → diff 视图直接读全文件当新增） */
-  untracked: boolean
-}
-
-export interface GitStatus {
-  isRepo: boolean
-  root: string
-  branch: string | null
-  detached: boolean
-  upstream: string | null
-  ahead: number
-  behind: number
-  remotes: string[]
-  /** 合并进行中（存在 MERGE_HEAD）：UI 显示「合并中」并提供「中止合并」 */
-  mergeInProgress: boolean
-  staged: GitFileStatus[]
-  unstaged: GitFileStatus[]
-  conflicts: GitFileStatus[]
-}
+export type { GitStatusLetter, GitFileStatus, GitStatus } from '../../shared/git-status'
 
 export interface GitDiffLine {
   type: 'ctx' | 'add' | 'del' | 'hunk'
@@ -241,23 +213,6 @@ function runGitPaths(dir: string, args: string[], paths: string[]): Promise<RunR
 
 // ── 解析 ─────────────────────────────────────────────────────────────────────
 
-function emptyStatus(root: string): GitStatus {
-  return {
-    isRepo: false,
-    root,
-    branch: null,
-    detached: false,
-    upstream: null,
-    ahead: 0,
-    behind: 0,
-    remotes: [],
-    mergeInProgress: false,
-    staged: [],
-    unstaged: [],
-    conflicts: []
-  }
-}
-
 /** git 状态字符 → 展示字母。 */
 function letterFor(c: string): GitStatusLetter {
   switch (c) {
@@ -299,10 +254,7 @@ function mkFile(
  * 解析 `git status --porcelain=v2 --branch -z` 输出。
  * `-z` 用 NUL 分隔，稳过含空格/中文/特殊字符的路径；重命名（`2`）额外占一个 NUL 段（origPath）。
  */
-function parsePorcelainV2(
-  stdout: string,
-  root: string
-): Omit<GitStatus, 'isRepo' | 'root' | 'remotes' | 'mergeInProgress'> {
+function parsePorcelainV2(stdout: string, root: string): GitParsedStatus {
   const tokens = stdout.split('\0')
   let branch: string | null = null
   let detached = false
@@ -625,48 +577,17 @@ export function registerGitIpc(): void {
     }
   })
 
-  // 核心：完整状态（分支 / upstream / ahead-behind / 分组文件）
-  ipcMain.handle('git:status', async (_e, dir: string): Promise<GitStatus> => {
-    assertInside(dir)
-    const st = await runGitRaw(dir, [
-      'status',
-      '--porcelain=v2',
-      '--branch',
-      '--untracked-files=all',
-      '-z'
-    ])
-    if (st.code !== 0) return emptyStatus(dir) // 非仓库 / 无 git
-    const top = await runGitRaw(dir, ['rev-parse', '--show-toplevel'])
-    const root = top.code === 0 && top.stdout.trim() ? resolve(top.stdout.trim()) : resolve(dir)
-    const parsed = parsePorcelainV2(st.stdout, root)
-    // 只保留落在受信根内的文件（常见情形 root===项目根，无过滤；子目录场景下过滤根外文件）。
-    // 须批量判定：未跟踪文件逐个列出（-uall），大仓可达上万条，逐条 assertInside 会把主进程卡住。
-    const keepInside = async (list: GitFileStatus[]): Promise<GitFileStatus[]> => {
-      const ok = await insideRootFlags(list.map((f) => f.path))
-      return list.filter((_, i) => ok[i])
-    }
-    const [staged, unstaged, conflicts] = await Promise.all([
-      keepInside(parsed.staged),
-      keepInside(parsed.unstaged),
-      keepInside(parsed.conflicts)
-    ])
-    const remotes = await listRemotes(dir)
-    const merge = await runGitRaw(dir, ['rev-parse', '-q', '--verify', 'MERGE_HEAD'])
-    return {
-      isRepo: true,
-      root,
-      branch: parsed.branch,
-      detached: parsed.detached,
-      upstream: parsed.upstream,
-      ahead: parsed.ahead,
-      behind: parsed.behind,
-      remotes,
-      mergeInProgress: merge.code === 0,
-      staged,
-      unstaged,
-      conflicts
-    }
+  // Background requests read metadata only; enumeration requires a strict user opt-in.
+  const statusService = createGitStatusService({
+    assertInside,
+    insideRootFlags,
+    resolveGitPath,
+    parseStatus: parsePorcelainV2
   })
+  app.once('before-quit', cancelGitStatusScans)
+  ipcMain.handle('git:status', (_e, dir: string, options?: GitStatusOptions): Promise<GitStatus> =>
+    statusService.status(dir, options)
+  )
 
   // 文件级 diff：staged→index↔HEAD；unstaged→worktree↔index；未跟踪→读全文件当新增
   ipcMain.handle(
