@@ -39,6 +39,7 @@ const CATALOG: Record<string, ToolTraits> = {
   web_fetch: { category: 'read', parallel: true },
   // 读记忆：主进程直读 ~/.deva 下的全局 / 项目记忆，无路径入参。
   memory_read: { category: 'read', parallel: true },
+  recall_chat: { category: 'read', parallel: true, subagent: false, member: false, unattended: false },
 
   // ── 写 / 执行 ──
   write_file: { category: 'edit' },

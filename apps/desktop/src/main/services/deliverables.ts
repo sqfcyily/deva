@@ -2,7 +2,8 @@ import { app, ipcMain, nativeImage, shell } from 'electron'
 import { promises as fs } from 'node:fs'
 import { basename, dirname, extname, isAbsolute } from 'node:path'
 import type { DeliverableInfo } from '../../shared/deliverables'
-import { getSession } from './chat-store'
+import type { ToolUsePart } from '../providers/types'
+import { getSession, type StoredSession } from './chat-store'
 import { roleHomeOf } from './role-home'
 
 /**
@@ -47,14 +48,20 @@ function deliveredPaths(sessionId: unknown, toolUseId: unknown): string[] {
     if (m.role !== 'assistant' || typeof m.content === 'string') continue
     for (const p of m.content) {
       if (p.type !== 'tool_use' || p.id !== toolUseId) continue
-      if (p.name !== 'present_files') return []
-      const paths = (p.input as { paths?: unknown } | null)?.paths
-      return Array.isArray(paths)
-        ? paths.filter((x): x is string => typeof x === 'string' && isAbsolute(x))
-        : []
+      return recordedDeliveryPaths(s, p)
     }
   }
   return []
+}
+
+export function recordedDeliveryPaths(session: StoredSession, call: ToolUsePart): string[] {
+  if (call.name !== 'present_files') return []
+  const recorded = session.delivered?.[call.id]
+  if (recorded) return recorded
+  const paths = (call.input as { paths?: unknown } | null)?.paths
+  return Array.isArray(paths)
+    ? paths.filter((x): x is string => typeof x === 'string' && isAbsolute(x))
+    : []
 }
 
 export function deliveredPath(sessionId: unknown, toolUseId: unknown, index: unknown): string | null {

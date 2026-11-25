@@ -10,6 +10,7 @@ import { spillLongOutput } from './tool-results'
 import { skillsDir, upsertSkill } from './skills'
 import type { MemoryAccess } from './memory'
 import { MEMORY_TOOL_SPECS, memoryDeleteTool, memoryReadTool, memoryWriteTool } from './memory-tools'
+import { chatRecallToolSpec, recallChat } from './chat-recall'
 import type { CompactModelConfig } from './compaction'
 import { upsertServer, type McpValue } from './mcp-config'
 import {
@@ -274,6 +275,7 @@ const fullToolSpecs: ToolSpec[] = [
   },
   // 记忆：memory_read / memory_write / memory_delete（规格与执行见 memory-tools.ts）
   ...MEMORY_TOOL_SPECS,
+  chatRecallToolSpec,
   {
     name: 'propose_agent',
     description:
@@ -1304,6 +1306,7 @@ function errorSummary(e: unknown): string {
  * 新增内置工具：在这里加一项，并在 tool-catalog.ts 写清它的权限分类与适用范围。
  */
 const toolHandlers: Record<string, (a: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>> = {
+  recall_chat: (a, ctx) => recallChat(a, ctx.sessionId),
   browser: (a, ctx) => runBrowserTool(a, ctx),
   read_file: async (a, ctx) => {
     const abs = resolvePath(baseDir(ctx), a.path)
