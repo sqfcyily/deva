@@ -14,6 +14,8 @@ One conversation, a whole AI team
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-7C3AED?style=flat-square" alt="License" /></a>
   <img src="https://img.shields.io/badge/Electron-33-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
   <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-community-FFB003?style=flat-square" alt="LINUX DO Community" /></a>
+  <a href="https://qm.qq.com/q/NnvOb65TSU"><img src="https://img.shields.io/badge/QQ%20group-961555325-12B7F5?style=flat-square&logo=qq&logoColor=white" alt="QQ group 961555325" /></a>
+  <a href="https://t.me/usedeva"><img src="https://img.shields.io/badge/Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram group" /></a>
 </p>
 
 <a href="https://github.com/sqfcyily/deva/releases"><b>Download</b></a> ·

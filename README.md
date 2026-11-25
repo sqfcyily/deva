@@ -14,6 +14,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF-MIT-7C3AED?style=flat-square" alt="许可" /></a>
   <img src="https://img.shields.io/badge/Electron-33-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron" />
   <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-%E7%A4%BE%E5%8C%BA-FFB003?style=flat-square" alt="LINUX DO 社区" /></a>
+  <a href="https://qm.qq.com/q/NnvOb65TSU"><img src="https://img.shields.io/badge/QQ%20%E7%BE%A4-961555325-12B7F5?style=flat-square&logo=qq&logoColor=white" alt="QQ 群 961555325" /></a>
+  <a href="https://t.me/usedeva"><img src="https://img.shields.io/badge/Telegram-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram 群" /></a>
 </p>
 
 <a href="https://github.com/sqfcyily/deva/releases"><b>下载</b></a> · <a href="#模型破甲"><b>模型破甲</b></a> · <a href="#成员协作"><b>成员协作</b></a> · <a href="#功能"><b>功能</b></a> · <a href="#快速开始"><b>快速开始</b></a> · <a href="#工作方式"><b>工作方式</b></a> · <a href="#工具参考"><b>工具参考</b></a> · <a href="#安全模型"><b>安全模型</b></a> · <a href="#从源码构建"><b>从源码构建</b></a>
