@@ -1,14 +1,21 @@
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import {
   appendFileSync,
+  closeSync,
+  constants,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
+  openSync,
+  opendirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync
 } from 'fs'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { writeFileAtomic } from './atomic-write'
 import { getDevaHome } from './config'
 import { hydrateMessages, mediaReplacer } from './media-store'
@@ -248,8 +255,18 @@ export function projectKey(workspaceRoot: string | null): string {
   return createHash('sha1').update(norm).digest('hex').slice(0, 24)
 }
 
-function chatsDir(): string {
-  const dir = join(getDevaHome(), 'data', 'chats')
+function chatsDir(strict = false): string {
+  const data = join(getDevaHome(), 'data')
+  const dir = join(data, 'chats')
+  if (strict) {
+    for (const path of [data, dir]) {
+      try { mkdirSync(path, { mode: 0o700 }) } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      }
+      if (!lstatSync(path).isDirectory()) throw new Error('Invalid chat storage directory')
+    }
+    return dir
+  }
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   } catch {
@@ -266,8 +283,8 @@ function safeId(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]/g, '')
 }
 
-function fileForId(id: string): string {
-  return join(chatsDir(), `${safeId(id)}.json`)
+function fileForId(id: string, strict = false): string {
+  return join(chatsDir(strict), `${safeId(id)}.json`)
 }
 
 function indexPath(): string {
@@ -471,6 +488,64 @@ export function save(id: string): void {
   if (stale) removeCompactedFiles(id, s.compacted?.file)
   ensureIndex().set(id, metaOf(s))
   persistIndex()
+}
+
+/** Strict plain sessions use the native main file, without the advisory index or sidecar hydration. */
+export function listPlainSessionIds(accepts: (id: string) => boolean, limit: number, scanLimit: number): string[] {
+  const dir = opendirSync(chatsDir(true))
+  const ids: string[] = []
+  let scanned = 0
+  try {
+    for (let entry = dir.readSync(); entry; entry = dir.readSync()) {
+      if (++scanned > scanLimit) throw new Error('Chat storage scan limit exceeded')
+      if (!entry.name.endsWith('.json')) continue
+      const id = entry.name.slice(0, -5)
+      if (accepts(id)) ids.push(id)
+      if (ids.length > limit) break // Return one over so the caller can report saturation.
+    }
+  } finally {
+    dir.closeSync()
+  }
+  return ids
+}
+
+export function readPlainSession(id: string, maxBytes: number): unknown {
+  const file = fileForId(id, true)
+  try {
+    const stat = lstatSync(file)
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > maxBytes) return undefined
+    return JSON.parse(readFileSync(file, 'utf8'))
+  } catch (error) {
+    if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+/** The rename may have committed, but durability could not be verified. */
+export class PlainSessionSyncError extends Error {}
+
+export function savePlainSession(session: StoredSession): void {
+  const file = fileForId(session.id, true)
+  const tmp = `${file}.${randomUUID()}.tmp`
+  const fd = openSync(tmp, 'wx', 0o600)
+  let renamed = false
+  try {
+    try { writeFileSync(fd, JSON.stringify(session), { flush: true }) } finally { closeSync(fd) }
+    renameSync(tmp, file)
+    renamed = true
+    // Sync chats, data, and DEVA_HOME: the first write can have created both child directories.
+    // Windows supports the file flush above, but Node has no directory fsync there.
+    if (process.platform !== 'win32') {
+      for (let path = dirname(file), depth = 0; depth < 3; path = dirname(path), depth++) {
+        const dir = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY)
+        try { fsyncSync(dir) } finally { closeSync(dir) }
+      }
+    }
+  } catch (error) {
+    if (renamed) throw new PlainSessionSyncError()
+    try { rmSync(tmp, { force: true }) } catch { /* Retain the original write error. */ }
+    throw error
+  }
 }
 
 /** 全部会话清单（无分桶——对话优先外壳一次列全部，按 updatedAt 倒序）。 */

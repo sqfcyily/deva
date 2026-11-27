@@ -1,4 +1,4 @@
-import { app, ipcMain } from 'electron'
+import { homedir } from 'node:os'
 import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { writeFileAtomic } from './atomic-write'
@@ -13,12 +13,18 @@ import { writeFileAtomic } from './atomic-write'
  */
 
 let home = ''
+let userHome = homedir
+
+/** 桌面入口保留 app.getPath('home')；只在没有 DEVA_HOME 时才调用。 */
+export function setUserHomeResolver(resolveHome: () => string): void {
+  userHome = resolveHome
+}
 
 /** Deva 配置根目录：DEVA_HOME 覆盖，否则 ~/.deva。首次调用即确保目录存在。 */
 export function getDevaHome(): string {
   if (home) return home
   const override = process.env.DEVA_HOME?.trim()
-  home = override && override.length > 0 ? override : join(app.getPath('home'), '.deva')
+  home = override && override.length > 0 ? override : join(userHome(), '.deva')
   try {
     if (!existsSync(home)) mkdirSync(home, { recursive: true })
   } catch {
@@ -79,26 +85,4 @@ export function setConfig(patch: Record<string, unknown>): void {
     else config[k] = v
   }
   persist()
-}
-
-export function registerConfigIpc(): void {
-  ensureLoaded()
-
-  // 同步读取整份配置：供渲染层首帧读取主题/语言，避免闪烁（FOUC）。
-  ipcMain.on('config:get-sync', (evt) => {
-    ensureLoaded()
-    evt.returnValue = config
-  })
-
-  // 异步读取整份配置。
-  ipcMain.handle('config:get', () => {
-    ensureLoaded()
-    return config
-  })
-
-  // 顶层浅合并补丁：值为 undefined 时删除该键。
-  ipcMain.handle('config:set', (_e, patch: Record<string, unknown>) => {
-    setConfig(patch)
-    return { ok: true as const }
-  })
 }

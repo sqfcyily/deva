@@ -339,6 +339,10 @@ When memory is full, the next write by the model first consolidates the existing
 
 </details>
 
+## Headless text chat (experimental)
+
+On Linux, [run the basic Web chat with Docker Compose](apps/desktop/src/headless/README.md). Sign in, create a conversation, stream or stop a reply, and continue it after recreating the container. The service publishes to loopback by default and uses a dedicated data volume and one operator-configured model. It does not run desktop tools.
+
 ## Build from Source
 
 Stack: Electron 33 · React 18 · TypeScript · electron-vite · pnpm workspace. Requires Node.js 20+ and pnpm 10.

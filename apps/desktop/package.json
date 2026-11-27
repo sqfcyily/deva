@@ -11,6 +11,7 @@
     "dev": "npm run build:mobile && electron-vite dev",
     "build": "electron-vite build && npm run build:mobile",
     "build:mobile": "vite build --config vite.mobile.config.ts",
+    "build:headless": "vite build --config vite.headless.config.ts --ssr src/headless/server.ts && vite build --config vite.headless.config.ts",
     "start": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",

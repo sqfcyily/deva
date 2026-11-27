@@ -19,7 +19,6 @@ import {
   Puzzle,
   RotateCcw,
   Shrink,
-  Square,
   X
 } from 'lucide-react'
 import {
@@ -55,6 +54,7 @@ import { samePath, DEFAULT_PERSONA_ID, fill, AvatarStack, Avatar } from './shell
 import { GitWidget, WorkspaceMenu } from './GitWidget'
 import { leadingQuote, withQuote, quotePlain } from './ConvMessage'
 import { ModelPanel } from './ModelPanel'
+import { ComposerAction } from './ComposerAction'
 
 /**
  * 一次挑选返回的附件（与 preload PickedAttachment 结构一致）；拖入 / 粘贴的文件夹也放这里，kind 为 folder。
@@ -971,29 +971,16 @@ export const Composer = memo(function Composer({
                 有文字时不出停止，要停先清空输入框。 */}
             {streaming ? (
               canInsert ? (
-                <button
-                  className="cf-send"
-                  type="button"
+                <ComposerAction
+                  label={t('cf.send')}
                   title={t('cf.insert.hint').replace('{name}', name)}
                   onClick={insertNow}
-                >
-                  {t('cf.send')}
-                </button>
+                />
               ) : (
-                <button
-                  className="cf-send is-stop"
-                  type="button"
-                  title={t('chat.stop')}
-                  aria-label={t('chat.stop')}
-                  onClick={stopTurn}
-                >
-                  <Square size={14} fill="currentColor" />
-                </button>
+                <ComposerAction stop label={t('chat.stop')} onClick={stopTurn} />
               )
             ) : (
-              <button className="cf-send" type="button" disabled={!canSend} onClick={submit}>
-                {t('cf.send')}
-              </button>
+              <ComposerAction label={t('cf.send')} disabled={!canSend} onClick={submit} />
             )}
           </div>
         </div>

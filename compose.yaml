@@ -1,0 +1,22 @@
+services:
+  deva:
+    build: .
+    environment:
+      DEVA_HOST: 0.0.0.0
+      DEVA_PORT: ${DEVA_PORT:-8787}
+      DEVA_ORIGIN: ${DEVA_ORIGIN:-http://127.0.0.1:${DEVA_PORT:-8787}}
+      DEVA_WEB_TOKEN: ${DEVA_WEB_TOKEN:?Set a random Web access token}
+      DEVA_MODEL_BASE_URL: ${DEVA_MODEL_BASE_URL:?Set the OpenAI-compatible API base URL including /v1}
+      DEVA_MODEL: ${DEVA_MODEL:?Set a model ID}
+      DEVA_MODEL_API_KEY: ${DEVA_MODEL_API_KEY:-}
+    ports:
+      - "${DEVA_BIND:-127.0.0.1}:${DEVA_PORT:-8787}:${DEVA_PORT:-8787}"
+    volumes:
+      - deva-data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+volumes:
+  deva-data:

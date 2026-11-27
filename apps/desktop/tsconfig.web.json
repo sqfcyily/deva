@@ -3,6 +3,7 @@
   "include": [
     "src/renderer/src/**/*",
     "src/renderer/src/**/*.tsx",
+    "src/headless/web/**/*",
     "src/preload/*.d.ts",
     "src/shared/**/*",
     "src/mobile/**/*",
