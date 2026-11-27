@@ -1,0 +1,17 @@
+# Send only public inputs required to compile this headless target.
+**
+!.npmrc
+!package.json
+!pnpm-workspace.yaml
+!pnpm-lock.yaml
+!apps/
+!apps/desktop/
+!apps/desktop/package.json
+!apps/desktop/tsconfig*.json
+!apps/desktop/vite.headless.config.ts
+!apps/desktop/src/
+!apps/desktop/src/**
+**/.env*
+**/*.pem
+**/*.key
+**/node_modules/**
