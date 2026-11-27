@@ -1,0 +1,28 @@
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--fg); background: var(--bg); font: 14px/1.5 var(--font-sans); }
+button, input, textarea { font: inherit; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:not(:disabled):active { translate: 0 1px; }
+button:disabled { opacity: .55; cursor: default; }
+.web-login { max-width: 360px; margin: min(24vh, 160px) auto 0; padding: var(--space-6); }
+.web-login h1 { margin: 0 0 var(--space-6); font-size: 24px; }
+.web-login form { display: grid; gap: var(--space-3); }
+.web-login input { min-width: 0; padding: var(--space-2); color: var(--fg); background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: var(--radius); }
+.web-login [role='alert'] { color: var(--danger); }
+.web-secondary { width: fit-content; padding: var(--space-1) var(--space-2); border-radius: var(--radius); border: 1px solid var(--border); color: var(--fg); background: var(--bg-elevated); cursor: pointer; }
+.web-secondary:hover:not(:disabled) { background: var(--bg-hover); }
+.web-chat { grid-template-columns: clamp(192px, 23vw, 264px) minmax(0, 1fr); line-height: 1.5; }
+.web-chat .cf-rail__top, .web-chat .cf-conv__head { min-height: 56px; justify-content: space-between; padding: var(--space-2) var(--space-4); }
+.web-chat .cf-thread { display: block; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.web-chat h1 { flex: 1; min-width: 0; margin: 0; font-size: 16px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.web-chat .cf-msg { display: flex; }
+.web-chat .cf-msg.is-user { justify-content: flex-end; }
+.web-chat .cf-box { box-shadow: none; }
+.web-chat .cf-box:focus-within { box-shadow: 0 0 0 1px var(--accent); }
+.web-chat .cf-box__bar { justify-content: space-between; }
+.web-muted, .web-notice { color: var(--fg-muted); overflow-wrap: anywhere; }
+.web-notice { margin: 0 0 var(--space-2); }
+@media (max-width: 600px) {
+  .web-chat { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .web-chat .cf-rail { max-height: 25dvh; border-right: 0; border-bottom: 1px solid var(--border); }
+}

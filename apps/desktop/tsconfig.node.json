@@ -2,6 +2,8 @@
   "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
   "include": [
     "electron.vite.config.*",
+    "vite.headless.config.ts",
+    "src/headless/*.ts",
     "src/main/**/*",
     "src/preload/**/*",
     "src/shared/**/*"
