@@ -37,3 +37,27 @@ jobs:
       - run: node --test apps/desktop/test/node-session-storage.test.mjs
 
       - run: pnpm build
+
+      - run: pnpm --filter @deva/desktop build:headless && node --test apps/desktop/test/headless-chat.test.mjs
+
+      - name: Verify a text conversation across two native amd64 Compose containers
+        timeout-minutes: 12
+        env:
+          DEVA_PORT: '18794'
+          DEVA_ORIGIN: http://127.0.0.1:18794
+          DEVA_MODEL_BASE_URL: http://127.0.0.1:18795/v1
+          DEVA_MODEL: deva-compose-fixture
+        run: |
+          set -eu
+          test "$(uname -m)" = x86_64
+          export COMPOSE_PROJECT_NAME="deva-test-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          DEVA_WEB_TOKEN=$(openssl rand -hex 32); export DEVA_WEB_TOKEN
+          trap 'docker compose down --volumes' EXIT
+          docker compose up --build --wait --wait-timeout 90
+          curl -fsS "$DEVA_ORIGIN/healthz"
+          first=$(docker compose ps -q deva)
+          sid=$(docker compose exec -T deva node --input-type=module < apps/desktop/test/headless-compose-probe.mjs)
+          docker compose up --force-recreate --wait --wait-timeout 90
+          second=$(docker compose ps -q deva)
+          test -n "$first" && test -n "$second" && test "$first" != "$second"
+          docker compose exec -T -e DEVA_SMOKE_SESSION="$sid" deva node --input-type=module < apps/desktop/test/headless-compose-probe.mjs
