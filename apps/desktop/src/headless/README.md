@@ -19,6 +19,8 @@ printf '浏览器登录令牌：%s\n' "$DEVA_WEB_TOKEN"
 
 在同一套部署环境中运行 `docker compose up -d --force-recreate --wait`，重新登录，再点之前的会话继续聊。命名卷 `deva-data` 保留历史；`docker compose down` 保留卷，`down -v` 会删除它。普通服务进程重启会使旧登录失效。停止后保留已经生成的文字，刷新或重启不会自行重发上一条消息。
 
+[查看真实浏览器截图：服务重启并重新登录后，完整回复与已停止的回复都保留在原会话中。](../../../../docs/headless-chat.png) 图中均为本地测试对话。
+
 ## 配置与范围
 
 - `DEVA_WEB_TOKEN` 是部署者保管的高熵登录令牌（32–128 个 base64url 字符）；`DEVA_MODEL_API_KEY` 只注入服务端，使用无密钥本地模型时留空。Compose 会把这些环境变量交给容器，Docker 管理员可读取；长期部署请用私有环境文件或部署平台管理，勿提交到 Git。浏览器登录 Cookie 为 HttpOnly、SameSite=Strict，默认 8 小时有效。
