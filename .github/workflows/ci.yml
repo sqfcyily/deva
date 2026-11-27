@@ -34,4 +34,6 @@ jobs:
 
       - run: pnpm typecheck
 
+      - run: node --test apps/desktop/test/node-session-storage.test.mjs
+
       - run: pnpm build
