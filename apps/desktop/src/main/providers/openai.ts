@@ -1,5 +1,3 @@
-import { describeNetError } from '../http'
-import { fetchModel } from './request'
 import { iterateSSE, STREAM_IDLE_MS } from './sse'
 import {
   httpError,
@@ -173,7 +171,7 @@ function outputLimitField(baseURL: string): 'max_tokens' | 'max_completion_token
     : 'max_tokens'
 }
 
-function mapFinishReason(raw: string | null | undefined): StopReason {
+function mapFinishReason(raw: string | null | undefined, strict = false): StopReason {
   switch (raw) {
     case 'stop':
       return 'end_turn'
@@ -186,7 +184,7 @@ function mapFinishReason(raw: string | null | undefined): StopReason {
     case 'length':
       return 'max_tokens'
     default:
-      return 'end_turn'
+      return strict ? 'error' : 'end_turn'
   }
 }
 
@@ -200,7 +198,12 @@ interface PendingCall {
 
 export async function* streamOpenAI(
   cfg: AdapterConfig,
-  req: GenerateRequest
+  req: GenerateRequest,
+  { fetchModel, describeNetError, textOnly }: {
+    fetchModel: (url: string, init: RequestInit) => Promise<Response>
+    describeNetError: (error: unknown) => string
+    textOnly?: boolean
+  }
 ): AsyncGenerator<StreamEvent> {
   const url = `${cfg.baseURL.replace(/\/$/, '')}/chat/completions`
   const messages = mapMessages(req.system, req.messages, isGemini(cfg.baseURL, req.model))
@@ -263,6 +266,7 @@ export async function* streamOpenAI(
   let inputTokens = 0
   let outputTokens = 0
   let cacheRead = 0
+  let finished = false
 
   const flushCalls = function* (): Generator<StreamEvent> {
     const indices = [...calls.keys()].sort((a, b) => a - b)
@@ -286,8 +290,12 @@ export async function* streamOpenAI(
   }
 
   try {
-    for await (const { data } of iterateSSE(res, STREAM_IDLE_MS)) {
-      if (data === '[DONE]') break
+    // The headless transport supplies an overall deadline and keeps error details opaque.
+    for await (const { data } of iterateSSE(res, textOnly ? 0 : STREAM_IDLE_MS)) {
+      if (data === '[DONE]') {
+        finished = true
+        break
+      }
       let chunk: Record<string, unknown>
       try {
         chunk = JSON.parse(data)
@@ -300,6 +308,10 @@ export async function* streamOpenAI(
       // 「自然结束 + 零正文」收场，用户只看到一句语焉不详的空回合提示。必须原样上报。
       const inband = chunk.error as { message?: string; code?: string; type?: string } | undefined
       if (inband && !Array.isArray(chunk.choices)) {
+        if (textOnly) {
+          yield { type: 'done', stopReason: 'error' }
+          return
+        }
         const message =
           inband.message ??
           inband.code ??
@@ -344,6 +356,7 @@ export async function* streamOpenAI(
               reasoning_content?: string | null
               /** 结构化拒绝文本（OpenAI 及兼容网关在拒绝时改走此字段，content 为空）。 */
               refusal?: string | null
+              function_call?: unknown
               tool_calls?: {
                 index?: number
                 id?: string
@@ -357,6 +370,10 @@ export async function* streamOpenAI(
       if (!choice) continue
 
       const delta = choice.delta
+      if (textOnly && (delta?.tool_calls?.length || delta?.function_call || mapFinishReason(choice.finish_reason) === 'tool_use')) {
+        yield { type: 'done', stopReason: 'tool_use' }
+        return
+      }
       if (delta?.content) yield { type: 'text_delta', text: delta.content }
       // DeepSeek-R1 等把思维链放在 reasoning_content
       if (delta?.reasoning_content) yield { type: 'thinking_delta', text: delta.reasoning_content }
@@ -383,6 +400,11 @@ export async function* streamOpenAI(
       }
 
       if (choice.finish_reason) {
+        if (textOnly) {
+          finished = true
+          stopReason = mapFinishReason(choice.finish_reason, true)
+          break
+        }
         // 智谱：network_error = 模型推理异常，本步输出不完整——按可重试错误上报，引擎丢弃残缺尾部重发本步。
         if (choice.finish_reason === 'network_error') {
           yield {
@@ -408,6 +430,11 @@ export async function* streamOpenAI(
       return
     }
     yield { type: 'error', error: { kind: 'network', retryable: true, message: describeNetError(e) } }
+    yield { type: 'done', stopReason: 'error' }
+    return
+  }
+
+  if (textOnly && !finished) {
     yield { type: 'done', stopReason: 'error' }
     return
   }
